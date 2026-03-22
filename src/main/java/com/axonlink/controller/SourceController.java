@@ -50,33 +50,51 @@ public class SourceController {
         }
     }
 
-    // ── 跨文件导航接口：按类名查找文件 ──────────────────────────────────────
+    /**
+     * 跨文件导航：按类名或 FQN 查找源文件
+     * GET /api/source/find?className=Foo&methodName=bar         （简单名，有冲突时取首次）
+     * GET /api/source/find?fqn=com.example.Foo&methodName=bar  （FQN 精确，解决同名冲突）
+     *
+     * 优先级：fqn > className（索引命中）> className（文件系统降级）
+     */
     @GetMapping("/find")
     public ResponseEntity<Map<String, Object>> findClass(
             @RequestParam(required = false, defaultValue = "") String currentFilePath,
-            @RequestParam String className,
+            @RequestParam(required = false, defaultValue = "") String className,
+            @RequestParam(required = false, defaultValue = "") String fqn,
             @RequestParam(required = false, defaultValue = "") String methodName) {
         try {
-            // ① 优先查全局索引（毫秒级）
-            Optional<Path> indexed = projectIndexer.findBySimpleName(className);
-            if (indexed.isPresent()) {
-                return ResponseEntity.ok(buildResponse(indexed.get(), methodName));
+            // ① FQN 精确查找（无歧义，推荐用于有同名冲突的类）
+            if (!fqn.isBlank()) {
+                Optional<Path> byFqn = projectIndexer.findByFqn(fqn);
+                if (byFqn.isPresent()) return ResponseEntity.ok(buildResponse(byFqn.get(), methodName));
+                // FQN 未命中（索引可能还在构建）→ 尝试从 FQN 末尾提取 simpleName 降级
+                String simpleFromFqn = fqn.contains(".") ? fqn.substring(fqn.lastIndexOf('.') + 1) : fqn;
+                Optional<Path> bySimple = projectIndexer.findBySimpleName(simpleFromFqn);
+                if (bySimple.isPresent()) return ResponseEntity.ok(buildResponse(bySimple.get(), methodName));
+                return ResponseEntity.notFound().build();
             }
 
-            // ② 索引未命中：降级到文件系统遍历（与旧逻辑一致）
-            if (!currentFilePath.isBlank()) {
-                Path current    = Paths.get(currentFilePath).toAbsolutePath().normalize();
-                Path sourceRoot = deriveSourceRoot(current);
-                try (Stream<Path> walk = Files.walk(sourceRoot)) {
-                    Optional<Path> found = walk
-                            .filter(Files::isRegularFile)
-                            .filter(p -> p.getFileName().toString().equals(className + ".java"))
-                            .findFirst();
-                    if (found.isPresent()) return ResponseEntity.ok(buildResponse(found.get(), methodName));
+            // ② 简单类名查找（全局索引优先）
+            if (!className.isBlank()) {
+                Optional<Path> indexed = projectIndexer.findBySimpleName(className);
+                if (indexed.isPresent()) return ResponseEntity.ok(buildResponse(indexed.get(), methodName));
+
+                // ③ 降级：在当前文件所在工程内遍历文件系统
+                if (!currentFilePath.isBlank()) {
+                    Path current    = Paths.get(currentFilePath).toAbsolutePath().normalize();
+                    Path sourceRoot = deriveSourceRoot(current);
+                    try (Stream<Path> walk = Files.walk(sourceRoot)) {
+                        Optional<Path> found = walk
+                                .filter(Files::isRegularFile)
+                                .filter(p -> p.getFileName().toString().equals(className + ".java"))
+                                .findFirst();
+                        if (found.isPresent()) return ResponseEntity.ok(buildResponse(found.get(), methodName));
+                    }
                 }
             }
-            return ResponseEntity.notFound().build();
 
+            return ResponseEntity.notFound().build();
         } catch (IOException e) {
             return ResponseEntity.internalServerError().build();
         }
@@ -88,6 +106,27 @@ public class SourceController {
         Map<String, Object> stats = projectIndexer.getStats();
         stats.put("indexed", projectIndexer.isIndexed());
         return ResponseEntity.ok(stats);
+    }
+
+    /**
+     * 实时索引进度接口（前端轮询用）
+     * GET /api/source/index/progress
+     *
+     * 返回字段：
+     *   phase      : idle | collecting | parsing | done | error
+     *   indexing   : 是否正在索引
+     *   total      : 发现的总文件数
+     *   parsed     : 深度解析完成数（< maxFileKb 的文件）
+     *   skipped    : 大文件轻量处理数（只登记类名，跳过 AST）
+     *   processed  : parsed + skipped
+     *   percent    : 0-100
+     *   classCount : 已入索引的类总数
+     *   elapsedMs  : 耗时（毫秒）
+     *   maxFileKb  : 当前大文件阈值
+     */
+    @GetMapping("/index/progress")
+    public ResponseEntity<Map<String, Object>> getIndexProgress() {
+        return ResponseEntity.ok(projectIndexer.getIndexProgress());
     }
 
     // ── 热重载接口：编译后调用此接口更新索引，无需重启服务 ────────────────────

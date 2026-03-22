@@ -59,10 +59,24 @@
       <div v-if="isFullscreen" class="fs-backdrop" @click.self="closeFullscreen"/>
     </Teleport>
 
-    <!-- 代码查看弹窗（Monaco Editor） -->
+    <!-- API 测试弹窗 -->
+    <ApiTester
+      :visible="apiTester.visible"
+      :tx-code="apiTester.txCode"
+      :tx-name="apiTester.txName"
+      :is-dark="isDark"
+      @close="apiTester.visible = false"
+    />
+
+    <!-- 代码查看弹窗（Monaco Editor）
+         使用 v-show 而非 v-if：组件常驻 DOM，关闭时只隐藏不销毁，
+         保留 Monaco 的 openTabs 状态，再次打开时标签页仍在。 -->
     <Teleport to="body">
-      <div v-if="codeViewer.visible" class="code-modal-backdrop" @click.self="closeCodeViewer">
-        <div class="code-modal monaco-modal">
+      <div v-show="codeViewer.visible"
+           class="code-modal-backdrop"
+           :class="{ 'code-modal-backdrop-fs': codeViewer.fullscreen }"
+           @click.self="!codeViewer.fullscreen && closeCodeViewer()">
+        <div class="code-modal monaco-modal" :class="{ 'monaco-modal-fs': codeViewer.fullscreen }">
           <!-- Monaco 代码查看器 -->
           <MonacoCodeViewer
             :node="codeViewer.node"
@@ -70,7 +84,9 @@
             :method-name="codeViewer.methodName"
             :is-dark="isDark"
             :parent-loading="codeViewer.loading"
+            :visible="codeViewer.visible"
             @close="closeCodeViewer"
+            @fullscreen-change="v => { codeViewer.fullscreen = v }"
           />
 
 
@@ -168,6 +184,13 @@
               <div v-for="node in transaction.chain.orchestration" :key="node.code" class="chain-node orchestration-node">
                 <div class="node-first-row">
                   <span class="node-code">{{ node.code }}</span>
+                  <button class="code-view-btn test-btn" @click.stop="openApiTester(node)" title="报文测试">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 3h8M2 6h5.5M2 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                      <circle cx="9.5" cy="9" r="2" stroke="#4F7CFF" stroke-width="1.2"/>
+                      <path d="M9.5 8v1.2M9.5 10.4v.1" stroke="#4F7CFF" stroke-width="1.2" stroke-linecap="round"/>
+                    </svg>
+                  </button>
                   <button class="code-view-btn" @click.stop="openCodeViewer(node, 'orchestration')" title="查看代码">
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                       <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -443,6 +466,7 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import MonacoCodeViewer from './MonacoCodeViewer.vue'
+import ApiTester from './ApiTester.vue'
 
 const props = defineProps({
   transaction:     { type: Object,  required: true },
@@ -694,6 +718,9 @@ const showData = (code) => {
   const c2d = relations.value.componentToData || {}
   if (activePath.techComp) return (c2d[activePath.techComp] || []).includes(code)
   if (activePath.bizComp) {
+    // ① 业务构件直接关联数据表（无中间技术构件）
+    if ((c2d[activePath.bizComp] || []).includes(code)) return true
+    // ② 经由 componentToComponent → 技术构件 → 数据表
     return [...linkedTechComps.value].some(tc => (c2d[tc] || []).includes(code))
   }
   if (activePath.calledSvc) return dataCodesOfSelectedCalledSvc.value.has(code)
@@ -921,10 +948,18 @@ const tabsContainerRef  = ref(null)
 const codeViewer = reactive({
   visible: false, node: null, nodeType: '', copied: false,
   noSource: false, loading: false,
-  toast: '',         // 跨文件导航状态消息（空字符串 = 不显示）
-  filePath: '',      // Monaco：传给 MonacoCodeViewer 的文件路径
-  methodName: '',    // Monaco：传给 MonacoCodeViewer 的入口方法名
+  toast: '', filePath: '', methodName: '',
+  fullscreen: false,
 })
+
+// ── API 测试弹窗状态 ──
+const apiTester = reactive({ visible: false, txCode: '', txName: '' })
+
+const openApiTester = (node) => {
+  apiTester.txCode  = node.code || props.transaction.id
+  apiTester.txName  = node.name || props.transaction.name
+  apiTester.visible = true
+}
 
 // ── Tab 标签页状态 ──
 // 每个 tab：{ id, filename, kind, pkg, source, internalMethods, entryMethod, className }
@@ -1440,12 +1475,117 @@ public enum TxStatus {
  * 后端全局索引会自动找到类所在的文件，无需写死绝对路径。
  */
 const NODE_FILE_REGISTRY = {
-  // ── 公共领域 ─────────────────────────────────────────────────────────────
-  'COMP_AUTH_BIZ_001': { className: 'DictMcpTools',          methodName: 'getDictDefByLongNameList' },
 
-  // ── 其他节点（补充类名和入口方法即可） ────────────────────────────────────
-  // 'SVC_AUTH_001':      { className: 'AuthService',           methodName: 'authenticate'            },
-  // 'COMP_ENC_001':      { className: 'EncryptService',        methodName: 'encrypt'                 },
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 贷款领域 - TD0101 贷款申请提交
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 服务层
+  'SVC_LOAN_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.managedeptcptl.IoDpPrcAcctDeptSvcApsImpl',
+    className:  'IoDpPrcAcctDeptSvcApsImpl',
+    methodName: 'prcAcctDept',
+  },
+  'SVC_LIMIT_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.acclimit.IoDpAccLimitSetApsImpl',
+    className:  'IoDpAccLimitSetApsImpl',
+    methodName: 'prcAccLimitRgst',
+  },
+  'SVC_RISK_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.acclimit.IoDpQryAccLimitApsImpl',
+    className:  'IoDpQryAccLimitApsImpl',
+    methodName: 'qryAccLimit',
+  },
+
+  // 构件层（业务/产品构件）
+  'COMP_AUTH_BIZ_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.dpbtchbusi.IoDpAcctFrzCtrlDetlApsImpl',
+    className:  'IoDpAcctFrzCtrlDetlApsImpl',
+    methodName: 'prcAcctFrzCtrlDetl',
+  },
+  'COMP_QUOTA_PROD_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.managedeptctrct.IoDpOpenDeptAcctApsImpl',
+    className:  'IoDpOpenDeptAcctApsImpl',
+    methodName: 'openDeptAcct',
+  },
+  'COMP_RISK_BASE_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpbtchbusi.DpPrcCalIntLayerBcsImpl',
+    className:  'DpPrcCalIntLayerBcsImpl',
+    methodName: 'prcCalIntLayer',
+  },
+
+  // 构件层（公共/技术构件）
+  'COMP_CALC_002': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpacclimit.DpQryAccLimitBcsImpl',
+    className:  'DpQryAccLimitBcsImpl',
+    methodName: 'qryAccLimit',
+  },
+  'COMP_RULE_002': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpacclimit.DpSetAccLimitBcsImpl',
+    className:  'DpSetAccLimitBcsImpl',
+    methodName: 'prcAccLimitMntn',
+  },
+  'COMP_SCORE_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.publicBusiness.interest.base.DpInterestBaseImpl',
+    className:  'DpInterestBaseImpl',
+    methodName: 'calculateInterest',
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 贷款领域 - TD0102 贷款额度查询
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 服务层
+  'SVC_QUOTA_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.acclimit.IoDpQryAccLimitApsImpl',
+    className:  'IoDpQryAccLimitApsImpl',
+    methodName: 'qryAccLimit',
+  },
+  'SVC_LEVEL_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.acclimit.IoDpAccLimitSetApsImpl',
+    className:  'IoDpAccLimitSetApsImpl',
+    methodName: 'prcAccLimitMntn',
+  },
+
+  // 构件层
+  'COMP_CALC_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpmaintaindeptinfo.DpCalIntByProdBcsImpl',
+    className:  'DpCalIntByProdBcsImpl',
+    methodName: 'prcCalIntByProd',
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 贷款领域 - TD0103 还款计划生成
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 服务层
+  'SVC_REPAY_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.maintaindeptinfo.IoDpCalIntByAccApsImpl',
+    className:  'IoDpCalIntByAccApsImpl',
+    methodName: 'prcCalIntByAcc',
+  },
+  'SVC_CALC_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.dpbtchbusi.IoDpPrcAcrlPstgApsImpl',
+    className:  'IoDpPrcAcrlPstgApsImpl',
+    methodName: 'prcAcrlPstg',
+  },
+  'SVC_RPT_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.aps.serviceimpl.apsimpl.dpbtchbusi.IoDpPrcCalIntLayerApsImpl',
+    className:  'IoDpPrcCalIntLayerApsImpl',
+    methodName: 'prcCalIntLayer',
+  },
+
+  // 构件层
+  'COMP_DATE_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpmaintaindeptinfo.DpCalIntByAccBcsImpl',
+    className:  'DpCalIntByAccBcsImpl',
+    methodName: 'prcCalIntByAcc',
+  },
+  'COMP_FMT_001': {
+    fqn:        'cn.sunline.ltts.busi.dept.bcs.serviceimpl.dpbtchbusi.DpPrcAcrlPstgBcsImpl',
+    className:  'DpPrcAcrlPstgBcsImpl',
+    methodName: 'prcAcrlPstg',
+  },
 }
 
 // 从后端 /api/source 加载真实 Java 文件
@@ -2201,50 +2341,62 @@ const jumpToCallSite = (lineNum) => {
 
 const closeCallSitesPopup = () => { callSitesPopup.visible = false }
 
+// 已加载节点路径缓存：node.code → filePath
+// 跨关闭/打开保留，避免重复发起网络请求；切换到其他交易卡片时自然随组件销毁
+const nodePathCache = new Map()
+
 // 打开代码查看器：通过全局索引把 className 解析成 filePath，再传给 MonacoCodeViewer
 const openCodeViewer = async (node, nodeType) => {
   const reg = NODE_FILE_REGISTRY[node.code]
 
   if (!reg) {
-    // 没有配置 → 暂无源码
     Object.assign(codeViewer, { visible: true, node, nodeType, noSource: true,
       loading: false, toast: '', filePath: '', methodName: '' })
     return
   }
 
-  // 先打开弹窗（loading 状态），避免用户感知延迟
+  // 同一节点且已有缓存路径 → 直接显示，无需重新请求（保留 Monaco 现有标签页）
+  const cached = nodePathCache.get(node.code)
+  if (cached) {
+    Object.assign(codeViewer, {
+      visible: true, node, nodeType, noSource: false,
+      loading: false, toast: '',
+      filePath:   cached.filePath,
+      methodName: cached.methodName,
+    })
+    return
+  }
+
+  // 首次加载：先打开弹窗（loading 状态）
   Object.assign(codeViewer, { visible: true, node, nodeType, noSource: false,
-    loading: true, toast: '', filePath: '', methodName: '' })
+    loading: true, toast: '', methodName: '' })
+  // 不重置 filePath，避免 MonacoCodeViewer 触发空路径处理
 
   try {
-    // 通过后端全局索引将类名转成文件路径
-    const params = new URLSearchParams({ className: reg.className, methodName: reg.methodName })
-    const res    = await fetch(`/api/source/find?${params}`)
+    const params = new URLSearchParams({ methodName: reg.methodName })
+    if (reg.fqn)  params.set('fqn',       reg.fqn)
+    else          params.set('className',  reg.className)
+
+    const res = await fetch(`/api/source/find?${params}`)
     if (!res.ok) {
       Object.assign(codeViewer, { noSource: true, loading: false })
       return
     }
     const data = await res.json()
-    Object.assign(codeViewer, {
-      loading:    false,
-      filePath:   data.filePath,
-      methodName: reg.methodName,
-    })
+    const filePath   = data.filePath
+    const methodName = reg.methodName
+    // 写入缓存
+    nodePathCache.set(node.code, { filePath, methodName })
+    Object.assign(codeViewer, { loading: false, filePath, methodName })
   } catch {
     Object.assign(codeViewer, { noSource: true, loading: false })
   }
 }
 
 const closeCodeViewer = () => {
-  codeViewer.visible     = false
-  codeViewer.noSource    = false
-  codeViewer.loading     = false
-  codeViewer.toast       = ''
-  codeViewer.filePath    = ''
-  codeViewer.methodName  = ''
+  codeViewer.visible    = false
+  codeViewer.fullscreen = false
   callSitesPopup.visible = false
-  tabs.list    = []
-  tabs.activeIdx = 0
 }
 
 // 打开外部类 Tab（已有则切换，没有则新增）
@@ -2473,6 +2625,7 @@ defineExpose({
 }
 .chain-node:hover .code-view-btn { opacity: 1; }
 .code-view-btn:hover { background: rgba(79,124,255,0.12); color: #4F7CFF; border-color: rgba(79,124,255,0.3); }
+.code-view-btn.test-btn:hover { background: rgba(18,184,134,0.12); color: #12B886; border-color: rgba(18,184,134,0.3); }
 
 /* ── 代码查看弹窗（跟随日/夜主题） ── */
 .code-modal-backdrop {
@@ -2494,6 +2647,18 @@ defineExpose({
 /* Monaco 版弹窗需要明确高度，让编辑器能计算尺寸 */
 .code-modal.monaco-modal {
   height: 80vh;
+}
+/* 全屏模式 */
+.code-modal-backdrop-fs {
+  padding: 0 !important;
+}
+.code-modal.monaco-modal-fs {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 !important;
+  border: none !important;
 }
 
 /* ── 标题栏 ── */

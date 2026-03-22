@@ -9,21 +9,21 @@
         <span class="mcv-desc">{{ node?.name }}</span>
       </div>
       <div class="mcv-actions">
-        <button v-if="entryMethod" class="mcv-btn" :title="`定位到 ${entryMethod}()`" @click="revealMethod(entryMethod)">
+        <!-- 定位入口方法 + 关闭所有附加标签，恢复初始状态 -->
+        <button v-if="entryMethod" class="mcv-btn" title="定位入口方法并清除其他文件" @click="locateAndClean">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
             <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.2"/>
-            <circle cx="6.5" cy="6.5" r="2"   stroke="currentColor" stroke-width="1.2"/>
+            <circle cx="6.5" cy="6.5" r="2"   fill="currentColor"/>
             <path d="M6.5 1v1.5M6.5 10.5V12M1 6.5h1.5M10.5 6.5H12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
         </button>
-        <!-- 重新索引按钮：编译后点击，无需重启服务 -->
-        <button class="mcv-btn" :class="{ 'mcv-refreshing': indexRefreshing }"
-                :title="indexRefreshing ? '正在重建索引…' : '重新索引（编译后刷新）'"
-                @click="refreshIndex">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"
-               :style="indexRefreshing ? 'animation:spin 1s linear infinite' : ''">
-            <path d="M11 6.5A4.5 4.5 0 1 1 6.5 2a4.5 4.5 0 0 1 3.18 1.32" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-            <path d="M9.5 1v2.5H7"   stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- 全屏 / 退出全屏 -->
+        <button class="mcv-btn" :title="isFullscreen ? '退出全屏' : '全屏展示'" @click="toggleFullscreen">
+          <svg v-if="!isFullscreen" width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <path d="M1.5 5V2H4.5M8.5 2H11.5V5M11.5 8V11H8.5M4.5 11H1.5V8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <svg v-else width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <path d="M4.5 1.5V4.5H1.5M11.5 4.5H8.5V1.5M8.5 11.5V8.5H11.5M1.5 8.5H4.5V11.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
         <button class="mcv-btn mcv-close" @click="$emit('close')">
@@ -34,29 +34,52 @@
       </div>
     </div>
 
-    <!-- 文件标签栏 -->
-    <div class="mcv-tab-bar" ref="tabBarRef">
-      <div
-        v-for="(tab, idx) in openTabs"
-        :key="tab.uri"
-        class="mcv-tab"
-        :class="{ active: idx === activeIdx }"
-        @click="switchTab(idx)"
-      >
-        <span v-if="tab.kind && /class/i.test(tab.kind)"   class="kind-badge kind-class">C</span>
-        <span v-else-if="tab.kind === 'interface'"          class="kind-badge kind-interface">I</span>
-        <span v-else-if="tab.kind === 'enum'"               class="kind-badge kind-enum">E</span>
-        <svg v-else class="tab-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <rect x="1" y="1" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.1"/>
-          <path d="M3 4h6M3 6h5M3 8h3.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+    <!-- 文件标签栏（含左右滚动箭头） -->
+    <div class="mcv-tab-nav">
+      <!-- 向左滚动 -->
+      <button v-show="canScrollLeft" class="mcv-tab-scroll-btn" title="向左滚动" @click="scrollTabBar(-1)">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path d="M7.5 2L3.5 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        <span class="mcv-tab-label">{{ tab.filename }}</span>
-        <button v-if="idx > 0" class="mcv-tab-close" @click.stop="closeTab(idx)">×</button>
+      </button>
+
+      <div class="mcv-tab-bar" ref="tabBarRef" @scroll="updateScrollState">
+        <div
+          v-for="(tab, idx) in openTabs"
+          :key="tab.uri"
+          class="mcv-tab"
+          :class="{ active: idx === activeIdx }"
+          :title="tab.filename + (tab.pkg ? '\n' + tab.pkg : '')"
+          @click="switchTab(idx)"
+        >
+          <span v-if="tab.kind && /class/i.test(tab.kind)"   class="kind-badge kind-class">C</span>
+          <span v-else-if="tab.kind === 'interface'"          class="kind-badge kind-interface">I</span>
+          <span v-else-if="tab.kind === 'enum'"               class="kind-badge kind-enum">E</span>
+          <svg v-else class="tab-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <rect x="1" y="1" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.1"/>
+            <path d="M3 4h6M3 6h5M3 8h3.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+          </svg>
+          <span class="mcv-tab-label">{{ tab.filename }}</span>
+          <button v-if="idx > 0" class="mcv-tab-close" @click.stop="closeTab(idx)">×</button>
+        </div>
       </div>
+
+      <!-- 向右滚动 -->
+      <button v-show="canScrollRight" class="mcv-tab-scroll-btn mcv-tab-scroll-right" title="向右滚动" @click="scrollTabBar(1)">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+          <path d="M4.5 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- 状态消息 -->
-    <div v-if="statusMsg" class="mcv-status">{{ statusMsg }}</div>
+    <div v-if="statusMsg" class="mcv-status" :class="{ 'mcv-status-error': isErrorStatus }">
+      <svg v-if="isErrorStatus" width="13" height="13" viewBox="0 0 13 13" fill="none" style="flex-shrink:0">
+        <circle cx="6.5" cy="6.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+        <path d="M6.5 3.5v3.5M6.5 9.5v.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      {{ statusMsg }}
+    </div>
 
     <!-- 加载中（父组件查索引 或 Monaco 加载文件内容） -->
     <div v-if="isLoading || props.parentLoading" class="mcv-no-source">
@@ -85,28 +108,41 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import loader from '@monaco-editor/loader'
 
 // ── Props / Emits ────────────────────────────────────────────────────────────
 const props = defineProps({
-  node:       { type: Object,  default: null },
-  filePath:   { type: String,  default: '' },
-  methodName: { type: String,  default: '' },
-  isDark:     { type: Boolean, default: true },
+  node:          { type: Object,  default: null },
+  filePath:      { type: String,  default: '' },
+  methodName:    { type: String,  default: '' },
+  isDark:        { type: Boolean, default: true },
   parentLoading: { type: Boolean, default: false },
+  // 父组件用 v-show 控制可见性时传入，visible 由 false→true 时触发 editor.layout()
+  visible:       { type: Boolean, default: true },
 })
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'fullscreen-change'])
 
 // ── 状态 ─────────────────────────────────────────────────────────────────────
 const editorContainer = ref(null)
 const tabBarRef       = ref(null)
+const canScrollLeft   = ref(false)
+const canScrollRight  = ref(false)
 const statusMsg       = ref('')
+const isErrorStatus   = computed(() =>
+  /暂无源码|⚠|失败|不存在/.test(statusMsg.value)
+)
 const openTabs        = ref([])
 const activeIdx       = ref(0)
-const entryMethod     = ref('')
-const isLoading       = ref(false)
-const indexRefreshing = ref(false)
+const entryMethod  = ref('')
+const isLoading    = ref(false)
+const isFullscreen = ref(false)
+
+function toggleFullscreen() {
+  isFullscreen.value = !isFullscreen.value
+  emit('fullscreen-change', isFullscreen.value)
+  nextTick(() => editor?.layout())
+}
 
 let monaco       = null
 let editor       = null
@@ -211,8 +247,9 @@ async function initMonaco() {
           const sym = (tab.symbols || []).find(s => s.name === w)
           return sym && sym.line > 0 ? [{ uri: model.uri, range: makeLine(sym.line) }] : null
         }
-        // 跨文件方法调用：占位（onMouseDown 完成真正跳转）
-        const cls = (tab.typeMap || {})[objName] || (/^[A-Z]/.test(objName) ? objName : '')
+        // 跨文件方法调用：用 deriveClassName 推断，给占位让下划线显示
+        // (真正跳转在 onMouseDown 中完成)
+        const cls = deriveClassName(objName, tab.typeMap)
         return cls ? [{ uri: model.uri, range: selfRange }] : null
       } else {
         // 本文件方法/本文件内已知符号
@@ -226,6 +263,27 @@ async function initMonaco() {
       }
     }
   })
+
+  // ── 从对象名称推断类名（处理局部变量 + 字段两种情况）────────────────────────
+  // 策略：① typeMap 字段声明 → ② 首字母大写（直接是类名） → ③ 剥离 cpl/io 前缀
+  // 例：cplDpCalIntSingleWithPreInPojo → 剥离 cpl → DpCalIntSingleWithPreInPojo
+  function deriveClassName(objName, typeMap) {
+    if (typeMap && typeMap[objName]) return typeMap[objName]
+    if (/^[A-Z]/.test(objName)) return objName
+    // 剥离 cpl 前缀（本工程局部变量命名惯例：cplXxxYyyPojo）
+    if (objName.startsWith('cpl') && objName.length > 3) {
+      const rest = objName.charAt(3).toUpperCase() + objName.slice(4)
+      if (/^[A-Z]/.test(rest)) return rest
+    }
+    // 剥离 io 前缀
+    if (objName.startsWith('io') && objName.length > 2) {
+      const rest = objName.charAt(2).toUpperCase() + objName.slice(3)
+      if (/^[A-Z]/.test(rest)) return rest
+    }
+    // 兜底：首字母大写
+    const cap = objName.charAt(0).toUpperCase() + objName.slice(1)
+    return cap
+  }
 
   // ── onMouseDown：Ctrl/Cmd + 左键点击 才真正跳转 ──
   editor.onMouseDown(async (e) => {
@@ -251,8 +309,7 @@ async function initMonaco() {
       const objName = dotMatch[1]
       if (objName === 'this' || objName === 'super') return  // 本文件，Monaco 默认处理
 
-      const className = (tab.typeMap || {})[objName] || (/^[A-Z]/.test(objName) ? objName : '')
-      if (!className) { setStatus('暂无源码，如需查看请至 IDE 中查看'); return }
+      const className = deriveClassName(objName, tab.typeMap)
       await openFileAndReveal(className, clickedWord, tab)
 
     } else if (/^[A-Z]/.test(clickedWord) && !JAVA_PRIMITIVES.has(clickedWord)) {
@@ -358,6 +415,7 @@ async function openFileAndReveal(className, symbolName, fromTab) {
     }
 
     activeIdx.value = targetIdx
+    scrollActiveTabIntoView()   // 确保新/切换的 Tab 在标签栏中可见
     editor.setModel(targetModel)
     await nextTick()
     editor.layout()
@@ -407,6 +465,7 @@ function switchTab(idx) {
   }
 
   activeIdx.value = idx
+  scrollActiveTabIntoView()   // 点击时也确保 Tab 可见（标签太多时会被遮住）
   const tab = openTabs.value[idx]
   if (!tab) return
 
@@ -434,24 +493,71 @@ function closeTab(idx) {
   switchTab(activeIdx.value)
 }
 
+// ── 标签栏左右滚动 ──────────────────────────────────────────────────────────────
+function updateScrollState() {
+  const bar = tabBarRef.value
+  if (!bar) return
+  canScrollLeft.value  = bar.scrollLeft > 2
+  canScrollRight.value = bar.scrollLeft + bar.clientWidth < bar.scrollWidth - 2
+}
+
+function scrollTabBar(dir) {
+  const bar = tabBarRef.value
+  if (!bar) return
+  bar.scrollBy({ left: dir * 160, behavior: 'smooth' })
+  setTimeout(updateScrollState, 320)
+}
+
+/** 滚动标签栏，使当前激活的 tab 完整可见 */
+async function scrollActiveTabIntoView() {
+  await nextTick()
+  const bar = tabBarRef.value
+  if (!bar) return
+  const tabs = bar.querySelectorAll('.mcv-tab')
+  const activeTab = tabs[activeIdx.value]
+  if (!activeTab) return
+  const barLeft  = bar.scrollLeft
+  const barRight = barLeft + bar.clientWidth
+  const tabLeft  = activeTab.offsetLeft
+  const tabRight = tabLeft + activeTab.offsetWidth
+  if (tabLeft < barLeft) {
+    bar.scrollTo({ left: tabLeft - 4, behavior: 'smooth' })
+  } else if (tabRight > barRight) {
+    bar.scrollTo({ left: tabRight - bar.clientWidth + 4, behavior: 'smooth' })
+  }
+  setTimeout(updateScrollState, 320)
+}
+
+// 标签页增减时更新滚动状态
+watch(openTabs, () => nextTick(updateScrollState), { deep: true })
+
 // ── 工具 ──────────────────────────────────────────────────────────────────────
 const makeLine = (line) => ({ startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 })
 
 let statusTimer = null
-// ── 热重载索引（编译后无需重启服务）──────────────────────────────────────────
-async function refreshIndex() {
-  if (indexRefreshing.value) return
-  indexRefreshing.value = true
-  setStatus('正在重建索引…')
-  try {
-    const res  = await fetch('/api/source/index/refresh', { method: 'POST' })
-    const data = await res.json()
-    setStatus(`索引完成：收录 ${data.classCount} 个类，耗时 ${data.elapsedMs} ms`)
-  } catch {
-    setStatus('索引重建失败，请检查服务日志')
-  } finally {
-    indexRefreshing.value = false
+/**
+ * 定位 + 清除：关闭所有附加标签（保留入口文件），切回第一个标签，
+ * 然后滚动定位到入口方法。
+ * 适合"打开了太多关联文件想快速回到起点"的场景。
+ */
+function locateAndClean() {
+  if (!editor || !monaco) return
+
+  // 1. 清除第一个标签以外的所有附加标签（同时清理保存的视图状态）
+  const extras = openTabs.value.slice(1)
+  extras.forEach(t => { delete tabViewStates[t.uri] })
+  openTabs.value = openTabs.value.slice(0, 1)
+
+  // 2. 切换到第一个标签
+  activeIdx.value = 0
+  const firstTab = openTabs.value[0]
+  if (firstTab) {
+    const model = monaco.editor.getModel(monaco.Uri.parse(firstTab.uri))
+    if (model) editor.setModel(model)
   }
+
+  // 3. 定位到入口方法
+  revealMethod(entryMethod.value)
 }
 
 function setStatus(msg) {
@@ -482,6 +588,19 @@ watch(() => [props.filePath, props.methodName], async ([fp, mn]) => {
 // ── 主题切换 ──────────────────────────────────────────────────────────────────
 watch(() => props.isDark, dark => {
   if (monaco && editor) monaco.editor.setTheme(dark ? DARK_THEME : LIGHT_THEME)
+})
+
+// ── v-show 显示后强制重新测量布局（Monaco 在 display:none 时无法计算尺寸） ──
+watch(() => props.visible, async (v) => {
+  if (v && editor) {
+    await nextTick()
+    editor.layout()
+  }
+  // 关闭弹窗时退出全屏
+  if (!v && isFullscreen.value) {
+    isFullscreen.value = false
+    emit('fullscreen-change', false)
+  }
 })
 
 defineExpose({ loadFile, revealMethod })
@@ -516,11 +635,30 @@ defineExpose({ loadFile, revealMethod })
 .mcv-btn:hover { background: var(--node-hover, rgba(255,255,255,0.06)); color: var(--text-primary, #ccc); }
 .mcv-close:hover { background: rgba(220,50,50,0.15); color: #e06060; }
 
-/* ── Tab bar ── */
-.mcv-tab-bar {
-  display: flex; flex-shrink: 0; overflow-x: auto; overflow-y: hidden;
+/* ── Tab nav 容器（箭头 + 标签栏） ── */
+.mcv-tab-nav {
+  display: flex; align-items: stretch; flex-shrink: 0;
   background: var(--code-header-bg, #2d2d2d);
   border-bottom: 1px solid var(--code-header-bd, #404040);
+  min-width: 0;
+}
+
+/* 左右滚动箭头 */
+.mcv-tab-scroll-btn {
+  flex-shrink: 0; width: 26px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--code-header-bg, #2d2d2d);
+  border: none; border-right: 1px solid var(--code-header-bd, #404040);
+  cursor: pointer; color: var(--text-faint, #888);
+  transition: background 0.15s, color 0.15s;
+}
+.mcv-tab-scroll-right { border-right: none; border-left: 1px solid var(--code-header-bd, #404040); }
+.mcv-tab-scroll-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary, #ccc); }
+
+/* ── Tab bar ── */
+.mcv-tab-bar {
+  flex: 1; min-width: 0;
+  display: flex; overflow-x: auto; overflow-y: hidden;
   scrollbar-width: none;
 }
 .mcv-tab-bar::-webkit-scrollbar { display: none; }
@@ -558,10 +696,22 @@ defineExpose({ loadFile, revealMethod })
 
 /* ── 状态消息 ── */
 .mcv-status {
+  display: flex; align-items: center; gap: 6px;
   padding: 5px 14px; font-size: 12px; flex-shrink: 0;
   background: var(--code-header-bg, #2d2d2d);
   border-bottom: 1px solid rgba(78,201,176,0.25);
   color: #4EC9B0;
+}
+/* 错误/暂无源码状态 —— 红色突出 */
+.mcv-status.mcv-status-error {
+  color: #FF4D4F;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(255, 77, 79, 0.12);
+  border-left: 3px solid #FF4D4F;
+  border-bottom: 1px solid rgba(255, 77, 79, 0.3);
+  padding-left: 11px;   /* 补偿左边框 3px */
+  letter-spacing: 0.01em;
 }
 
 /* ── 编辑器 ── */

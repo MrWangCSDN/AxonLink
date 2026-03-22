@@ -2,8 +2,6 @@
 -- 交易链路分析平台 — 测试数据 SQL
 -- 对应 mock/data.js 全部数据
 -- ============================================================
-USE mall_admin;
-
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
@@ -327,9 +325,8 @@ INSERT INTO t_relation (id, tx_id, relation_type, from_code, to_code, create_tim
 (4043, 4, 'COMPONENT_TO_COMPONENT',  'COMP_QUOTA_PROD_001','COMP_CACHE_002',NOW(), 0),
 (4044, 4, 'COMPONENT_TO_COMPONENT',  'COMP_RISK_BASE_001', 'COMP_RULE_002', NOW(), 0),
 (4045, 4, 'COMPONENT_TO_COMPONENT',  'COMP_RISK_BASE_001', 'COMP_SCORE_001',NOW(), 0),
--- COMP_LOAN_PROD_001 不关联公共/技术构件，直接连接 2 张数据表
-(4065, 4, 'COMPONENT_TO_DATA',       'COMP_LOAN_PROD_001', 'LOAN_APPLY',    NOW(), 0),
-(4066, 4, 'COMPONENT_TO_DATA',       'COMP_LOAN_PROD_001', 'CREDIT_LINE',   NOW(), 0),
+(4046, 4, 'COMPONENT_TO_COMPONENT',  'COMP_LOAN_PROD_001', 'COMP_VALID_001',NOW(), 0),
+(4047, 4, 'COMPONENT_TO_COMPONENT',  'COMP_LOAN_PROD_001', 'COMP_RULE_001', NOW(), 0),
 (4048, 4, 'COMPONENT_TO_DATA',       'COMP_TOKEN_001','TOKEN_INFO',    NOW(), 0),
 (4049, 4, 'COMPONENT_TO_DATA',       'COMP_TOKEN_001','USR_SESSION',   NOW(), 0),
 (4050, 4, 'COMPONENT_TO_DATA',       'COMP_PERM_001', 'ROLE_INFO',     NOW(), 0),
@@ -465,15 +462,3 @@ INSERT INTO t_relation (id, tx_id, relation_type, from_code, to_code, create_tim
 
 SET FOREIGN_KEY_CHECKS = 1;
 
--- 验证
-SELECT '领域数量' AS item, COUNT(*) AS cnt FROM t_domain WHERE deleted=0
-UNION ALL
-SELECT '交易数量', COUNT(*) FROM t_transaction WHERE deleted=0
-UNION ALL
-SELECT '服务节点', COUNT(*) FROM t_service_node WHERE deleted=0
-UNION ALL
-SELECT '构件节点', COUNT(*) FROM t_component_node WHERE deleted=0
-UNION ALL
-SELECT '数据表节点', COUNT(*) FROM t_data_table_node WHERE deleted=0
-UNION ALL
-SELECT '关联关系', COUNT(*) FROM t_relation WHERE deleted=0;

@@ -26,11 +26,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
                     @Override
                     protected Resource getResource(String resourcePath, Resource location) throws IOException {
                         Resource resource = location.createRelative(resourcePath);
-                        // 找到文件则直接返回（JS/CSS/图片等）
                         if (resource.exists() && resource.isReadable()) {
                             return resource;
                         }
-                        // 找不到则返回 index.html（Vue Router 接管）
                         return new ClassPathResource("/static/index.html");
                     }
                 });

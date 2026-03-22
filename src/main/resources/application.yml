@@ -11,6 +11,13 @@ spring:
   application:
     name: axon-link-server
 
+  # 建表脚本可重复执行（CREATE IF NOT EXISTS）；RDS 账号需有 mall_admin 库下 DDL 权限
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+      schema-locations: classpath:db/migration/V1__schema.sql
+
   datasource:
     type: com.alibaba.druid.pool.DruidDataSource
     driver-class-name: com.mysql.cj.jdbc.Driver
