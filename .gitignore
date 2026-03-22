@@ -1,0 +1,7 @@
+target/
+frontend/node_modules/
+src/main/resources/static/
+src/main/resources/application-local.yml
+.node/
+*.log
+.DS_Store

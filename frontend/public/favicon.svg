@@ -1,0 +1,26 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2448E8"/>
+      <stop offset="100%" stop-color="#8B28F5"/>
+    </linearGradient>
+  </defs>
+  <!-- �o -->
+  <rect width="32" height="32" rx="8" fill="url(#bg)"/>
+  <!-- �S Soma -->
+  <circle cx="9" cy="9.5" r="3.5" fill="white"/>
+  <!-- t�;r -->
+  <path d="M12 12 L18.5 18.5" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- ��+�IU -->
+  <circle cx="23" cy="14" r="4" fill="white" opacity="0.18"/>
+  <circle cx="23" cy="22" r="4" fill="white" opacity="0.18"/>
+  <circle cx="15" cy="26" r="4" fill="white" opacity="0.18"/>
+  <!-- +�/ -->
+  <path d="M18.5 18.5 L23 14" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M18.5 18.5 L23 22" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M18.5 18.5 L15 26" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- ��S -->
+  <circle cx="23" cy="14" r="2.2" fill="white" opacity="0.95"/>
+  <circle cx="23" cy="22" r="2.2" fill="white" opacity="0.95"/>
+  <circle cx="15" cy="26" r="2.2" fill="white" opacity="0.95"/>
+</svg>

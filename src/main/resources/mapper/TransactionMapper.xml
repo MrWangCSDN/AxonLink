@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.axonlink.mapper.TransactionMapper">
+
+    <select id="selectByDomainId" resultType="com.axonlink.entity.Transaction">
+        SELECT * FROM t_transaction
+        WHERE domain_id = #{domainId}
+          AND deleted = 0
+        ORDER BY sort_order ASC, tx_code ASC
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM t_transaction
+    </select>
+
+</mapper>

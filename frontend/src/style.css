@@ -1,0 +1,226 @@
+/* ── 日间模式（默认） ── */
+:root {
+  --bg-page:          #F0F2F7;
+  --bg-sidebar:       #FFFFFF;
+  --bg-card:          #FFFFFF;
+  --bg-input:         #FFFFFF;
+  --bg-sticky:        #F0F2F7;
+  --bg-badge:         #F0F2F5;
+  --bg-action-btn:    #FFFFFF;
+  --bg-domain-hover:  #F5F7FA;
+  --bg-domain-active: #EEF3FF;
+  --bg-stats-bar:     #FFFFFF;
+  --bg-empty:         #FFFFFF;
+  --bg-dropdown:      #FFFFFF;
+
+  --text-primary:   #1F2937;
+  --text-secondary: #374151;
+  --text-muted:     #6B7280;
+  --text-faint:     #8C94A6;
+  --text-badge:     #5C6878;
+  --text-active:    #3B5ADB;
+
+  --border:        #E8EDF5;
+  --border-subtle: #F0F2F5;
+  --border-dashed: #E8EDF5;
+
+  --scrollbar-thumb:       #CBD5E0;
+  --scrollbar-thumb-hover: #9CA3AF;
+
+  /* ── 代码查看器：VSCode Light+ ── */
+  --code-modal-bg:    #F8F8F8;
+  --code-modal-bd:    #E8E8E8;
+  --code-header-bg:   #F3F3F3;
+  --code-header-bd:   #E0E0E0;
+  --code-file-tab-bg: #FFFFFF;
+  --code-file-tab-bd: #1976D2;
+  --code-body-bg:     #FFFFFF;
+  --code-ln:          #999999;
+  --code-text:        #000000;
+  --code-keyword:     #0000FF;
+  --code-type:        #267F99;
+  --code-string:      #A31515;
+  --code-comment:     #008000;
+  --code-number:      #098658;
+  --code-annotation:  #808000;
+  --code-fn:          #795E26;
+  --code-fn-entry:    #795E26;
+  --code-var:         #001080;
+  --code-internal:    #267F99;
+  --code-internal-bg: rgba(38,127,153,0.06);
+  --code-line-flash:  rgba(79,124,255,0.12);
+  --code-copy-hover:  rgba(0,0,0,0.06);
+  --code-jump-color:  #1976D2;
+  --code-jump-hover:  rgba(25,118,210,0.08);
+
+  /* ── 卡片 & 链路图 ── */
+  --card-bg:         #FFFFFF;
+  --card-border:     #E8EDF5;
+  --card-hover-bg:   #FAFBFD;
+  --chain-bg:        #F8F9FC;
+  --chain-toolbar:   #FFFFFF;
+  --layer-bg:        #FFFFFF;
+  --layer-bd:        #E8EDF5;
+  --layer-inner-bg:  #FFFFFF;
+  --layer-title:     #374151;
+  --layer-nodes-bd:  #F0F2F5;
+  --inner-nodes-bd:  #F0F2F5;
+
+  --node-orch-bg:  #EEF3FF;
+  --node-orch-bd:  #C5D5FF;
+  --node-svc-bg:   #E6FCF5;
+  --node-svc-bd:   #96F2D7;
+  --node-comp-bg:  #FFF4E6;
+  --node-comp-bd:  #FFD8A8;
+  --node-data-bg:  #F3F0FF;
+  --node-data-bd:  #D0BFFF;
+  --node-pcs-bg:   #EFF6FF;
+  --node-pcs-bd:   #BFDBFE;
+  --node-code:     #4F7CFF;
+  --node-name:     #6B7280;
+  --node-svc-code: #374151;
+}
+
+/* ── 夜间模式 ── */
+[data-theme="dark"] {
+  --bg-page:          #0D1424;
+  --bg-sidebar:       #131D33;
+  --bg-card:          #1A2540;
+  --bg-input:         rgba(255,255,255,0.06);
+  --bg-sticky:        #0D1424;
+  --bg-badge:         rgba(255,255,255,0.08);
+  --bg-action-btn:    rgba(255,255,255,0.06);
+  --bg-domain-hover:  rgba(255,255,255,0.04);
+  --bg-domain-active: rgba(79,124,255,0.15);
+  --bg-stats-bar:     rgba(255,255,255,0.04);
+  --bg-empty:         rgba(255,255,255,0.03);
+  --bg-dropdown:      #1E2D4A;
+
+  --text-primary:   #E8EDFB;
+  --text-secondary: #C8D3E8;
+  --text-muted:     #8FA3BF;
+  --text-faint:     #5A7090;
+  --text-badge:     #90A8C4;
+  --text-active:    #7EB8FF;
+
+  --border:        rgba(255,255,255,0.08);
+  --border-subtle: rgba(255,255,255,0.05);
+  --border-dashed: rgba(255,255,255,0.1);
+
+  --scrollbar-thumb:       #2A3D5C;
+  --scrollbar-thumb-hover: #3A5070;
+
+  /* ── 代码查看器：VSCode Dark+ ── */
+  --code-modal-bg:    #252526;
+  --code-modal-bd:    rgba(255,255,255,0.06);
+  --code-header-bg:   #2D2D2D;
+  --code-header-bd:   rgba(255,255,255,0.08);
+  --code-file-tab-bg: #1E1E1E;
+  --code-file-tab-bd: #007ACC;
+  --code-body-bg:     #1E1E1E;
+  --code-ln:          #858585;
+  --code-text:        #D4D4D4;
+  --code-keyword:     #569CD6;
+  --code-type:        #4EC9B0;
+  --code-string:      #CE9178;
+  --code-comment:     #6A9955;
+  --code-number:      #B5CEA8;
+  --code-annotation:  #9CDCFE;
+  --code-fn:          #DCDCAA;
+  --code-fn-entry:    #DCDCAA;
+  --code-var:         #9CDCFE;
+  --code-internal:    #4EC9B0;
+  --code-internal-bg: rgba(78,201,176,0.06);
+  --code-line-flash:  rgba(78,201,176,0.15);
+  --code-copy-hover:  rgba(255,255,255,0.08);
+  --code-jump-color:  #4EC9B0;
+  --code-jump-hover:  rgba(78,201,176,0.1);
+
+  /* ── 卡片 & 链路图（夜间） ── */
+  --card-bg:         #1A2540;
+  --card-border:     rgba(255,255,255,0.08);
+  --card-hover-bg:   rgba(255,255,255,0.03);
+  --chain-bg:        #111827;
+  --chain-toolbar:   #1A2540;
+  --layer-bg:        #1E2D4A;
+  --layer-bd:        rgba(255,255,255,0.08);
+  --layer-inner-bg:  #1A2540;
+  --layer-title:     #C8D3E8;
+  --layer-nodes-bd:  rgba(255,255,255,0.06);
+  --inner-nodes-bd:  rgba(255,255,255,0.06);
+
+  --node-orch-bg:  rgba(79,124,255,0.14);
+  --node-orch-bd:  rgba(79,124,255,0.35);
+  --node-svc-bg:   rgba(18,184,134,0.12);
+  --node-svc-bd:   rgba(18,184,134,0.3);
+  --node-comp-bg:  rgba(247,103,7,0.12);
+  --node-comp-bd:  rgba(247,103,7,0.3);
+  --node-data-bg:  rgba(121,80,242,0.12);
+  --node-data-bd:  rgba(121,80,242,0.3);
+  --node-pcs-bg:   rgba(34,139,230,0.12);
+  --node-pcs-bd:   rgba(34,139,230,0.3);
+  --node-code:     #7EB8FF;
+  --node-name:     #8FA3BF;
+  --node-svc-code: #C8D3E8;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background 0.3s, color 0.3s;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
