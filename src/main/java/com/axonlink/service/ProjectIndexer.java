@@ -50,7 +50,7 @@ public class ProjectIndexer {
     /**
      * 工作区根目录列表（逗号分隔）。
      * 自动发现其下所有子模块的 src/main/java 和 target/gen 目录（最多深入 6 层）。
-     * 例：D:/code/sunline → 自动找到 dept-parent/dept-aps/src/main/java 等所有子目录
+     * 例：/Users/.../sunline/sunline → 自动找到各子模块下 src/main/java 等所有子目录
      */
     @Value("${project.workspace-roots:}")
     private String workspaceRootsConfig;
@@ -250,18 +250,21 @@ public class ProjectIndexer {
     }
 
     /**
-     * 自动发现工作区下所有子模块的 src/main/java 和 target/gen 目录。
-     * 最多深入 6 层，找到后不再继续向下（避免递归到 src/main/java/com/... 内部）。
+     * 自动发现工作区下所有子模块的源码目录：
+     * - src/main/java
+     * - target/gen（部分工程）
+     * - target/generated-sources/annotations（Maven 注解处理器常见输出）
+     * 最多 walk 8 层，匹配目录后缀即可。
      */
     private List<String> discoverSourceRoots(Path workspace) {
         List<String> roots = new ArrayList<>();
-        Set<String> TARGETS = Set.of("src/main/java", "src\\main\\java",
-                "target/gen", "target\\gen");
         try (Stream<Path> walk = Files.walk(workspace, 8)) {
             walk.filter(Files::isDirectory)
                 .filter(p -> {
                     String rel = workspace.relativize(p).toString().replace('\\', '/');
-                    return rel.endsWith("src/main/java") || rel.endsWith("target/gen");
+                    return rel.endsWith("src/main/java")
+                            || rel.endsWith("target/gen")
+                            || rel.endsWith("target/generated-sources/annotations");
                 })
                 .map(Path::toString)
                 .sorted()

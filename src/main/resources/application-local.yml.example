@@ -9,5 +9,9 @@ spring:
     password: your_password
 
 project:
-  source-roots: >-
-    /path/to/your-project/src/main/java
+  # 多工程聚合目录（推荐）：自动扫描其下所有子模块的 src/main/java
+  workspace-roots: /path/to/your/workspace-root
+  # 若只有一个 Maven 模块，也可改用 source-roots 直接写两条路径：
+  # source-roots: >-
+  #   /path/to/one-module/src/main/java,
+  #   /path/to/one-module/target/generated-sources/annotations

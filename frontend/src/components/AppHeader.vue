@@ -61,15 +61,15 @@
 
     <div class="header-right">
       <!-- 日/夜模式切换按钮 -->
-      <button class="icon-btn theme-toggle" :title="isDark ? '切换日间模式' : '切换夜间模式'" @click="$emit('toggleTheme')">
+      <button class="icon-btn theme-toggle" :title="isDark ? '当前夜间模式，点击切换日间' : '当前日间模式，点击切换夜间'" @click="$emit('toggleTheme')">
         <transition name="theme-icon" mode="out-in">
-          <!-- 夜间模式时显示太阳（点击切回日间） -->
-          <svg v-if="isDark" key="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" class="sun-icon">
+          <!-- 白天模式时显示太阳（当前是日间） -->
+          <svg v-if="!isDark" key="sun" width="18" height="18" viewBox="0 0 24 24" fill="none" class="sun-icon">
             <circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"
               stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
-          <!-- 日间模式时显示月亮（点击切到夜间） -->
+          <!-- 夜间模式时显示月亮（当前是夜间） -->
           <svg v-else key="moon" width="18" height="18" viewBox="0 0 24 24" fill="none" class="moon-icon">
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
               stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>

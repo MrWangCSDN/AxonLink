@@ -16,7 +16,9 @@ spring:
     init:
       mode: always
       encoding: UTF-8
-      schema-locations: classpath:db/migration/V1__schema.sql
+      schema-locations: >
+        classpath:db/migration/V1__schema.sql,
+        classpath:db/migration/V3__callgraph.sql
 
   datasource:
     type: com.alibaba.druid.pool.DruidDataSource
@@ -58,8 +60,17 @@ logging:
     com.alibaba.druid: warn
 
 # ── 源码索引配置 ────────────────────────────────────────────────────────────
+# source-roots：直接写死若干 src/main/java 目录（逗号分隔）
+# workspace-roots：多工程/多模块聚合根目录，自动递归发现子路径下的 src/main/java 与生成源码目录
 project:
-  # 替换为实际工程根目录；也可在 application-local.yml 中覆盖
   source-roots: ${PROJECT_SOURCE_ROOTS:}
+  workspace-roots: ${PROJECT_WORKSPACE_ROOTS:}
 
   index-threads: 0
+
+# ── 方法调用关系网配置 ──────────────────────────────────────────────────────────
+callgraph:
+  # 只扫描以下包前缀的类，逗号分隔（排除 JDK/Spring/第三方框架）
+  include-packages: ${CALLGRAPH_INCLUDE_PACKAGES:cn.sunline.ltts.busi}
+  # 扫描线程数（0=自动，与 project.index-threads 逻辑一致）
+  scan-threads: 0

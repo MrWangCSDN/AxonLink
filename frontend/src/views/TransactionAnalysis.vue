@@ -324,12 +324,15 @@ const initObserver = () => {
 
 onMounted(async () => {
   applyTheme(isDark.value)
+  // 先初始化 observer，再加载数据——确保 loadFirstPage 渲染卡片时
+  // cardObs 已就绪，observeCardWrapper 能立即 observe 每张卡片。
+  // 若放在 initDomains 之后的 nextTick，首批卡片已渲染完毕，
+  // observe 调用全部成为空操作，导致向上滚动时卡片无法自动展开。
+  await nextTick()
+  initCardObserver()
+  initObserver()
   await initDomains()
   healthTimer = setInterval(checkHealth, 30_000)
-  nextTick(() => {
-    initCardObserver()
-    initObserver()
-  })
 })
 onBeforeUnmount(() => {
   observer?.disconnect()
