@@ -7,11 +7,18 @@
         :domains="domains"
         :active-domain-id="activeDomain?.id"
         :system-stats="systemStats"
+        :is-build-active="activePage === 'build'"
         @select="selectDomain"
+        @open-build="activePage = 'build'"
       />
 
 
       <main class="main-content">
+        <!-- ── 编译控制台页 ── -->
+        <BuildConsole v-if="activePage === 'build'" :isDark="isDark" />
+
+        <!-- ── 交易分析页（默认） ── -->
+        <template v-else>
         <!-- ── 固定头部：面包屑 + 标题栏 + 统计栏（滚动时不动） ── -->
         <div class="sticky-header">
           <!-- 面包屑 -->
@@ -141,6 +148,7 @@
           </div>
         </div>
         </div><!-- /cards-scroll -->
+        </template><!-- /transactions page -->
       </main>
     </div>
   </div>
@@ -151,9 +159,13 @@ import { ref, computed, reactive, watch, onMounted, onBeforeUnmount, nextTick } 
 import AppHeader from '../components/AppHeader.vue'
 import DomainSidebar from '../components/DomainSidebar.vue'
 import TransactionCard from '../components/TransactionCard.vue'
+import BuildConsole from './BuildConsole.vue'
 import { getDomains, getTransactions, getChain, getSystemStats } from '../api/index.js'
 
 const PAGE_SIZE = 5
+
+// ── 页面切换 ──
+const activePage = ref('transactions')  // 'transactions' | 'build'
 
 // ── 日/夜模式 ──
 const isDark = ref(localStorage.getItem('theme') === 'dark')
@@ -341,12 +353,23 @@ onBeforeUnmount(() => {
 })
 watch(activeDomain, () => nextTick(initObserver))
 
+// 从编译控制台切回交易页时，DOM 已重新挂载，需重建 observer
+watch(activePage, (page) => {
+  if (page === 'transactions') {
+    nextTick(() => {
+      initCardObserver()
+      initObserver()
+    })
+  }
+})
+
 const selectDomain = (domain) => {
   globalResult.value   = null
   globalNotFound.value = false
   globalQuery.value    = ''
   activeDomain.value   = domain
   localSearch.value    = ''
+  activePage.value     = 'transactions'
 }
 
 // ── 全局精确搜索：按交易码精确匹配，跨领域查找 ──
