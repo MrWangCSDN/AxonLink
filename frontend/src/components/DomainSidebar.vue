@@ -115,11 +115,10 @@ const getDomainIcon = (id) => {
 }
 
 .sidebar-menu-label {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-faint);
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  color: var(--text-primary);
+  letter-spacing: 0;
   transition: color 0.15s;
 }
 
@@ -212,7 +211,7 @@ const getDomainIcon = (id) => {
 }
 
 .domain-name {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-primary);
   font-weight: 500;
   white-space: nowrap;

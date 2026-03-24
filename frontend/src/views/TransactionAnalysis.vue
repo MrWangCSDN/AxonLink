@@ -16,7 +16,7 @@
         <div class="sticky-header">
           <!-- 面包屑 -->
           <div class="breadcrumb">
-            <span class="breadcrumb-home">首页</span>
+            <span class="breadcrumb-home">领域交易</span>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
               <path d="M5 3.5L8.5 7L5 10.5" stroke="#C5CBD7" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
