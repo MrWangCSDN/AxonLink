@@ -1,8 +1,17 @@
 <template>
   <aside class="domain-sidebar">
-    <div class="sidebar-title">业务领域</div>
+    <div class="sidebar-menu-header" @click="expanded = !expanded">
+      <span class="sidebar-menu-label">领域交易</span>
+      <svg
+        class="sidebar-menu-chevron"
+        :class="{ collapsed: !expanded }"
+        width="14" height="14" viewBox="0 0 14 14" fill="none"
+      >
+        <path d="M3 5.5l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
 
-    <nav class="domain-list">
+    <nav class="domain-list" :class="{ 'domain-list--hidden': !expanded }">
       <div
         v-for="domain in domains"
         :key="domain.id"
@@ -39,7 +48,7 @@
 </template>
 
 <script setup>
-import { h } from 'vue'
+import { h, ref } from 'vue'
 
 const props = defineProps({
   domains:       { type: Array,  required: true },
@@ -47,6 +56,8 @@ const props = defineProps({
   systemStats:   { type: Object, default: () => ({ totalDomains: 0, totalTransactions: 0, status: 'normal', statusText: '系统运行正常' }) }
 })
 defineEmits(['select'])
+
+const expanded = ref(true)
 
 const getDomainIcon = (id) => {
   const icons = {
@@ -89,13 +100,37 @@ const getDomainIcon = (id) => {
   transition: background 0.3s, border-color 0.3s;
 }
 
-.sidebar-title {
+.sidebar-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px 10px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px 6px 0 0;
+}
+
+.sidebar-menu-header:hover .sidebar-menu-label {
+  color: var(--text-primary);
+}
+
+.sidebar-menu-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
   letter-spacing: 1px;
   text-transform: uppercase;
-  padding: 0 16px 12px;
+  transition: color 0.15s;
+}
+
+.sidebar-menu-chevron {
+  color: var(--text-faint);
+  transition: transform 0.22s ease, color 0.15s;
+  flex-shrink: 0;
+}
+
+.sidebar-menu-chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .domain-list {
@@ -104,6 +139,18 @@ const getDomainIcon = (id) => {
   flex-direction: column;
   gap: 2px;
   padding: 0 8px;
+  overflow: hidden;
+  max-height: 600px;
+  transition: max-height 0.28s ease, opacity 0.22s ease, padding 0.22s ease;
+  opacity: 1;
+}
+
+.domain-list--hidden {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
 }
 
 .domain-item {
