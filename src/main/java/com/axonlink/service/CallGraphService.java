@@ -225,7 +225,200 @@ public class CallGraphService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 4. 统计概览
+    // 4. 前端影响图谱：给定 FQN/className，返回上游交易 + 下游调用构件
+    //    供服务/构件卡片上的「影响图谱」按钮使用
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 影响图谱汇总：
+     *   upstream   → 直接调用本节点的 APS 服务 + 最终影响的交易
+     *   downstream → 本节点通过 SysUtil 调用的下游类（BCS/DAO）
+     *
+     * @param fqn       全限定类名（精确）
+     * @param className 简单类名（备用，fqn 为空时使用）
+     * @param limit     前端展示截断阈值，超出后 truncated=true
+     */
+    public Map<String, Object> getImpactSummary(String fqn, String className, String nodeCode, String nodeType, int limit) {
+        // ── 1. 确定目标类的 FQN 前缀，用于匹配 callee_sig（格式 FQN#method(*) ）
+        //       callee_sig 与 method_node.signature 参数不同，需用 LIKE 模糊匹配
+        String classFqnPrefix;
+        if (fqn != null && !fqn.isBlank()) {
+            classFqnPrefix = fqn;
+        } else {
+            // 从 method_node 中找到实际 FQN
+            List<String> fqnList = jdbc.queryForList(
+                "SELECT DISTINCT class_fqn FROM cg_method_node WHERE class_name = ? LIMIT 5",
+                String.class, className
+            );
+            classFqnPrefix = fqnList.isEmpty() ? className : fqnList.get(0);
+        }
+        boolean noData = classFqnPrefix == null || classFqnPrefix.isBlank();
+
+        // ── 2. 上游：BFS — 用 callee_sig LIKE 'FQN#%' 精确匹配类级调用边 ─────
+        Set<String> visitedFqns    = new LinkedHashSet<>();
+        List<String> queueFqns    = new ArrayList<>();
+        queueFqns.add(classFqnPrefix);
+        Set<String> apsClassNames = new LinkedHashSet<>();
+        int depth = 0;
+
+        while (!queueFqns.isEmpty() && depth < 8) {
+            depth++;
+            List<String> next = new ArrayList<>();
+            for (String targetFqn : queueFqns) {
+                if (visitedFqns.contains(targetFqn)) continue;
+                visitedFqns.add(targetFqn);
+
+                // callee_sig 格式：FQN#methodName(*) 或 FQN#methodName(实参)
+                List<Map<String, Object>> callerRows = jdbc.queryForList(
+                    """
+                    SELECT DISTINCT e.caller_sig, n.class_name, n.class_fqn, n.layer
+                    FROM cg_call_edge e
+                    LEFT JOIN cg_method_node n ON n.signature = e.caller_sig
+                    WHERE e.callee_sig LIKE ?
+                      AND e.call_type IN ('SYS_UTIL','IMPL','STATIC')
+                    LIMIT 200
+                    """, targetFqn + "#%");
+
+                for (Map<String, Object> row : callerRows) {
+                    String callerFqn = (String) row.get("class_fqn");
+                    if (callerFqn != null && !visitedFqns.contains(callerFqn)) {
+                        next.add(callerFqn);
+                        if ("APS".equals(row.get("layer"))) {
+                            String cn = (String) row.get("class_name");
+                            if (cn != null) apsClassNames.add(cn.toLowerCase());
+                        }
+                    }
+                }
+            }
+            queueFqns = next;
+        }
+
+        // ── 3. 上游：从 flowtran 表查询受影响的交易（t_domain/t_transaction 已废弃）──
+        List<Map<String, Object>> upstreamServices     = new ArrayList<>();
+        List<Map<String, Object>> impactedTransactions = new ArrayList<>();
+
+        Set<String> seenTx  = new LinkedHashSet<>();
+        Set<String> seenSvc = new LinkedHashSet<>();
+
+        // 方式A：nodeCode 就是 flow_step.node_name 中的接口/服务名，从 flowtran flow_step 反查交易
+        if (nodeCode != null && !nodeCode.isBlank() && "service".equalsIgnoreCase(nodeType)) {
+            List<Map<String, Object>> ftRows = jdbc.queryForList(
+                "SELECT DISTINCT f.id AS tx_code, f.longname AS tx_name, f.domain_key " +
+                "FROM flowtran f JOIN flow_step fs ON fs.flow_id = f.id " +
+                "WHERE fs.node_name = ?", nodeCode);
+            for (Map<String, Object> row : ftRows) {
+                String txCode = (String) row.get("tx_code");
+                if (seenTx.add(txCode)) {
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    r.put("tx_code",     txCode);
+                    r.put("tx_name",     row.get("tx_name"));
+                    r.put("domain_name", row.get("domain_key"));
+                    impactedTransactions.add(r);
+                }
+            }
+        }
+
+        // 方式B：BFS 找到的 APS class_name → 从 flow_step 反查交易
+        if (!apsClassNames.isEmpty()) {
+            List<Map<String, Object>> allSteps = jdbc.queryForList(
+                "SELECT DISTINCT fs.node_name, f.id AS tx_code, f.longname AS tx_name, f.domain_key " +
+                "FROM flow_step fs JOIN flowtran f ON f.id = fs.flow_id WHERE fs.node_type='service'"
+            );
+            for (Map<String, Object> row : allSteps) {
+                String nodeName = ((String) row.get("node_name")).toLowerCase();
+                boolean matched = apsClassNames.stream().anyMatch(n -> {
+                    String kw = n.replace("apsimpl","").replace("svtp","");
+                    return kw.length() > 4 && nodeName.contains(kw);
+                });
+                if (matched) {
+                    String txCode = (String) row.get("tx_code");
+                    String svcName = (String) row.get("node_name");
+                    if (seenSvc.add(svcName)) {
+                        Map<String, Object> r = new LinkedHashMap<>();
+                        r.put("service_code", svcName);
+                        r.put("service_name", svcName);
+                        upstreamServices.add(r);
+                    }
+                    if (seenTx.add(txCode)) {
+                        Map<String, Object> r = new LinkedHashMap<>();
+                        r.put("tx_code",     txCode);
+                        r.put("tx_name",     row.get("tx_name"));
+                        r.put("domain_name", row.get("domain_key"));
+                        impactedTransactions.add(r);
+                    }
+                }
+            }
+        }
+
+        // ── 4. 下游：本节点作为 caller（用 caller_sig LIKE 'FQN#%'），找 SYS_UTIL 目标 ──
+        List<Map<String, Object>> downstreamComponents = new ArrayList<>();
+        if (!noData) {
+            Set<String> seenCallee = new LinkedHashSet<>();
+            // callee_sig 格式 FQN#method(*) — 截取 FQN 部分
+            List<Map<String, Object>> calleeRows = jdbc.queryForList(
+                """
+                SELECT DISTINCT
+                  SUBSTRING_INDEX(e.callee_sig, '#', 1) AS callee_fqn,
+                  n.class_name, n.class_fqn, n.layer, n.module
+                FROM cg_call_edge e
+                LEFT JOIN cg_method_node n ON n.class_fqn = SUBSTRING_INDEX(e.callee_sig, '#', 1)
+                WHERE e.caller_sig LIKE ?
+                  AND e.call_type IN ('SYS_UTIL','IMPL','STATIC')
+                  AND e.callee_sig NOT LIKE '?#%'
+                LIMIT 200
+                """, classFqnPrefix + "#%");
+
+            for (Map<String, Object> row : calleeRows) {
+                String calleeFqn = (String) row.get("callee_fqn");
+                if (calleeFqn == null) calleeFqn = (String) row.get("class_fqn");
+                if (calleeFqn != null && seenCallee.add(calleeFqn)) {
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    String cn = (String) row.get("class_name");
+                    // 如果 method_node 没命中，从 FQN 末段推断 className
+                    if (cn == null) cn = calleeFqn.contains(".") ? calleeFqn.substring(calleeFqn.lastIndexOf('.') + 1) : calleeFqn;
+                    r.put("class_name", cn);
+                    r.put("class_fqn",  calleeFqn);
+                    r.put("layer",      row.get("layer"));
+                    r.put("module",     row.get("module"));
+                    downstreamComponents.add(r);
+                }
+            }
+        }
+
+        // ── 5. 截断处理 ──────────────────────────────────────────────────────
+        boolean upSvcTrunc  = upstreamServices.size()     > limit;
+        boolean upTxTrunc   = impactedTransactions.size() > limit;
+        boolean downTrunc   = downstreamComponents.size() > limit;
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("noData",   noData);
+        result.put("keyword",  classFqnPrefix);
+
+        Map<String, Object> upstream = new LinkedHashMap<>();
+        upstream.put("services",           upSvcTrunc  ? upstreamServices.subList(0, limit)     : upstreamServices);
+        upstream.put("servicesTotalCount", upstreamServices.size());
+        upstream.put("servicesTruncated",  upSvcTrunc);
+        upstream.put("transactions",           upTxTrunc ? impactedTransactions.subList(0, limit) : impactedTransactions);
+        upstream.put("transactionsTotalCount", impactedTransactions.size());
+        upstream.put("transactionsTruncated",  upTxTrunc);
+        result.put("upstream", upstream);
+
+        Map<String, Object> downstream = new LinkedHashMap<>();
+        downstream.put("components",       downTrunc ? downstreamComponents.subList(0, limit) : downstreamComponents);
+        downstream.put("totalCount",       downstreamComponents.size());
+        downstream.put("truncated",        downTrunc);
+        result.put("downstream", downstream);
+
+        return result;
+    }
+
+    /** 为 Excel 导出准备完整数据（不截断）*/
+    public Map<String, Object> getImpactFull(String fqn, String className, String nodeCode, String nodeType) {
+        return getImpactSummary(fqn, className, nodeCode, nodeType, Integer.MAX_VALUE);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 5. 统计概览
     // ─────────────────────────────────────────────────────────────────────────
 
     public Map<String, Object> getStats() {

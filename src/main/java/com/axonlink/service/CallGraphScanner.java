@@ -43,7 +43,11 @@ public class CallGraphScanner {
 
     private final JdbcTemplate jdbc;
 
-    @Value("${callgraph.include-packages:cn.sunline.ltts}")
+    /** 功能总开关：false 时所有扫描请求直接返回，不读写数据库 */
+    @Value("${callgraph.enabled:false}")
+    private boolean enabled;
+
+    @Value("${callgraph.include-packages:cn.sunline.ltts.busi}")
     private String includePackages;
 
     @Value("${callgraph.scan-threads:0}")
@@ -91,15 +95,20 @@ public class CallGraphScanner {
     // ─────────────────────────────────────────────────────────────────────────
 
     public void startFullScan() {
-        if (scanning) { log.warn("[CallGraph] 扫描正在进行中，忽略重复触发"); return; }
+        if (!enabled) { log.info("[CallGraph] 开关已关闭（callgraph.enabled=false），跳过扫描"); return; }
+        if (scanning)  { log.warn("[CallGraph] 扫描正在进行中，忽略重复触发"); return; }
         Thread t = new Thread(this::doFullScan, "callgraph-scanner");
         t.setDaemon(true);
         t.start();
     }
 
-    public Map<String, Object> fullScanSync() { return doFullScan(); }
+    public Map<String, Object> fullScanSync() {
+        if (!enabled) return Map.of("skipped", true, "reason", "callgraph.enabled=false");
+        return doFullScan();
+    }
 
     public Map<String, Object> incrementalRefresh(List<String> changedFilePaths) {
+        if (!enabled) return Map.of("skipped", true, "reason", "callgraph.enabled=false");
         log.info("[CallGraph] 增量刷新，文件数={}", changedFilePaths.size());
         long t0 = System.currentTimeMillis();
         List<MethodNode> nodes = new ArrayList<>();

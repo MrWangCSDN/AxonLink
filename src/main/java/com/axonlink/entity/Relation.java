@@ -1,7 +1,6 @@
 package com.axonlink.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
-import lombok.Data;
 
 import java.time.LocalDateTime;
 
@@ -14,7 +13,6 @@ import java.time.LocalDateTime;
  *   COMPONENT_TO_COMPONENT - pbcb/pbcp → pbcc/pbct
  *   COMPONENT_TO_DATA    - 构件 → 数据表
  */
-@Data
 @TableName("t_relation")
 public class Relation {
 
@@ -38,4 +36,19 @@ public class Relation {
 
     @TableLogic
     private Integer deleted;
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public Long getTxId() { return txId; }
+    public void setTxId(Long txId) { this.txId = txId; }
+    public String getRelationType() { return relationType; }
+    public void setRelationType(String relationType) { this.relationType = relationType; }
+    public String getFromCode() { return fromCode; }
+    public void setFromCode(String fromCode) { this.fromCode = fromCode; }
+    public String getToCode() { return toCode; }
+    public void setToCode(String toCode) { this.toCode = toCode; }
+    public LocalDateTime getCreateTime() { return createTime; }
+    public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
+    public Integer getDeleted() { return deleted; }
+    public void setDeleted(Integer deleted) { this.deleted = deleted; }
 }
