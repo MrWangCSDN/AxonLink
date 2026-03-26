@@ -151,7 +151,7 @@ import { ref, computed, reactive, watch, onMounted, onBeforeUnmount, nextTick } 
 import AppHeader from '../components/AppHeader.vue'
 import DomainSidebar from '../components/DomainSidebar.vue'
 import TransactionCard from '../components/TransactionCard.vue'
-import { getDomains, getTransactions, getChain, getSystemStats } from '../api/index.js'
+import { getFlowtranDomains as getDomains, getFlowtranTransactions as getTransactions, getFlowtranChain as getChain, getSystemStats } from '../api/index.js'
 
 const PAGE_SIZE = 5
 

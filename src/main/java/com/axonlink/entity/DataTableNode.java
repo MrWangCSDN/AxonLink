@@ -1,11 +1,9 @@
 package com.axonlink.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
-import lombok.Data;
 
 import java.time.LocalDateTime;
 
-@Data
 @TableName("t_data_table_node")
 public class DataTableNode {
 
@@ -29,4 +27,19 @@ public class DataTableNode {
 
     @TableLogic
     private Integer deleted;
+
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    public Long getTxId() { return txId; }
+    public void setTxId(Long txId) { this.txId = txId; }
+    public String getTableCode() { return tableCode; }
+    public void setTableCode(String tableCode) { this.tableCode = tableCode; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public Integer getSortOrder() { return sortOrder; }
+    public void setSortOrder(Integer sortOrder) { this.sortOrder = sortOrder; }
+    public LocalDateTime getCreateTime() { return createTime; }
+    public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }
+    public Integer getDeleted() { return deleted; }
+    public void setDeleted(Integer deleted) { this.deleted = deleted; }
 }

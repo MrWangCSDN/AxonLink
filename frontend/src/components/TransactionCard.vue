@@ -68,6 +68,16 @@
       @close="apiTester.visible = false"
     />
 
+    <!-- 影响图谱面板 -->
+    <ImpactGraphPanel
+      :visible="impactPanel.visible"
+      :node="impactPanel.node"
+      :node-type="impactPanel.nodeType"
+      :reg="impactPanel.reg"
+      :is-dark="isDark"
+      @close="impactPanel.visible = false"
+    />
+
     <!-- 代码查看弹窗（Monaco Editor）
          使用 v-show 而非 v-if：组件常驻 DOM，关闭时只隐藏不销毁，
          保留 Monaco 的 openTabs 状态，再次打开时标签页仍在。 -->
@@ -250,6 +260,16 @@
                             <circle cx="7" cy="7" r="6" fill="#12B886"/>
                             <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                           </svg>
+                          <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'service')" title="影响图谱">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                              <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
+                              <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
+                              <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
+                              <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
+                              <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
+                              <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+                            </svg>
+                          </button>
                           <button class="code-view-btn" @click.stop="openCodeViewer(node, 'service')" title="查看代码">
                             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                               <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -293,6 +313,16 @@
                           <circle cx="7" cy="7" r="6" fill="#12B886"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
+                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'service')" title="影响图谱">
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
+                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
+                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
+                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
+                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
+                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+                          </svg>
+                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'service')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -367,6 +397,16 @@
                           <circle cx="7" cy="7" r="6" fill="#F76707"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
+                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'component')" title="影响图谱">
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
+                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
+                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
+                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
+                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
+                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+                          </svg>
+                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'component')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -409,6 +449,16 @@
                           <circle cx="7" cy="7" r="6" fill="#7950F2"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
+                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'component')" title="影响图谱">
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
+                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
+                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
+                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
+                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
+                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+                          </svg>
+                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'component')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -467,6 +517,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import MonacoCodeViewer from './MonacoCodeViewer.vue'
 import ApiTester from './ApiTester.vue'
+import ImpactGraphPanel from './ImpactGraphPanel.vue'
 
 const props = defineProps({
   transaction:     { type: Object,  required: true },
@@ -2399,6 +2450,14 @@ const closeCodeViewer = () => {
   callSitesPopup.visible = false
 }
 
+// ── 影响图谱面板 ────────────────────────────────────────────────────────────
+const impactPanel = reactive({ visible: false, node: null, nodeType: 'service', reg: null })
+
+const openImpactPanel = (node, nodeType) => {
+  const reg = NODE_FILE_REGISTRY[node.code] || null
+  Object.assign(impactPanel, { visible: true, node, nodeType, reg })
+}
+
 // 打开外部类 Tab（已有则切换，没有则新增）
 const openExternalClass = (className) => {
   const reg = EXTERNAL_REGISTRY[className]
@@ -2565,12 +2624,13 @@ defineExpose({
 
 .node-header { display: flex; align-items: center; gap: 6px; }
 .node-prefix { display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; font-family: 'SF Mono','Fira Code',monospace; letter-spacing: 0.5px; white-space: nowrap; flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-width: 1.5px; border-style: solid; }
-.prefix-pbs  { background: #DCFCE7; color: #15803D; border-color: #86EFAC; }
-.prefix-pcs  { background: #DBEAFE; color: #1D4ED8; border-color: #93C5FD; }
-.prefix-pbcc { background: #FFEDD5; color: #C2410C; border-color: #FDBA74; }
-.prefix-pbct { background: #FEF9C3; color: #A16207; border-color: #FDE047; }
-.prefix-pbcb { background: #F3E8FF; color: #7E22CE; border-color: #D8B4FE; }
-.prefix-pbcp { background: #FCE7F3; color: #BE185D; border-color: #F9A8D4; }
+.prefix-pbs    { background: #DCFCE7; color: #15803D; border-color: #86EFAC; }
+.prefix-pcs    { background: #DBEAFE; color: #1D4ED8; border-color: #93C5FD; }
+.prefix-pbcc   { background: #FFEDD5; color: #C2410C; border-color: #FDBA74; }
+.prefix-pbct   { background: #FEF9C3; color: #A16207; border-color: #FDE047; }
+.prefix-pbcb   { background: #F3E8FF; color: #7E22CE; border-color: #D8B4FE; }
+.prefix-pbcp   { background: #FCE7F3; color: #BE185D; border-color: #F9A8D4; }
+.prefix-method { background: #F0FDFA; color: #0F766E; border-color: #5EEAD4; }
 
 .node-code { font-size: 12px; font-weight: 700; color: var(--node-code); font-family: monospace; }
 .node-code-service { font-size: 11px; font-weight: 600; color: var(--node-svc-code); font-family: monospace; }
@@ -2626,6 +2686,7 @@ defineExpose({
 .chain-node:hover .code-view-btn { opacity: 1; }
 .code-view-btn:hover { background: rgba(79,124,255,0.12); color: #4F7CFF; border-color: rgba(79,124,255,0.3); }
 .code-view-btn.test-btn:hover { background: rgba(18,184,134,0.12); color: #12B886; border-color: rgba(18,184,134,0.3); }
+.code-view-btn.impact-btn:hover { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.3); }
 
 /* ── 代码查看弹窗（跟随日/夜主题） ── */
 .code-modal-backdrop {

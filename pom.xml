@@ -61,11 +61,13 @@
             <version>1.2.20</version>
         </dependency>
 
-        <!-- Lombok -->
+        <!-- Lombok 已移除，所有类使用手写 getter/setter/constructor -->
+
+        <!-- Apache POI：Excel 导出 -->
         <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
         </dependency>
 
         <!-- 测试 -->
@@ -89,12 +91,6 @@
                       修复 logback ThrowableProxy 在 Tomcat 线程中 NoClassDefFoundError 的问题。
                     -->
                     <layout>ZIP</layout>
-                    <excludes>
-                        <exclude>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </exclude>
-                    </excludes>
                 </configuration>
             </plugin>
 
