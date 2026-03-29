@@ -63,6 +63,13 @@
 
         <!-- Lombok 已移除，所有类使用手写 getter/setter/constructor -->
 
+        <!-- Neo4j Java Driver：图数据库 AST 语法树存储 -->
+        <dependency>
+            <groupId>org.neo4j.driver</groupId>
+            <artifactId>neo4j-java-driver</artifactId>
+            <version>5.18.0</version>
+        </dependency>
+
         <!-- Apache POI：Excel 导出 -->
         <dependency>
             <groupId>org.apache.poi</groupId>

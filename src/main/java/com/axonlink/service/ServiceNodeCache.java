@@ -15,17 +15,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
- * 服务/构件节点内存缓存。
+ * 服务/构件节点内存缓存，维护两张 Map：
  *
- * <p>启动时（{@link PostConstruct}）异步全量加载 service + service_detail + component + component_detail
- * 四张表，供交易链路展示时 O(1) 查找，<b>不允许在请求链路中发起 DB 查询</b>（FR-010）。
- *
- * <p>缓存 Key 规则（FR-011）：
  * <ul>
- *   <li>服务节点：{@code {service_type_id}.{service_id}}</li>
- *   <li>构件节点：{@code {component_id}.{service_id}}</li>
+ *   <li><b>nodeMap</b>（完整节点信息）
+ *       <br>key = {@code {service_type_id}.{service_id}} / {@code {component_id}.{service_id}}
+ *       <br>value = {@link NodeCacheEntry}（名称 + 接口字段 + 节点类型 + 领域）</li>
+ *
+ *   <li><b>longnameMap</b>（ID 存在标记）
+ *       <br>key = {@code service_type_id} / {@code component_id}（主表 ID）
+ *       <br>value = {@code 1}（固定值，相当于 Set，用于 O(1) 判断某 ID 是否已注册）</li>
  * </ul>
- * 与 {@code flow_step.node_name} 一一对应，直接用于 Map 查找。
+ *
+ * <p>两张 Map 在启动时同步加载，不允许在请求链路中发起 DB 查询。
  */
 @Component
 public class ServiceNodeCache {
@@ -36,19 +38,23 @@ public class ServiceNodeCache {
     private final FlowtranConfig flowtranConfig;
 
     public ServiceNodeCache(JdbcTemplate jdbcTemplate, FlowtranConfig flowtranConfig) {
-        this.jdbcTemplate    = jdbcTemplate;
-        this.flowtranConfig  = flowtranConfig;
+        this.jdbcTemplate   = jdbcTemplate;
+        this.flowtranConfig = flowtranConfig;
     }
 
-    private final ConcurrentHashMap<String, NodeCacheEntry> nodeMap = new ConcurrentHashMap<>(8000);
+    // ── Map1：service_type_id.service_id → NodeCacheEntry（完整信息）────────────
+    private final ConcurrentHashMap<String, NodeCacheEntry> nodeMap     = new ConcurrentHashMap<>(8000);
 
-    private volatile boolean       loaded          = false;
-    private volatile LocalDateTime loadedAt        = null;
-    private volatile int           serviceCount    = 0;
-    private volatile int           componentCount  = 0;
+    // ── Map2：service_type_id / component_id → 1（ID 存在标记，等价于 Set）────────
+    private final ConcurrentHashMap<String, Integer>        longnameMap = new ConcurrentHashMap<>(4000);
+
+    private volatile boolean       loaded         = false;
+    private volatile LocalDateTime loadedAt       = null;
+    private volatile int           serviceCount   = 0;
+    private volatile int           componentCount = 0;
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 启动时异步加载（不阻塞 Spring 启动）
+    // 启动时异步加载
     // ─────────────────────────────────────────────────────────────────────────
 
     @PostConstruct
@@ -62,9 +68,10 @@ public class ServiceNodeCache {
         t.start();
     }
 
-    /** 热重载：清空旧数据，重新加载 */
+    /** 热重载：清空两张 Map，重新加载 */
     public Map<String, Object> reload() {
         nodeMap.clear();
+        longnameMap.clear();
         loaded = false;
         serviceCount = 0;
         componentCount = 0;
@@ -72,7 +79,7 @@ public class ServiceNodeCache {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 核心加载逻辑
+    // 加载逻辑
     // ─────────────────────────────────────────────────────────────────────────
 
     private Map<String, Object> loadAll() {
@@ -86,8 +93,8 @@ public class ServiceNodeCache {
             loadedAt = LocalDateTime.now();
             loaded   = true;
             long elapsed = System.currentTimeMillis() - t0;
-            log.info("[ServiceNodeCache] 加载完成：service={} component={} total={} 耗时={}ms",
-                     svc, comp, svc + comp, elapsed);
+            log.info("[ServiceNodeCache] 加载完成：service={} component={} total={} longnameMap={} 耗时={}ms",
+                     svc, comp, svc + comp, longnameMap.size(), elapsed);
             return getStats();
         } catch (Exception e) {
             log.warn("[ServiceNodeCache] 加载失败: {}", e.getMessage());
@@ -96,14 +103,13 @@ public class ServiceNodeCache {
         }
     }
 
-    // ── 服务节点：service_detail JOIN service ─────────────────────────────────
     private int loadServiceNodes() {
         String sql = """
             SELECT sd.service_type_id, sd.service_id,
                    sd.service_name, sd.service_longname,
                    sd.interface_input_field_type,  sd.interface_input_field_multi,
                    sd.interface_output_field_type, sd.interface_output_field_multi,
-                   s.service_type   AS node_kind,
+                   s.service_type AS node_kind,
                    s.package_path
             FROM service_detail sd
             JOIN service s ON s.id = sd.service_type_id
@@ -111,7 +117,6 @@ public class ServiceNodeCache {
         return loadNodes(sql, "service_type_id", "service_id");
     }
 
-    // ── 构件节点：component_detail JOIN component ─────────────────────────────
     private int loadComponentNodes() {
         String sql = """
             SELECT cd.component_id, cd.service_id,
@@ -127,12 +132,12 @@ public class ServiceNodeCache {
     }
 
     /**
-     * 通用加载逻辑：
-     * 1. 执行 JOIN 查询
-     * 2. 按 {typeIdCol}.{serviceIdCol} 分组聚合多行 field 为单条 NodeCacheEntry
-     * 3. 写入 nodeMap
+     * 通用加载：同时写入 nodeMap（按 service_id）和 longnameMap（按 service_name）。
      *
-     * @return 写入的 key 数量
+     * <pre>
+     * nodeMap    key = {typeIdCol}.{service_id}    value = NodeCacheEntry
+     * longnameMap key = {typeIdCol}.{service_name} value = service_longname
+     * </pre>
      */
     private int loadNodes(String sql, String typeIdCol, String serviceIdCol) {
         List<Map<String, Object>> rows;
@@ -143,35 +148,46 @@ public class ServiceNodeCache {
             return 0;
         }
 
-        // 按 key 分组：key = typeId.serviceId
+        // ── Map1：按 typeId.serviceId 分组聚合 ────────────────────────────────
         Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            String typeId  = str(row, typeIdCol);
-            String svcId   = str(row, serviceIdCol);
+            String typeId = str(row, typeIdCol);
+            String svcId  = str(row, serviceIdCol);
             if (typeId == null || svcId == null) continue;
-            String key = typeId + "." + svcId;
-            grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+            grouped.computeIfAbsent(typeId + "." + svcId, k -> new ArrayList<>()).add(row);
         }
 
-        // 聚合
         for (Map.Entry<String, List<Map<String, Object>>> e : grouped.entrySet()) {
             List<Map<String, Object>> group = e.getValue();
             Map<String, Object> first = group.get(0);
-
             String packagePath = str(first, "package_path");
+
+            // callerKey = typeId.serviceName，用于匹配 call_relation 的 caller_id + caller_method
+            String svcName = str(first, "service_name");
+            String typeIdVal = str(first, typeIdCol);
+            String callerKey = (typeIdVal != null && svcName != null) ? typeIdVal + "." + svcName : null;
+
             NodeCacheEntry entry = NodeCacheEntry.builder()
-                .serviceName(str(first, "service_name"))
+                .serviceName(svcName)
                 .serviceLongname(str(first, "service_longname"))
-                .interfaceInputFieldTypes( joinNonNull(group, "interface_input_field_type"))
+                .interfaceInputFieldTypes(joinNonNull(group, "interface_input_field_type"))
                 .interfaceInputFieldMultis(joinNonNull(group, "interface_input_field_multi"))
-                .interfaceOutputFieldTypes( joinNonNull(group, "interface_output_field_type"))
+                .interfaceOutputFieldTypes(joinNonNull(group, "interface_output_field_type"))
                 .interfaceOutputFieldMultis(joinNonNull(group, "interface_output_field_multi"))
                 .nodeKind(str(first, "node_kind"))
                 .packagePath(packagePath)
                 .domainKey(DomainKeyResolver.resolve(packagePath))
+                .callerKey(callerKey)
                 .build();
             nodeMap.put(e.getKey(), entry);
         }
+
+        // ── Map2：typeId（service_type_id / component_id）→ 1 ────────────────
+        for (Map<String, Object> row : rows) {
+            String typeId = str(row, typeIdCol);
+            if (typeId != null) longnameMap.put(typeId, 1);
+        }
+
         return grouped.size();
     }
 
@@ -180,13 +196,38 @@ public class ServiceNodeCache {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * 按 node_name 查找缓存条目（O(1)）。
+     * 按 {@code typeId.serviceId} 查找完整节点信息（O(1)）。
+     * 对应 flow_step.node_name 格式。
      *
-     * @param nodeKey flow_step.node_name，格式 {@code TypeId.serviceId}
-     * @return 缓存条目；未命中时返回 empty
+     * @param nodeKey 如 {@code IoDpAccLimitApsSvtp.prcAccLimitRgst}
      */
     public Optional<NodeCacheEntry> get(String nodeKey) {
         return Optional.ofNullable(nodeMap.get(nodeKey));
+    }
+
+    /**
+     * 判断某个 service_type_id 或 component_id 是否存在于缓存中（O(1)）。
+     *
+     * @param typeId service_type_id 或 component_id，如 {@code IoDpAccLimitApsSvtp}
+     * @return true = 已注册；false = 不存在
+     */
+    public boolean containsTypeId(String typeId) {
+        return typeId != null && longnameMap.containsKey(typeId);
+    }
+
+    /**
+     * 按 typeId 前缀查找第一个匹配的 NodeCacheEntry。
+     * nodeMap 的 key 格式为 {@code typeId.serviceId}，此方法遍历查找以 {@code typeId.} 开头的第一条。
+     *
+     * @param typeId service_type_id 或 component_id
+     */
+    public Optional<NodeCacheEntry> findByTypeId(String typeId) {
+        if (typeId == null) return Optional.empty();
+        String prefix = typeId + ".";
+        for (Map.Entry<String, NodeCacheEntry> e : nodeMap.entrySet()) {
+            if (e.getKey().startsWith(prefix)) return Optional.of(e.getValue());
+        }
+        return Optional.empty();
     }
 
     /** 缓存是否已完成首次加载 */
@@ -195,12 +236,13 @@ public class ServiceNodeCache {
     /** 返回缓存统计信息 */
     public Map<String, Object> getStats() {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("loaded",         loaded);
-        m.put("serviceCount",   serviceCount);
-        m.put("componentCount", componentCount);
-        m.put("totalCount",     serviceCount + componentCount);
-        m.put("loadedAt",       loadedAt != null ? loadedAt.toString() : null);
-        m.put("datasource",     flowtranConfig.getDatasource());
+        m.put("loaded",          loaded);
+        m.put("serviceCount",    serviceCount);
+        m.put("componentCount",  componentCount);
+        m.put("totalCount",      serviceCount + componentCount);
+        m.put("longnameMapSize", longnameMap.size());
+        m.put("loadedAt",        loadedAt != null ? loadedAt.toString() : null);
+        m.put("datasource",      flowtranConfig.getDatasource());
         return m;
     }
 
@@ -213,7 +255,6 @@ public class ServiceNodeCache {
         return v == null ? null : v.toString();
     }
 
-    /** 将一组 row 的某列非空值以逗号连接 */
     private static String joinNonNull(List<Map<String, Object>> rows, String col) {
         return rows.stream()
             .map(r -> str(r, col))

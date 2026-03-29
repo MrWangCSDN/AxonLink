@@ -21,6 +21,9 @@ public class NodeCacheEntry {
     private String packagePath;
     private String domainKey;
 
+    /** typeId.serviceName 格式，用于匹配 call_relation 的 caller_id + caller_method */
+    private String callerKey;
+
     public NodeCacheEntry() {}
 
     private NodeCacheEntry(Builder b) {
@@ -33,6 +36,7 @@ public class NodeCacheEntry {
         this.nodeKind                  = b.nodeKind;
         this.packagePath               = b.packagePath;
         this.domainKey                 = b.domainKey;
+        this.callerKey                 = b.callerKey;
     }
 
     public static Builder builder() { return new Builder(); }
@@ -41,7 +45,7 @@ public class NodeCacheEntry {
         private String serviceName, serviceLongname;
         private String interfaceInputFieldTypes, interfaceInputFieldMultis;
         private String interfaceOutputFieldTypes, interfaceOutputFieldMultis;
-        private String nodeKind, packagePath, domainKey;
+        private String nodeKind, packagePath, domainKey, callerKey;
 
         public Builder serviceName(String v)                { this.serviceName = v; return this; }
         public Builder serviceLongname(String v)            { this.serviceLongname = v; return this; }
@@ -52,6 +56,7 @@ public class NodeCacheEntry {
         public Builder nodeKind(String v)                   { this.nodeKind = v; return this; }
         public Builder packagePath(String v)                { this.packagePath = v; return this; }
         public Builder domainKey(String v)                  { this.domainKey = v; return this; }
+        public Builder callerKey(String v)                  { this.callerKey = v; return this; }
         public NodeCacheEntry build()                       { return new NodeCacheEntry(this); }
     }
 
@@ -73,4 +78,6 @@ public class NodeCacheEntry {
     public void   setPackagePath(String v)        { this.packagePath = v; }
     public String getDomainKey()                  { return domainKey; }
     public void   setDomainKey(String v)          { this.domainKey = v; }
+    public String getCallerKey()                  { return callerKey; }
+    public void   setCallerKey(String v)          { this.callerKey = v; }
 }

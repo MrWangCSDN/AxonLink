@@ -79,6 +79,13 @@ callgraph:
   scan-threads: 0
 
 # ── flowtran 数据驱动配置 ──────────────────────────────────────────────────────
+# ── Neo4j 图数据库配置 ────────────────────────────────────────────────────────
+neo4j:
+  enabled: ${NEO4J_ENABLED:false}
+  uri: ${NEO4J_URI:bolt://localhost:7687}
+  username: ${NEO4J_USERNAME:neo4j}
+  password: ${NEO4J_PASSWORD:axonlink123}
+
 flowtran:
   # 激活的数据源环境标识：local（外网本地 mall_admin）| intranet（内网 benchmarkdb）
   # 实际连接 URL 由 spring.datasource.* 控制，本字段仅作环境标记

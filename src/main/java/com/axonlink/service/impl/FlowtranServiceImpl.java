@@ -241,13 +241,178 @@ public class FlowtranServiceImpl implements FlowtranService {
                 }
             }
 
-            // 4. 组装 chain
+            // 4. 多层级查 call_relation，逐层展开，全局去重
+            //    Layer1: 流程编排 pbs/pcs → 编码调用 pbs/pcs + 构件 pbcb/pbcp/pbcc/pbct + bcc
+            //    Layer2: 编码调用 pbs/pcs → 构件 pbcb/pbcp/pbcc/pbct + bcc
+            //    Layer3: 业务构件 pbcb/pbcp → 公共构件 pbcc/pbct + bcc
+            //    Layer4: 所有构件 → bcc（数据层）
+            //    bcc 展示为数据层，去掉 "Dao" 后缀
+
+            Map<String, List<String>> serviceToService     = new LinkedHashMap<>();
+            Map<String, List<String>> serviceToComponent   = new LinkedHashMap<>();
+            Map<String, List<String>> componentToComponent = new LinkedHashMap<>();
+            Map<String, List<String>> componentToData      = new LinkedHashMap<>();
+
+            List<Map<String, Object>> calledServiceNodes = new ArrayList<>();
+            List<Map<String, Object>> dataLayer          = new ArrayList<>();
+
+            // 去重集合（按 code 去重）
+            Set<String> seenServiceCodes   = new LinkedHashSet<>();
+            Set<String> seenComponentCodes = new LinkedHashSet<>();
+            Set<String> seenDataCodes      = new LinkedHashSet<>();
+
+            // 已有的流程编排节点先注册到去重集合
+            for (Map<String, Object> n : serviceLayer) {
+                String c = (String) n.get("code");
+                if (c != null) seenServiceCodes.add(c);
+            }
+            for (Map<String, Object> n : componentLayer) {
+                String c = (String) n.get("code");
+                if (c != null) seenComponentCodes.add(c);
+            }
+
+            // 通用方法：查某 caller 的所有 callee，按类型分类
+            // 返回新发现的构件 code 列表（供后续递归）
+            java.util.function.BiFunction<String, String, List<String>> queryCallees = (callerCode, callerPrefix) -> {
+                Optional<com.axonlink.dto.NodeCacheEntry> entOpt = serviceNodeCache.get(callerCode);
+                if (entOpt.isEmpty()) return List.of();
+                String ck = entOpt.get().getCallerKey();
+                if (ck == null || !ck.contains(".")) return List.of();
+
+                int di = ck.indexOf('.');
+                String cId = ck.substring(0, di);
+                String cMt = ck.substring(di + 1);
+
+                List<String> svcList  = new ArrayList<>();
+                List<String> compList = new ArrayList<>();
+                List<String> dataList = new ArrayList<>();
+                List<String> newCompCodes = new ArrayList<>();
+
+                try {
+                    List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                        "SELECT callee_id, callee_type, callee_method, callee_longname, callee_domain, callee_class " +
+                        "FROM call_relation WHERE caller_id = ? AND caller_method = ?", cId, cMt);
+
+                    for (Map<String, Object> row : rows) {
+                        String ceeId   = (String) row.get("callee_id");
+                        String ceeType = (String) row.get("callee_type");
+                        String ceeMeth = (String) row.get("callee_method");
+                        String ceeLong = (String) row.get("callee_longname");
+                        String ceeDom  = (String) row.get("callee_domain");
+                        if (ceeType == null || ceeId == null) continue;
+
+                        String ceeCode = ceeId + (ceeMeth != null ? "." + ceeMeth : "");
+
+                        if ("bcc".equals(ceeType)) {
+                            // 数据层：去掉 Dao 后缀
+                            String tableName = ceeId.replaceAll("Dao$", "");
+                            if (seenDataCodes.add(tableName)) {
+                                Map<String, Object> dn = new LinkedHashMap<>();
+                                dn.put("code", tableName);
+                                dn.put("name", tableName);
+                                dataLayer.add(dn);
+                            }
+                            dataList.add(tableName);
+                        } else if ("pbs".equals(ceeType) || "pcs".equals(ceeType)) {
+                            if (seenServiceCodes.add(ceeCode)) {
+                                Map<String, Object> cn = new LinkedHashMap<>();
+                                cn.put("prefix", ceeType);
+                                cn.put("code",   ceeCode);
+                                cn.put("name",   ceeLong != null ? ceeLong : ceeCode);
+                                if (ceeDom != null && !txDomainKey.equals(ceeDom))
+                                    cn.put("domain", DOMAIN_NAME_MAP.getOrDefault(ceeDom, ceeDom));
+                                calledServiceNodes.add(cn);
+                            }
+                            svcList.add(ceeCode);
+                        } else {
+                            // pbcb/pbcp/pbcc/pbct → 构件层
+                            if (seenComponentCodes.add(ceeCode)) {
+                                Map<String, Object> cn = new LinkedHashMap<>();
+                                cn.put("prefix", ceeType);
+                                cn.put("code",   ceeCode);
+                                cn.put("name",   ceeLong != null ? ceeLong : ceeCode);
+                                if (ceeDom != null && !txDomainKey.equals(ceeDom))
+                                    cn.put("domain", DOMAIN_NAME_MAP.getOrDefault(ceeDom, ceeDom));
+                                componentLayer.add(cn);
+                                newCompCodes.add(ceeCode);
+                            }
+                            compList.add(ceeCode);
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.debug("[FlowtranService] call_relation 查询失败: {}", ex.getMessage());
+                }
+
+                // 填充 relations
+                if (!svcList.isEmpty()) serviceToService.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(svcList);
+                if (!compList.isEmpty()) serviceToComponent.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(compList);
+                if (!dataList.isEmpty()) componentToData.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(dataList);
+                return newCompCodes;
+            };
+
+            // ── Layer 1：流程编排 pbs/pcs → 查 call_relation ──
+            List<String> newCalledSvcCodes = new ArrayList<>();
+            List<String> allNewCompCodes   = new ArrayList<>();
+            for (Map<String, Object> svcNode : new ArrayList<>(serviceLayer)) {
+                String prefix = (String) svcNode.get("prefix");
+                String code   = (String) svcNode.get("code");
+                if (code == null || (!"pbs".equals(prefix) && !"pcs".equals(prefix))) continue;
+                List<String> nc = queryCallees.apply(code, prefix);
+                allNewCompCodes.addAll(nc);
+                // 收集新发现的编码调用服务 code
+                List<String> sl = serviceToService.get(code);
+                if (sl != null) newCalledSvcCodes.addAll(sl);
+            }
+
+            // ── Layer 2：编码调用 pbs/pcs → 查 call_relation ──
+            for (String svcCode : new ArrayList<>(newCalledSvcCodes)) {
+                List<String> nc = queryCallees.apply(svcCode, "pbs");
+                allNewCompCodes.addAll(nc);
+            }
+
+            // ── Layer 3：业务构件 pbcb/pbcp → 查 call_relation → 公共构件 pbcc/pbct + bcc ──
+            List<String> bizCompCodes = new ArrayList<>();
+            for (Map<String, Object> cn : new ArrayList<>(componentLayer)) {
+                String p = (String) cn.get("prefix");
+                String c = (String) cn.get("code");
+                if (c != null && ("pbcb".equals(p) || "pbcp".equals(p))) bizCompCodes.add(c);
+            }
+            List<String> newTechCompCodes = new ArrayList<>();
+            for (String compCode : bizCompCodes) {
+                List<String> nc = queryCallees.apply(compCode, "pbcb");
+                newTechCompCodes.addAll(nc);
+                // pbcb/pbcp → pbcc/pbct 的关系
+                List<String> cl = serviceToComponent.get(compCode);
+                if (cl != null) componentToComponent.computeIfAbsent(compCode, k -> new ArrayList<>()).addAll(cl);
+                serviceToComponent.remove(compCode); // 从 serviceToComponent 移到 componentToComponent
+            }
+
+            // ── Layer 4：所有构件 → bcc（数据层） ──
+            for (Map<String, Object> cn : new ArrayList<>(componentLayer)) {
+                String c = (String) cn.get("code");
+                if (c != null && !componentToData.containsKey(c)) {
+                    queryCallees.apply(c, (String) cn.get("prefix"));
+                }
+            }
+
+            // 编码调用节点追加到 serviceLayer
+            serviceLayer.addAll(calledServiceNodes);
+
+            // 5. 组装 chain
+            Map<String, Object> relations = new LinkedHashMap<>();
+            if (!serviceToService.isEmpty())     relations.put("serviceToService", serviceToService);
+            if (!serviceToComponent.isEmpty())   relations.put("serviceToComponent", serviceToComponent);
+            if (!componentToComponent.isEmpty()) relations.put("componentToComponent", componentToComponent);
+            if (!componentToData.isEmpty())      relations.put("componentToData", componentToData);
+            relations.putIfAbsent("serviceToComponent", Map.of());
+            relations.putIfAbsent("componentToData", Map.of());
+
             Map<String, Object> chain = new LinkedHashMap<>();
             chain.put("orchestration", orchestration);
             chain.put("service",       serviceLayer);
             chain.put("component",     componentLayer);
-            chain.put("data",          List.of());
-            chain.put("relations",     Map.of());
+            chain.put("data",          dataLayer);
+            chain.put("relations",     relations);
 
             // 5. 顶层（与 TransactionCard.vue 格式兼容）
             Map<String, Object> result = new LinkedHashMap<>();
