@@ -92,6 +92,7 @@
             :node="codeViewer.node"
             :file-path="codeViewer.filePath"
             :method-name="codeViewer.methodName"
+            :locate-text="codeViewer.locateText"
             :is-dark="isDark"
             :parent-loading="codeViewer.loading"
             :visible="codeViewer.visible"
@@ -999,7 +1000,7 @@ const tabsContainerRef  = ref(null)
 const codeViewer = reactive({
   visible: false, node: null, nodeType: '', copied: false,
   noSource: false, loading: false,
-  toast: '', filePath: '', methodName: '',
+  toast: '', filePath: '', methodName: '', locateText: '',
   fullscreen: false,
 })
 
@@ -2395,32 +2396,86 @@ const closeCallSitesPopup = () => { callSitesPopup.visible = false }
 // 已加载节点路径缓存：node.code → filePath
 // 跨关闭/打开保留，避免重复发起网络请求；切换到其他交易卡片时自然随组件销毁
 const nodePathCache = new Map()
+const shouldResolveFlowSource = (node, nodeType) =>
+  nodeType === 'orchestration' || node?.prefix === 'method' || !!node?.code?.includes('.')
 
 // 打开代码查看器：通过全局索引把 className 解析成 filePath，再传给 MonacoCodeViewer
 const openCodeViewer = async (node, nodeType) => {
+  const cacheKey = `${props.transaction.id}|${nodeType}|${node?.prefix || ''}|${node.code}`
   const reg = NODE_FILE_REGISTRY[node.code]
+
+  if (shouldResolveFlowSource(node, nodeType)) {
+    const cached = nodePathCache.get(cacheKey)
+    if (cached) {
+      Object.assign(codeViewer, {
+        visible: true, node, nodeType, noSource: false,
+        loading: false, toast: '',
+        filePath: cached.filePath,
+        methodName: cached.methodName || '',
+        locateText: cached.locateText || '',
+      })
+      return
+    }
+
+    Object.assign(codeViewer, {
+      visible: true, node, nodeType, noSource: false,
+      loading: true, toast: '', filePath: '', methodName: '', locateText: '',
+    })
+
+    try {
+      const params = new URLSearchParams({
+        txId: props.transaction.id,
+        nodeCode: node.code,
+        nodeType,
+        nodePrefix: node?.prefix || '',
+      })
+      const res = await fetch(`/api/source/resolve/flow?${params}`)
+      if (!res.ok) {
+        Object.assign(codeViewer, { noSource: true, loading: false })
+        return
+      }
+      const data = await res.json()
+      const resolved = {
+        filePath: data.filePath,
+        methodName: data.methodName || '',
+        locateText: data.locateText || '',
+      }
+      nodePathCache.set(cacheKey, resolved)
+      Object.assign(codeViewer, {
+        loading: false,
+        filePath: resolved.filePath,
+        methodName: resolved.methodName,
+        locateText: resolved.locateText,
+      })
+      return
+    } catch {
+      Object.assign(codeViewer, { noSource: true, loading: false })
+      return
+    }
+  }
 
   if (!reg) {
     Object.assign(codeViewer, { visible: true, node, nodeType, noSource: true,
-      loading: false, toast: '', filePath: '', methodName: '' })
+      loading: false, toast: '', filePath: '', methodName: '', locateText: '' })
     return
   }
 
   // 同一节点且已有缓存路径 → 直接显示，无需重新请求（保留 Monaco 现有标签页）
-  const cached = nodePathCache.get(node.code)
+  const cached = nodePathCache.get(cacheKey)
   if (cached) {
     Object.assign(codeViewer, {
       visible: true, node, nodeType, noSource: false,
       loading: false, toast: '',
       filePath:   cached.filePath,
       methodName: cached.methodName,
+      locateText: cached.locateText || '',
     })
     return
   }
 
   // 首次加载：先打开弹窗（loading 状态）
   Object.assign(codeViewer, { visible: true, node, nodeType, noSource: false,
-    loading: true, toast: '', methodName: '' })
+    loading: true, toast: '', methodName: '', locateText: '' })
   // 不重置 filePath，避免 MonacoCodeViewer 触发空路径处理
 
   try {
@@ -2437,8 +2492,8 @@ const openCodeViewer = async (node, nodeType) => {
     const filePath   = data.filePath
     const methodName = reg.methodName
     // 写入缓存
-    nodePathCache.set(node.code, { filePath, methodName })
-    Object.assign(codeViewer, { loading: false, filePath, methodName })
+    nodePathCache.set(cacheKey, { filePath, methodName, locateText: '' })
+    Object.assign(codeViewer, { loading: false, filePath, methodName, locateText: '' })
   } catch {
     Object.assign(codeViewer, { noSource: true, loading: false })
   }

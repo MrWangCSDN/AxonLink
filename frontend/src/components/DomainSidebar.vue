@@ -61,6 +61,40 @@ const expanded = ref(true)
 
 const getDomainIcon = (id) => {
   const icons = {
+    ap: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('rect', { x: 2, y: 2, width: 12, height: 12, rx: 2, stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('path', { d: 'M5 5.5h6M5 8h6M5 10.5h4', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' })
+    ]),
+    dept: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('path', { d: 'M2 6.5h12M2 9.5h12', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' }),
+      h('rect', { x: 1.5, y: 3, width: 13, height: 10, rx: 2, stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('circle', { cx: 8, cy: 8, r: 1.4, fill: 'currentColor' })
+    ]),
+    unvr: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('circle', { cx: 8, cy: 8, r: 6, stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('path', { d: 'M2.5 8h11', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' }),
+      h('path', { d: 'M8 2c1.8 1.7 2.8 3.7 2.8 6S9.8 12.3 8 14C6.2 12.3 5.2 10.3 5.2 8S6.2 3.7 8 2Z', stroke: 'currentColor', 'stroke-width': 1.2, 'stroke-linejoin': 'round' })
+    ]),
+    stmt: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('rect', { x: 3, y: 2, width: 10, height: 12, rx: 1.5, stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('path', { d: 'M5.5 5.5h5M5.5 8h5M5.5 10.5h3.5', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' })
+    ]),
+    medu: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('path', { d: 'M3 5.5h7l-2-2M13 10.5H6l2 2', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }),
+      h('circle', { cx: 11.5, cy: 5.5, r: 1, fill: 'currentColor' }),
+      h('circle', { cx: 4.5, cy: 10.5, r: 1, fill: 'currentColor' })
+    ]),
+    inbu: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('rect', { x: 2, y: 4.5, width: 12, height: 8.5, rx: 1.5, stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('path', { d: 'M5.5 4.5v-1A1.5 1.5 0 0 1 7 2h2a1.5 1.5 0 0 1 1.5 1.5v1', stroke: 'currentColor', 'stroke-width': 1.5 }),
+      h('path', { d: 'M2 8h12', stroke: 'currentColor', 'stroke-width': 1.5 })
+    ]),
+    aggr: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
+      h('circle', { cx: 4, cy: 4, r: 1.5, fill: 'currentColor' }),
+      h('circle', { cx: 12, cy: 4, r: 1.5, fill: 'currentColor' }),
+      h('circle', { cx: 8, cy: 12, r: 1.5, fill: 'currentColor' }),
+      h('path', { d: 'M5.3 5.1 6.8 9.8M10.7 5.1 9.2 9.8M5.2 4h5.6', stroke: 'currentColor', 'stroke-width': 1.5, 'stroke-linecap': 'round' })
+    ]),
     public: () => h('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none' }, [
       h('circle', { cx: 8, cy: 8, r: 6.5, stroke: 'currentColor', 'stroke-width': 1.5 }),
       h('path', { d: 'M8 1.5C8 1.5 5.5 4 5.5 8s2.5 6.5 2.5 6.5', stroke: 'currentColor', 'stroke-width': 1.5 }),
@@ -197,6 +231,13 @@ const getDomainIcon = (id) => {
   transition: all 0.15s;
 }
 
+.icon-ap { background: #EEF3FF; color: #4F7CFF; }
+.icon-dept { background: #EAFBF3; color: #12B886; }
+.icon-unvr { background: #EDF6FF; color: #228BE6; }
+.icon-stmt { background: #FFF4E6; color: #F76707; }
+.icon-medu { background: #FFF0F6; color: #D6336C; }
+.icon-inbu { background: #FFF9DB; color: #E67700; }
+.icon-aggr { background: #F3F0FF; color: #7950F2; }
 .icon-public { background: #EEF3FF; color: #4F7CFF; }
 .icon-loan { background: #FFF4E6; color: #F76707; }
 .icon-deposit { background: #E6FCF5; color: #12B886; }

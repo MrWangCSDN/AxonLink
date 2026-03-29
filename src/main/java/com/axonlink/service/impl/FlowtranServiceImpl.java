@@ -1,435 +1,824 @@
 package com.axonlink.service.impl;
 
-import com.axonlink.common.DomainKeyResolver;
+import com.axonlink.config.Neo4jConfig;
 import com.axonlink.dto.FlowtranDomain;
 import com.axonlink.dto.FlowtranTransaction;
+import com.axonlink.dto.NodeCacheEntry;
 import com.axonlink.service.FlowtranService;
 import com.axonlink.service.ServiceNodeCache;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.Record;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.Value;
+import org.neo4j.driver.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
-/**
- * flowtran 数据服务实现。
- *
- * <p>领域归属统一从 {@code package_path} 推断：
- * {@code com.spdb.ccbs.{领域}.xxx.xxx} → 取第4段作为领域标识，
- * 不依赖 {@code domain_key} 列（该列在原始 benchmarkdb 中不存在）。
- */
 @Service
 public class FlowtranServiceImpl implements FlowtranService {
 
     private static final Logger log = LoggerFactory.getLogger(FlowtranServiceImpl.class);
+    private static final int MAX_METHOD_DEPTH = 8;
 
-    private final JdbcTemplate    jdbcTemplate;
+    private static final Map<String, String> DOMAIN_NAME_MAP = Map.of(
+        "deposit", "存款领域",
+        "loan", "贷款领域",
+        "settlement", "结算领域",
+        "public", "公共领域",
+        "unvr", "通联领域",
+        "aggr", "综合领域",
+        "inbu", "境内业务领域",
+        "medu", "中间业务领域",
+        "stmt", "对账领域"
+    );
+
+    private static final Map<String, String> DOMAIN_ICON_MAP = Map.of(
+        "deposit", "bank",
+        "loan", "credit-card",
+        "settlement", "exchange",
+        "public", "globe"
+    );
+
+    private static final Map<String, String> FLOWTRAN_DOMAIN_NAME_OVERRIDES = Map.of(
+        "ap", "AP",
+        "dept", "DEPT",
+        "unvr", "UNVR",
+        "stmt", "STMT",
+        "medu", "MEDU",
+        "inbu", "INBU",
+        "aggr", "AGGR"
+    );
+
+    private static final Map<String, String> FLOWTRAN_DOMAIN_ICON_OVERRIDES = Map.of(
+        "ap", "layers",
+        "dept", "bank",
+        "unvr", "globe",
+        "stmt", "file-text",
+        "medu", "shuffle",
+        "inbu", "briefcase",
+        "aggr", "git-merge"
+    );
+
+    private final Driver driver;
+    private final Neo4jConfig neo4jConfig;
     private final ServiceNodeCache serviceNodeCache;
 
-    public FlowtranServiceImpl(JdbcTemplate jdbcTemplate, ServiceNodeCache serviceNodeCache) {
-        this.jdbcTemplate     = jdbcTemplate;
+    public FlowtranServiceImpl(Driver driver, Neo4jConfig neo4jConfig, ServiceNodeCache serviceNodeCache) {
+        this.driver = driver;
+        this.neo4jConfig = neo4jConfig;
         this.serviceNodeCache = serviceNodeCache;
     }
 
-    // ── 静态映射 ───────────────────────────────────────────────────────────────
-    private static final Map<String, String> DOMAIN_NAME_MAP = Map.of(
-        "deposit",    "存款领域",
-        "loan",       "贷款领域",
-        "settlement", "结算领域",
-        "public",     "公共领域",
-        "unvr",       "通联领域",
-        "aggr",       "综合领域",
-        "inbu",       "境内业务领域",
-        "medu",       "中间业务领域",
-        "stmt",       "对账领域"
-    );
-    private static final Map<String, String> DOMAIN_ICON_MAP = Map.of(
-        "deposit",    "bank",
-        "loan",       "credit-card",
-        "settlement", "exchange",
-        "public",     "globe"
-    );
-
-    /**
-     * AxonLink domain_key → package_path 第4段关键字
-     * （用于 WHERE package_path LIKE 过滤）
-     */
-    private static final Map<String, String> AXON_TO_RAW = Map.of(
-        "deposit",    "dept",
-        "loan",       "loan",
-        "settlement", "sett",
-        "public",     "comm",
-        "unvr",       "unvr",
-        "aggr",       "aggr",
-        "inbu",       "inbu",
-        "medu",       "medu",
-        "stmt",       "stmt"
-    );
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // 领域列表：从 package_path 第4段推断，不读 domain_key 列
-    // MySQL: SUBSTRING_INDEX(SUBSTRING_INDEX(package_path, '.', 4), '.', -1)
-    //   com.spdb.ccbs.dept.pbf.trans.qryMnt  →  dept
-    // ─────────────────────────────────────────────────────────────────────────
     @Override
     public List<FlowtranDomain> listDomains() {
+        if (!neo4jAvailable()) {
+            return List.of();
+        }
+
         try {
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(package_path, '.', 4), '.', -1) AS raw_dk, " +
-                "       COUNT(*) AS tx_count " +
-                "FROM flowtran " +
-                "WHERE package_path IS NOT NULL AND package_path != '' " +
-                "GROUP BY raw_dk " +
-                "ORDER BY raw_dk"
-            );
-
-            // 按 AxonLink domain_key 聚合（多个 raw_dk 可能映射同一个 axonDk，如 comm→public）
-            Map<String, Long> merged = new LinkedHashMap<>();
-            for (Map<String, Object> row : rows) {
-                String rawDk = (String) row.get("raw_dk");
-                if (rawDk == null || rawDk.isBlank()) continue;
-                String axonDk = DomainKeyResolver.resolve("com.spdb.ccbs." + rawDk + ".x");
-                long   count  = ((Number) row.get("tx_count")).longValue();
-                merged.merge(axonDk, count, Long::sum);
+            List<FlowtranDomain> domains = new ArrayList<>();
+            try (Session session = driver.session()) {
+                session.run(
+                    "MATCH (tx:Transaction) " +
+                    "WHERE tx.domainKey IS NOT NULL " +
+                    "RETURN tx.domainKey AS domainKey, count(tx) AS txCount " +
+                    "ORDER BY domainKey")
+                    .forEachRemaining(record -> {
+                        String domainKey = stringValue(record, "domainKey");
+                        if (isBlank(domainKey)) {
+                            return;
+                        }
+                        FlowtranDomain domain = new FlowtranDomain();
+                        domain.setDomainKey(domainKey);
+                        domain.setDomainName(displayDomainName(domainKey));
+                        domain.setTxCount(longValue(record, "txCount"));
+                        domain.setIcon(displayDomainIcon(domainKey));
+                        domains.add(domain);
+                    });
             }
-
-            List<FlowtranDomain> result = new ArrayList<>();
-            for (Map.Entry<String, Long> e : merged.entrySet()) {
-                String axonDk = e.getKey();
-                FlowtranDomain d = new FlowtranDomain();
-                d.setDomainKey(axonDk);
-                d.setDomainName(DOMAIN_NAME_MAP.getOrDefault(axonDk, axonDk));
-                d.setTxCount(e.getValue());
-                d.setIcon(DOMAIN_ICON_MAP.getOrDefault(axonDk, "folder"));
-                result.add(d);
-            }
-            return result;
+            domains.sort(Comparator.comparing(FlowtranDomain::getDomainKey));
+            return domains;
         } catch (Exception e) {
-            log.warn("[FlowtranService] listDomains 失败: {}", e.getMessage());
+            log.warn("[FlowtranService] listDomains failed: {}", e.getMessage());
             return List.of();
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 交易分页：通过 package_path LIKE '%.<raw_dk>.%' 过滤领域
-    // ─────────────────────────────────────────────────────────────────────────
     @Override
     public Map<String, Object> listTransactions(String domainKey, int page, int size, String keyword) {
-        try {
-            String rawDk = AXON_TO_RAW.getOrDefault(domainKey, domainKey);
-            // 匹配 package_path 第4段，如 com.spdb.ccbs.dept.xxx
-            String domainPattern = "%.%" + rawDk + ".%";
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.max(1, Math.min(size, 100));
+        if (!neo4jAvailable()) {
+            return emptyPage(safePage, safeSize);
+        }
 
-            String baseWhere = "WHERE package_path LIKE ?";
-            List<Object> params = new ArrayList<>();
-            params.add(domainPattern);
-
-            if (keyword != null && !keyword.isBlank()) {
-                baseWhere += " AND (id LIKE ? OR longname LIKE ?)";
-                String kw = "%" + keyword.trim() + "%";
-                params.add(kw);
-                params.add(kw);
-            }
-
-            Long total = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM flowtran " + baseWhere, Long.class, params.toArray()
-            );
-
-            List<Object> pageParams = new ArrayList<>(params);
-            pageParams.add(size);
-            pageParams.add((page - 1) * size);
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT id, longname, package_path, txn_mode, from_jar FROM flowtran "
-                + baseWhere + " ORDER BY id LIMIT ? OFFSET ?",
-                pageParams.toArray()
-            );
+        try (Session session = driver.session()) {
+            String normalizedKeyword = keyword == null ? "" : keyword.trim().toUpperCase(Locale.ROOT);
+            long total = session.run(
+                "MATCH (tx:Transaction) " +
+                "WHERE tx.domainKey = $domainKey " +
+                "  AND ($keyword = '' " +
+                "       OR toUpper(tx.id) CONTAINS $keyword " +
+                "       OR toUpper(coalesce(tx.longname, '')) CONTAINS $keyword) " +
+                "RETURN count(tx) AS total",
+                Values.parameters("domainKey", domainKey, "keyword", normalizedKeyword))
+                .single()
+                .get("total")
+                .asLong();
 
             List<FlowtranTransaction> list = new ArrayList<>();
-            for (Map<String, Object> row : rows) {
-                FlowtranTransaction tx = new FlowtranTransaction();
-                tx.setId((String) row.get("id"));
-                tx.setLongname((String) row.get("longname"));
-                tx.setDomainKey(domainKey);
-                tx.setTxnMode((String) row.get("txn_mode"));
-                tx.setFromJar((String) row.get("from_jar"));
-                list.add(tx);
-            }
+            session.run(
+                "MATCH (tx:Transaction) " +
+                "WHERE tx.domainKey = $domainKey " +
+                "  AND ($keyword = '' " +
+                "       OR toUpper(tx.id) CONTAINS $keyword " +
+                "       OR toUpper(coalesce(tx.longname, '')) CONTAINS $keyword) " +
+                "RETURN tx.id AS id, " +
+                "       tx.longname AS longname, " +
+                "       tx.domainKey AS domainKey, " +
+                "       tx.kind AS txnMode, " +
+                "       coalesce(tx.parentProject, tx.module, '') AS fromJar " +
+                "ORDER BY tx.id SKIP $skip LIMIT $limit",
+                Values.parameters(
+                    "domainKey", domainKey,
+                    "keyword", normalizedKeyword,
+                    "skip", (safePage - 1) * safeSize,
+                    "limit", safeSize))
+                .forEachRemaining(record -> {
+                    FlowtranTransaction tx = new FlowtranTransaction();
+                    tx.setId(stringValue(record, "id"));
+                    tx.setLongname(stringValue(record, "longname"));
+                    tx.setDomainKey(stringValue(record, "domainKey"));
+                    tx.setTxnMode(stringValue(record, "txnMode"));
+                    tx.setFromJar(stringValue(record, "fromJar"));
+                    list.add(tx);
+                });
 
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("list",  list);
-            result.put("total", total != null ? total : 0L);
-            result.put("page",  page);
-            result.put("size",  size);
+            result.put("list", list);
+            result.put("total", total);
+            result.put("page", safePage);
+            result.put("size", safeSize);
             return result;
         } catch (Exception e) {
-            log.warn("[FlowtranService] listTransactions 失败: {}", e.getMessage());
-            return Map.of("list", List.of(), "total", 0L, "page", page, "size", size);
+            log.warn("[FlowtranService] listTransactions failed: {}", e.getMessage());
+            return emptyPage(safePage, safeSize);
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 交易链路：从 package_path 推断领域，不读 domain_key 列
-    // ─────────────────────────────────────────────────────────────────────────
     @Override
     public Map<String, Object> getChain(String txId) {
-        try {
-            // 1. 查 flowtran，用 package_path 推断领域
-            List<Map<String, Object>> ftRows = jdbcTemplate.queryForList(
-                "SELECT id, longname, package_path, txn_mode, from_jar FROM flowtran WHERE id = ?", txId
-            );
-            if (ftRows.isEmpty()) return null;
-            Map<String, Object> ft = ftRows.get(0);
+        if (!neo4jAvailable()) {
+            return null;
+        }
 
-            String packagePath  = (String) ft.get("package_path");
-            String txDomainKey  = DomainKeyResolver.resolve(packagePath);
-            String txDomainName = DOMAIN_NAME_MAP.getOrDefault(txDomainKey, txDomainKey);
-
-            // 2. 查 flow_step 按 step 升序
-            List<Map<String, Object>> steps = jdbcTemplate.queryForList(
-                "SELECT step, node_type, node_name, node_longname, incorrect_calls " +
-                "FROM flow_step WHERE flow_id = ? ORDER BY step ASC", txId
-            );
-
-            boolean cacheReady = serviceNodeCache.isLoaded();
-
-            // 3. 分层组装
-            List<Map<String, Object>> orchestration  = new ArrayList<>();
-            List<Map<String, Object>> serviceLayer   = new ArrayList<>();
-            List<Map<String, Object>> componentLayer = new ArrayList<>();
-
-            orchestration.add(Map.of("code", txId, "name", ft.getOrDefault("longname", txId)));
-
-            for (Map<String, Object> s : steps) {
-                String nodeType = (String) s.get("node_type");
-                String nodeName = (String) s.get("node_name");
-                String nodeLong = (String) s.get("node_longname");
-
-                if ("method".equals(nodeType)) {
-                    Map<String, Object> n = new LinkedHashMap<>();
-                    n.put("prefix", "method");
-                    n.put("code",   nodeName != null ? nodeName : "");
-                    n.put("name",   nodeLong != null ? nodeLong : (nodeName != null ? nodeName : ""));
-                    serviceLayer.add(n);
-
-                } else if ("service".equals(nodeType) && nodeName != null) {
-                    Optional<com.axonlink.dto.NodeCacheEntry> entryOpt = serviceNodeCache.get(nodeName);
-                    String  nodeKind      = null;
-                    String  nodeDomainKey = txDomainKey;
-                    boolean crossDomain   = false;
-
-                    if (entryOpt.isPresent()) {
-                        com.axonlink.dto.NodeCacheEntry entry = entryOpt.get();
-                        nodeKind      = entry.getNodeKind();
-                        nodeDomainKey = entry.getDomainKey();
-                        crossDomain   = !txDomainKey.equals(nodeDomainKey);
-                    }
-
-                    String prefix = nodeKind != null ? nodeKind : "pbs";
-
-                    Map<String, Object> n = new LinkedHashMap<>();
-                    n.put("prefix", prefix);
-                    n.put("code",   nodeName);
-                    n.put("name",   nodeLong != null ? nodeLong : nodeName);
-                    if (crossDomain) n.put("domain", DOMAIN_NAME_MAP.getOrDefault(nodeDomainKey, nodeDomainKey));
-
-                    if (prefix.startsWith("pbc")) {
-                        componentLayer.add(n);
-                    } else {
-                        serviceLayer.add(n);
-                    }
-                }
+        try (Session session = driver.session()) {
+            TransactionMeta tx = loadTransaction(session, txId);
+            if (tx == null) {
+                return null;
             }
 
-            // 4. 多层级查 call_relation，逐层展开，全局去重
-            //    Layer1: 流程编排 pbs/pcs → 编码调用 pbs/pcs + 构件 pbcb/pbcp/pbcc/pbct + bcc
-            //    Layer2: 编码调用 pbs/pcs → 构件 pbcb/pbcp/pbcc/pbct + bcc
-            //    Layer3: 业务构件 pbcb/pbcp → 公共构件 pbcc/pbct + bcc
-            //    Layer4: 所有构件 → bcc（数据层）
-            //    bcc 展示为数据层，去掉 "Dao" 后缀
+            List<FlowStepRef> steps = loadFlowSteps(session, txId);
+            String txDomainName = displayDomainName(tx.domainKey);
 
-            Map<String, List<String>> serviceToService     = new LinkedHashMap<>();
-            Map<String, List<String>> serviceToComponent   = new LinkedHashMap<>();
+            List<Map<String, Object>> orchestration = List.of(node("code", tx.id, "name", tx.longname));
+            LinkedHashMap<String, LogicalSeed> topServiceSeeds = new LinkedHashMap<>();
+            LinkedHashMap<String, LogicalSeed> calledServiceSeeds = new LinkedHashMap<>();
+            LinkedHashMap<String, LogicalSeed> componentSeeds = new LinkedHashMap<>();
+
+            LinkedHashMap<String, Map<String, Object>> serviceLayer = new LinkedHashMap<>();
+            LinkedHashMap<String, Map<String, Object>> componentLayer = new LinkedHashMap<>();
+            LinkedHashMap<String, Map<String, Object>> dataLayer = new LinkedHashMap<>();
+
+            for (FlowStepRef step : steps) {
+                LogicalSeed seed = new LogicalSeed(
+                    step.code,
+                    step.name,
+                    step.prefix,
+                    step.domainKey,
+                    new LinkedHashSet<>(step.methodSignatures)
+                );
+                if (isComponentPrefix(step.prefix)) {
+                    componentLayer.putIfAbsent(step.code, displayNode(step.code, step.name, step.prefix, tx.domainKey, step.domainKey));
+                    componentSeeds.merge(step.code, seed, LogicalSeed::merge);
+                } else {
+                    serviceLayer.putIfAbsent(step.code, displayNode(step.code, step.name, step.prefix, tx.domainKey, step.domainKey));
+                    topServiceSeeds.merge(step.code, seed, LogicalSeed::merge);
+                }
+            }
+            BoundaryResolver resolver = new BoundaryResolver(session);
+            Map<String, List<String>> serviceToService = new LinkedHashMap<>();
+            Map<String, List<String>> serviceToComponent = new LinkedHashMap<>();
             Map<String, List<String>> componentToComponent = new LinkedHashMap<>();
-            Map<String, List<String>> componentToData      = new LinkedHashMap<>();
+            Map<String, List<String>> componentToData = new LinkedHashMap<>();
 
-            List<Map<String, Object>> calledServiceNodes = new ArrayList<>();
-            List<Map<String, Object>> dataLayer          = new ArrayList<>();
-
-            // 去重集合（按 code 去重）
-            Set<String> seenServiceCodes   = new LinkedHashSet<>();
-            Set<String> seenComponentCodes = new LinkedHashSet<>();
-            Set<String> seenDataCodes      = new LinkedHashSet<>();
-
-            // 已有的流程编排节点先注册到去重集合
-            for (Map<String, Object> n : serviceLayer) {
-                String c = (String) n.get("code");
-                if (c != null) seenServiceCodes.add(c);
+            for (LogicalSeed seed : topServiceSeeds.values()) {
+                BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
+                for (LogicalSeed target : directTargets.serviceTargets.values()) {
+                    serviceLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
+                    calledServiceSeeds.merge(target.code, target, LogicalSeed::merge);
+                    addRelation(serviceToService, seed.code, target.code);
+                }
+                for (LogicalSeed target : directTargets.componentTargets.values()) {
+                    componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
+                    componentSeeds.merge(target.code, target, LogicalSeed::merge);
+                    addRelation(serviceToComponent, seed.code, target.code);
+                }
+                for (String table : directTargets.tables) {
+                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
+                    addRelation(componentToData, seed.code, table);
+                }
             }
-            for (Map<String, Object> n : componentLayer) {
-                String c = (String) n.get("code");
-                if (c != null) seenComponentCodes.add(c);
+
+            for (LogicalSeed seed : calledServiceSeeds.values()) {
+                BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
+                for (LogicalSeed target : directTargets.componentTargets.values()) {
+                    componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
+                    componentSeeds.merge(target.code, target, LogicalSeed::merge);
+                    addRelation(serviceToComponent, seed.code, target.code);
+                }
+                for (String table : directTargets.tables) {
+                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
+                    addRelation(componentToData, seed.code, table);
+                }
             }
 
-            // 通用方法：查某 caller 的所有 callee，按类型分类
-            // 返回新发现的构件 code 列表（供后续递归）
-            java.util.function.BiFunction<String, String, List<String>> queryCallees = (callerCode, callerPrefix) -> {
-                Optional<com.axonlink.dto.NodeCacheEntry> entOpt = serviceNodeCache.get(callerCode);
-                if (entOpt.isEmpty()) return List.of();
-                String ck = entOpt.get().getCallerKey();
-                if (ck == null || !ck.contains(".")) return List.of();
-
-                int di = ck.indexOf('.');
-                String cId = ck.substring(0, di);
-                String cMt = ck.substring(di + 1);
-
-                List<String> svcList  = new ArrayList<>();
-                List<String> compList = new ArrayList<>();
-                List<String> dataList = new ArrayList<>();
-                List<String> newCompCodes = new ArrayList<>();
-
-                try {
-                    List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                        "SELECT callee_id, callee_type, callee_method, callee_longname, callee_domain, callee_class " +
-                        "FROM call_relation WHERE caller_id = ? AND caller_method = ?", cId, cMt);
-
-                    for (Map<String, Object> row : rows) {
-                        String ceeId   = (String) row.get("callee_id");
-                        String ceeType = (String) row.get("callee_type");
-                        String ceeMeth = (String) row.get("callee_method");
-                        String ceeLong = (String) row.get("callee_longname");
-                        String ceeDom  = (String) row.get("callee_domain");
-                        if (ceeType == null || ceeId == null) continue;
-
-                        String ceeCode = ceeId + (ceeMeth != null ? "." + ceeMeth : "");
-
-                        if ("bcc".equals(ceeType)) {
-                            // 数据层：去掉 Dao 后缀
-                            String tableName = ceeId.replaceAll("Dao$", "");
-                            if (seenDataCodes.add(tableName)) {
-                                Map<String, Object> dn = new LinkedHashMap<>();
-                                dn.put("code", tableName);
-                                dn.put("name", tableName);
-                                dataLayer.add(dn);
-                            }
-                            dataList.add(tableName);
-                        } else if ("pbs".equals(ceeType) || "pcs".equals(ceeType)) {
-                            if (seenServiceCodes.add(ceeCode)) {
-                                Map<String, Object> cn = new LinkedHashMap<>();
-                                cn.put("prefix", ceeType);
-                                cn.put("code",   ceeCode);
-                                cn.put("name",   ceeLong != null ? ceeLong : ceeCode);
-                                if (ceeDom != null && !txDomainKey.equals(ceeDom))
-                                    cn.put("domain", DOMAIN_NAME_MAP.getOrDefault(ceeDom, ceeDom));
-                                calledServiceNodes.add(cn);
-                            }
-                            svcList.add(ceeCode);
-                        } else {
-                            // pbcb/pbcp/pbcc/pbct → 构件层
-                            if (seenComponentCodes.add(ceeCode)) {
-                                Map<String, Object> cn = new LinkedHashMap<>();
-                                cn.put("prefix", ceeType);
-                                cn.put("code",   ceeCode);
-                                cn.put("name",   ceeLong != null ? ceeLong : ceeCode);
-                                if (ceeDom != null && !txDomainKey.equals(ceeDom))
-                                    cn.put("domain", DOMAIN_NAME_MAP.getOrDefault(ceeDom, ceeDom));
-                                componentLayer.add(cn);
-                                newCompCodes.add(ceeCode);
-                            }
-                            compList.add(ceeCode);
-                        }
+            List<LogicalSeed> componentQueue = new ArrayList<>(componentSeeds.values());
+            for (int i = 0; i < componentQueue.size(); i++) {
+                LogicalSeed seed = componentQueue.get(i);
+                BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
+                for (LogicalSeed target : directTargets.componentTargets.values()) {
+                    componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
+                    LogicalSeed existing = componentSeeds.get(target.code);
+                    if (existing == null) {
+                        componentSeeds.put(target.code, target);
+                        componentQueue.add(target);
+                    } else {
+                        componentSeeds.put(target.code, existing.merge(target));
                     }
-                } catch (Exception ex) {
-                    log.debug("[FlowtranService] call_relation 查询失败: {}", ex.getMessage());
+                    addRelation(componentToComponent, seed.code, target.code);
                 }
-
-                // 填充 relations
-                if (!svcList.isEmpty()) serviceToService.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(svcList);
-                if (!compList.isEmpty()) serviceToComponent.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(compList);
-                if (!dataList.isEmpty()) componentToData.computeIfAbsent(callerCode, k -> new ArrayList<>()).addAll(dataList);
-                return newCompCodes;
-            };
-
-            // ── Layer 1：流程编排 pbs/pcs → 查 call_relation ──
-            List<String> newCalledSvcCodes = new ArrayList<>();
-            List<String> allNewCompCodes   = new ArrayList<>();
-            for (Map<String, Object> svcNode : new ArrayList<>(serviceLayer)) {
-                String prefix = (String) svcNode.get("prefix");
-                String code   = (String) svcNode.get("code");
-                if (code == null || (!"pbs".equals(prefix) && !"pcs".equals(prefix))) continue;
-                List<String> nc = queryCallees.apply(code, prefix);
-                allNewCompCodes.addAll(nc);
-                // 收集新发现的编码调用服务 code
-                List<String> sl = serviceToService.get(code);
-                if (sl != null) newCalledSvcCodes.addAll(sl);
-            }
-
-            // ── Layer 2：编码调用 pbs/pcs → 查 call_relation ──
-            for (String svcCode : new ArrayList<>(newCalledSvcCodes)) {
-                List<String> nc = queryCallees.apply(svcCode, "pbs");
-                allNewCompCodes.addAll(nc);
-            }
-
-            // ── Layer 3：业务构件 pbcb/pbcp → 查 call_relation → 公共构件 pbcc/pbct + bcc ──
-            List<String> bizCompCodes = new ArrayList<>();
-            for (Map<String, Object> cn : new ArrayList<>(componentLayer)) {
-                String p = (String) cn.get("prefix");
-                String c = (String) cn.get("code");
-                if (c != null && ("pbcb".equals(p) || "pbcp".equals(p))) bizCompCodes.add(c);
-            }
-            List<String> newTechCompCodes = new ArrayList<>();
-            for (String compCode : bizCompCodes) {
-                List<String> nc = queryCallees.apply(compCode, "pbcb");
-                newTechCompCodes.addAll(nc);
-                // pbcb/pbcp → pbcc/pbct 的关系
-                List<String> cl = serviceToComponent.get(compCode);
-                if (cl != null) componentToComponent.computeIfAbsent(compCode, k -> new ArrayList<>()).addAll(cl);
-                serviceToComponent.remove(compCode); // 从 serviceToComponent 移到 componentToComponent
-            }
-
-            // ── Layer 4：所有构件 → bcc（数据层） ──
-            for (Map<String, Object> cn : new ArrayList<>(componentLayer)) {
-                String c = (String) cn.get("code");
-                if (c != null && !componentToData.containsKey(c)) {
-                    queryCallees.apply(c, (String) cn.get("prefix"));
+                for (String table : directTargets.tables) {
+                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
+                    addRelation(componentToData, seed.code, table);
                 }
             }
 
-            // 编码调用节点追加到 serviceLayer
-            serviceLayer.addAll(calledServiceNodes);
-
-            // 5. 组装 chain
             Map<String, Object> relations = new LinkedHashMap<>();
-            if (!serviceToService.isEmpty())     relations.put("serviceToService", serviceToService);
-            if (!serviceToComponent.isEmpty())   relations.put("serviceToComponent", serviceToComponent);
-            if (!componentToComponent.isEmpty()) relations.put("componentToComponent", componentToComponent);
-            if (!componentToData.isEmpty())      relations.put("componentToData", componentToData);
-            relations.putIfAbsent("serviceToComponent", Map.of());
-            relations.putIfAbsent("componentToData", Map.of());
+            relations.put("serviceToService", serviceToService);
+            relations.put("serviceToComponent", serviceToComponent);
+            relations.put("componentToComponent", componentToComponent);
+            relations.put("componentToData", componentToData);
 
             Map<String, Object> chain = new LinkedHashMap<>();
             chain.put("orchestration", orchestration);
-            chain.put("service",       serviceLayer);
-            chain.put("component",     componentLayer);
-            chain.put("data",          dataLayer);
-            chain.put("relations",     relations);
+            chain.put("service", new ArrayList<>(serviceLayer.values()));
+            chain.put("component", new ArrayList<>(componentLayer.values()));
+            chain.put("data", new ArrayList<>(dataLayer.values()));
+            chain.put("relations", relations);
 
-            // 5. 顶层（与 TransactionCard.vue 格式兼容）
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("id",             txId);
-            result.put("name",           ft.getOrDefault("longname", txId));
-            result.put("domain",         txDomainName);
-            result.put("serviceCount",   (long) serviceLayer.size());
+            result.put("id", tx.id);
+            result.put("name", tx.longname);
+            result.put("domain", txDomainName);
+            result.put("serviceCount", (long) serviceLayer.size());
             result.put("componentCount", (long) componentLayer.size());
-            result.put("tableCount",     0L);
-            result.put("layers",         4);
-            result.put("chain",          chain);
-            if (!cacheReady) result.put("cacheStatus", "loading");
+            result.put("tableCount", (long) dataLayer.size());
+            result.put("layers", 4);
+            result.put("chain", chain);
             return result;
-
         } catch (Exception e) {
-            log.warn("[FlowtranService] getChain 失败 txId={}: {}", txId, e.getMessage());
+            log.warn("[FlowtranService] getChain failed txId={}: {}", txId, e.getMessage());
             return null;
+        }
+    }
+
+    private boolean neo4jAvailable() {
+        return neo4jConfig.isEnabled() && driver != null;
+    }
+
+    private Map<String, Object> emptyPage(int page, int size) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("list", List.of());
+        result.put("total", 0L);
+        result.put("page", page);
+        result.put("size", size);
+        return result;
+    }
+
+    private TransactionMeta loadTransaction(Session session, String txId) {
+        List<Record> records = session.run(
+            "MATCH (tx:Transaction {id: $txId}) " +
+            "RETURN tx.id AS id, " +
+            "       coalesce(tx.longname, tx.id) AS longname, " +
+            "       tx.domainKey AS domainKey, " +
+            "       coalesce(tx.parentProject, tx.module, '') AS parentProject",
+            Values.parameters("txId", txId)).list();
+        if (records.isEmpty()) {
+            return null;
+        }
+        Record record = records.get(0);
+        return new TransactionMeta(
+            stringValue(record, "id"),
+            stringValue(record, "longname"),
+            stringValue(record, "domainKey"),
+            stringValue(record, "parentProject")
+        );
+    }
+
+    private List<FlowStepRef> loadFlowSteps(Session session, String txId) {
+        List<Record> records = session.run(
+            "MATCH (tx:Transaction {id: $txId})-[:HAS_FLOW]->(flow:FlowBlock) " +
+            "MATCH p = (flow)-[:HAS_STEP|EXECUTES|HAS_BRANCH|NEXT*0..24]->(step) " +
+            "WHERE step:FlowMethodStep OR step:FlowServiceStep " +
+            "WITH DISTINCT step " +
+            "OPTIONAL MATCH (step)-[:RESOLVES_TO_METHOD]->(resolved:Method) " +
+            "OPTIONAL MATCH (step)-[:CALLS_SERVICE]->(op:ServiceOperation) " +
+            "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(stype:ServiceType) " +
+            "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(impl:Method) " +
+            "RETURN step.key AS stepKey, " +
+            "       labels(step)[0] AS stepLabel, " +
+            "       step.id AS stepId, " +
+            "       coalesce(step.longname, step.id, step.methodName, step.serviceId) AS stepName, " +
+            "       step.methodName AS methodName, " +
+            "       step.serviceName AS serviceName, " +
+            "       step.serviceTypeId AS serviceTypeId, " +
+            "       step.serviceId AS serviceId, " +
+            "       stype.nodeKind AS nodeKind, " +
+            "       stype.domainKey AS serviceDomainKey, " +
+            "       collect(DISTINCT resolved.signature) AS resolvedSignatures, " +
+            "       collect(DISTINCT impl.signature) AS implSignatures " +
+            "ORDER BY stepKey",
+            Values.parameters("txId", txId)).list();
+
+        List<FlowStepRef> steps = new ArrayList<>();
+        for (Record record : records) {
+            String stepLabel = stringValue(record, "stepLabel");
+            String code;
+            String prefix;
+            String domainKey = null;
+            List<String> signatures;
+            if ("FlowMethodStep".equals(stepLabel)) {
+                code = firstNonBlank(stringValue(record, "stepId"), stringValue(record, "methodName"), stringValue(record, "stepKey"));
+                prefix = "method";
+                signatures = listAsStrings(record.get("resolvedSignatures"));
+            } else {
+                String serviceName = firstNonBlank(
+                    stringValue(record, "serviceName"),
+                    buildServiceCode(stringValue(record, "serviceTypeId"), stringValue(record, "serviceId")),
+                    stringValue(record, "stepId"));
+                Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.get(serviceName);
+                prefix = normalizePrefix(firstNonBlank(
+                    stringValue(record, "nodeKind"),
+                    cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null),
+                    "pbs"));
+                domainKey = firstNonBlank(
+                    stringValue(record, "serviceDomainKey"),
+                    cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null));
+                code = serviceName;
+                signatures = listAsStrings(record.get("implSignatures"));
+            }
+
+            String name = firstNonBlank(
+                stringValue(record, "stepName"),
+                serviceNodeCache.get(code).map(NodeCacheEntry::getServiceLongname).orElse(null),
+                code);
+            steps.add(new FlowStepRef(code, name, prefix, domainKey, signatures));
+        }
+        return steps;
+    }
+    private BoundaryResult discoverDirectTargets(Session session,
+                                                 Collection<String> startSignatures,
+                                                 BoundaryResolver resolver) {
+        BoundaryResult result = new BoundaryResult();
+        List<String> frontier = startSignatures.stream()
+            .filter(sig -> !isBlank(sig))
+            .distinct()
+            .collect(Collectors.toList());
+        Set<String> visited = new LinkedHashSet<>(frontier);
+
+        for (int depth = 0; depth < MAX_METHOD_DEPTH && !frontier.isEmpty(); depth++) {
+            Map<String, List<CallTarget>> outgoing = loadOutgoingCalls(session, frontier);
+            Set<String> nextFrontier = new LinkedHashSet<>();
+
+            for (String signature : frontier) {
+                for (CallTarget target : outgoing.getOrDefault(signature, List.of())) {
+                    if ("Dao".equals(target.targetLabel)) {
+                        String table = firstNonBlank(target.tableName, stripDaoSuffix(target.targetName));
+                        if (!isBlank(table)) {
+                            result.tables.add(table);
+                        }
+                        continue;
+                    }
+
+                    Optional<LogicalSeed> logicalTarget;
+                    if ("Method".equals(target.targetLabel)) {
+                        logicalTarget = resolver.resolveByMethodSignature(target.targetSignature);
+                    } else if ("Class".equals(target.targetLabel)) {
+                        logicalTarget = resolver.resolveByImplementationClass(target.targetFqn, target.edgeMethodName);
+                    } else if ("Interface".equals(target.targetLabel)) {
+                        logicalTarget = resolver.resolveByInterfaceMethod(target.targetFqn, target.edgeMethodName);
+                    } else {
+                        logicalTarget = Optional.empty();
+                    }
+
+                    if (logicalTarget.isPresent()) {
+                        LogicalSeed seed = logicalTarget.get();
+                        if (isComponentPrefix(seed.prefix)) {
+                            result.componentTargets.merge(seed.code, seed, LogicalSeed::merge);
+                        } else {
+                            result.serviceTargets.merge(seed.code, seed, LogicalSeed::merge);
+                        }
+                        continue;
+                    }
+
+                    if ("Method".equals(target.targetLabel)
+                        && !isBlank(target.targetSignature)
+                        && visited.add(target.targetSignature)) {
+                        nextFrontier.add(target.targetSignature);
+                    }
+                }
+            }
+
+            frontier = new ArrayList<>(nextFrontier);
+        }
+
+        return result;
+    }
+
+    private Map<String, List<CallTarget>> loadOutgoingCalls(Session session, Collection<String> methodSignatures) {
+        if (methodSignatures.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, List<CallTarget>> result = new HashMap<>();
+        session.run(
+            "UNWIND $signatures AS signature " +
+            "MATCH (m:Method {signature: signature})-[r:CALLS|SYS_UTIL_CALLS|SELF_CALLS|DAO_CALLS]->(target) " +
+            "RETURN signature AS sourceSignature, " +
+            "       type(r) AS relationType, " +
+            "       r.methodName AS edgeMethodName, " +
+            "       labels(target)[0] AS targetLabel, " +
+            "       target.signature AS targetSignature, " +
+            "       target.fqn AS targetFqn, " +
+            "       target.name AS targetName, " +
+            "       target.tableName AS tableName",
+            Values.parameters("signatures", methodSignatures))
+            .forEachRemaining(record -> {
+                String sourceSignature = stringValue(record, "sourceSignature");
+                result.computeIfAbsent(sourceSignature, ignored -> new ArrayList<>()).add(new CallTarget(
+                    stringValue(record, "relationType"),
+                    stringValue(record, "edgeMethodName"),
+                    stringValue(record, "targetLabel"),
+                    stringValue(record, "targetSignature"),
+                    stringValue(record, "targetFqn"),
+                    stringValue(record, "targetName"),
+                    stringValue(record, "tableName")
+                ));
+            });
+        return result;
+    }
+
+    private Map<String, Object> displayNode(String code,
+                                            String name,
+                                            String prefix,
+                                            String txDomainKey,
+                                            String nodeDomainKey) {
+        Map<String, Object> node = node(
+            "prefix", prefix,
+            "code", code,
+            "name", name
+        );
+        if (!isBlank(nodeDomainKey) && !nodeDomainKey.equals(txDomainKey)) {
+            node.put("domain", displayDomainName(nodeDomainKey));
+        }
+        return node;
+    }
+
+    private String displayDomainName(String domainKey) {
+        if (isBlank(domainKey)) {
+            return domainKey;
+        }
+        return FLOWTRAN_DOMAIN_NAME_OVERRIDES.getOrDefault(
+            domainKey,
+            DOMAIN_NAME_MAP.getOrDefault(domainKey, domainKey)
+        );
+    }
+
+    private String displayDomainIcon(String domainKey) {
+        if (isBlank(domainKey)) {
+            return "folder";
+        }
+        return FLOWTRAN_DOMAIN_ICON_OVERRIDES.getOrDefault(
+            domainKey,
+            DOMAIN_ICON_MAP.getOrDefault(domainKey, "folder")
+        );
+    }
+
+    private void addRelation(Map<String, List<String>> relations, String fromCode, String toCode) {
+        if (isBlank(fromCode) || isBlank(toCode) || fromCode.equals(toCode)) {
+            return;
+        }
+        List<String> values = relations.computeIfAbsent(fromCode, ignored -> new ArrayList<>());
+        if (!values.contains(toCode)) {
+            values.add(toCode);
+        }
+    }
+
+    private String buildServiceCode(String serviceTypeId, String serviceId) {
+        if (isBlank(serviceTypeId) || isBlank(serviceId)) {
+            return null;
+        }
+        return serviceTypeId + "." + serviceId;
+    }
+
+    private String normalizePrefix(String value) {
+        if (isBlank(value)) {
+            return "pbs";
+        }
+        return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean isComponentPrefix(String prefix) {
+        return prefix != null && prefix.startsWith("pbc");
+    }
+
+    private List<String> listAsStrings(Value value) {
+        if (value == null || value.isNull()) {
+            return List.of();
+        }
+        return value.asList(item -> item == null || item.isNull() ? null : item.asString()).stream()
+            .filter(item -> !isBlank(item))
+            .distinct()
+            .collect(Collectors.toList());
+    }
+
+    private String stringValue(Record record, String key) {
+        Value value = record.get(key);
+        return value == null || value.isNull() ? null : value.asString();
+    }
+
+    private long longValue(Record record, String key) {
+        Value value = record.get(key);
+        return value == null || value.isNull() ? 0L : value.asLong();
+    }
+
+    private Map<String, Object> node(Object... kvs) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kvs.length; i += 2) {
+            Object value = kvs[i + 1];
+            if (value != null) {
+                map.put(String.valueOf(kvs[i]), value);
+            }
+        }
+        return map;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private String stripDaoSuffix(String value) {
+        if (isBlank(value)) {
+            return null;
+        }
+        return value.endsWith("Dao") ? value.substring(0, value.length() - 3) : value;
+    }
+
+    private final class BoundaryResolver {
+        private final Session session;
+        private final Map<String, Optional<LogicalSeed>> methodCache = new HashMap<>();
+        private final Map<String, Optional<LogicalSeed>> implClassCache = new HashMap<>();
+        private final Map<String, Optional<LogicalSeed>> interfaceCache = new HashMap<>();
+
+        private BoundaryResolver(Session session) {
+            this.session = session;
+        }
+
+        private Optional<LogicalSeed> resolveByMethodSignature(String methodSignature) {
+            if (isBlank(methodSignature)) {
+                return Optional.empty();
+            }
+            return methodCache.computeIfAbsent(methodSignature, key -> resolveServiceOperation(
+                "MATCH (op:ServiceOperation)-[:IMPLEMENTS_BY]->(m:Method {signature: $value}) " +
+                "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(stype:ServiceType) " +
+                "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(impl:Method) " +
+                "RETURN op.serviceTypeId AS serviceTypeId, " +
+                "       op.serviceId AS serviceId, " +
+                "       coalesce(op.longname, op.serviceId, op.methodName) AS serviceName, " +
+                "       stype.nodeKind AS nodeKind, " +
+                "       stype.domainKey AS domainKey, " +
+                "       collect(DISTINCT impl.signature) AS implSignatures " +
+                "LIMIT 1",
+                Values.parameters("value", key)));
+        }
+
+        private Optional<LogicalSeed> resolveByImplementationClass(String classFqn, String methodName) {
+            if (isBlank(classFqn) || isBlank(methodName)) {
+                return Optional.empty();
+            }
+            String cacheKey = classFqn + "#" + methodName;
+            return implClassCache.computeIfAbsent(cacheKey, key -> resolveServiceOperation(
+                "MATCH (op:ServiceOperation)-[:IMPLEMENTS_BY]->(matched:Method {classFqn: $classFqn, name: $methodName}) " +
+                "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(stype:ServiceType) " +
+                "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(impl:Method) " +
+                "RETURN op.serviceTypeId AS serviceTypeId, " +
+                "       op.serviceId AS serviceId, " +
+                "       coalesce(op.longname, op.serviceId, op.methodName) AS serviceName, " +
+                "       stype.nodeKind AS nodeKind, " +
+                "       stype.domainKey AS domainKey, " +
+                "       collect(DISTINCT impl.signature) AS implSignatures " +
+                "LIMIT 1",
+                Values.parameters("classFqn", classFqn, "methodName", methodName)));
+        }
+
+        private Optional<LogicalSeed> resolveByInterfaceMethod(String interfaceFqn, String methodName) {
+            if (isBlank(interfaceFqn) || isBlank(methodName)) {
+                return Optional.empty();
+            }
+            String cacheKey = interfaceFqn + "#" + methodName;
+            return interfaceCache.computeIfAbsent(cacheKey, key -> resolveServiceOperation(
+                "MATCH (stype:ServiceType {interfaceFqn: $interfaceFqn})-[:DECLARES_OPERATION]->(op:ServiceOperation {methodName: $methodName}) " +
+                "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(impl:Method) " +
+                "RETURN op.serviceTypeId AS serviceTypeId, " +
+                "       op.serviceId AS serviceId, " +
+                "       coalesce(op.longname, op.serviceId, op.methodName) AS serviceName, " +
+                "       stype.nodeKind AS nodeKind, " +
+                "       stype.domainKey AS domainKey, " +
+                "       collect(DISTINCT impl.signature) AS implSignatures " +
+                "LIMIT 1",
+                Values.parameters("interfaceFqn", interfaceFqn, "methodName", methodName)));
+        }
+
+        private Optional<LogicalSeed> resolveServiceOperation(String cypher, Value parameters) {
+            List<Record> records = session.run(cypher, parameters).list();
+            if (records.isEmpty()) {
+                return Optional.empty();
+            }
+
+            Record record = records.get(0);
+            String serviceTypeId = stringValue(record, "serviceTypeId");
+            String serviceId = stringValue(record, "serviceId");
+            String code = buildServiceCode(serviceTypeId, serviceId);
+            if (isBlank(code)) {
+                return Optional.empty();
+            }
+
+            Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.get(code);
+            String name = firstNonBlank(
+                stringValue(record, "serviceName"),
+                cacheEntry.map(NodeCacheEntry::getServiceLongname).orElse(null),
+                code
+            );
+            String prefix = normalizePrefix(firstNonBlank(
+                stringValue(record, "nodeKind"),
+                cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null),
+                "pbs"
+            ));
+            String domainKey = firstNonBlank(
+                stringValue(record, "domainKey"),
+                cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null)
+            );
+            return Optional.of(new LogicalSeed(
+                code,
+                name,
+                prefix,
+                domainKey,
+                listAsStrings(record.get("implSignatures"))
+            ));
+        }
+    }
+
+    private static final class TransactionMeta {
+        private final String id;
+        private final String longname;
+        private final String domainKey;
+        private final String parentProject;
+
+        private TransactionMeta(String id, String longname, String domainKey, String parentProject) {
+            this.id = id;
+            this.longname = longname;
+            this.domainKey = domainKey;
+            this.parentProject = parentProject;
+        }
+    }
+
+    private static final class FlowStepRef {
+        private final String code;
+        private final String name;
+        private final String prefix;
+        private final String domainKey;
+        private final List<String> methodSignatures;
+
+        private FlowStepRef(String code,
+                            String name,
+                            String prefix,
+                            String domainKey,
+                            List<String> methodSignatures) {
+            this.code = code;
+            this.name = name;
+            this.prefix = prefix;
+            this.domainKey = domainKey;
+            this.methodSignatures = methodSignatures == null ? List.of() : List.copyOf(methodSignatures);
+        }
+    }
+
+    private static final class LogicalSeed {
+        private final String code;
+        private final String name;
+        private final String prefix;
+        private final String domainKey;
+        private final LinkedHashSet<String> methodSignatures;
+
+        private LogicalSeed(String code,
+                            String name,
+                            String prefix,
+                            String domainKey,
+                            Collection<String> methodSignatures) {
+            this.code = code;
+            this.name = name;
+            this.prefix = prefix;
+            this.domainKey = domainKey;
+            this.methodSignatures = new LinkedHashSet<>();
+            if (methodSignatures != null) {
+                methodSignatures.stream()
+                    .filter(sig -> sig != null && !sig.isBlank())
+                    .forEach(this.methodSignatures::add);
+            }
+        }
+
+        private LogicalSeed merge(LogicalSeed other) {
+            LinkedHashSet<String> mergedSignatures = new LinkedHashSet<>(methodSignatures);
+            mergedSignatures.addAll(other.methodSignatures);
+            return new LogicalSeed(
+                code,
+                firstNonBlank(name, other.name),
+                firstNonBlank(prefix, other.prefix),
+                firstNonBlank(domainKey, other.domainKey),
+                mergedSignatures
+            );
+        }
+
+        private static String firstNonBlank(String left, String right) {
+            if (left != null && !left.isBlank()) {
+                return left;
+            }
+            return right;
+        }
+    }
+
+    private static final class BoundaryResult {
+        private final Map<String, LogicalSeed> serviceTargets = new LinkedHashMap<>();
+        private final Map<String, LogicalSeed> componentTargets = new LinkedHashMap<>();
+        private final Set<String> tables = new LinkedHashSet<>();
+    }
+
+    private static final class CallTarget {
+        private final String relationType;
+        private final String edgeMethodName;
+        private final String targetLabel;
+        private final String targetSignature;
+        private final String targetFqn;
+        private final String targetName;
+        private final String tableName;
+
+        private CallTarget(String relationType,
+                           String edgeMethodName,
+                           String targetLabel,
+                           String targetSignature,
+                           String targetFqn,
+                           String targetName,
+                           String tableName) {
+            this.relationType = relationType;
+            this.edgeMethodName = edgeMethodName;
+            this.targetLabel = targetLabel;
+            this.targetSignature = targetSignature;
+            this.targetFqn = targetFqn;
+            this.targetName = targetName;
+            this.tableName = tableName;
         }
     }
 }

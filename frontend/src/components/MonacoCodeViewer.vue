@@ -116,6 +116,7 @@ const props = defineProps({
   node:          { type: Object,  default: null },
   filePath:      { type: String,  default: '' },
   methodName:    { type: String,  default: '' },
+  locateText:    { type: String,  default: '' },
   isDark:        { type: Boolean, default: true },
   parentLoading: { type: Boolean, default: false },
   // 父组件用 v-show 控制可见性时传入，visible 由 false→true 时触发 editor.layout()
@@ -135,6 +136,7 @@ const isErrorStatus   = computed(() =>
 const openTabs        = ref([])
 const activeIdx       = ref(0)
 const entryMethod  = ref('')
+const entryLocateText = ref('')
 const isLoading    = ref(false)
 const isFullscreen = ref(false)
 
@@ -333,7 +335,7 @@ async function initMonaco() {
 }
 
 // ── 加载文件 ──────────────────────────────────────────────────────────────────
-async function loadFile(filePath, methodName = '') {
+async function loadFile(filePath, methodName = '', locateText = '') {
   if (!monaco) return
   isLoading.value = true
   setStatus('正在加载源码…')
@@ -345,16 +347,19 @@ async function loadFile(filePath, methodName = '') {
     const data = await res.json()
     setStatus('')
 
-    entryMethod.value = methodName || ''
+    entryMethod.value = methodName || (locateText ? '__xml_locate__' : '')
+    entryLocateText.value = locateText || ''
 
     const fileUri = window.__monacoFileUri(data.filePath)
     let   model   = monaco.editor.getModel(fileUri)
-    if (!model)   model = monaco.editor.createModel(data.source, 'java', fileUri)
+    const language = data.language || inferLanguage(data.filePath)
+    if (!model)   model = monaco.editor.createModel(data.source, language, fileUri)
 
     openTabs.value = [{
       uri:      fileUri.toString(),
       filename: data.filename,
       kind:     data.kind || null,
+      language,
       pkg:      data.pkg  || null,
       filePath: data.filePath,
       typeMap:  data.typeMap  || {},
@@ -367,7 +372,11 @@ async function loadFile(filePath, methodName = '') {
     await nextTick()
     editor.layout()
 
-    if (methodName) await nextTick(() => revealMethod(methodName))
+    if (methodName) {
+      await nextTick(() => revealMethod(methodName))
+    } else if (entryLocateText.value) {
+      await nextTick(() => revealText(entryLocateText.value))
+    }
   } catch (e) {
     console.error('[MonacoCodeViewer] loadFile error:', e)
     setStatus(`⚠ 加载失败：${e.message}`)
@@ -392,7 +401,8 @@ async function openFileAndReveal(className, symbolName, fromTab) {
     const fileUri    = window.__monacoFileUri(data.filePath)
     const fileUriStr = fileUri.toString()
     let   targetModel = monaco.editor.getModel(fileUri)
-    if (!targetModel) targetModel = monaco.editor.createModel(data.source, 'java', fileUri)
+    const language = data.language || inferLanguage(data.filePath)
+    if (!targetModel) targetModel = monaco.editor.createModel(data.source, language, fileUri)
 
     const existIdx = openTabs.value.findIndex(t => t.uri === fileUriStr)
     if (existIdx < 0) {
@@ -400,6 +410,7 @@ async function openFileAndReveal(className, symbolName, fromTab) {
         uri:      fileUriStr,
         filename: data.filename,
         kind:     data.kind || 'class',
+        language,
         pkg:      data.pkg  || '',
         filePath: data.filePath,
         typeMap:  data.typeMap  || {},
@@ -449,6 +460,23 @@ function revealMethod(name) {
     options: { isWholeLine: true, className: 'mcv-line-highlight', stickiness: 1 }
   }])
   setTimeout(() => editor.deltaDecorations(decId, []), 1500)
+}
+
+function revealText(text) {
+  if (!editor || !monaco || !text) return
+  const model = editor.getModel()
+  if (!model) return
+  for (let line = 1; line <= model.getLineCount(); line++) {
+    if (!model.getLineContent(line).includes(text)) continue
+    editor.revealLineInCenter(line)
+    editor.setPosition({ lineNumber: line, column: 1 })
+    const decId = editor.deltaDecorations([], [{
+      range: new monaco.Range(line, 1, line, 1),
+      options: { isWholeLine: true, className: 'mcv-line-highlight', stickiness: 1 }
+    }])
+    setTimeout(() => editor.deltaDecorations(decId, []), 1500)
+    break
+  }
 }
 
 // ── Tab 切换 / 关闭 ───────────────────────────────────────────────────────────
@@ -557,7 +585,11 @@ function locateAndClean() {
   }
 
   // 3. 定位到入口方法
-  revealMethod(entryMethod.value)
+  if (entryLocateText.value) {
+    revealText(entryLocateText.value)
+  } else {
+    revealMethod(entryMethod.value)
+  }
 }
 
 function setStatus(msg) {
@@ -570,7 +602,7 @@ function setStatus(msg) {
 onMounted(async () => {
   if (!props.filePath) return   // 无源码配置，不需要初始化编辑器
   await initMonaco()
-  await loadFile(props.filePath, props.methodName)
+  await loadFile(props.filePath, props.methodName, props.locateText)
 })
 
 onBeforeUnmount(() => {
@@ -579,10 +611,10 @@ onBeforeUnmount(() => {
 })
 
 // ── 响应 filePath 变化（父组件切换节点） ─────────────────────────────────────
-watch(() => [props.filePath, props.methodName], async ([fp, mn]) => {
+watch(() => [props.filePath, props.methodName, props.locateText], async ([fp, mn, lt]) => {
   if (!fp) return
   if (!monaco) { await initMonaco() }
-  await loadFile(fp, mn)
+  await loadFile(fp, mn, lt)
 }, { immediate: false })
 
 // ── 主题切换 ──────────────────────────────────────────────────────────────────
@@ -604,6 +636,10 @@ watch(() => props.visible, async (v) => {
 })
 
 defineExpose({ loadFile, revealMethod })
+
+function inferLanguage(filePath) {
+  return (filePath || '').toLowerCase().endsWith('.xml') ? 'xml' : 'java'
+}
 </script>
 
 <style scoped>

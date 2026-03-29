@@ -100,4 +100,17 @@ public class Neo4jGraphController {
             @RequestParam(defaultValue = "10") int depth) {
         return R.ok(builder.queryTables(sig, depth));
     }
+
+    /**
+     * 交易调用关系图查询：从 flowtrans 交易出发，串联编排步骤、serviceType、实现方法与下游调用。
+     *
+     * @param txId  交易 id，例如 ap0010 / dp2524
+     * @param depth 穿透深度，默认 12
+     */
+    @GetMapping("/query/transaction")
+    public R<Map<String, Object>> transaction(
+            @RequestParam String txId,
+            @RequestParam(defaultValue = "12") int depth) {
+        return R.ok(builder.queryTransactionGraph(txId, depth));
+    }
 }

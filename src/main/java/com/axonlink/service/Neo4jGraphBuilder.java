@@ -52,14 +52,18 @@ public class Neo4jGraphBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(Neo4jGraphBuilder.class);
 
-    private final Driver     driver;
+    private final Driver driver;
     private final Neo4jConfig neo4jConfig;
+    private final FlowtransMetaGraphBuilder flowtransMetaGraphBuilder;
 
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
 
     @Value("${project.source-roots:}")
     private String sourceRoots;
+
+    @Value("${project.max-file-kb:500}")
+    private int maxFileKb;
 
     @Value("${callgraph.include-packages:cn.sunline.ltts.busi}")
     private String includePackages;
@@ -93,9 +97,12 @@ public class Neo4jGraphBuilder {
     private final List<Map<String, Object>> hasMethodEdges = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> callsEdges     = Collections.synchronizedList(new ArrayList<>());
 
-    public Neo4jGraphBuilder(Driver driver, Neo4jConfig neo4jConfig) {
-        this.driver      = driver;
+    public Neo4jGraphBuilder(Driver driver,
+                             Neo4jConfig neo4jConfig,
+                             FlowtransMetaGraphBuilder flowtransMetaGraphBuilder) {
+        this.driver = driver;
         this.neo4jConfig = neo4jConfig;
+        this.flowtransMetaGraphBuilder = flowtransMetaGraphBuilder;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -143,6 +150,11 @@ public class Neo4jGraphBuilder {
             stats.put("daoEdgeCount", session.run("MATCH ()-[r:DAO_CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("selfCallEdgeCount", session.run("MATCH ()-[r:SELF_CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("implementsCount", session.run("MATCH ()-[r:IMPLEMENTS]->() RETURN count(r) AS c").single().get("c").asLong());
+            stats.put("transactionCount", session.run("MATCH (n:Transaction) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("flowMethodStepCount", session.run("MATCH (n:FlowMethodStep) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("flowServiceStepCount", session.run("MATCH (n:FlowServiceStep) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("serviceTypeCount", session.run("MATCH (n:ServiceType) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("serviceOperationCount", session.run("MATCH (n:ServiceOperation) RETURN count(n) AS c").single().get("c").asLong());
             return stats;
         } catch (Exception e) {
             return Map.of("error", e.getMessage());
@@ -230,6 +242,10 @@ public class Neo4jGraphBuilder {
         }
     }
 
+    public Map<String, Object> queryTransactionGraph(String txId, int depth) {
+        return flowtransMetaGraphBuilder.queryTransactionGraph(txId, depth);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 核心构建流程
     // ─────────────────────────────────────────────────────────────────────────
@@ -258,7 +274,7 @@ public class Neo4jGraphBuilder {
             log.info("[Neo4j] Phase1: 解析声明，线程数={}", threads);
             ForkJoinPool pool = new ForkJoinPool(threads);
             pool.submit(() -> allFiles.parallelStream().forEach(f -> {
-                if (f.toFile().length() > 500 * 1024L) return;
+                if (f.toFile().length() > (long) maxFileKb * 1024L) return;
                 parseDeclarations(f);
                 parsedFiles.incrementAndGet();
             })).get();
@@ -272,7 +288,7 @@ public class Neo4jGraphBuilder {
             parsedFiles.set(0);
             log.info("[Neo4j] Phase2: 解析调用关系");
             pool.submit(() -> allFiles.parallelStream().forEach(f -> {
-                if (f.toFile().length() > 500 * 1024L) return;
+                if (f.toFile().length() > (long) maxFileKb * 1024L) return;
                 parseCalls(f);
                 parsedFiles.incrementAndGet();
             })).get();
@@ -283,6 +299,10 @@ public class Neo4jGraphBuilder {
             // Phase 3：写入 Neo4j
             phase = "phase3_write";
             writeToNeo4j();
+
+            // Phase 4：补充 flowtrans / serviceType 元数据图
+            phase = "phase4_flowtrans";
+            Map<String, Object> flowtransResult = flowtransMetaGraphBuilder.importMetadata();
 
             phase = "done";
             long elapsed = System.currentTimeMillis() - startMs;
@@ -295,6 +315,7 @@ public class Neo4jGraphBuilder {
             result.put("calls",      callsEdges.size());
             result.put("implements", implementsEdges.size());
             result.put("extends",    extendsEdges.size());
+            result.put("flowtrans",  flowtransResult);
             result.put("elapsedMs",  elapsed);
             return result;
 
@@ -574,6 +595,7 @@ public class Neo4jGraphBuilder {
             session.run("CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.fqn)");
             session.run("CREATE INDEX IF NOT EXISTS FOR (i:Interface) ON (i.fqn)");
             session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.signature)");
+            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.classFqn, m.name)");
             session.run("CREATE INDEX IF NOT EXISTS FOR (d:Dao) ON (d.name)");
 
             // 写入 Class 节点
@@ -653,7 +675,9 @@ public class Neo4jGraphBuilder {
                 batchWrite(session, typed,
                     "UNWIND $batch AS row " +
                     "MATCH (caller:Method {signature: row.callerSig}) " +
-                    "WHERE NOT EXISTS { MATCH (caller)-[:" + edgeType + "]->(m:Method {classFqn: row.targetFqn, name: row.methodName}) } " +
+                    "OPTIONAL MATCH (matched:Method {classFqn: row.targetFqn, name: row.methodName}) " +
+                    "WITH caller, row, matched " +
+                    "WHERE matched IS NULL " +
                     "OPTIONAL MATCH (targetC:Class {fqn: row.targetFqn}) " +
                     "OPTIONAL MATCH (targetI:Interface {fqn: row.targetFqn}) " +
                     "WITH caller, row, COALESCE(targetC, targetI) AS target " +
@@ -773,7 +797,10 @@ public class Neo4jGraphBuilder {
                 if (!Files.exists(wsPath)) continue;
                 try (Stream<Path> walk = Files.walk(wsPath, 8)) {
                     walk.filter(Files::isDirectory)
-                        .filter(p -> wsPath.relativize(p).toString().replace('\\', '/').endsWith("src/main/java"))
+                        .filter(p -> {
+                            String rel = wsPath.relativize(p).toString().replace('\\', '/');
+                            return rel.endsWith("src/main/java") || rel.endsWith("target/gen");
+                        })
                         .map(Path::toString).forEach(roots::add);
                 } catch (IOException ignored) {}
             }
@@ -784,7 +811,7 @@ public class Neo4jGraphBuilder {
             try (Stream<Path> walk = Files.walk(p)) {
                 walk.filter(Files::isRegularFile)
                     .filter(f -> f.toString().endsWith(".java"))
-                    .filter(f -> !f.toString().contains("/test/"))
+                    .filter(f -> !f.toString().replace('\\', '/').contains("/test/"))
                     .forEach(files::add);
             } catch (IOException ignored) {}
         }

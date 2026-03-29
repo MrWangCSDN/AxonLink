@@ -1,6 +1,7 @@
 package com.axonlink.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.axonlink.dto.FlowtranDomain;
 import com.axonlink.entity.*;
 import com.axonlink.mapper.*;
 import org.slf4j.Logger;
@@ -56,9 +57,9 @@ public class ChainService {
         long totalTransactions = 0L;
         try {
             // 领域数：直接使用 listDomains() 合并后的数量，与侧边栏完全一致
-            totalDomains = flowtranService.listDomains().size();
-            Long t = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM flowtran", Long.class);
-            totalTransactions = t != null ? t : 0L;
+            List<FlowtranDomain> domains = flowtranService.listDomains();
+            totalDomains = domains.size();
+            totalTransactions = domains.stream().mapToLong(FlowtranDomain::getTxCount).sum();
         } catch (Exception e) {
             log.warn("[ChainService] getSystemStats 查询失败: {}", e.getMessage());
         }
