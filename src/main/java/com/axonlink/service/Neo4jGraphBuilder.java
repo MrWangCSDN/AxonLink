@@ -37,7 +37,7 @@ import java.util.stream.Stream;
  * <p>图数据模型：
  * <ul>
  *   <li>节点：Class, Interface, Method, Dao</li>
- *   <li>边：HAS_METHOD, CALLS, SYS_UTIL_CALLS, DAO_CALLS, SELF_CALLS, IMPLEMENTS, EXTENDS</li>
+ *   <li>边：CALLS, SYS_UTIL_CALLS, DAO_CALLS, SELF_CALLS, IMPLEMENTS, EXTENDS</li>
  * </ul>
  *
  * <p>Dao 节点：name=KXxxDao, tableName=KXxx（去掉 Dao 后缀），是调用链的终端节点。
@@ -51,10 +51,14 @@ import java.util.stream.Stream;
 public class Neo4jGraphBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(Neo4jGraphBuilder.class);
+    private static final int DELETE_BATCH_SIZE = 1000;
+    private static final int NODE_BATCH_SIZE = 1000;
+    private static final int EDGE_BATCH_SIZE = 300;
 
     private final Driver driver;
     private final Neo4jConfig neo4jConfig;
     private final FlowtransMetaGraphBuilder flowtransMetaGraphBuilder;
+    private final SysUtilTargetRegistry sysUtilTargetRegistry;
 
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
@@ -87,22 +91,32 @@ public class Neo4jGraphBuilder {
     private volatile long startMs = 0;
 
     // 批量缓冲
-    private static final int BATCH_SIZE = 2000;
     private final List<Map<String, Object>> classNodes     = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> interfaceNodes = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> methodNodes    = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> daoNodes       = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> implementsEdges= Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> extendsEdges   = Collections.synchronizedList(new ArrayList<>());
-    private final List<Map<String, Object>> hasMethodEdges = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> callsEdges     = Collections.synchronizedList(new ArrayList<>());
+    private final AtomicInteger sysUtilChainDetectCount    = new AtomicInteger();
+    private final AtomicInteger sysUtilVarAssignDetectCount= new AtomicInteger();
+    private final AtomicInteger sysUtilVarInvokeCount      = new AtomicInteger();
+    private final AtomicInteger sysUtilAcceptedCount       = new AtomicInteger();
+    private final AtomicInteger sysUtilRejectedCount       = new AtomicInteger();
+    private final AtomicInteger sysUtilBufferedEdgeCount   = new AtomicInteger();
+    private final Map<String, AtomicInteger> sysUtilSeenTypes     = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> sysUtilAcceptedTypes = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> sysUtilRejectedTypes = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> sysUtilResolvedFqns  = new ConcurrentHashMap<>();
 
     public Neo4jGraphBuilder(Driver driver,
                              Neo4jConfig neo4jConfig,
-                             FlowtransMetaGraphBuilder flowtransMetaGraphBuilder) {
+                             FlowtransMetaGraphBuilder flowtransMetaGraphBuilder,
+                             SysUtilTargetRegistry sysUtilTargetRegistry) {
         this.driver = driver;
         this.neo4jConfig = neo4jConfig;
         this.flowtransMetaGraphBuilder = flowtransMetaGraphBuilder;
+        this.sysUtilTargetRegistry = sysUtilTargetRegistry;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -164,9 +178,8 @@ public class Neo4jGraphBuilder {
     /**
      * 调用链查询：从指定类/方法出发，向下 N 层穿透。
      *
-     * <p>路径模型：Method -[CALLS]-> Class -[HAS_METHOD]-> Method -[CALLS]-> ...
-     * 每跨一个 Class 节点算 1 次 HAS_METHOD 跳，实际方法层数 = depth/2。
-     * depth 建议设为逻辑层数 × 2（如要穿 5 层方法，传 depth=10）。
+     * <p>路径模型：Method 沿 CALLS / SYS_UTIL_CALLS / SELF_CALLS / DAO_CALLS 直接向下穿透。
+     * depth 表示最大方法调用跳数，建议按逻辑链路层数直接传入。
      */
     public Map<String, Object> queryCallChain(String fqn, int depth) {
         if (driver == null) return Map.of("error", "Neo4j 不可用");
@@ -284,6 +297,7 @@ public class Neo4jGraphBuilder {
                      implementsEdges.size(), extendsEdges.size());
 
             // Phase 2：方法调用关系
+            sysUtilTargetRegistry.warmUp();
             phase = "phase2_calls";
             parsedFiles.set(0);
             log.info("[Neo4j] Phase2: 解析调用关系");
@@ -295,6 +309,7 @@ public class Neo4jGraphBuilder {
             pool.shutdown();
 
             log.info("[Neo4j] Phase2 完成: calls={}", callsEdges.size());
+            logSysUtilSummary();
 
             // Phase 3：写入 Neo4j
             phase = "phase3_write";
@@ -303,6 +318,10 @@ public class Neo4jGraphBuilder {
             // Phase 4：补充 flowtrans / serviceType 元数据图
             phase = "phase4_flowtrans";
             Map<String, Object> flowtransResult = flowtransMetaGraphBuilder.importMetadata();
+            backfillInterfaceNodesFromServiceMetadata();
+            backfillImplementsEdges();
+            backfillServiceImplementationEdges();
+            backfillSysUtilEdgesToServiceOperations();
 
             phase = "done";
             long elapsed = System.currentTimeMillis() - startMs;
@@ -339,6 +358,7 @@ public class Neo4jGraphBuilder {
             CompilationUnit cu = pr.getResult().get();
             String pkg = cu.getPackageDeclaration().map(pd -> pd.getNameAsString()).orElse("");
             if (!isIncluded(pkg)) return;
+            Map<String, String> importMap = buildImportMap(cu);
 
             String module = detectModule(file);
 
@@ -365,17 +385,17 @@ public class Neo4jGraphBuilder {
 
                         // implements 边
                         for (ClassOrInterfaceType iface : n.getImplementedTypes()) {
-                            String ifaceFqn = resolveToFqn(iface.getNameAsString(), cu);
+                            String ifaceFqn = resolveTypeName(iface, cu, importMap);
                             implementsEdges.add(Map.of("classFqn", fqn, "interfaceFqn", ifaceFqn));
                         }
                         // extends 边
                         for (ClassOrInterfaceType ext : n.getExtendedTypes()) {
-                            String parentFqn = resolveToFqn(ext.getNameAsString(), cu);
+                            String parentFqn = resolveTypeName(ext, cu, importMap);
                             extendsEdges.add(Map.of("childFqn", fqn, "parentFqn", parentFqn));
                         }
                     }
 
-                    // 方法声明 + HAS_METHOD 边
+                    // 方法声明
                     for (MethodDeclaration method : n.getMethods()) {
                         String sig = fqn + "#" + method.getNameAsString() + "(" +
                             method.getParameters().stream()
@@ -385,7 +405,6 @@ public class Neo4jGraphBuilder {
                         methodNodes.add(Map.of(
                             "signature", sig, "name", method.getNameAsString(),
                             "classFqn", fqn, "lineNo", lineNo));
-                        hasMethodEdges.add(Map.of("classFqn", fqn, "methodSig", sig));
                     }
 
                     super.visit(n, arg);
@@ -437,7 +456,7 @@ public class Neo4jGraphBuilder {
                         // 处理两种形式：
                         //   IoDpAccLimitApsSvtp xxx = SysUtil.getInstance(IoDpAccLimitApsSvtp.class);
                         //   var xxx = SysUtil.getInstance(IoDpAccLimitApsSvtp.class);
-                        Map<String, String> sysUtilVarMap = new HashMap<>();
+                        Map<String, SysUtilResolvedTarget> sysUtilVarMap = new HashMap<>();
                         method.accept(new VoidVisitorAdapter<Void>() {
                             @Override
                             public void visit(com.github.javaparser.ast.expr.VariableDeclarationExpr vde, Void a) {
@@ -446,11 +465,8 @@ public class Neo4jGraphBuilder {
                                     decl.getInitializer().ifPresent(init -> {
                                         if (init instanceof MethodCallExpr mc && isSysUtilGetInstance(mc)) {
                                             String targetSimple = extractClassArg(mc);
-                                            if (targetSimple != null) {
-                                                String varName = decl.getNameAsString();
-                                                String targetFqn = resolveSimpleName(targetSimple, cu, importMap);
-                                                sysUtilVarMap.put(varName, targetFqn);
-                                            }
+                                            resolveSysUtilTarget(targetSimple, cu, importMap, "variable-assign")
+                                                .ifPresent(target -> sysUtilVarMap.put(decl.getNameAsString(), target));
                                         }
                                     });
                                 }
@@ -462,9 +478,9 @@ public class Neo4jGraphBuilder {
                                 Expression value = ae.getValue();
                                 if (value instanceof MethodCallExpr mc && isSysUtilGetInstance(mc)) {
                                     String targetSimple = extractClassArg(mc);
-                                    if (targetSimple != null && ae.getTarget() instanceof NameExpr ne) {
-                                        String targetFqn = resolveSimpleName(targetSimple, cu, importMap);
-                                        sysUtilVarMap.put(ne.getNameAsString(), targetFqn);
+                                    if (ae.getTarget() instanceof NameExpr ne) {
+                                        resolveSysUtilTarget(targetSimple, cu, importMap, "variable-assign")
+                                            .ifPresent(target -> sysUtilVarMap.put(ne.getNameAsString(), target));
                                     }
                                 }
                             }
@@ -494,13 +510,13 @@ public class Neo4jGraphBuilder {
 
     private void processCall(MethodCallExpr call, String callerSig, String callerClassFqn,
                               CompilationUnit cu, Map<String, String> importMap,
-                              Map<String, String> sysUtilVarMap) {
+                              Map<String, SysUtilResolvedTarget> sysUtilVarMap) {
         processCall(call, callerSig, callerClassFqn, cu, importMap, sysUtilVarMap, Map.of());
     }
 
     private void processCall(MethodCallExpr call, String callerSig, String callerClassFqn,
                               CompilationUnit cu, Map<String, String> importMap,
-                              Map<String, String> sysUtilVarMap,
+                              Map<String, SysUtilResolvedTarget> sysUtilVarMap,
                               Map<String, String> fieldTypeMap) {
         Optional<Expression> scopeOpt = call.getScope();
         String methodName = call.getNameAsString();
@@ -526,11 +542,13 @@ public class Neo4jGraphBuilder {
         // 形式1：SysUtil.getInstance(X.class).method()  ← 链式调用
         if (isSysUtilGetInstance(scope)) {
             String targetSimple = extractClassArg((MethodCallExpr) scope);
-            if (targetSimple == null) return;
-            String targetFqn = resolveSimpleName(targetSimple, cu, importMap);
+            Optional<SysUtilResolvedTarget> resolvedTarget = resolveSysUtilTarget(targetSimple, cu, importMap, "chain-call");
+            if (resolvedTarget.isEmpty()) return;
+            String targetFqn = resolvedTarget.get().targetFqn();
             callsEdges.add(Map.of(
                 "callerSig", callerSig, "targetFqn", targetFqn,
                 "methodName", methodName, "lineNo", lineNo, "type", "SYS_UTIL_CALLS"));
+            sysUtilBufferedEdgeCount.incrementAndGet();
             return;
         }
 
@@ -539,10 +557,13 @@ public class Neo4jGraphBuilder {
 
             // 形式2：xxx = SysUtil.getInstance(X.class); xxx.method()  ← 变量调用
             if (sysUtilVarMap.containsKey(scopeName)) {
-                String targetFqn = sysUtilVarMap.get(scopeName);
+                SysUtilResolvedTarget resolvedTarget = sysUtilVarMap.get(scopeName);
+                String targetFqn = resolvedTarget.targetFqn();
                 callsEdges.add(Map.of(
                     "callerSig", callerSig, "targetFqn", targetFqn,
                     "methodName", methodName, "lineNo", lineNo, "type", "SYS_UTIL_CALLS"));
+                sysUtilVarInvokeCount.incrementAndGet();
+                sysUtilBufferedEdgeCount.incrementAndGet();
                 return;
             }
 
@@ -588,35 +609,37 @@ public class Neo4jGraphBuilder {
     private void writeToNeo4j() {
         try (Session session = driver.session()) {
             // 清空旧图
-            session.run("MATCH (n) DETACH DELETE n");
-            log.info("[Neo4j] 已清空旧图数据");
+            clearGraphInBatches(session);
 
             // 建索引
-            session.run("CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.fqn)");
-            session.run("CREATE INDEX IF NOT EXISTS FOR (i:Interface) ON (i.fqn)");
-            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.signature)");
-            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.classFqn, m.name)");
-            session.run("CREATE INDEX IF NOT EXISTS FOR (d:Dao) ON (d.name)");
+            session.run("CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.fqn)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (i:Interface) ON (i.fqn)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.signature)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.classFqn, m.name)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (d:Dao) ON (d.name)").consume();
 
             // 写入 Class 节点
             batchWrite(session, classNodes,
                 "UNWIND $batch AS row " +
                 "CREATE (c:Class {fqn: row.fqn, simpleName: row.simpleName, module: row.module, " +
-                "nodeKind: row.nodeKind, domainKey: row.domainKey, filePath: row.filePath})");
+                "nodeKind: row.nodeKind, domainKey: row.domainKey, filePath: row.filePath})",
+                NODE_BATCH_SIZE);
             log.info("[Neo4j] 写入 Class 节点: {}", classNodes.size());
 
             // 写入 Interface 节点
             batchWrite(session, interfaceNodes,
                 "UNWIND $batch AS row " +
                 "CREATE (i:Interface {fqn: row.fqn, simpleName: row.simpleName, module: row.module, " +
-                "domainKey: row.domainKey, filePath: row.filePath})");
+                "domainKey: row.domainKey, filePath: row.filePath})",
+                NODE_BATCH_SIZE);
             log.info("[Neo4j] 写入 Interface 节点: {}", interfaceNodes.size());
 
             // 写入 Method 节点
             batchWrite(session, methodNodes,
                 "UNWIND $batch AS row " +
                 "CREATE (m:Method {signature: row.signature, name: row.name, " +
-                "classFqn: row.classFqn, lineNo: row.lineNo})");
+                "classFqn: row.classFqn, lineNo: row.lineNo})",
+                NODE_BATCH_SIZE);
             log.info("[Neo4j] 写入 Method 节点: {}", methodNodes.size());
 
             // 写入 Dao 节点（去重，同一个 DAO 可能被多处引用）
@@ -628,7 +651,8 @@ public class Neo4jGraphBuilder {
             batchWrite(session, uniqueDaoNodes,
                 "UNWIND $batch AS row " +
                 "MERGE (d:Dao {name: row.name}) " +
-                "SET d.tableName = row.tableName");
+                "SET d.tableName = row.tableName",
+                NODE_BATCH_SIZE);
             log.info("[Neo4j] 写入 Dao 节点: {}", uniqueDaoNodes.size());
 
             // IMPLEMENTS 边
@@ -636,7 +660,8 @@ public class Neo4jGraphBuilder {
                 "UNWIND $batch AS row " +
                 "MATCH (c:Class {fqn: row.classFqn}) " +
                 "MATCH (i:Interface {fqn: row.interfaceFqn}) " +
-                "CREATE (c)-[:IMPLEMENTS]->(i)");
+                "CREATE (c)-[:IMPLEMENTS]->(i)",
+                EDGE_BATCH_SIZE);
             log.info("[Neo4j] 写入 IMPLEMENTS 边: {}", implementsEdges.size());
 
             // EXTENDS 边
@@ -644,35 +669,38 @@ public class Neo4jGraphBuilder {
                 "UNWIND $batch AS row " +
                 "MATCH (child:Class {fqn: row.childFqn}) " +
                 "MATCH (parent:Class {fqn: row.parentFqn}) " +
-                "CREATE (child)-[:EXTENDS]->(parent)");
+                "CREATE (child)-[:EXTENDS]->(parent)",
+                EDGE_BATCH_SIZE);
             log.info("[Neo4j] 写入 EXTENDS 边: {}", extendsEdges.size());
-
-            // HAS_METHOD 边
-            batchWrite(session, hasMethodEdges,
-                "UNWIND $batch AS row " +
-                "MATCH (c:Class {fqn: row.classFqn}) " +
-                "MATCH (m:Method {signature: row.methodSig}) " +
-                "CREATE (c)-[:HAS_METHOD]->(m)");
-            log.info("[Neo4j] 写入 HAS_METHOD 边: {}", hasMethodEdges.size());
 
             // CALLS / SYS_UTIL_CALLS / SELF_CALLS 边
             // 优先连到目标 Method 节点（Method→Method），无法匹配时回退到 Class/Interface 节点
-            // 这样遍历查询只需 CALLS* 即可穿透，无需 HAS_METHOD 造成组合爆炸
             for (String edgeType : List.of("CALLS", "SYS_UTIL_CALLS", "SELF_CALLS")) {
                 List<Map<String, Object>> typed = callsEdges.stream()
                     .filter(e -> edgeType.equals(e.get("type")))
                     .collect(Collectors.toList());
-                if (typed.isEmpty()) continue;
+                if (typed.isEmpty()) {
+                    if ("SYS_UTIL_CALLS".equals(edgeType)) {
+                        log.warn("[Neo4j] 写入 SYS_UTIL_CALLS 边: buffered=0 accepted={} rejected={} seenTypes={} rejectedTypes={}",
+                            sysUtilAcceptedCount.get(),
+                            sysUtilRejectedCount.get(),
+                            summarizeTopCounts(sysUtilSeenTypes, 8),
+                            summarizeTopCounts(sysUtilRejectedTypes, 8));
+                    }
+                    continue;
+                }
 
                 // Pass 1：Method → Method（callee 方法在图中存在时）
-                batchWrite(session, typed,
+                long createdMethodEdges = batchWriteCount(session, typed,
                     "UNWIND $batch AS row " +
                     "MATCH (caller:Method {signature: row.callerSig}) " +
                     "MATCH (callee:Method {classFqn: row.targetFqn, name: row.methodName}) " +
-                    "CREATE (caller)-[:" + edgeType + " {lineNo: row.lineNo}]->(callee)");
+                    "CREATE (caller)-[:" + edgeType + " {lineNo: row.lineNo}]->(callee) " +
+                    "RETURN count(*) AS created",
+                    EDGE_BATCH_SIZE);
 
                 // Pass 2：Method → Class/Interface（callee 方法不在图中时的回退）
-                batchWrite(session, typed,
+                long createdFallbackEdges = batchWriteCount(session, typed,
                     "UNWIND $batch AS row " +
                     "MATCH (caller:Method {signature: row.callerSig}) " +
                     "OPTIONAL MATCH (matched:Method {classFqn: row.targetFqn, name: row.methodName}) " +
@@ -682,9 +710,18 @@ public class Neo4jGraphBuilder {
                     "OPTIONAL MATCH (targetI:Interface {fqn: row.targetFqn}) " +
                     "WITH caller, row, COALESCE(targetC, targetI) AS target " +
                     "WHERE target IS NOT NULL " +
-                    "CREATE (caller)-[:" + edgeType + " {methodName: row.methodName, lineNo: row.lineNo}]->(target)");
+                    "CREATE (caller)-[:" + edgeType + " {methodName: row.methodName, lineNo: row.lineNo}]->(target) " +
+                    "RETURN count(*) AS created",
+                    EDGE_BATCH_SIZE);
 
-                log.info("[Neo4j] 写入 {} 边: {}", edgeType, typed.size());
+                long createdTotal = createdMethodEdges + createdFallbackEdges;
+                log.info("[Neo4j] 写入 {} 边: buffered={} createdMethod={} createdFallback={} createdTotal={}",
+                    edgeType, typed.size(), createdMethodEdges, createdFallbackEdges, createdTotal);
+                if ("SYS_UTIL_CALLS".equals(edgeType) && createdTotal == 0L) {
+                    log.warn("[Neo4j] SYS_UTIL_CALLS 已缓冲但未成功落库: acceptedTypes={} resolvedFqns={}",
+                        summarizeTopCounts(sysUtilAcceptedTypes, 8),
+                        summarizeTopCounts(sysUtilResolvedFqns, 8));
+                }
             }
 
             // DAO_CALLS 边（目标为 Dao 节点）
@@ -696,22 +733,221 @@ public class Neo4jGraphBuilder {
                     "UNWIND $batch AS row " +
                     "MATCH (caller:Method {signature: row.callerSig}) " +
                     "MATCH (dao:Dao {name: row.targetFqn}) " +
-                    "CREATE (caller)-[:DAO_CALLS {methodName: row.methodName, lineNo: row.lineNo}]->(dao)");
+                    "CREATE (caller)-[:DAO_CALLS {methodName: row.methodName, lineNo: row.lineNo}]->(dao)",
+                    EDGE_BATCH_SIZE);
                 log.info("[Neo4j] 写入 DAO_CALLS 边: {}", daoCallEdges.size());
             }
         }
     }
 
+    private void clearGraphInBatches(Session session) {
+        long relationshipCount = countGraphEntities(session, "MATCH ()-[r]->() RETURN count(r) AS c");
+        long nodeCount = countGraphEntities(session, "MATCH (n) RETURN count(n) AS c");
+        if (relationshipCount == 0L && nodeCount == 0L) {
+            log.info("[Neo4j] 已清空旧图数据: relationships=0 nodes=0");
+            return;
+        }
+
+        log.info("[Neo4j] 开始清理旧图数据: relationships={} nodes={}", relationshipCount, nodeCount);
+
+        try {
+            clearGraphWithServerSideTransactions(session);
+            long remainingRelationships = countGraphEntities(session, "MATCH ()-[r]->() RETURN count(r) AS c");
+            long remainingNodes = countGraphEntities(session, "MATCH (n) RETURN count(n) AS c");
+            if (remainingRelationships != 0L || remainingNodes != 0L) {
+                log.warn("[Neo4j] 服务端分事务清理后仍有残留: relationships={} nodes={}，回退客户端补删",
+                         remainingRelationships, remainingNodes);
+                long deletedRelationships = deleteInBatches(
+                    session,
+                    "MATCH ()-[r]->() " +
+                    "WITH r LIMIT $limit " +
+                    "DELETE r " +
+                    "RETURN count(r) AS deleted",
+                    "relationships"
+                );
+                long deletedNodes = deleteInBatches(
+                    session,
+                    "MATCH (n) " +
+                    "WITH n LIMIT $limit " +
+                    "DELETE n " +
+                    "RETURN count(n) AS deleted",
+                    "nodes"
+                );
+                log.info("[Neo4j] 已清空旧图数据: relationships={} nodes={}",
+                         relationshipCount - remainingRelationships + deletedRelationships,
+                         nodeCount - remainingNodes + deletedNodes);
+                return;
+            }
+            log.info("[Neo4j] 已清空旧图数据: relationships={} nodes={}", relationshipCount, nodeCount);
+        } catch (Exception e) {
+            log.warn("[Neo4j] 服务端分事务清理失败，回退客户端分批删除: {}", e.getMessage());
+            long deletedRelationships = deleteInBatches(
+                session,
+                "MATCH ()-[r]->() " +
+                "WITH r LIMIT $limit " +
+                "DELETE r " +
+                "RETURN count(r) AS deleted",
+                "relationships"
+            );
+            long deletedNodes = deleteInBatches(
+                session,
+                "MATCH (n) " +
+                "WITH n LIMIT $limit " +
+                "DELETE n " +
+                "RETURN count(n) AS deleted",
+                "nodes"
+            );
+            log.info("[Neo4j] 已清空旧图数据: relationships={} nodes={}", deletedRelationships, deletedNodes);
+        }
+    }
+
+    private long deleteInBatches(Session session, String cypher, String label) {
+        long total = 0L;
+        while (true) {
+            var records = session.run(cypher, Values.parameters("limit", DELETE_BATCH_SIZE)).list();
+            long deleted = records.isEmpty() ? 0L : records.get(0).get("deleted").asLong();
+            if (deleted <= 0L) {
+                return total;
+            }
+            total += deleted;
+            if (total == deleted || total % (DELETE_BATCH_SIZE * 20L) == 0L) {
+                log.info("[Neo4j] 清理旧图 {} 进度: {}", label, total);
+            }
+        }
+    }
+
+    private void clearGraphWithServerSideTransactions(Session session) {
+        String deleteRelationships =
+            "MATCH ()-[r]->() " +
+            "CALL { " +
+            "  WITH r " +
+            "  DELETE r " +
+            "} IN TRANSACTIONS OF " + DELETE_BATCH_SIZE + " ROWS";
+        String deleteNodes =
+            "MATCH (n) " +
+            "CALL { " +
+            "  WITH n " +
+            "  DELETE n " +
+            "} IN TRANSACTIONS OF " + DELETE_BATCH_SIZE + " ROWS";
+        session.run(deleteRelationships).consume();
+        session.run(deleteNodes).consume();
+    }
+
+    private long countGraphEntities(Session session, String cypher) {
+        return session.run(cypher).single().get("c").asLong();
+    }
+
     private void batchWrite(Session session, List<Map<String, Object>> data, String cypher) {
-        for (int i = 0; i < data.size(); i += BATCH_SIZE) {
-            List<Map<String, Object>> batch = data.subList(i, Math.min(i + BATCH_SIZE, data.size()));
-            session.run(cypher, Values.parameters("batch", batch));
+        batchWrite(session, data, cypher, NODE_BATCH_SIZE);
+    }
+
+    private void batchWrite(Session session, List<Map<String, Object>> data, String cypher, int batchSize) {
+        for (int i = 0; i < data.size(); i += batchSize) {
+            List<Map<String, Object>> batch = data.subList(i, Math.min(i + batchSize, data.size()));
+            session.run(cypher, Values.parameters("batch", batch)).consume();
+        }
+    }
+
+    private long batchWriteCount(Session session, List<Map<String, Object>> data, String cypher, int batchSize) {
+        long total = 0L;
+        for (int i = 0; i < data.size(); i += batchSize) {
+            List<Map<String, Object>> batch = data.subList(i, Math.min(i + batchSize, data.size()));
+            var result = session.run(cypher, Values.parameters("batch", batch)).single();
+            total += result.get("created").asLong();
+        }
+        return total;
+    }
+
+    private void backfillSysUtilEdgesToServiceOperations() {
+        List<Map<String, Object>> sysUtilEdges = callsEdges.stream()
+            .filter(edge -> "SYS_UTIL_CALLS".equals(edge.get("type")))
+            .collect(Collectors.toList());
+        if (sysUtilEdges.isEmpty()) {
+            log.info("[Neo4j] Phase4 后补 SYS_UTIL_CALLS -> ServiceOperation: buffered=0");
+            return;
+        }
+
+        try (Session session = driver.session()) {
+            long created = batchWriteCount(session, sysUtilEdges,
+                "UNWIND $batch AS row " +
+                "MATCH (caller:Method {signature: row.callerSig}) " +
+                "MATCH (stype:ServiceType {interfaceFqn: row.targetFqn})-[:DECLARES_OPERATION]->(op:ServiceOperation {methodName: row.methodName}) " +
+                "MERGE (caller)-[r:SYS_UTIL_CALLS]->(op) " +
+                "ON CREATE SET r.methodName = row.methodName, r.lineNo = row.lineNo " +
+                "RETURN count(*) AS created",
+                EDGE_BATCH_SIZE);
+            log.info("[Neo4j] Phase4 后补 SYS_UTIL_CALLS -> ServiceOperation: buffered={} created={}",
+                sysUtilEdges.size(), created);
+        } catch (Exception e) {
+            log.warn("[Neo4j] Phase4 后补 SYS_UTIL_CALLS 失败: {}", e.getMessage());
+        }
+    }
+
+    private void backfillInterfaceNodesFromServiceMetadata() {
+        try (Session session = driver.session()) {
+            long created = session.run(
+                "MATCH (n) " +
+                "WHERE (n:ServiceType OR n:ServiceOperation) AND n.interfaceFqn IS NOT NULL AND trim(n.interfaceFqn) <> '' " +
+                "WITH DISTINCT n.interfaceFqn AS fqn " +
+                "MERGE (i:Interface {fqn: fqn}) " +
+                "ON CREATE SET i.simpleName = CASE WHEN fqn CONTAINS '.' THEN split(fqn, '.')[size(split(fqn, '.')) - 1] ELSE fqn END " +
+                "RETURN count(i) AS created").single().get("created").asLong();
+            log.info("[Neo4j] Phase4 后补 Interface 节点: created={}", created);
+        } catch (Exception e) {
+            log.warn("[Neo4j] Phase4 后补 Interface 节点失败: {}", e.getMessage());
+        }
+    }
+
+    private void backfillImplementsEdges() {
+        if (implementsEdges.isEmpty()) {
+            log.info("[Neo4j] Phase4 后补 IMPLEMENTS 边: buffered=0");
+            return;
+        }
+        try (Session session = driver.session()) {
+            long created = batchWriteCount(session, implementsEdges,
+                "UNWIND $batch AS row " +
+                "MATCH (c:Class {fqn: row.classFqn}) " +
+                "MATCH (i:Interface {fqn: row.interfaceFqn}) " +
+                "MERGE (c)-[r:IMPLEMENTS]->(i) " +
+                "RETURN count(r) AS created",
+                EDGE_BATCH_SIZE);
+            log.info("[Neo4j] Phase4 后补 IMPLEMENTS 边: buffered={} created={}", implementsEdges.size(), created);
+        } catch (Exception e) {
+            log.warn("[Neo4j] Phase4 后补 IMPLEMENTS 边失败: {}", e.getMessage());
+        }
+    }
+
+    private void backfillServiceImplementationEdges() {
+        try (Session session = driver.session()) {
+            long created = session.run(
+                "MATCH (op:ServiceOperation) " +
+                "MATCH (iface:Interface {fqn: op.interfaceFqn}) " +
+                "CALL { " +
+                "  WITH op, iface " +
+                "  MATCH (impl:Class)-[:IMPLEMENTS]->(iface) " +
+                "  MATCH (m:Method {classFqn: impl.fqn, name: op.methodName}) " +
+                "  RETURN DISTINCT m " +
+                "  UNION " +
+                "  WITH op, iface " +
+                "  MATCH (base:Class)-[:IMPLEMENTS]->(iface) " +
+                "  MATCH path = (impl:Class)-[:EXTENDS*1..6]->(base) " +
+                "  UNWIND [node IN nodes(path) | node.fqn] AS ownerFqn " +
+                "  MATCH (m:Method {classFqn: ownerFqn, name: op.methodName}) " +
+                "  RETURN DISTINCT m " +
+                "} " +
+                "MERGE (op)-[r:IMPLEMENTS_BY]->(m) " +
+                "RETURN count(r) AS created").single().get("created").asLong();
+            log.info("[Neo4j] Phase4 后补 IMPLEMENTS_BY 边: created={}", created);
+        } catch (Exception e) {
+            log.warn("[Neo4j] Phase4 后补 IMPLEMENTS_BY 边失败: {}", e.getMessage());
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // 辅助方法
     // ─────────────────────────────────────────────────────────────────────────
+
+    private record SysUtilResolvedTarget(String typeId, String targetFqn) {}
 
     private boolean isSysUtilGetInstance(Expression expr) {
         if (!(expr instanceof MethodCallExpr mc)) return false;
@@ -727,6 +963,80 @@ public class Neo4jGraphBuilder {
         return null;
     }
 
+    private Optional<SysUtilResolvedTarget> resolveSysUtilTarget(String rawTypeId,
+                                                                 CompilationUnit cu,
+                                                                 Map<String, String> importMap,
+                                                                 String sourceKind) {
+        String normalized = normalizeSysUtilTypeId(rawTypeId);
+        if (normalized == null) {
+            return Optional.empty();
+        }
+        if ("chain-call".equals(sourceKind)) {
+            sysUtilChainDetectCount.incrementAndGet();
+        } else if ("variable-assign".equals(sourceKind)) {
+            sysUtilVarAssignDetectCount.incrementAndGet();
+        }
+        incrementCounter(sysUtilSeenTypes, normalized);
+
+        Optional<SysUtilTargetRegistry.TargetMeta> metaOpt = sysUtilTargetRegistry.findByTypeId(normalized);
+        if (metaOpt.isEmpty()) {
+            sysUtilRejectedCount.incrementAndGet();
+            incrementCounter(sysUtilRejectedTypes, normalized);
+            return Optional.empty();
+        }
+
+        SysUtilTargetRegistry.TargetMeta meta = metaOpt.get();
+        String targetFqn = resolveSysUtilTargetFqn(meta, cu, importMap);
+        sysUtilAcceptedCount.incrementAndGet();
+        incrementCounter(sysUtilAcceptedTypes, meta.getTypeId());
+        incrementCounter(sysUtilResolvedFqns, targetFqn);
+        return Optional.of(new SysUtilResolvedTarget(meta.getTypeId(), targetFqn));
+    }
+
+    private String resolveSysUtilTargetFqn(SysUtilTargetRegistry.TargetMeta meta,
+                                           CompilationUnit cu,
+                                           Map<String, String> importMap) {
+        String typeId = meta.getTypeId();
+        if (typeId.contains(".")) {
+            return typeId;
+        }
+        String fromImport = importMap.get(typeId);
+        if (fromImport != null) {
+            return fromImport;
+        }
+        String fromIndex = simpleToFqn.get(typeId);
+        if (fromIndex != null) {
+            return fromIndex;
+        }
+        String packagePath = meta.getPackagePath();
+        if (packagePath != null && !packagePath.isBlank()) {
+            String normalizedPackage = packagePath.trim().replace('/', '.');
+            if (normalizedPackage.endsWith("." + typeId) || normalizedPackage.equals(typeId)) {
+                return normalizedPackage;
+            }
+            return normalizedPackage + "." + typeId;
+        }
+        return cu.getPackageDeclaration().map(pd -> pd.getNameAsString() + "." + typeId).orElse(typeId);
+    }
+
+    private String normalizeSysUtilTypeId(String rawTypeId) {
+        if (rawTypeId == null) {
+            return null;
+        }
+        String normalized = rawTypeId.replaceAll("<.*>", "").replaceAll("\\[]", "").trim();
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String resolveTypeName(ClassOrInterfaceType type,
+                                   CompilationUnit cu,
+                                   Map<String, String> importMap) {
+        String scopedName = type.getNameWithScope();
+        if (scopedName.contains(".")) {
+            return scopedName;
+        }
+        return resolveSimpleName(scopedName, cu, importMap);
+    }
+
     private String resolveSimpleName(String name, CompilationUnit cu, Map<String, String> importMap) {
         if (name.contains(".")) return name;
         String fromImport = importMap.get(name);
@@ -734,13 +1044,6 @@ public class Neo4jGraphBuilder {
         String fromIndex = simpleToFqn.get(name);
         if (fromIndex != null) return fromIndex;
         return cu.getPackageDeclaration().map(pd -> pd.getNameAsString() + "." + name).orElse(name);
-    }
-
-    private String resolveToFqn(String simpleName, CompilationUnit cu) {
-        if (simpleName.contains(".")) return simpleName;
-        String fromIndex = simpleToFqn.get(simpleName);
-        if (fromIndex != null) return fromIndex;
-        return cu.getPackageDeclaration().map(pd -> pd.getNameAsString() + "." + simpleName).orElse(simpleName);
     }
 
     private Map<String, String> buildImportMap(CompilationUnit cu) {
@@ -761,6 +1064,43 @@ public class Neo4jGraphBuilder {
             if (pkg.startsWith(prefix.trim())) return true;
         }
         return false;
+    }
+
+    private void logSysUtilSummary() {
+        log.info("[Neo4j] Phase2 SysUtil 统计: chainDetections={} varAssignments={} varInvocations={} accepted={} rejected={} bufferedEdges={}",
+            sysUtilChainDetectCount.get(),
+            sysUtilVarAssignDetectCount.get(),
+            sysUtilVarInvokeCount.get(),
+            sysUtilAcceptedCount.get(),
+            sysUtilRejectedCount.get(),
+            sysUtilBufferedEdgeCount.get());
+        if (!sysUtilSeenTypes.isEmpty()) {
+            log.info("[Neo4j] Phase2 SysUtil 目标Top: {}", summarizeTopCounts(sysUtilSeenTypes, 10));
+        }
+        if (!sysUtilAcceptedTypes.isEmpty()) {
+            log.info("[Neo4j] Phase2 SysUtil 命中白名单Top: {}", summarizeTopCounts(sysUtilAcceptedTypes, 10));
+        }
+        if (!sysUtilRejectedTypes.isEmpty()) {
+            log.info("[Neo4j] Phase2 SysUtil 未命中白名单Top: {}", summarizeTopCounts(sysUtilRejectedTypes, 10));
+        }
+        if (!sysUtilResolvedFqns.isEmpty()) {
+            log.info("[Neo4j] Phase2 SysUtil 目标FQN Top: {}", summarizeTopCounts(sysUtilResolvedFqns, 10));
+        }
+    }
+
+    private void incrementCounter(Map<String, AtomicInteger> counters, String key) {
+        if (key == null || key.isBlank()) {
+            return;
+        }
+        counters.computeIfAbsent(key, ignored -> new AtomicInteger()).incrementAndGet();
+    }
+
+    private String summarizeTopCounts(Map<String, AtomicInteger> counters, int limit) {
+        return counters.entrySet().stream()
+            .sorted((left, right) -> Integer.compare(right.getValue().get(), left.getValue().get()))
+            .limit(limit)
+            .map(entry -> entry.getKey() + "=" + entry.getValue().get())
+            .collect(Collectors.joining(", "));
     }
 
     private String inferNodeKind(String name, String filePath) {
@@ -821,7 +1161,17 @@ public class Neo4jGraphBuilder {
     private void clearBuffers() {
         classNodes.clear(); interfaceNodes.clear(); methodNodes.clear();
         daoNodes.clear();
-        implementsEdges.clear(); extendsEdges.clear(); hasMethodEdges.clear();
+        implementsEdges.clear(); extendsEdges.clear();
         callsEdges.clear();
+        sysUtilChainDetectCount.set(0);
+        sysUtilVarAssignDetectCount.set(0);
+        sysUtilVarInvokeCount.set(0);
+        sysUtilAcceptedCount.set(0);
+        sysUtilRejectedCount.set(0);
+        sysUtilBufferedEdgeCount.set(0);
+        sysUtilSeenTypes.clear();
+        sysUtilAcceptedTypes.clear();
+        sysUtilRejectedTypes.clear();
+        sysUtilResolvedFqns.clear();
     }
 }

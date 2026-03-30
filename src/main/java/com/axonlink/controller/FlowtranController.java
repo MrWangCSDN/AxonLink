@@ -18,9 +18,9 @@ import java.util.Map;
  *   <li>{@code GET  /api/flowtran/domains}                       — 领域列表（替代 /api/domains）</li>
  *   <li>{@code GET  /api/flowtran/domains/{domainKey}/transactions} — 分页交易列表</li>
  *   <li>{@code GET  /api/flowtran/transactions/{txId}/chain}     — 交易完整链路</li>
- *   <li>{@code POST /api/flowtran/cache/refresh}                 — ServiceNodeCache 热重载</li>
- *   <li>{@code GET  /api/flowtran/cache/stats}                   — 缓存统计</li>
- *   <li>{@code GET  /api/flowtran/env}                           — 当前激活数据源环境</li>
+ *   <li>{@code POST /api/flowtran/cache/refresh}                 — 元数据缓存热重载</li>
+ *   <li>{@code GET  /api/flowtran/cache/stats}                   — 元数据缓存统计</li>
+ *   <li>{@code GET  /api/flowtran/env}                           — 当前运行环境标识</li>
  * </ul>
  */
 @RestController
@@ -41,7 +41,7 @@ public class FlowtranController {
 
     /**
      * 领域列表（完全替代 {@code GET /api/domains}）。
-     * 来源：flowtran 表 GROUP BY domain_key，实时查询。
+     * 来源：Neo4j 交易图实时查询。
      */
     @GetMapping("/domains")
     public R<List<FlowtranDomain>> listDomains() {
@@ -70,7 +70,7 @@ public class FlowtranController {
     }
 
     /**
-     * 交易完整链路（flow_step + ServiceNodeCache 富化）。
+     * 交易完整链路（交易编排 + Neo4j 调用关系 + 元数据缓存富化）。
      *
      * @param txId flowtran.id，如 TC0033
      */
@@ -82,7 +82,7 @@ public class FlowtranController {
     }
 
     /**
-     * 热重载 ServiceNodeCache（不重启服务）。
+     * 热重载元数据缓存（不重启服务）。
      * 可由 Webhook 或运维人员手动触发。
      */
     @PostMapping("/cache/refresh")
@@ -91,7 +91,7 @@ public class FlowtranController {
     }
 
     /**
-     * 查询 ServiceNodeCache 当前统计状态。
+     * 查询元数据缓存当前统计状态。
      */
     @GetMapping("/cache/stats")
     public R<Map<String, Object>> cacheStats() {
@@ -99,7 +99,7 @@ public class FlowtranController {
     }
 
     /**
-     * 查询当前激活的数据源环境标识（FR-009）。
+     * 查询当前运行环境标识（FR-009）。
      */
     @GetMapping("/env")
     public R<Map<String, Object>> env() {

@@ -109,7 +109,12 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import loader from '@monaco-editor/loader'
+import * as monacoBundle from 'monaco-editor'
+import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
+import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
+import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
+import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 
 // ── Props / Emits ────────────────────────────────────────────────────────────
 const props = defineProps({
@@ -175,7 +180,17 @@ async function initMonaco() {
   if (initialized) return
   initialized = true
 
-  monaco = await loader.init()
+  globalThis.MonacoEnvironment = {
+    getWorker(_, label) {
+      if (label === 'json') return new jsonWorker()
+      if (label === 'css' || label === 'scss' || label === 'less') return new cssWorker()
+      if (label === 'html' || label === 'handlebars' || label === 'razor' || label === 'xml') return new htmlWorker()
+      if (label === 'typescript' || label === 'javascript') return new tsWorker()
+      return new editorWorker()
+    }
+  }
+
+  monaco = monacoBundle
 
   // macOS/Linux 绝对路径（'/path/to/file'）转 Monaco URI 的辅助函数
   // 正确格式：file:// + /path/to/file = file:///path/to/file（三斜杠）

@@ -1,7 +1,9 @@
 package com.axonlink.controller;
 
 import com.axonlink.config.Neo4jConfig;
+import com.axonlink.service.FlowServiceMetadataResolver;
 import com.axonlink.service.ProjectIndexer;
+import com.axonlink.service.FlowServiceMetadataResolver.ServiceTypeFileMeta;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
@@ -49,6 +51,9 @@ public class SourceController {
 
     @Autowired(required = false)
     private Driver driver;
+
+    @Autowired
+    private FlowServiceMetadataResolver flowServiceMetadataResolver;
 
     @Autowired
     private Neo4jConfig neo4jConfig;
@@ -126,17 +131,20 @@ public class SourceController {
             @RequestParam(required = false, defaultValue = "") String nodeType,
             @RequestParam(required = false, defaultValue = "") String nodePrefix) {
         try {
-            if (!neo4jConfig.isEnabled() || driver == null) {
-                return ResponseEntity.notFound().build();
-            }
             if ("orchestration".equalsIgnoreCase(nodeType)) {
+                if (!neo4jConfig.isEnabled() || driver == null) {
+                    return ResponseEntity.notFound().build();
+                }
                 return resolveTransactionXml(txId);
             }
             if ("method".equalsIgnoreCase(nodePrefix)) {
+                if (!neo4jConfig.isEnabled() || driver == null) {
+                    return ResponseEntity.notFound().build();
+                }
                 return resolveTransactionMethod(txId, nodeCode);
             }
             if (nodeCode.contains(".")) {
-                return resolveServiceTypeXml(nodeCode);
+                return resolveServiceTypeSource(nodeCode);
             }
             return ResponseEntity.notFound().build();
         } catch (Exception e) {
@@ -222,28 +230,85 @@ public class SourceController {
         }
     }
 
-    private ResponseEntity<Map<String, Object>> resolveServiceTypeXml(String nodeCode) {
+    private ResponseEntity<Map<String, Object>> resolveServiceTypeSource(String nodeCode) {
         String serviceTypeId = splitLeft(nodeCode);
         String serviceId = splitRight(nodeCode);
         if (isBlank(serviceTypeId) || isBlank(serviceId)) {
             return ResponseEntity.notFound().build();
         }
 
+        Optional<Map<String, Object>> implementation = resolveServiceImplementation(serviceTypeId, serviceId);
+        if (implementation.isPresent()) {
+            return ResponseEntity.ok(implementation.get());
+        }
+
+        return resolveServiceTypeXml(serviceTypeId, serviceId);
+    }
+
+    private Optional<Map<String, Object>> resolveServiceImplementation(String serviceTypeId, String serviceId) {
+        if (!neo4jConfig.isEnabled() || driver == null) {
+            return Optional.empty();
+        }
+
         try (Session session = driver.session()) {
             List<Record> records = session.run(
-                    "MATCH (stype:ServiceType {id: $serviceTypeId})-[:DECLARES_OPERATION]->(op:ServiceOperation {serviceId: $serviceId}) " +
-                    "RETURN stype.filePath AS filePath, op.serviceId AS serviceId LIMIT 1",
+                    "MATCH (op:ServiceOperation {serviceTypeId: $serviceTypeId, serviceId: $serviceId}) " +
+                    "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(m:Method) " +
+                    "RETURN m.classFqn AS classFqn, m.name AS implMethodName, op.methodName AS methodName " +
+                    "ORDER BY CASE WHEN m.classFqn IS NULL THEN 1 ELSE 0 END, m.classFqn, m.name " +
+                    "LIMIT 1",
                     Values.parameters("serviceTypeId", serviceTypeId, "serviceId", serviceId)).list();
             if (records.isEmpty()) {
-                return ResponseEntity.notFound().build();
+                return Optional.empty();
             }
-            String filePath = stringValue(records.get(0), "filePath");
-            String resolvedServiceId = stringValue(records.get(0), "serviceId");
-            if (isBlank(filePath)) {
-                return ResponseEntity.notFound().build();
+
+            Record record = records.get(0);
+            String classFqn = stringValue(record, "classFqn");
+            String methodName = firstNonBlank(stringValue(record, "implMethodName"), stringValue(record, "methodName"));
+            if (isBlank(classFqn) || isBlank(methodName)) {
+                return Optional.empty();
             }
-            return ResponseEntity.ok(pointer(preferSourceMetadataPath(filePath).toString(), "", "<service id=\"" + resolvedServiceId + "\"", "xml"));
+
+            Optional<Path> file = projectIndexer.findByFqn(classFqn);
+            if (file.isEmpty()) {
+                String className = classFqn.contains(".")
+                        ? classFqn.substring(classFqn.lastIndexOf('.') + 1)
+                        : classFqn;
+                file = projectIndexer.findBySimpleName(className);
+            }
+            if (file.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(pointer(file.get().toString(), methodName, "", "java"));
         }
+    }
+
+    private ResponseEntity<Map<String, Object>> resolveServiceTypeXml(String serviceTypeId, String serviceId) {
+        Optional<ServiceTypeFileMeta> fileMeta = flowServiceMetadataResolver.findByTypeId(serviceTypeId);
+        String filePath = fileMeta.map(ServiceTypeFileMeta::preferredXmlPath).orElse(null);
+        String resolvedServiceId = serviceId;
+
+        if (neo4jConfig.isEnabled() && driver != null) {
+            try (Session session = driver.session()) {
+                List<Record> records = session.run(
+                        "MATCH (stype:ServiceType {id: $serviceTypeId})-[:DECLARES_OPERATION]->(op:ServiceOperation {serviceId: $serviceId}) " +
+                        "RETURN stype.filePath AS filePath, op.serviceId AS serviceId LIMIT 1",
+                        Values.parameters("serviceTypeId", serviceTypeId, "serviceId", serviceId)).list();
+                if (!records.isEmpty()) {
+                    filePath = firstNonBlank(stringValue(records.get(0), "filePath"), filePath);
+                    resolvedServiceId = firstNonBlank(stringValue(records.get(0), "serviceId"), serviceId);
+                }
+            }
+        }
+
+        if (isBlank(filePath)) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String locateText = filePath.endsWith("Impl.xml")
+                ? resolvedServiceId
+                : "<service id=\"" + resolvedServiceId + "\"";
+        return ResponseEntity.ok(pointer(preferSourceMetadataPath(filePath).toString(), "", locateText, "xml"));
     }
 
     private Map<String, Object> buildResponse(Path path, String methodName) throws IOException {

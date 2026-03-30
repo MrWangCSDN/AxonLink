@@ -9,45 +9,43 @@
 
 # ┌──────────────────────────────────────────────────────────┐
 # │  环境 A：外网本地（开发/测试，默认）                       │
-# │  数据库：阿里云 RDS  mall_admin                           │
+# │  图数据库：本地 Neo4j                                     │
 # │  源码路径：macOS 本机                                     │
 # └──────────────────────────────────────────────────────────┘
-spring:
-  datasource:
-    url: jdbc:mysql://rm-uf65l2bqe8kpu0e219o.mysql.rds.aliyuncs.com:3306/mall_admin?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&allowMultiQueries=true&rewriteBatchedStatements=true
-    username: mall
-    password: Liang@201314
+neo4j:
+  enabled: true
+  uri: bolt://127.0.0.1:7687
+  username: neo4j
+  password: axonlink123
 
 project:
   workspace-roots: /Users/wangshanhe/Desktop/myproject/sunline/sunline
 
 callgraph:
-  enabled: true
   include-packages: cn.sunline.ltts.busi
 
 flowtran:
-  datasource: local          # local=mall_admin（外网本地） | intranet=benchmarkdb（内网）
+  datasource: local
 
 
 # ┌──────────────────────────────────────────────────────────┐
 # │  环境 B：内网 Linux（生产/联调）                           │
-# │  数据库：内网 MySQL  21.64.203.16  benchmarkdb            │
+# │  图数据库：内网 Neo4j                                      │
 # │  源码路径：/home/cbs/code                                 │
 # │                                                          │
 # │  使用方法：注释掉上方「环境 A」所有内容，取消下方注释即可。 │
 # └──────────────────────────────────────────────────────────┘
-# spring:
-#   datasource:
-#     url: jdbc:mysql://21.64.203.16:3306/benchmarkdb?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
-#     username: benchmark
-#     password: benchmark123
+# neo4j:
+#   enabled: true
+#   uri: bolt://127.0.0.1:7687
+#   username: neo4j
+#   password: your-password
 #
 # project:
 #   workspace-roots: /home/cbs/code
 #
 # callgraph:
-#   enabled: true
 #   include-packages: com.spdb.ccbs
 #
 # flowtran:
-#   datasource: intranet     # local=mall_admin（外网本地） | intranet=benchmarkdb（内网）
+#   datasource: intranet

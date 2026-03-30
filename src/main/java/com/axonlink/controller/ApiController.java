@@ -1,9 +1,12 @@
 package com.axonlink.controller;
 
 import com.axonlink.common.R;
-import com.axonlink.service.ChainService;
+import com.axonlink.dto.FlowtranDomain;
+import com.axonlink.service.FlowtranService;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -16,10 +19,10 @@ import java.util.Map;
 @RequestMapping("/api")
 public class ApiController {
 
-    private final ChainService chainService;
+    private final FlowtranService flowtranService;
 
-    public ApiController(ChainService chainService) {
-        this.chainService = chainService;
+    public ApiController(FlowtranService flowtranService) {
+        this.flowtranService = flowtranService;
     }
 
     /**
@@ -28,6 +31,14 @@ public class ApiController {
      */
     @GetMapping("/system/stats")
     public R<Map<String, Object>> stats() {
-        return R.ok(chainService.getSystemStats());
+        List<FlowtranDomain> domains = flowtranService.listDomains();
+        long totalTransactions = domains.stream().mapToLong(FlowtranDomain::getTxCount).sum();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("totalDomains", domains.size());
+        result.put("totalTransactions", totalTransactions);
+        result.put("status", "normal");
+        result.put("statusText", "系统运行正常");
+        return R.ok(result);
     }
 }

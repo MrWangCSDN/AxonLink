@@ -5,7 +5,9 @@ import com.axonlink.dto.FlowtranDomain;
 import com.axonlink.dto.FlowtranTransaction;
 import com.axonlink.dto.NodeCacheEntry;
 import com.axonlink.service.FlowtranService;
+import com.axonlink.service.FlowServiceMetadataResolver;
 import com.axonlink.service.ServiceNodeCache;
+import com.axonlink.service.FlowServiceMetadataResolver.ServiceTypeFileMeta;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
@@ -76,11 +78,16 @@ public class FlowtranServiceImpl implements FlowtranService {
     private final Driver driver;
     private final Neo4jConfig neo4jConfig;
     private final ServiceNodeCache serviceNodeCache;
+    private final FlowServiceMetadataResolver flowServiceMetadataResolver;
 
-    public FlowtranServiceImpl(Driver driver, Neo4jConfig neo4jConfig, ServiceNodeCache serviceNodeCache) {
+    public FlowtranServiceImpl(Driver driver,
+                               Neo4jConfig neo4jConfig,
+                               ServiceNodeCache serviceNodeCache,
+                               FlowServiceMetadataResolver flowServiceMetadataResolver) {
         this.driver = driver;
         this.neo4jConfig = neo4jConfig;
         this.serviceNodeCache = serviceNodeCache;
+        this.flowServiceMetadataResolver = flowServiceMetadataResolver;
     }
 
     @Override
@@ -197,8 +204,8 @@ public class FlowtranServiceImpl implements FlowtranService {
 
             List<Map<String, Object>> orchestration = List.of(node("code", tx.id, "name", tx.longname));
             LinkedHashMap<String, LogicalSeed> topServiceSeeds = new LinkedHashMap<>();
-            LinkedHashMap<String, LogicalSeed> calledServiceSeeds = new LinkedHashMap<>();
             LinkedHashMap<String, LogicalSeed> componentSeeds = new LinkedHashMap<>();
+            LinkedHashSet<String> rootServiceCodes = new LinkedHashSet<>();
 
             LinkedHashMap<String, Map<String, Object>> serviceLayer = new LinkedHashMap<>();
             LinkedHashMap<String, Map<String, Object>> componentLayer = new LinkedHashMap<>();
@@ -218,6 +225,7 @@ public class FlowtranServiceImpl implements FlowtranService {
                 } else {
                     serviceLayer.putIfAbsent(step.code, displayNode(step.code, step.name, step.prefix, tx.domainKey, step.domainKey));
                     topServiceSeeds.merge(step.code, seed, LogicalSeed::merge);
+                    rootServiceCodes.add(step.code);
                 }
             }
             BoundaryResolver resolver = new BoundaryResolver(session);
@@ -225,13 +233,22 @@ public class FlowtranServiceImpl implements FlowtranService {
             Map<String, List<String>> serviceToComponent = new LinkedHashMap<>();
             Map<String, List<String>> componentToComponent = new LinkedHashMap<>();
             Map<String, List<String>> componentToData = new LinkedHashMap<>();
+            Map<String, List<String>> nodeToData = new LinkedHashMap<>();
 
-            for (LogicalSeed seed : topServiceSeeds.values()) {
+            List<LogicalSeed> serviceQueue = new ArrayList<>(topServiceSeeds.values());
+            for (int i = 0; i < serviceQueue.size(); i++) {
+                LogicalSeed seed = topServiceSeeds.getOrDefault(serviceQueue.get(i).code, serviceQueue.get(i));
                 BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
                 for (LogicalSeed target : directTargets.serviceTargets.values()) {
                     serviceLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
-                    calledServiceSeeds.merge(target.code, target, LogicalSeed::merge);
                     addRelation(serviceToService, seed.code, target.code);
+                    LogicalSeed existing = topServiceSeeds.get(target.code);
+                    if (existing == null) {
+                        topServiceSeeds.put(target.code, target);
+                        serviceQueue.add(target);
+                    } else {
+                        topServiceSeeds.put(target.code, existing.merge(target));
+                    }
                 }
                 for (LogicalSeed target : directTargets.componentTargets.values()) {
                     componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
@@ -241,25 +258,13 @@ public class FlowtranServiceImpl implements FlowtranService {
                 for (String table : directTargets.tables) {
                     dataLayer.putIfAbsent(table, node("code", table, "name", table));
                     addRelation(componentToData, seed.code, table);
-                }
-            }
-
-            for (LogicalSeed seed : calledServiceSeeds.values()) {
-                BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
-                for (LogicalSeed target : directTargets.componentTargets.values()) {
-                    componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
-                    componentSeeds.merge(target.code, target, LogicalSeed::merge);
-                    addRelation(serviceToComponent, seed.code, target.code);
-                }
-                for (String table : directTargets.tables) {
-                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
-                    addRelation(componentToData, seed.code, table);
+                    addRelation(nodeToData, seed.code, table);
                 }
             }
 
             List<LogicalSeed> componentQueue = new ArrayList<>(componentSeeds.values());
             for (int i = 0; i < componentQueue.size(); i++) {
-                LogicalSeed seed = componentQueue.get(i);
+                LogicalSeed seed = componentSeeds.getOrDefault(componentQueue.get(i).code, componentQueue.get(i));
                 BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
                 for (LogicalSeed target : directTargets.componentTargets.values()) {
                     componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
@@ -275,14 +280,17 @@ public class FlowtranServiceImpl implements FlowtranService {
                 for (String table : directTargets.tables) {
                     dataLayer.putIfAbsent(table, node("code", table, "name", table));
                     addRelation(componentToData, seed.code, table);
+                    addRelation(nodeToData, seed.code, table);
                 }
             }
 
             Map<String, Object> relations = new LinkedHashMap<>();
+            relations.put("rootServices", new ArrayList<>(rootServiceCodes));
             relations.put("serviceToService", serviceToService);
             relations.put("serviceToComponent", serviceToComponent);
             relations.put("componentToComponent", componentToComponent);
             relations.put("componentToData", componentToData);
+            relations.put("nodeToData", nodeToData);
 
             Map<String, Object> chain = new LinkedHashMap<>();
             chain.put("orchestration", orchestration);
@@ -377,18 +385,22 @@ public class FlowtranServiceImpl implements FlowtranService {
                 prefix = "method";
                 signatures = listAsStrings(record.get("resolvedSignatures"));
             } else {
+                String serviceTypeId = stringValue(record, "serviceTypeId");
                 String serviceName = firstNonBlank(
                     stringValue(record, "serviceName"),
-                    buildServiceCode(stringValue(record, "serviceTypeId"), stringValue(record, "serviceId")),
+                    buildServiceCode(serviceTypeId, stringValue(record, "serviceId")),
                     stringValue(record, "stepId"));
                 Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.get(serviceName);
+                Optional<ServiceTypeFileMeta> fileMeta = resolveServiceFileMeta(serviceTypeId);
                 prefix = normalizePrefix(firstNonBlank(
                     stringValue(record, "nodeKind"),
                     cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null),
+                    fileMeta.map(ServiceTypeFileMeta::getNodeKind).orElse(null),
                     "pbs"));
                 domainKey = firstNonBlank(
                     stringValue(record, "serviceDomainKey"),
-                    cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null));
+                    cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null),
+                    fileMeta.map(ServiceTypeFileMeta::getDomainKey).orElse(null));
                 code = serviceName;
                 signatures = listAsStrings(record.get("implSignatures"));
             }
@@ -432,6 +444,8 @@ public class FlowtranServiceImpl implements FlowtranService {
                         logicalTarget = resolver.resolveByImplementationClass(target.targetFqn, target.edgeMethodName);
                     } else if ("Interface".equals(target.targetLabel)) {
                         logicalTarget = resolver.resolveByInterfaceMethod(target.targetFqn, target.edgeMethodName);
+                    } else if ("ServiceOperation".equals(target.targetLabel)) {
+                        logicalTarget = resolver.resolveByServiceOperation(target.targetServiceTypeId, target.targetServiceId);
                     } else {
                         logicalTarget = Optional.empty();
                     }
@@ -476,7 +490,9 @@ public class FlowtranServiceImpl implements FlowtranService {
             "       target.signature AS targetSignature, " +
             "       target.fqn AS targetFqn, " +
             "       target.name AS targetName, " +
-            "       target.tableName AS tableName",
+            "       target.tableName AS tableName, " +
+            "       target.serviceTypeId AS targetServiceTypeId, " +
+            "       target.serviceId AS targetServiceId",
             Values.parameters("signatures", methodSignatures))
             .forEachRemaining(record -> {
                 String sourceSignature = stringValue(record, "sourceSignature");
@@ -487,7 +503,9 @@ public class FlowtranServiceImpl implements FlowtranService {
                     stringValue(record, "targetSignature"),
                     stringValue(record, "targetFqn"),
                     stringValue(record, "targetName"),
-                    stringValue(record, "tableName")
+                    stringValue(record, "tableName"),
+                    stringValue(record, "targetServiceTypeId"),
+                    stringValue(record, "targetServiceId")
                 ));
             });
         return result;
@@ -498,13 +516,28 @@ public class FlowtranServiceImpl implements FlowtranService {
                                             String prefix,
                                             String txDomainKey,
                                             String nodeDomainKey) {
-        Map<String, Object> node = node(
-            "prefix", prefix,
-            "code", code,
-            "name", name
+        String typeId = resolveTypeId(code);
+        Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.get(code);
+        Optional<ServiceTypeFileMeta> fileMeta = resolveServiceFileMeta(typeId);
+        String resolvedPrefix = normalizePrefix(firstNonBlank(
+            fileMeta.map(ServiceTypeFileMeta::getNodeKind).orElse(null),
+            cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null),
+            prefix
+        ));
+        String resolvedDomainKey = firstNonBlank(
+            fileMeta.map(ServiceTypeFileMeta::getDomainKey).orElse(null),
+            cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null),
+            nodeDomainKey,
+            txDomainKey
         );
-        if (!isBlank(nodeDomainKey) && !nodeDomainKey.equals(txDomainKey)) {
-            node.put("domain", displayDomainName(nodeDomainKey));
+        Map<String, Object> node = node(
+            "prefix", resolvedPrefix,
+            "code", code,
+            "name", name,
+            "domainKey", resolvedDomainKey
+        );
+        if (!isBlank(resolvedDomainKey)) {
+            node.put("domain", displayDomainName(resolvedDomainKey));
         }
         return node;
     }
@@ -544,6 +577,21 @@ public class FlowtranServiceImpl implements FlowtranService {
             return null;
         }
         return serviceTypeId + "." + serviceId;
+    }
+
+    private Optional<ServiceTypeFileMeta> resolveServiceFileMeta(String serviceTypeId) {
+        if (isBlank(serviceTypeId)) {
+            return Optional.empty();
+        }
+        return flowServiceMetadataResolver.findByTypeId(serviceTypeId);
+    }
+
+    private String resolveTypeId(String code) {
+        if (isBlank(code)) {
+            return null;
+        }
+        int split = code.indexOf('.');
+        return split > 0 ? code.substring(0, split) : code;
     }
 
     private String normalizePrefix(String value) {
@@ -613,6 +661,7 @@ public class FlowtranServiceImpl implements FlowtranService {
         private final Map<String, Optional<LogicalSeed>> methodCache = new HashMap<>();
         private final Map<String, Optional<LogicalSeed>> implClassCache = new HashMap<>();
         private final Map<String, Optional<LogicalSeed>> interfaceCache = new HashMap<>();
+        private final Map<String, Optional<LogicalSeed>> operationCache = new HashMap<>();
 
         private BoundaryResolver(Session session) {
             this.session = session;
@@ -673,6 +722,25 @@ public class FlowtranServiceImpl implements FlowtranService {
                 Values.parameters("interfaceFqn", interfaceFqn, "methodName", methodName)));
         }
 
+        private Optional<LogicalSeed> resolveByServiceOperation(String serviceTypeId, String serviceId) {
+            if (isBlank(serviceTypeId) || isBlank(serviceId)) {
+                return Optional.empty();
+            }
+            String cacheKey = serviceTypeId + "." + serviceId;
+            return operationCache.computeIfAbsent(cacheKey, key -> resolveServiceOperation(
+                "MATCH (op:ServiceOperation {serviceTypeId: $serviceTypeId, serviceId: $serviceId}) " +
+                "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(stype:ServiceType) " +
+                "OPTIONAL MATCH (op)-[:IMPLEMENTS_BY]->(impl:Method) " +
+                "RETURN op.serviceTypeId AS serviceTypeId, " +
+                "       op.serviceId AS serviceId, " +
+                "       coalesce(op.longname, op.serviceId, op.methodName) AS serviceName, " +
+                "       stype.nodeKind AS nodeKind, " +
+                "       stype.domainKey AS domainKey, " +
+                "       collect(DISTINCT impl.signature) AS implSignatures " +
+                "LIMIT 1",
+                Values.parameters("serviceTypeId", serviceTypeId, "serviceId", serviceId)));
+        }
+
         private Optional<LogicalSeed> resolveServiceOperation(String cypher, Value parameters) {
             List<Record> records = session.run(cypher, parameters).list();
             if (records.isEmpty()) {
@@ -688,6 +756,7 @@ public class FlowtranServiceImpl implements FlowtranService {
             }
 
             Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.get(code);
+            Optional<ServiceTypeFileMeta> fileMeta = resolveServiceFileMeta(serviceTypeId);
             String name = firstNonBlank(
                 stringValue(record, "serviceName"),
                 cacheEntry.map(NodeCacheEntry::getServiceLongname).orElse(null),
@@ -696,11 +765,13 @@ public class FlowtranServiceImpl implements FlowtranService {
             String prefix = normalizePrefix(firstNonBlank(
                 stringValue(record, "nodeKind"),
                 cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null),
+                fileMeta.map(ServiceTypeFileMeta::getNodeKind).orElse(null),
                 "pbs"
             ));
             String domainKey = firstNonBlank(
                 stringValue(record, "domainKey"),
-                cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null)
+                cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null),
+                fileMeta.map(ServiceTypeFileMeta::getDomainKey).orElse(null)
             );
             return Optional.of(new LogicalSeed(
                 code,
@@ -804,6 +875,8 @@ public class FlowtranServiceImpl implements FlowtranService {
         private final String targetFqn;
         private final String targetName;
         private final String tableName;
+        private final String targetServiceTypeId;
+        private final String targetServiceId;
 
         private CallTarget(String relationType,
                            String edgeMethodName,
@@ -811,7 +884,9 @@ public class FlowtranServiceImpl implements FlowtranService {
                            String targetSignature,
                            String targetFqn,
                            String targetName,
-                           String tableName) {
+                           String tableName,
+                           String targetServiceTypeId,
+                           String targetServiceId) {
             this.relationType = relationType;
             this.edgeMethodName = edgeMethodName;
             this.targetLabel = targetLabel;
@@ -819,6 +894,8 @@ public class FlowtranServiceImpl implements FlowtranService {
             this.targetFqn = targetFqn;
             this.targetName = targetName;
             this.tableName = tableName;
+            this.targetServiceTypeId = targetServiceTypeId;
+            this.targetServiceId = targetServiceId;
         }
     }
 }

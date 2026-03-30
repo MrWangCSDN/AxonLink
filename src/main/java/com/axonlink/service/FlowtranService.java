@@ -9,13 +9,14 @@ import java.util.Map;
 /**
  * flowtran 数据服务接口。
  *
- * <p>以 flowtran / flow_step 表为数据源，驱动 AxonLink 的业务领域和交易展示。
+ * <p>以 Neo4j 中的 Transaction / FlowStep / ServiceType 图数据为数据源，
+ * 驱动 AxonLink 的业务领域和交易展示。
  * 所有方法均不在内部阻塞，连接失败时返回空集合或降级结果。
  */
 public interface FlowtranService {
 
     /**
-     * 查询所有领域列表（按 flowtran.domain_key 分组统计）。
+     * 查询所有领域列表。
      *
      * @return 领域 VO 列表，txCount 为该领域下的交易总数；数据源不可用时返回空列表
      */
@@ -33,10 +34,10 @@ public interface FlowtranService {
     Map<String, Object> listTransactions(String domainKey, int page, int size, String keyword);
 
     /**
-     * 查询某交易的完整调用链路（flow_step 步骤 + ServiceNodeCache 富化）。
+     * 查询某交易的完整调用链路（交易编排 + Neo4j 调用关系 + 元数据缓存富化）。
      *
      * @param txId flowtran.id，如 {@code TC0033}
-     * @return FlowtranChain VO；txId 不存在时返回 null；缓存尚未就绪时返回原始节点 + cacheStatus
+     * @return FlowtranChain VO；txId 不存在时返回 null
      */
     Map<String, Object> getChain(String txId);
 }

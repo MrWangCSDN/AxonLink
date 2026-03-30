@@ -21,7 +21,6 @@
 
     <properties>
         <java.version>17</java.version>
-        <mybatis-plus.version>3.5.4</mybatis-plus.version>
         <node.version>v20.11.0</node.version>
         <npm.version>10.2.4</npm.version>
     </properties>
@@ -38,27 +37,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-
-        <!-- MyBatis-Plus -->
-        <dependency>
-            <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
-            <version>${mybatis-plus.version}</version>
-        </dependency>
-
-        <!-- MySQL -->
-        <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-
-        <!-- 连接池 -->
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>druid-spring-boot-3-starter</artifactId>
-            <version>1.2.20</version>
         </dependency>
 
         <!-- Lombok 已移除，所有类使用手写 getter/setter/constructor -->

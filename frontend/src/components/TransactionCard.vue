@@ -68,16 +68,6 @@
       @close="apiTester.visible = false"
     />
 
-    <!-- 影响图谱面板 -->
-    <ImpactGraphPanel
-      :visible="impactPanel.visible"
-      :node="impactPanel.node"
-      :node-type="impactPanel.nodeType"
-      :reg="impactPanel.reg"
-      :is-dark="isDark"
-      @close="impactPanel.visible = false"
-    />
-
     <!-- 代码查看弹窗（Monaco Editor）
          使用 v-show 而非 v-if：组件常驻 DOM，关闭时只隐藏不销毁，
          保留 Monaco 的 openTabs 状态，再次打开时标签页仍在。 -->
@@ -251,26 +241,16 @@
                   <template v-for="node in orchestrationServices" :key="node.code">
                     <!-- 服务节点 -->
                     <div :data-scode="node.code" class="chain-node service-node"
-                      :class="{ 'node-selected': activePath.service === node.code }"
+                      :class="{ 'node-selected': selectedServices.has(node.code) }"
                       @click.stop="selectOrchService(node.code)">
                       <div class="node-header">
                         <span class="node-prefix" :class="`prefix-${node.prefix}`">{{ node.prefix }}</span>
                         <span class="node-code-service">{{ node.code }}</span>
                         <div class="node-header-actions">
-                          <svg v-if="activePath.service === node.code" class="node-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                          <svg v-if="selectedServices.has(node.code)" class="node-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <circle cx="7" cy="7" r="6" fill="#12B886"/>
                             <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                           </svg>
-                          <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'service')" title="影响图谱">
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                              <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
-                              <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
-                              <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
-                              <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
-                              <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
-                              <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-                            </svg>
-                          </button>
                           <button class="code-view-btn" @click.stop="openCodeViewer(node, 'service')" title="查看代码">
                             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                               <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -304,26 +284,16 @@
                 <div class="svc-inner-nodes">
                   <div v-for="node in activeCalledServices" :key="node.code" :data-scode="node.code"
                     class="chain-node service-node pcs-service-node"
-                    :class="{ 'node-selected': activePath.calledSvc === node.code }"
+                    :class="{ 'node-selected': selectedServices.has(node.code) }"
                     @click.stop="selectCalledSvc(node.code)">
                     <div class="node-header">
                       <span class="node-prefix" :class="`prefix-${node.prefix}`">{{ node.prefix }}</span>
                       <span class="node-code-service">{{ node.code }}</span>
                       <div class="node-header-actions">
-                        <svg v-if="activePath.calledSvc === node.code" class="node-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <svg v-if="selectedServices.has(node.code)" class="node-check" width="14" height="14" viewBox="0 0 14 14" fill="none">
                           <circle cx="7" cy="7" r="6" fill="#12B886"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
-                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'service')" title="影响图谱">
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
-                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
-                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
-                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
-                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
-                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-                          </svg>
-                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'service')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -398,16 +368,6 @@
                           <circle cx="7" cy="7" r="6" fill="#F76707"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
-                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'component')" title="影响图谱">
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
-                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
-                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
-                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
-                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
-                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-                          </svg>
-                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'component')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -450,16 +410,6 @@
                           <circle cx="7" cy="7" r="6" fill="#7950F2"/>
                           <path d="M4 7l2.5 2.5 4-4" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
-                        <button class="code-view-btn impact-btn" @click.stop="openImpactPanel(node, 'component')" title="影响图谱">
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <circle cx="6" cy="6" r="1.5" fill="currentColor"/>
-                            <circle cx="6" cy="1.5" r="1" fill="currentColor"/>
-                            <circle cx="6" cy="10.5" r="1" fill="currentColor"/>
-                            <circle cx="1.5" cy="6" r="1" fill="currentColor"/>
-                            <circle cx="10.5" cy="6" r="1" fill="currentColor"/>
-                            <path d="M6 3v1.5M6 7.5V9M3 6h1.5M7.5 6H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-                          </svg>
-                        </button>
                         <button class="code-view-btn" @click.stop="openCodeViewer(node, 'component')" title="查看代码">
                           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M4 2.5L1.5 6 4 9.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -518,7 +468,6 @@
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import MonacoCodeViewer from './MonacoCodeViewer.vue'
 import ApiTester from './ApiTester.vue'
-import ImpactGraphPanel from './ImpactGraphPanel.vue'
 
 const props = defineProps({
   transaction:     { type: Object,  required: true },
@@ -565,16 +514,14 @@ const DOMAIN_COLORS = {
 const domainStyle = (d) => DOMAIN_COLORS[d] || { bg: '#F3F4F6', color: '#374151', border: '#D1D5DB' }
 const isCrossDomain = (node) => node.domain && node.domain !== props.transaction.domain
 
-// ======== 方案一：线性路径下钻（含构件层级）========
-// 路径：service → calledSvc → bizComp(pbcb/pbcp) → techComp(pbcc/pbct) → 数据层
-const activePath = reactive({ service: null, calledSvc: null, bizComp: null, techComp: null })
-// 兼容旧 activePath.component 引用
-Object.defineProperty(activePath, 'component', {
-  get: () => activePath.bizComp || activePath.techComp,
-  enumerable: false
+const relations = computed(() => props.transaction.chain.relations || {
+  rootServices: [],
+  serviceToService: {},
+  serviceToComponent: {},
+  componentToComponent: {},
+  componentToData: {},
+  nodeToData: {}
 })
-
-const relations = computed(() => props.transaction.chain.relations || { serviceToComponent: {}, componentToData: {} })
 
 const hasSvcToSvc = computed(() => Object.keys(relations.value.serviceToService || {}).length > 0)
 
@@ -584,8 +531,6 @@ const TECH_PREFIXES = new Set(['pbcc', 'pbct'])   // 公共/技术构件
 
 const bizComps  = computed(() => props.transaction.chain.component.filter(c => BIZ_PREFIXES.has(c.prefix)))
 const techComps = computed(() => props.transaction.chain.component.filter(c => TECH_PREFIXES.has(c.prefix)))
-const hasBizComps  = computed(() => bizComps.value.length > 0)
-const hasTechComps = computed(() => techComps.value.length > 0)
 
 // 构件间调用关系（pbcb/pbcp → pbcc/pbct）
 const compCallSvgRef = ref(null)
@@ -593,229 +538,234 @@ const compLayerRef   = ref(null)
 const compCallArrows = ref([])
 const compCallSvgSize = reactive({ w: 0, h: 0 })
 
-// 选中 bizComp 时，关联的 techComps
-const linkedTechComps = computed(() => {
-  if (!activePath.bizComp) return new Set()
-  return new Set(relations.value.componentToComponent?.[activePath.bizComp] || [])
+const serviceNodeMap = computed(() =>
+  new Map((props.transaction.chain.service || []).map(node => [node.code, node]))
+)
+const componentNodeMap = computed(() =>
+  new Map((props.transaction.chain.component || []).map(node => [node.code, node]))
+)
+
+const serviceToServiceMap = computed(() => relations.value.serviceToService || {})
+const serviceToComponentMap = computed(() => relations.value.serviceToComponent || {})
+const componentToComponentMap = computed(() => relations.value.componentToComponent || {})
+const nodeToDataMap = computed(() => relations.value.nodeToData || relations.value.componentToData || {})
+
+// ======== 服务路径下钻（serviceTrail）+ 构件层级下钻 ========
+const activePath = reactive({ serviceTrail: [], bizComp: null, techComp: null })
+Object.defineProperty(activePath, 'service', {
+  get: () => activePath.serviceTrail[0] || null,
+  enumerable: false
+})
+Object.defineProperty(activePath, 'calledSvc', {
+  get: () => activePath.serviceTrail.length ? activePath.serviceTrail[activePath.serviceTrail.length - 1] : null,
+  enumerable: false
+})
+Object.defineProperty(activePath, 'component', {
+  get: () => activePath.bizComp || activePath.techComp,
+  enumerable: false
 })
 
 const calledByCodes = computed(() => {
   const set = new Set()
-  Object.values(relations.value.serviceToService || {}).forEach(list => list.forEach(c => set.add(c)))
+  Object.values(serviceToServiceMap.value).forEach(list => (list || []).forEach(code => set.add(code)))
   return set
 })
 
-// 流程编排层（不在编码调用集合中的服务）
+const rootServiceCodes = computed(() => {
+  const configured = new Set(relations.value.rootServices || [])
+  if (configured.size) {
+    return configured
+  }
+  const inferred = new Set()
+  ;(props.transaction.chain.service || []).forEach(node => {
+    if (!calledByCodes.value.has(node.code)) inferred.add(node.code)
+  })
+  return inferred
+})
+
 const orchestrationServices = computed(() =>
-  hasSvcToSvc.value
-    ? props.transaction.chain.service.filter(s => !calledByCodes.value.has(s.code))
-    : props.transaction.chain.service
+  (props.transaction.chain.service || []).filter(node => rootServiceCodes.value.has(node.code))
 )
-
-// 编码调用层（被其他服务 s2s 调用的服务）
 const calledServices = computed(() =>
-  props.transaction.chain.service.filter(s => calledByCodes.value.has(s.code))
+  (props.transaction.chain.service || []).filter(node => !rootServiceCodes.value.has(node.code))
 )
 
-// 是否有任何激活路径
-const hasSelection = computed(() => !!(activePath.service || activePath.calledSvc || activePath.component))
+const selectedServiceCode = computed(() =>
+  activePath.serviceTrail.length ? activePath.serviceTrail[activePath.serviceTrail.length - 1] : null
+)
 
-// 路径摘要（面包屑式显示）
+const hasSelection = computed(() =>
+  activePath.serviceTrail.length > 0 || !!(activePath.bizComp || activePath.techComp)
+)
+
 const selectionSummary = computed(() => {
-  const parts = []
-  if (activePath.service) {
-    const svc = orchestrationServices.value.find(s => s.code === activePath.service)
-    parts.push(svc?.name || activePath.service)
-  }
-  if (activePath.calledSvc) {
-    const svc = calledServices.value.find(s => s.code === activePath.calledSvc)
-    parts.push(svc?.name || activePath.calledSvc)
-  }
+  const parts = activePath.serviceTrail
+    .map(code => serviceNodeMap.value.get(code)?.name || code)
   if (activePath.bizComp) {
-    const c = props.transaction.chain.component.find(n => n.code === activePath.bizComp)
-    parts.push(c?.name || activePath.bizComp)
+    parts.push(componentNodeMap.value.get(activePath.bizComp)?.name || activePath.bizComp)
   }
   if (activePath.techComp) {
-    const c = props.transaction.chain.component.find(n => n.code === activePath.techComp)
-    parts.push(c?.name || activePath.techComp)
+    parts.push(componentNodeMap.value.get(activePath.techComp)?.name || activePath.techComp)
   }
   return parts.join(' → ')
 })
 
-// 编码调用层过滤：选中流程编排服务 → 只显示它调用的编码服务
-const activeCalledServices = computed(() => {
-  if (!activePath.service) return calledServices.value
-  const s2s = relations.value.serviceToService || {}
-  const callees = s2s[activePath.service] || []
-  return calledServices.value.filter(s => callees.includes(s.code))
-})
+const walkClosure = (startCodes, adjacency) => {
+  const visited = new Set()
+  const stack = [...startCodes]
+  while (stack.length) {
+    const code = stack.pop()
+    if (!code || visited.has(code)) continue
+    visited.add(code)
+    ;(adjacency[code] || []).forEach(next => {
+      if (!visited.has(next)) stack.push(next)
+    })
+  }
+  return visited
+}
 
-// 当前可见编码调用服务的构件集合（选中流程编排服务时使用）
-const componentCodesOfCalledSvcs = computed(() => {
-  const s2c = relations.value.serviceToComponent || {}
-  const set = new Set()
-  activeCalledServices.value.forEach(svc => {
-    ;(s2c[svc.code] || []).forEach(c => set.add(c))
+const directServiceChildren = (code) => serviceToServiceMap.value[code] || []
+const directComponentChildren = (code) => componentToComponentMap.value[code] || []
+const directNodeTables = (code) => nodeToDataMap.value[code] || []
+
+const collectServiceClosure = (startCode, { includeStart = true } = {}) => {
+  if (!startCode) return new Set()
+  const closure = walkClosure([startCode], serviceToServiceMap.value)
+  if (!includeStart) closure.delete(startCode)
+  return closure
+}
+
+const collectComponentClosure = (startCodes, { includeStart = true } = {}) => {
+  const closure = walkClosure(startCodes, componentToComponentMap.value)
+  if (!includeStart) {
+    startCodes.forEach(code => closure.delete(code))
+  }
+  return closure
+}
+
+const collectComponentsForService = (serviceCode) => {
+  const services = collectServiceClosure(serviceCode)
+  const directComponents = new Set()
+  services.forEach(code => {
+    ;(serviceToComponentMap.value[code] || []).forEach(compCode => directComponents.add(compCode))
   })
-  return set
-})
+  const allComponents = new Set(directComponents)
+  collectComponentClosure([...directComponents], { includeStart: false }).forEach(code => allComponents.add(code))
+  return allComponents
+}
 
-/**
- * 获取某个构件（含 biz/tech 两级）对应的所有数据表
- * - pbcc/pbct：直接 componentToData
- * - pbcb/pbcp：先通过 componentToComponent 找到 tech 构件，再找数据表
- */
-const getDataTablesForComp = (compCode) => {
-  const c2c = relations.value.componentToComponent || {}
-  const c2d = relations.value.componentToData || {}
+const collectTablesForComponent = (componentCode) => {
+  const components = collectComponentClosure([componentCode])
   const tables = new Set()
-  // 直接映射（技术构件）
-  ;(c2d[compCode] || []).forEach(t => tables.add(t))
-  // 经由业务构件 → 技术构件
-  ;(c2c[compCode] || []).forEach(techCode => {
-    ;(c2d[techCode] || []).forEach(t => tables.add(t))
+  components.forEach(code => {
+    directNodeTables(code).forEach(table => tables.add(table))
   })
   return tables
 }
 
-/** 获取某个服务对应的所有数据表（跟随 s2c → c2c → c2d） */
-const getDataTablesForSvc = (svcCode) => {
-  const s2c = relations.value.serviceToComponent || {}
-  const set = new Set()
-  ;(s2c[svcCode] || []).forEach(compCode => {
-    getDataTablesForComp(compCode).forEach(t => set.add(t))
+const collectTablesForService = (serviceCode) => {
+  const services = collectServiceClosure(serviceCode)
+  const tables = new Set()
+  services.forEach(code => {
+    directNodeTables(code).forEach(table => tables.add(table))
   })
-  return set
+  collectComponentsForService(serviceCode).forEach(code => {
+    directNodeTables(code).forEach(table => tables.add(table))
+  })
+  return tables
 }
 
-// 当前可见编码调用服务对应的数据表集合（pcs 选中时用）
-const dataCodesOfCalledSvcs = computed(() => {
-  const set = new Set()
-  activeCalledServices.value.forEach(svc => {
-    getDataTablesForSvc(svc.code).forEach(t => set.add(t))
+const activeCalledServices = computed(() => {
+  if (!selectedServiceCode.value) return calledServices.value
+  const nodes = []
+  const added = new Set()
+  activePath.serviceTrail.slice(1).forEach(code => {
+    const current = serviceNodeMap.value.get(code)
+    if (current && !added.has(code)) {
+      nodes.push(current)
+      added.add(code)
+    }
   })
-  return set
+  directServiceChildren(selectedServiceCode.value).forEach(code => {
+    const node = serviceNodeMap.value.get(code)
+    if (node && !added.has(code)) {
+      nodes.push(node)
+      added.add(code)
+    }
+  })
+  return nodes
 })
 
-// 选中单个编码调用服务时，该服务对应的数据表集合
-const dataCodesOfSelectedCalledSvc = computed(() => {
-  if (!activePath.calledSvc) return new Set()
-  return getDataTablesForSvc(activePath.calledSvc)
+const visibleComponentCodes = computed(() => {
+  if (activePath.techComp) return collectComponentClosure([activePath.techComp])
+  if (activePath.bizComp) return collectComponentClosure([activePath.bizComp])
+  if (selectedServiceCode.value) return collectComponentsForService(selectedServiceCode.value)
+  return new Set((props.transaction.chain.component || []).map(node => node.code))
 })
 
-// 选中流程编排服务时，判断它是 pbs（有自己的构件）还是 pcs（通过编码调用传递）
-const selectedServiceOwnComponents = computed(() => {
-  if (!activePath.service) return []
-  return relations.value.serviceToComponent?.[activePath.service] || []
-})
-const selectedServiceIsPbs = computed(() => selectedServiceOwnComponents.value.length > 0)
+const showComponent = (code) => visibleComponentCodes.value.has(code)
 
-/**
- * 构件层过滤（决定哪些构件可见）：
- * - 按 service/calledSvc 过滤出「直接被调用的构件」
- * - bizComp/techComp 属于构件内部的下钻，不在此处过滤
- */
-const showComponent = (code) => {
-  const s2c = relations.value.serviceToComponent || {}
-  if (activePath.calledSvc)         return (s2c[activePath.calledSvc] || []).includes(code)
-  if (activePath.service) {
-    if (selectedServiceIsPbs.value) return selectedServiceOwnComponents.value.includes(code)
-    else                            return componentCodesOfCalledSvcs.value.has(code)
-  }
-  return true
-}
-
-// 可见的业务/产品构件（通过 showComponent 过滤 + pbcb/pbcp）
 const visibleBizComps = computed(() =>
-  bizComps.value.filter(c => showComponent(c.code))
+  bizComps.value.filter(node => showComponent(node.code))
 )
-// 可见的公共/技术构件（通过 showComponent 过滤 + pbcc/pbct；
-// 若选了 bizComp，则再按 componentToComponent 过滤）
-const visibleTechComps = computed(() => {
-  const base = techComps.value.filter(c => showComponent(c.code))
-  // 若服务层有选中且对应构件全走 bizComp，techComps 直接展示由 bizComp 关联的
-  if (activePath.bizComp) {
-    return techComps.value.filter(c => linkedTechComps.value.has(c.code))
-  }
-  // 若服务层选中且存在业务构件但没有直接的技术构件，展示所有业务构件的下级技术构件
-  if ((activePath.service || activePath.calledSvc) && hasBizComps.value && base.length === 0) {
-    const c2c = relations.value.componentToComponent || {}
-    const set = new Set()
-    visibleBizComps.value.forEach(bc => (c2c[bc.code] || []).forEach(t => set.add(t)))
-    return techComps.value.filter(c => set.has(c.code))
-  }
-  return base
-})
+
+const visibleTechComps = computed(() =>
+  techComps.value.filter(node => showComponent(node.code))
+)
 
 const visibleBizCompCount  = computed(() => visibleBizComps.value.length)
 const visibleTechCompCount = computed(() => visibleTechComps.value.length)
 
-// pbs 服务自身构件对应的数据表（跟随 c2c 链路）
-const dataCodesOfOwnComponents = computed(() => {
-  const set = new Set()
-  selectedServiceOwnComponents.value.forEach(c => {
-    getDataTablesForComp(c).forEach(t => set.add(t))
-  })
-  return set
+const visibleDataCodes = computed(() => {
+  if (activePath.techComp) return collectTablesForComponent(activePath.techComp)
+  if (activePath.bizComp) return collectTablesForComponent(activePath.bizComp)
+  if (selectedServiceCode.value) return collectTablesForService(selectedServiceCode.value)
+  return new Set((props.transaction.chain.data || []).map(node => node.code))
 })
 
-/**
- * 数据层过滤规则：
- * - 选了构件 → 只显示该构件的表
- * - 选了编码调用服务 → 显示该服务所有构件的表
- * - 选了流程编排 pbs → 显示该 pbs 构件的表
- * - 选了流程编排 pcs → 显示其编码调用服务的所有表
- */
-const showData = (code) => {
-  const c2d = relations.value.componentToData || {}
-  if (activePath.techComp) return (c2d[activePath.techComp] || []).includes(code)
-  if (activePath.bizComp) {
-    // ① 业务构件直接关联数据表（无中间技术构件）
-    if ((c2d[activePath.bizComp] || []).includes(code)) return true
-    // ② 经由 componentToComponent → 技术构件 → 数据表
-    return [...linkedTechComps.value].some(tc => (c2d[tc] || []).includes(code))
-  }
-  if (activePath.calledSvc) return dataCodesOfSelectedCalledSvc.value.has(code)
-  if (activePath.service) {
-    if (selectedServiceIsPbs.value) return dataCodesOfOwnComponents.value.has(code)
-    else                            return dataCodesOfCalledSvcs.value.has(code)
-  }
-  return true
-}
+const showData = (code) => visibleDataCodes.value.has(code)
 
 // badge 计数
 const visibleComponentCount = computed(() =>
-  props.transaction.chain.component.filter(n => showComponent(n.code)).length
+  (props.transaction.chain.component || []).filter(n => showComponent(n.code)).length
 )
 const visibleDataCount = computed(() =>
-  props.transaction.chain.data.filter(n => showData(n.code)).length
+  (props.transaction.chain.data || []).filter(n => showData(n.code)).length
 )
 
 // ---- 点击处理 ----
-// 点击流程编排服务：设置 service，清除下游
 const selectOrchService = (code) => {
-  if (activePath.service === code) {
-    activePath.service = null; activePath.calledSvc = null
-    activePath.bizComp = null; activePath.techComp  = null
+  if (activePath.serviceTrail.length === 1 && activePath.serviceTrail[0] === code) {
+    activePath.serviceTrail = []
   } else {
-    activePath.service = code; activePath.calledSvc = null
-    activePath.bizComp = null; activePath.techComp  = null
+    activePath.serviceTrail = [code]
   }
-  // 服务选中后构件子框高度变化，需重新计算构件间箭头
+  activePath.bizComp = null
+  activePath.techComp = null
   nextTick(() => { recalcCurves(); recalcServiceCallArrows(); recalcCompCallArrows() })
 }
 
-// 点击编码调用服务：设置 calledSvc，清除下游
 const selectCalledSvc = (code) => {
-  if (activePath.calledSvc === code) {
-    activePath.calledSvc = null; activePath.bizComp = null; activePath.techComp = null
+  const trail = [...activePath.serviceTrail]
+  const last = trail[trail.length - 1]
+
+  if (!trail.length) {
+    activePath.serviceTrail = [code]
+  } else if (last === code) {
+    activePath.serviceTrail = trail.slice(0, -1)
+  } else if (trail.includes(code)) {
+    activePath.serviceTrail = trail.slice(0, trail.indexOf(code) + 1)
+  } else if (directServiceChildren(last).includes(code)) {
+    activePath.serviceTrail = [...trail, code]
   } else {
-    activePath.calledSvc = code; activePath.bizComp = null; activePath.techComp = null
+    activePath.serviceTrail = [code]
   }
+
+  activePath.bizComp = null
+  activePath.techComp = null
   nextTick(() => { recalcCurves(); recalcCompCallArrows() })
 }
 
-// 点击构件：设置 component
 // 点击业务/产品构件（pbcb/pbcp）→ 设置 bizComp，清除 techComp
 const selectBizComp = (code) => {
   activePath.bizComp  = activePath.bizComp === code ? null : code
@@ -837,13 +787,13 @@ const toggleComponent = (code) => {
 }
 
 const resetSelection = () => {
-  activePath.service = null; activePath.calledSvc = null
-  activePath.bizComp = null; activePath.techComp  = null
+  activePath.serviceTrail = []
+  activePath.bizComp = null
+  activePath.techComp  = null
   nextTick(() => { recalcCurves(); recalcServiceCallArrows(); recalcCompCallArrows() })
 }
 
-// 兼容旧引用
-const selectedServices   = computed(() => new Set(activePath.service ? [activePath.service] : []))
+const selectedServices   = computed(() => new Set(activePath.serviceTrail))
 const selectedComponents = computed(() => new Set([activePath.bizComp, activePath.techComp].filter(Boolean)))
 
 // 构件层内部调用箭头（bizComp → techComp）
@@ -2505,14 +2455,6 @@ const closeCodeViewer = () => {
   callSitesPopup.visible = false
 }
 
-// ── 影响图谱面板 ────────────────────────────────────────────────────────────
-const impactPanel = reactive({ visible: false, node: null, nodeType: 'service', reg: null })
-
-const openImpactPanel = (node, nodeType) => {
-  const reg = NODE_FILE_REGISTRY[node.code] || null
-  Object.assign(impactPanel, { visible: true, node, nodeType, reg })
-}
-
 // 打开外部类 Tab（已有则切换，没有则新增）
 const openExternalClass = (className) => {
   const reg = EXTERNAL_REGISTRY[className]
@@ -2741,7 +2683,6 @@ defineExpose({
 .chain-node:hover .code-view-btn { opacity: 1; }
 .code-view-btn:hover { background: rgba(79,124,255,0.12); color: #4F7CFF; border-color: rgba(79,124,255,0.3); }
 .code-view-btn.test-btn:hover { background: rgba(18,184,134,0.12); color: #12B886; border-color: rgba(18,184,134,0.3); }
-.code-view-btn.impact-btn:hover { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.3); }
 
 /* ── 代码查看弹窗（跟随日/夜主题） ── */
 .code-modal-backdrop {

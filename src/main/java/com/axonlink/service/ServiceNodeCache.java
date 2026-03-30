@@ -1,61 +1,62 @@
 package com.axonlink.service;
 
-import com.axonlink.common.DomainKeyResolver;
 import com.axonlink.config.FlowtranConfig;
+import com.axonlink.config.Neo4jConfig;
 import com.axonlink.dto.NodeCacheEntry;
+import com.axonlink.service.FlowServiceMetadataResolver.ServiceTypeFileMeta;
 import jakarta.annotation.PostConstruct;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.Record;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
 /**
- * 服务/构件节点内存缓存，维护两张 Map：
+ * 服务/构件节点元数据缓存。
  *
+ * <p>不再依赖关系型数据库，数据来源统一改为：
  * <ul>
- *   <li><b>nodeMap</b>（完整节点信息）
- *       <br>key = {@code {service_type_id}.{service_id}} / {@code {component_id}.{service_id}}
- *       <br>value = {@link NodeCacheEntry}（名称 + 接口字段 + 节点类型 + 领域）</li>
- *
- *   <li><b>longnameMap</b>（ID 存在标记）
- *       <br>key = {@code service_type_id} / {@code component_id}（主表 ID）
- *       <br>value = {@code 1}（固定值，相当于 Set，用于 O(1) 判断某 ID 是否已注册）</li>
+ *   <li>XML 元数据：{@link FlowServiceMetadataResolver}</li>
+ *   <li>Neo4j 元数据：{@code ServiceType}/{@code ServiceOperation}</li>
  * </ul>
- *
- * <p>两张 Map 在启动时同步加载，不允许在请求链路中发起 DB 查询。
  */
 @Component
 public class ServiceNodeCache {
 
     private static final Logger log = LoggerFactory.getLogger(ServiceNodeCache.class);
 
-    private final JdbcTemplate   jdbcTemplate;
+    private final Driver driver;
+    private final Neo4jConfig neo4jConfig;
     private final FlowtranConfig flowtranConfig;
+    private final FlowServiceMetadataResolver flowServiceMetadataResolver;
 
-    public ServiceNodeCache(JdbcTemplate jdbcTemplate, FlowtranConfig flowtranConfig) {
-        this.jdbcTemplate   = jdbcTemplate;
+    public ServiceNodeCache(Driver driver,
+                            Neo4jConfig neo4jConfig,
+                            FlowtranConfig flowtranConfig,
+                            FlowServiceMetadataResolver flowServiceMetadataResolver) {
+        this.driver = driver;
+        this.neo4jConfig = neo4jConfig;
         this.flowtranConfig = flowtranConfig;
+        this.flowServiceMetadataResolver = flowServiceMetadataResolver;
     }
 
-    // ── Map1：service_type_id.service_id → NodeCacheEntry（完整信息）────────────
-    private final ConcurrentHashMap<String, NodeCacheEntry> nodeMap     = new ConcurrentHashMap<>(8000);
+    private final ConcurrentHashMap<String, NodeCacheEntry> nodeMap = new ConcurrentHashMap<>(8000);
+    private final ConcurrentHashMap<String, NodeCacheEntry> typeIdMap = new ConcurrentHashMap<>(4000);
+    private final ConcurrentHashMap<String, Integer> longnameMap = new ConcurrentHashMap<>(4000);
 
-    // ── Map2：service_type_id / component_id → 1（ID 存在标记，等价于 Set）────────
-    private final ConcurrentHashMap<String, Integer>        longnameMap = new ConcurrentHashMap<>(4000);
-
-    private volatile boolean       loaded         = false;
-    private volatile LocalDateTime loadedAt       = null;
-    private volatile int           serviceCount   = 0;
-    private volatile int           componentCount = 0;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // 启动时异步加载
-    // ─────────────────────────────────────────────────────────────────────────
+    private volatile boolean loaded = false;
+    private volatile LocalDateTime loadedAt = null;
+    private volatile int serviceCount = 0;
+    private volatile int componentCount = 0;
 
     @PostConstruct
     public void init() {
@@ -68,197 +69,240 @@ public class ServiceNodeCache {
         t.start();
     }
 
-    /** 热重载：清空两张 Map，重新加载 */
     public Map<String, Object> reload() {
         nodeMap.clear();
+        typeIdMap.clear();
         longnameMap.clear();
         loaded = false;
         serviceCount = 0;
         componentCount = 0;
+        loadedAt = null;
         return loadAll();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 加载逻辑
-    // ─────────────────────────────────────────────────────────────────────────
+    public Optional<NodeCacheEntry> get(String nodeKey) {
+        if (nodeKey == null || nodeKey.isBlank()) {
+            return Optional.empty();
+        }
+        NodeCacheEntry entry = nodeMap.get(nodeKey);
+        if (entry != null) {
+            return Optional.of(entry);
+        }
+        int split = nodeKey.indexOf('.');
+        if (split > 0) {
+            return Optional.ofNullable(typeIdMap.get(nodeKey.substring(0, split)));
+        }
+        return Optional.ofNullable(typeIdMap.get(nodeKey));
+    }
+
+    public boolean containsTypeId(String typeId) {
+        return typeId != null && typeIdMap.containsKey(typeId);
+    }
+
+    public Optional<NodeCacheEntry> findByTypeId(String typeId) {
+        return Optional.ofNullable(typeId == null ? null : typeIdMap.get(typeId));
+    }
+
+    public boolean isLoaded() {
+        return loaded;
+    }
+
+    public Map<String, Object> getStats() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("loaded", loaded);
+        m.put("serviceCount", serviceCount);
+        m.put("componentCount", componentCount);
+        m.put("totalCount", serviceCount + componentCount);
+        m.put("longnameMapSize", longnameMap.size());
+        m.put("loadedAt", loadedAt != null ? loadedAt.toString() : null);
+        m.put("datasource", flowtranConfig.getDatasource());
+        m.put("mode", "neo4j+xml");
+        return m;
+    }
 
     private Map<String, Object> loadAll() {
-        long t0 = System.currentTimeMillis();
-        log.info("[ServiceNodeCache] 开始全量加载 service/component 四表...");
+        long start = System.currentTimeMillis();
+        log.info("[ServiceNodeCache] 开始加载 XML/Neo4j 元数据缓存...");
         try {
-            int svc  = loadServiceNodes();
-            int comp = loadComponentNodes();
-            serviceCount   = svc;
-            componentCount = comp;
+            flowServiceMetadataResolver.warmUp();
+            Map<String, ServiceTypeFileMeta> metadataMap = new LinkedHashMap<>();
+            for (ServiceTypeFileMeta meta : flowServiceMetadataResolver.allMetadata()) {
+                metadataMap.put(meta.getTypeId(), meta);
+                registerTypeEntry(meta);
+            }
+
+            loadOperationsFromNeo4j(metadataMap);
+
+            serviceCount = countByKind(false);
+            componentCount = countByKind(true);
             loadedAt = LocalDateTime.now();
-            loaded   = true;
-            long elapsed = System.currentTimeMillis() - t0;
-            log.info("[ServiceNodeCache] 加载完成：service={} component={} total={} longnameMap={} 耗时={}ms",
-                     svc, comp, svc + comp, longnameMap.size(), elapsed);
+            loaded = true;
+            log.info("[ServiceNodeCache] 加载完成：service={} component={} total={} mode=neo4j+xml 耗时={}ms",
+                serviceCount,
+                componentCount,
+                serviceCount + componentCount,
+                System.currentTimeMillis() - start);
             return getStats();
         } catch (Exception e) {
-            log.warn("[ServiceNodeCache] 加载失败: {}", e.getMessage());
             loaded = false;
+            log.warn("[ServiceNodeCache] 加载失败: {}", e.getMessage());
             return Map.of("loaded", false, "error", e.getMessage());
         }
     }
 
-    private int loadServiceNodes() {
-        String sql = """
-            SELECT sd.service_type_id, sd.service_id,
-                   sd.service_name, sd.service_longname,
-                   sd.interface_input_field_type,  sd.interface_input_field_multi,
-                   sd.interface_output_field_type, sd.interface_output_field_multi,
-                   s.service_type AS node_kind,
-                   s.package_path
-            FROM service_detail sd
-            JOIN service s ON s.id = sd.service_type_id
-            """;
-        return loadNodes(sql, "service_type_id", "service_id");
-    }
+    private void loadOperationsFromNeo4j(Map<String, ServiceTypeFileMeta> metadataMap) {
+        if (!neo4jConfig.isEnabled() || driver == null) {
+            log.info("[ServiceNodeCache] Neo4j 不可用，仅加载 XML 类型元数据");
+            return;
+        }
 
-    private int loadComponentNodes() {
-        String sql = """
-            SELECT cd.component_id, cd.service_id,
-                   cd.service_name, cd.service_longname,
-                   cd.interface_input_field_type,  cd.interface_input_field_multi,
-                   cd.interface_output_field_type, cd.interface_output_field_multi,
-                   c.component_type AS node_kind,
-                   c.package_path
-            FROM component_detail cd
-            JOIN component c ON c.id = cd.component_id
-            """;
-        return loadNodes(sql, "component_id", "service_id");
-    }
+        try (Session session = driver.session()) {
+            List<Record> rows = session.run(
+                "MATCH (stype:ServiceType) " +
+                "OPTIONAL MATCH (stype)-[:DECLARES_OPERATION]->(op:ServiceOperation) " +
+                "RETURN stype.id AS typeId, " +
+                "       stype.longname AS typeLongname, " +
+                "       stype.nodeKind AS nodeKind, " +
+                "       stype.packagePath AS packagePath, " +
+                "       stype.domainKey AS domainKey, " +
+                "       op.serviceId AS serviceId, " +
+                "       op.methodName AS serviceName, " +
+                "       op.longname AS serviceLongname " +
+                "ORDER BY typeId, serviceId")
+                .list();
 
-    /**
-     * 通用加载：同时写入 nodeMap（按 service_id）和 longnameMap（按 service_name）。
-     *
-     * <pre>
-     * nodeMap    key = {typeIdCol}.{service_id}    value = NodeCacheEntry
-     * longnameMap key = {typeIdCol}.{service_name} value = service_longname
-     * </pre>
-     */
-    private int loadNodes(String sql, String typeIdCol, String serviceIdCol) {
-        List<Map<String, Object>> rows;
-        try {
-            rows = jdbcTemplate.queryForList(sql);
+            for (Record row : rows) {
+                String typeId = stringValue(row, "typeId");
+                if (isBlank(typeId)) {
+                    continue;
+                }
+                ServiceTypeFileMeta fileMeta = metadataMap.get(typeId);
+                registerTypeEntry(typeId, fileMeta, row);
+
+                String serviceId = stringValue(row, "serviceId");
+                if (isBlank(serviceId)) {
+                    continue;
+                }
+
+                String serviceName = firstNonBlank(
+                    stringValue(row, "serviceName"),
+                    serviceId
+                );
+                String serviceLongname = firstNonBlank(
+                    stringValue(row, "serviceLongname"),
+                    stringValue(row, "typeLongname"),
+                    serviceName,
+                    typeId
+                );
+
+                String nodeKind = normalizeNodeKind(firstNonBlank(
+                    stringValue(row, "nodeKind"),
+                    fileMeta != null ? fileMeta.getNodeKind() : null
+                ));
+                String packagePath = firstNonBlank(
+                    stringValue(row, "packagePath"),
+                    fileMeta != null ? fileMeta.getPackagePath() : null
+                );
+                String domainKey = firstNonBlank(
+                    stringValue(row, "domainKey"),
+                    fileMeta != null ? fileMeta.getDomainKey() : null
+                );
+
+                NodeCacheEntry entry = NodeCacheEntry.builder()
+                    .serviceName(serviceName)
+                    .serviceLongname(serviceLongname)
+                    .nodeKind(nodeKind)
+                    .packagePath(packagePath)
+                    .domainKey(domainKey)
+                    .callerKey(typeId + "." + serviceName)
+                    .build();
+                nodeMap.put(typeId + "." + serviceId, entry);
+                typeIdMap.put(typeId, mergeTypeEntry(typeIdMap.get(typeId), entry, typeId));
+                longnameMap.put(typeId, 1);
+            }
         } catch (Exception e) {
-            log.debug("[ServiceNodeCache] 表不存在或查询失败，跳过: {}", e.getMessage());
-            return 0;
+            log.warn("[ServiceNodeCache] 从 Neo4j 加载 ServiceOperation 失败，将仅使用 XML 元数据: {}", e.getMessage());
         }
+    }
 
-        // ── Map1：按 typeId.serviceId 分组聚合 ────────────────────────────────
-        Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            String typeId = str(row, typeIdCol);
-            String svcId  = str(row, serviceIdCol);
-            if (typeId == null || svcId == null) continue;
-            grouped.computeIfAbsent(typeId + "." + svcId, k -> new ArrayList<>()).add(row);
+    private void registerTypeEntry(ServiceTypeFileMeta meta) {
+        registerTypeEntry(meta.getTypeId(), meta, null);
+    }
+
+    private void registerTypeEntry(String typeId, ServiceTypeFileMeta meta, Record row) {
+        NodeCacheEntry entry = NodeCacheEntry.builder()
+            .serviceName(typeId)
+            .serviceLongname(typeId)
+            .nodeKind(normalizeNodeKind(firstNonBlank(
+                row != null ? stringValue(row, "nodeKind") : null,
+                meta != null ? meta.getNodeKind() : null
+            )))
+            .packagePath(firstNonBlank(
+                row != null ? stringValue(row, "packagePath") : null,
+                meta != null ? meta.getPackagePath() : null
+            ))
+            .domainKey(firstNonBlank(
+                row != null ? stringValue(row, "domainKey") : null,
+                meta != null ? meta.getDomainKey() : null
+            ))
+            .callerKey(typeId)
+            .build();
+        typeIdMap.put(typeId, mergeTypeEntry(typeIdMap.get(typeId), entry, typeId));
+        longnameMap.put(typeId, 1);
+    }
+
+    private NodeCacheEntry mergeTypeEntry(NodeCacheEntry existing, NodeCacheEntry incoming, String typeId) {
+        if (existing == null) {
+            return incoming;
         }
+        return NodeCacheEntry.builder()
+            .serviceName(firstNonBlank(existing.getServiceName(), incoming.getServiceName(), typeId))
+            .serviceLongname(firstNonBlank(existing.getServiceLongname(), incoming.getServiceLongname(), typeId))
+            .interfaceInputFieldTypes(firstNonBlank(existing.getInterfaceInputFieldTypes(), incoming.getInterfaceInputFieldTypes()))
+            .interfaceInputFieldMultis(firstNonBlank(existing.getInterfaceInputFieldMultis(), incoming.getInterfaceInputFieldMultis()))
+            .interfaceOutputFieldTypes(firstNonBlank(existing.getInterfaceOutputFieldTypes(), incoming.getInterfaceOutputFieldTypes()))
+            .interfaceOutputFieldMultis(firstNonBlank(existing.getInterfaceOutputFieldMultis(), incoming.getInterfaceOutputFieldMultis()))
+            .nodeKind(firstNonBlank(existing.getNodeKind(), incoming.getNodeKind()))
+            .packagePath(firstNonBlank(existing.getPackagePath(), incoming.getPackagePath()))
+            .domainKey(firstNonBlank(existing.getDomainKey(), incoming.getDomainKey()))
+            .callerKey(firstNonBlank(existing.getCallerKey(), incoming.getCallerKey(), typeId))
+            .build();
+    }
 
-        for (Map.Entry<String, List<Map<String, Object>>> e : grouped.entrySet()) {
-            List<Map<String, Object>> group = e.getValue();
-            Map<String, Object> first = group.get(0);
-            String packagePath = str(first, "package_path");
+    private int countByKind(boolean component) {
+        return (int) nodeMap.values().stream()
+            .filter(entry -> {
+                String kind = normalizeNodeKind(entry.getNodeKind());
+                if (component) {
+                    return kind != null && kind.startsWith("pbc");
+                }
+                return kind != null && !kind.startsWith("pbc");
+            })
+            .count();
+    }
 
-            // callerKey = typeId.serviceName，用于匹配 call_relation 的 caller_id + caller_method
-            String svcName = str(first, "service_name");
-            String typeIdVal = str(first, typeIdCol);
-            String callerKey = (typeIdVal != null && svcName != null) ? typeIdVal + "." + svcName : null;
+    private String normalizeNodeKind(String value) {
+        return isBlank(value) ? null : value.trim().toLowerCase();
+    }
 
-            NodeCacheEntry entry = NodeCacheEntry.builder()
-                .serviceName(svcName)
-                .serviceLongname(str(first, "service_longname"))
-                .interfaceInputFieldTypes(joinNonNull(group, "interface_input_field_type"))
-                .interfaceInputFieldMultis(joinNonNull(group, "interface_input_field_multi"))
-                .interfaceOutputFieldTypes(joinNonNull(group, "interface_output_field_type"))
-                .interfaceOutputFieldMultis(joinNonNull(group, "interface_output_field_multi"))
-                .nodeKind(str(first, "node_kind"))
-                .packagePath(packagePath)
-                .domainKey(DomainKeyResolver.resolve(packagePath))
-                .callerKey(callerKey)
-                .build();
-            nodeMap.put(e.getKey(), entry);
+    private String stringValue(Record record, String key) {
+        if (record == null) {
+            return null;
         }
+        Value value = record.get(key);
+        return value == null || value.isNull() ? null : value.asString();
+    }
 
-        // ── Map2：typeId（service_type_id / component_id）→ 1 ────────────────
-        for (Map<String, Object> row : rows) {
-            String typeId = str(row, typeIdCol);
-            if (typeId != null) longnameMap.put(typeId, 1);
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
         }
-
-        return grouped.size();
+        return null;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // 查询接口
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * 按 {@code typeId.serviceId} 查找完整节点信息（O(1)）。
-     * 对应 flow_step.node_name 格式。
-     *
-     * @param nodeKey 如 {@code IoDpAccLimitApsSvtp.prcAccLimitRgst}
-     */
-    public Optional<NodeCacheEntry> get(String nodeKey) {
-        return Optional.ofNullable(nodeMap.get(nodeKey));
-    }
-
-    /**
-     * 判断某个 service_type_id 或 component_id 是否存在于缓存中（O(1)）。
-     *
-     * @param typeId service_type_id 或 component_id，如 {@code IoDpAccLimitApsSvtp}
-     * @return true = 已注册；false = 不存在
-     */
-    public boolean containsTypeId(String typeId) {
-        return typeId != null && longnameMap.containsKey(typeId);
-    }
-
-    /**
-     * 按 typeId 前缀查找第一个匹配的 NodeCacheEntry。
-     * nodeMap 的 key 格式为 {@code typeId.serviceId}，此方法遍历查找以 {@code typeId.} 开头的第一条。
-     *
-     * @param typeId service_type_id 或 component_id
-     */
-    public Optional<NodeCacheEntry> findByTypeId(String typeId) {
-        if (typeId == null) return Optional.empty();
-        String prefix = typeId + ".";
-        for (Map.Entry<String, NodeCacheEntry> e : nodeMap.entrySet()) {
-            if (e.getKey().startsWith(prefix)) return Optional.of(e.getValue());
-        }
-        return Optional.empty();
-    }
-
-    /** 缓存是否已完成首次加载 */
-    public boolean isLoaded() { return loaded; }
-
-    /** 返回缓存统计信息 */
-    public Map<String, Object> getStats() {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("loaded",          loaded);
-        m.put("serviceCount",    serviceCount);
-        m.put("componentCount",  componentCount);
-        m.put("totalCount",      serviceCount + componentCount);
-        m.put("longnameMapSize", longnameMap.size());
-        m.put("loadedAt",        loadedAt != null ? loadedAt.toString() : null);
-        m.put("datasource",      flowtranConfig.getDatasource());
-        return m;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // 工具方法
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private static String str(Map<String, Object> row, String key) {
-        Object v = row.get(key);
-        return v == null ? null : v.toString();
-    }
-
-    private static String joinNonNull(List<Map<String, Object>> rows, String col) {
-        return rows.stream()
-            .map(r -> str(r, col))
-            .filter(v -> v != null && !v.isBlank())
-            .collect(Collectors.joining(","));
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

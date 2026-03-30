@@ -3,36 +3,13 @@ server:
   servlet:
     context-path: /
 
-# 可选：本地覆盖配置（数据库密码等），见 application-local.yml.example
+# 可选：本地覆盖配置，见 application-local.yml.example
 spring:
   config:
     import: optional:classpath:application-local.yml
 
   application:
     name: axon-link-server
-
-  # 建表由 DBA 或首次手动执行 db/migration/ 目录下的脚本完成，启动不自动初始化
-  # 如需自动建表，取消下方注释：
-  # sql:
-  #   init:
-  #     mode: always
-  #     encoding: UTF-8
-  #     schema-locations: >
-  #       classpath:db/migration/V3__callgraph.sql,
-  #       classpath:db/migration/V4__flowtran.sql
-
-  datasource:
-    type: com.alibaba.druid.pool.DruidDataSource
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    # 可通过环境变量或 application-local.yml 覆盖
-    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/mall_admin?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&allowMultiQueries=true&rewriteBatchedStatements=true}
-    username: ${SPRING_DATASOURCE_USERNAME:root}
-    password: ${SPRING_DATASOURCE_PASSWORD:}
-    druid:
-      initial-size: 5
-      min-idle: 5
-      max-active: 20
-      max-wait: 60000
 
   # 静态资源（Vue3 dist 文件）
   web:
@@ -41,24 +18,12 @@ spring:
       cache:
         period: 3600
 
-mybatis-plus:
-  mapper-locations: classpath:/mapper/*.xml
-  type-aliases-package: com.axonlink.entity
-  configuration:
-    map-underscore-to-camel-case: true
-  global-config:
-    db-config:
-      logic-delete-field: deleted
-      logic-delete-value: 1
-      logic-not-delete-value: 0
-
 logging:
   level:
     com.axonlink: info
     org.apache.tomcat.util.net: warn
     org.apache.tomcat: warn
     org.apache.catalina: warn
-    com.alibaba.druid: warn
 
 # ── 源码索引配置 ────────────────────────────────────────────────────────────
 # source-roots：直接写死若干 src/main/java 目录（逗号分隔）
@@ -69,16 +34,10 @@ project:
 
   index-threads: 0
 
-# ── 方法调用关系网配置 ──────────────────────────────────────────────────────────
+# ── 代码扫描配置 ──────────────────────────────────────────────────────────────
 callgraph:
-  # 功能总开关：false = 禁用调用图扫描（API 仍可访问已有数据，只是不会自动扫描）
-  enabled: ${CALLGRAPH_ENABLED:false}
-  # 只扫描以下包前缀的类，逗号分隔（排除 JDK/Spring/第三方框架）
   include-packages: ${CALLGRAPH_INCLUDE_PACKAGES:cn.sunline.ltts.busi}
-  # 扫描线程数（0=自动，与 project.index-threads 逻辑一致）
-  scan-threads: 0
 
-# ── flowtran 数据驱动配置 ──────────────────────────────────────────────────────
 # ── Neo4j 图数据库配置 ────────────────────────────────────────────────────────
 neo4j:
   enabled: ${NEO4J_ENABLED:false}
@@ -87,9 +46,8 @@ neo4j:
   password: ${NEO4J_PASSWORD:axonlink123}
 
 flowtran:
-  # 激活的数据源环境标识：local（外网本地 mall_admin）| intranet（内网 benchmarkdb）
-  # 实际连接 URL 由 spring.datasource.* 控制，本字段仅作环境标记
+  # 当前运行环境标识，仅用于页面展示与日志标记
   datasource: ${FLOWTRAN_DATASOURCE:local}
   cache:
-    # 是否启动时全量加载 service/component 四张表到 ServiceNodeCache
+    # 是否启动时预热 XML/Neo4j 元数据缓存
     enabled: ${FLOWTRAN_CACHE_ENABLED:true}

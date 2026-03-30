@@ -14,9 +14,13 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.EOFException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,7 +48,23 @@ import java.util.stream.Stream;
 public class FlowtransMetaGraphBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(FlowtransMetaGraphBuilder.class);
-    private static final int BATCH_SIZE = 500;
+    private static final int BATCH_SIZE = 300;
+    private static final ErrorHandler SILENT_XML_ERROR_HANDLER = new ErrorHandler() {
+        @Override
+        public void warning(SAXParseException exception) throws SAXException {
+            throw exception;
+        }
+
+        @Override
+        public void error(SAXParseException exception) throws SAXException {
+            throw exception;
+        }
+
+        @Override
+        public void fatalError(SAXParseException exception) throws SAXException {
+            throw exception;
+        }
+    };
     private static final Map<String, String> PARENT_PROJECT_DOMAIN_MAP = Map.of(
         "ap-parent", "ap",
         "unvr-parent", "unvr",
@@ -95,8 +115,16 @@ public class FlowtransMetaGraphBuilder {
         clearBuffers();
 
         List<Path> flowtransFiles = collectFiles(".flowtrans.xml");
-        List<Path> serviceTypeFiles = collectFiles(".serviceType.xml");
-        log.info("[FlowtransMeta] 鎵弿鍒?flowtrans.xml={} serviceType.xml={}",
+        List<Path> serviceTypeFiles = new ArrayList<>();
+        serviceTypeFiles.addAll(collectFiles(".serviceType.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pbs.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pcs.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pbcb.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pbcp.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pbcc.xml"));
+        serviceTypeFiles.addAll(collectFiles(".pbct.xml"));
+        serviceTypeFiles = serviceTypeFiles.stream().distinct().sorted().collect(Collectors.toList());
+        log.info("[FlowtransMeta] 扫描到 flowtrans.xml={} serviceMeta.xml={}",
                  flowtransFiles.size(), serviceTypeFiles.size());
 
         Map<String, ServiceTypeMeta> serviceTypes = parseServiceTypes(serviceTypeFiles);
@@ -462,24 +490,29 @@ public class FlowtransMetaGraphBuilder {
             try {
                 Document doc = parseXml(file);
                 Element root = doc.getDocumentElement();
-                if (root == null || !"serviceType".equals(root.getTagName())) {
+                if (root == null) {
                     continue;
                 }
 
-                String serviceTypeId = attr(root, "id");
+                String fileName = file.getFileName().toString();
+                String serviceTypeId = firstNonBlank(attr(root, "id"), stripServiceMetaSuffix(fileName));
                 if (isBlank(serviceTypeId)) {
                     continue;
                 }
 
                 String packagePath = attr(root, "package");
+                Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.findByTypeId(serviceTypeId);
                 ServiceTypeMeta meta = new ServiceTypeMeta(
                     serviceTypeId,
                     attr(root, "longname"),
                     packagePath,
                     detectModule(file),
                     file.toString().replace('\\', '/'),
-                    DomainKeyResolver.resolve(packagePath),
-                    serviceNodeCache.findByTypeId(serviceTypeId).map(NodeCacheEntry::getNodeKind).orElse(null)
+                    resolveServiceDomainKey(file, packagePath, cacheEntry),
+                    firstNonBlank(
+                        inferServiceNodeKind(fileName),
+                        cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null)
+                    )
                 );
                 result.put(serviceTypeId, meta);
                 addServiceTypeNode(meta);
@@ -504,7 +537,7 @@ public class FlowtransMetaGraphBuilder {
                     graphEdges.add(edge("DECLARES_OPERATION", serviceTypeKey(serviceTypeId), operationKey));
                 }
             } catch (Exception e) {
-                log.warn("[FlowtransMeta] 瑙ｆ瀽 serviceType 澶辫触: {} - {}", file.getFileName(), e.getMessage());
+                log.warn("[FlowtransMeta] 解析 service 元数据失败: {} - {}", file.getFileName(), e.getMessage());
             }
         }
         return result;
@@ -594,20 +627,20 @@ public class FlowtransMetaGraphBuilder {
     }
 
     private void ensureIndexes(Session session) {
-        session.run("CREATE INDEX IF NOT EXISTS FOR (t:Transaction) ON (t.id)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (t:Transaction) ON (t.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowBlock) ON (f.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (s:FlowSection) ON (s.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (g:FlowFieldGroup) ON (g.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (s:ServiceType) ON (s.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (o:ServiceOperation) ON (o.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowMethodStep) ON (f.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (s:FlowServiceStep) ON (s.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (c:FlowCase) ON (c.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (w:FlowWhen) ON (w.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowField) ON (f.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (m:FlowMappingGroup) ON (m.key)");
-        session.run("CREATE INDEX IF NOT EXISTS FOR (m:FlowMapping) ON (m.key)");
+        session.run("CREATE INDEX IF NOT EXISTS FOR (t:Transaction) ON (t.id)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (t:Transaction) ON (t.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowBlock) ON (f.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:FlowSection) ON (s.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (g:FlowFieldGroup) ON (g.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:ServiceType) ON (s.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (o:ServiceOperation) ON (o.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowMethodStep) ON (f.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (s:FlowServiceStep) ON (s.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (c:FlowCase) ON (c.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (w:FlowWhen) ON (w.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (f:FlowField) ON (f.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (m:FlowMappingGroup) ON (m.key)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (m:FlowMapping) ON (m.key)").consume();
     }
 
     private void writeNodes(Session session, String label, List<Map<String, Object>> nodes) {
@@ -663,15 +696,26 @@ public class FlowtransMetaGraphBuilder {
         session.run(
             "MATCH (op:ServiceOperation) " +
             "MATCH (iface:Interface {fqn: op.interfaceFqn}) " +
-            "MATCH (impl:Class)-[:IMPLEMENTS]->(iface) " +
-            "MATCH (m:Method {classFqn: impl.fqn, name: op.methodName}) " +
-            "MERGE (op)-[:IMPLEMENTS_BY]->(m)");
+            "CALL { " +
+            "  WITH op, iface " +
+            "  MATCH (impl:Class)-[:IMPLEMENTS]->(iface) " +
+            "  MATCH (m:Method {classFqn: impl.fqn, name: op.methodName}) " +
+            "  RETURN DISTINCT m " +
+            "  UNION " +
+            "  WITH op, iface " +
+            "  MATCH (base:Class)-[:IMPLEMENTS]->(iface) " +
+            "  MATCH path = (impl:Class)-[:EXTENDS*1..6]->(base) " +
+            "  UNWIND [node IN nodes(path) | node.fqn] AS ownerFqn " +
+            "  MATCH (m:Method {classFqn: ownerFqn, name: op.methodName}) " +
+            "  RETURN DISTINCT m " +
+            "} " +
+            "MERGE (op)-[:IMPLEMENTS_BY]->(m)").consume();
     }
 
     private void batchWrite(Session session, List<Map<String, Object>> rows, String cypher) {
         for (int i = 0; i < rows.size(); i += BATCH_SIZE) {
             List<Map<String, Object>> batch = rows.subList(i, Math.min(i + BATCH_SIZE, rows.size()));
-            session.run(cypher, Values.parameters("batch", batch));
+            session.run(cypher, Values.parameters("batch", batch)).consume();
         }
     }
 
@@ -704,8 +748,13 @@ public class FlowtransMetaGraphBuilder {
         factory.setNamespaceAware(false);
         factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
         factory.setExpandEntityReferences(false);
+        if (Files.size(file) == 0L) {
+            throw new EOFException("empty xml file");
+        }
         try (InputStream in = Files.newInputStream(file)) {
-            Document doc = factory.newDocumentBuilder().parse(in);
+            var builder = factory.newDocumentBuilder();
+            builder.setErrorHandler(SILENT_XML_ERROR_HANDLER);
+            Document doc = builder.parse(in);
             doc.getDocumentElement().normalize();
             return doc;
         }
@@ -716,7 +765,7 @@ public class FlowtransMetaGraphBuilder {
             return List.of();
         }
 
-        List<Path> files = new ArrayList<>();
+        Map<String, Path> metadataRoots = new LinkedHashMap<>();
         for (String root : workspaceRoots.split(",")) {
             String trimmed = root.trim();
             if (trimmed.isEmpty()) {
@@ -726,16 +775,58 @@ public class FlowtransMetaGraphBuilder {
             if (!Files.exists(ws)) {
                 continue;
             }
-            try (Stream<Path> walk = Files.walk(ws, 10)) {
+            collectMetadataRoots(ws, metadataRoots);
+        }
+
+        List<Path> files = new ArrayList<>();
+        for (Path metadataRoot : metadataRoots.values()) {
+            try (Stream<Path> walk = Files.walk(metadataRoot, 6)) {
                 walk.filter(Files::isRegularFile)
                     .filter(path -> path.getFileName().toString().endsWith(suffix))
                     .forEach(files::add);
             } catch (Exception e) {
-                log.debug("[FlowtransMeta] 鎵弿 {} 澶辫触: {}", trimmed, e.getMessage());
+                log.debug("[FlowtransMeta] 鎵弿 {} 澶辫触: {}", metadataRoot, e.getMessage());
             }
         }
         Collections.sort(files);
         return files;
+    }
+
+    private void collectMetadataRoots(Path workspaceRoot, Map<String, Path> metadataRoots) {
+        try (Stream<Path> walk = Files.walk(workspaceRoot, 8)) {
+            walk.filter(Files::isDirectory)
+                .filter(this::isMetadataRoot)
+                .sorted(Path::compareTo)
+                .forEach(path -> registerMetadataRoot(metadataRoots, path));
+        } catch (Exception e) {
+            log.debug("[FlowtransMeta] 鎵弿 {} 澶辫触: {}", workspaceRoot, e.getMessage());
+        }
+    }
+
+    private boolean isMetadataRoot(Path path) {
+        String normalized = path.toString().replace('\\', '/');
+        return normalized.endsWith("/src/main/resources") || normalized.endsWith("/target/classes");
+    }
+
+    private void registerMetadataRoot(Map<String, Path> metadataRoots, Path candidate) {
+        String normalized = candidate.toString().replace('\\', '/');
+        String suffix = normalized.endsWith("/src/main/resources") ? "/src/main/resources" : "/target/classes";
+        String moduleKey = normalized.substring(0, normalized.length() - suffix.length());
+        Path existing = metadataRoots.get(moduleKey);
+        if (existing == null || isPreferredMetadataRoot(candidate, existing)) {
+            metadataRoots.put(moduleKey, candidate);
+        }
+    }
+
+    private boolean isPreferredMetadataRoot(Path candidate, Path existing) {
+        String candidateText = candidate.toString().replace('\\', '/');
+        String existingText = existing.toString().replace('\\', '/');
+        boolean candidateIsSource = candidateText.endsWith("/src/main/resources");
+        boolean existingIsSource = existingText.endsWith("/src/main/resources");
+        if (candidateIsSource != existingIsSource) {
+            return candidateIsSource;
+        }
+        return candidateText.compareTo(existingText) < 0;
     }
 
     private String detectModule(Path file) {
@@ -782,6 +873,17 @@ public class FlowtransMetaGraphBuilder {
             return fromParent;
         }
         return DomainKeyResolver.resolve(packagePath);
+    }
+
+    private String resolveServiceDomainKey(Path file, String packagePath, Optional<NodeCacheEntry> cacheEntry) {
+        String fromParent = PARENT_PROJECT_DOMAIN_MAP.get(detectParentProject(file));
+        if (fromParent != null) {
+            return fromParent;
+        }
+        return firstNonBlank(
+            cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null),
+            DomainKeyResolver.resolve(packagePath)
+        );
     }
 
     private void clearBuffers() {
@@ -877,11 +979,78 @@ public class FlowtransMetaGraphBuilder {
         return "SVOP:" + serviceTypeId + "." + serviceId;
     }
 
+    private static String stripServiceMetaSuffix(String fileName) {
+        for (String suffix : List.of(
+            ".serviceType.xml",
+            ".pbs.xml",
+            ".pcs.xml",
+            ".pbcb.xml",
+            ".pbcp.xml",
+            ".pbcc.xml",
+            ".pbct.xml"
+        )) {
+            if (fileName.endsWith(suffix)) {
+                return fileName.substring(0, fileName.length() - suffix.length());
+            }
+        }
+        return fileName;
+    }
+
+    private static String inferServiceNodeKind(String fileName) {
+        String lowered = fileName.toLowerCase();
+        if (lowered.endsWith(".pbs.xml")) {
+            return "pbs";
+        }
+        if (lowered.endsWith(".pcs.xml")) {
+            return "pcs";
+        }
+        if (lowered.endsWith(".pbcb.xml")) {
+            return "pbcb";
+        }
+        if (lowered.endsWith(".pbcp.xml")) {
+            return "pbcp";
+        }
+        if (lowered.endsWith(".pbcc.xml")) {
+            return "pbcc";
+        }
+        if (lowered.endsWith(".pbct.xml")) {
+            return "pbct";
+        }
+        if (lowered.endsWith("pbs")) {
+            return "pbs";
+        }
+        if (lowered.endsWith("pcs")) {
+            return "pcs";
+        }
+        if (lowered.endsWith("pbcb")) {
+            return "pbcb";
+        }
+        if (lowered.endsWith("pbcp")) {
+            return "pbcp";
+        }
+        if (lowered.endsWith("pbcc")) {
+            return "pbcc";
+        }
+        if (lowered.endsWith("pbct")) {
+            return "pbct";
+        }
+        return null;
+    }
+
     private static String buildInterfaceFqn(String packagePath, String serviceTypeId) {
         if (isBlank(packagePath) || isBlank(serviceTypeId)) {
             return null;
         }
         return packagePath + "." + serviceTypeId;
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (!isBlank(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private static String splitLeft(String serviceName) {
@@ -986,4 +1155,3 @@ public class FlowtransMetaGraphBuilder {
         }
     }
 }
-

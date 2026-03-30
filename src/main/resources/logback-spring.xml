@@ -19,7 +19,6 @@
   <logger name="org.apache.tomcat.util.net"    level="WARN"  additivity="false"><appender-ref ref="CONSOLE"/></logger>
   <logger name="org.apache.catalina"            level="WARN"  additivity="false"><appender-ref ref="CONSOLE"/></logger>
   <logger name="org.apache.coyote"              level="WARN"  additivity="false"><appender-ref ref="CONSOLE"/></logger>
-  <logger name="com.alibaba.druid"              level="WARN"  additivity="false"><appender-ref ref="CONSOLE"/></logger>
   <logger name="org.springframework.web"        level="WARN"  additivity="false"><appender-ref ref="CONSOLE"/></logger>
 
   <!-- 项目日志保持 INFO -->
