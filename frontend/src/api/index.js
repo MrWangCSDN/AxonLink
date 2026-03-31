@@ -22,6 +22,11 @@ export function getSystemStats() {
   return request('/system/stats')
 }
 
+/** 获取最近一次全量拉取+编译状态 */
+export function getBuildSyncStatus() {
+  return request('/system/build-sync-status')
+}
+
 // ── flowtran 数据驱动接口（替代 getDomains / getTransactions） ──────────────
 
 /**

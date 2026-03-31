@@ -65,16 +65,6 @@ public class FlowtransMetaGraphBuilder {
             throw exception;
         }
     };
-    private static final Map<String, String> PARENT_PROJECT_DOMAIN_MAP = Map.of(
-        "ap-parent", "ap",
-        "unvr-parent", "unvr",
-        "stmt-parent", "stmt",
-        "medu-parent", "medu",
-        "inbu-parent", "inbu",
-        "dept-parent", "dept",
-        "aggr-parent", "aggr"
-    );
-
     private final Driver driver;
     private final Neo4jConfig neo4jConfig;
     private final ServiceNodeCache serviceNodeCache;
@@ -114,7 +104,9 @@ public class FlowtransMetaGraphBuilder {
 
         clearBuffers();
 
-        List<Path> flowtransFiles = collectFiles(".flowtrans.xml");
+        List<Path> flowtransFiles = collectFiles(".flowtrans.xml").stream()
+            .filter(this::shouldParseTransactionFlowtrans)
+            .collect(Collectors.toList());
         List<Path> serviceTypeFiles = new ArrayList<>();
         serviceTypeFiles.addAll(collectFiles(".serviceType.xml"));
         serviceTypeFiles.addAll(collectFiles(".pbs.xml"));
@@ -267,6 +259,10 @@ public class FlowtransMetaGraphBuilder {
                 log.warn("[FlowtransMeta] 瑙ｆ瀽 flowtrans 澶辫触: {} - {}", file.getFileName(), e.getMessage());
             }
         }
+    }
+
+    private boolean shouldParseTransactionFlowtrans(Path file) {
+        return !"ccbs-ap".equalsIgnoreCase(detectParentProject(file));
     }
 
     private void parseSections(String txKey, String txId, Element interfaceEl, Map<String, List<String>> fieldIndex) {
@@ -868,21 +864,13 @@ public class FlowtransMetaGraphBuilder {
     }
 
     private String resolveTransactionDomainKey(String parentProject, String packagePath) {
-        String fromParent = PARENT_PROJECT_DOMAIN_MAP.get(parentProject);
-        if (fromParent != null) {
-            return fromParent;
-        }
-        return DomainKeyResolver.resolve(packagePath);
+        return DomainKeyResolver.resolveByProjectOrPackage(parentProject, packagePath);
     }
 
     private String resolveServiceDomainKey(Path file, String packagePath, Optional<NodeCacheEntry> cacheEntry) {
-        String fromParent = PARENT_PROJECT_DOMAIN_MAP.get(detectParentProject(file));
-        if (fromParent != null) {
-            return fromParent;
-        }
         return firstNonBlank(
             cacheEntry.map(NodeCacheEntry::getDomainKey).orElse(null),
-            DomainKeyResolver.resolve(packagePath)
+            DomainKeyResolver.resolveByProjectOrPackage(detectParentProject(file), packagePath)
         );
     }
 

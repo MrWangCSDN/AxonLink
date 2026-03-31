@@ -51,3 +51,9 @@ flowtran:
   cache:
     # 是否启动时预热 XML/Neo4j 元数据缓存
     enabled: ${FLOWTRAN_CACHE_ENABLED:true}
+
+benchmark:
+  build-status:
+    # sunline-benchmark 服务地址，用于查询最近一次拉取+编译状态
+    base-url: ${BENCHMARK_BUILD_STATUS_BASE_URL:http://127.0.0.1:8080}
+    timeout-ms: ${BENCHMARK_BUILD_STATUS_TIMEOUT_MS:5000}

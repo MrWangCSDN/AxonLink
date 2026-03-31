@@ -14,13 +14,14 @@
       <main class="main-content">
         <!-- ── 固定头部：面包屑 + 标题栏 + 统计栏（滚动时不动） ── -->
         <div class="sticky-header">
-          <!-- 面包屑 -->
-          <div class="breadcrumb">
-            <span class="breadcrumb-home">领域交易</span>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M5 3.5L8.5 7L5 10.5" stroke="#C5CBD7" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <span class="breadcrumb-current">{{ activeDomain?.name }}</span>
+          <div class="header-topbar">
+            <div class="breadcrumb">
+              <span class="breadcrumb-home">领域交易</span>
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M5 3.5L8.5 7L5 10.5" stroke="#C5CBD7" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span class="breadcrumb-current">{{ activeDomain?.name }}</span>
+            </div>
           </div>
 
           <!-- 页面标题栏 -->
@@ -28,6 +29,20 @@
             <div class="content-title-group">
               <h2 class="content-title">{{ activeDomain?.name }}</h2>
               <span class="tx-count-badge">{{ totalCount || activeDomain?.count || sortedTransactions.length }} 支交易</span>
+              <div class="build-sync-inline" :class="`is-${buildSyncInfo.statusType}`">
+                <div class="build-sync-meta">
+                  <span class="build-sync-label">分支</span>
+                  <span class="build-sync-value">{{ buildSyncInfo.branch }}</span>
+                </div>
+                <div class="build-sync-meta build-sync-version-wrap">
+                  <span class="build-sync-label">版本</span>
+                  <span class="build-sync-value build-sync-version" :title="buildSyncInfo.versionNo">{{ buildSyncInfo.versionNo }}</span>
+                </div>
+                <div class="build-sync-meta">
+                  <span class="build-sync-label">状态</span>
+                  <span class="build-sync-status-pill">{{ buildSyncInfo.statusText }}</span>
+                </div>
+              </div>
             </div>
             <div class="content-actions">
               <div class="domain-search">
@@ -151,7 +166,13 @@ import { ref, computed, reactive, watch, onMounted, onBeforeUnmount, nextTick } 
 import AppHeader from '../components/AppHeader.vue'
 import DomainSidebar from '../components/DomainSidebar.vue'
 import TransactionCard from '../components/TransactionCard.vue'
-import { getFlowtranDomains as getDomains, getFlowtranTransactions as getTransactions, getFlowtranChain as getChain, getSystemStats } from '../api/index.js'
+import {
+  getBuildSyncStatus,
+  getFlowtranDomains as getDomains,
+  getFlowtranTransactions as getTransactions,
+  getFlowtranChain as getChain,
+  getSystemStats,
+} from '../api/index.js'
 
 const PAGE_SIZE = 5
 
@@ -173,6 +194,15 @@ const appHeaderRef = ref(null)
 const domains      = ref([])
 const activeDomain = ref(null)
 const systemStats  = ref({ totalDomains: 0, totalTransactions: 0, status: 'normal', statusText: '系统运行正常' })
+const buildSyncInfo = ref({
+  project: 'axon-link-server',
+  branch: 'Master',
+  versionNo: '--',
+  statusText: '未执行',
+  statusType: 'idle',
+  message: '',
+  refreshedAt: '',
+})
 const localSearch  = ref('')
 const cardRefs     = reactive({})
 
@@ -241,13 +271,41 @@ const sortedTransactions = computed(() =>
 // ── 系统健康检查（同时更新统计数字） ──
 let healthTimer = null
 const checkHealth = async () => {
-  try {
-    systemStats.value = await getSystemStats()
-  } catch {
+  const [statsResult, buildResult] = await Promise.allSettled([
+    getSystemStats(),
+    getBuildSyncStatus(),
+  ])
+
+  if (statsResult.status === 'fulfilled') {
+    systemStats.value = statsResult.value
+  } else {
     systemStats.value = {
       ...(systemStats.value || {}),
       status: 'error',
       statusText: '系统运行异常'
+    }
+  }
+
+  if (buildResult.status === 'fulfilled') {
+    buildSyncInfo.value = {
+      project: 'axon-link-server',
+      branch: 'Master',
+      versionNo: '--',
+      statusText: '未执行',
+      statusType: 'idle',
+      message: '',
+      refreshedAt: '',
+      ...buildResult.value,
+    }
+  } else {
+    buildSyncInfo.value = {
+      project: 'axon-link-server',
+      branch: 'Master',
+      versionNo: '--',
+      statusText: '状态未知',
+      statusType: 'unknown',
+      message: '构建状态服务不可用',
+      refreshedAt: '',
     }
   }
 }
@@ -421,6 +479,13 @@ const collapseAll = () => sortedTransactions.value.forEach(tx => cardRefs[tx.id]
   transition: background 0.3s;
 }
 
+/* 顶部工具条 */
+.header-topbar {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
 /* ── 卡片滚动区 ── */
 .cards-scroll {
   flex: 1;
@@ -437,17 +502,134 @@ const collapseAll = () => sortedTransactions.value.forEach(tx => cardRefs[tx.id]
 .cards-scroll::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* 面包屑 */
-.breadcrumb { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }
+.breadcrumb { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .breadcrumb-home { font-size: 13px; color: var(--text-faint); cursor: pointer; transition: color 0.15s; }
 .breadcrumb-home:hover { color: #4F7CFF; }
 .breadcrumb-current { font-size: 13px; color: var(--text-primary); font-weight: 500; }
 
+.build-sync-label {
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+}
+
+.build-sync-value {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.build-sync-version {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--build-sync-version-border);
+  background: var(--build-sync-version-bg);
+  color: var(--build-sync-version-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.build-sync-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-width: 64px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  border: 1px solid var(--build-sync-pill-border);
+  background: var(--build-sync-idle-bg);
+  color: var(--build-sync-idle-color);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.build-sync-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  margin-left: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--build-sync-border);
+  background: var(--build-sync-bg);
+  box-shadow: var(--build-sync-shadow);
+  backdrop-filter: blur(8px);
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.build-sync-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.build-sync-meta + .build-sync-meta {
+  position: relative;
+  padding-left: 14px;
+}
+
+.build-sync-meta + .build-sync-meta::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 18px;
+  background: var(--build-sync-divider);
+  transform: translateY(-50%);
+}
+
+.build-sync-version-wrap {
+  max-width: 240px;
+}
+
+.build-sync-version-wrap .build-sync-version {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-sync-inline.is-success .build-sync-status-pill {
+  background: var(--build-sync-success-bg);
+  color: var(--build-sync-success-color);
+  border-color: var(--build-sync-success-border);
+}
+
+.build-sync-inline.is-running .build-sync-status-pill {
+  background: var(--build-sync-running-bg);
+  color: var(--build-sync-running-color);
+  border-color: var(--build-sync-running-border);
+}
+
+.build-sync-inline.is-error .build-sync-status-pill {
+  background: var(--build-sync-error-bg);
+  color: var(--build-sync-error-color);
+  border-color: var(--build-sync-error-border);
+}
+
+.build-sync-inline.is-unknown .build-sync-status-pill,
+.build-sync-inline.is-idle .build-sync-status-pill {
+  background: var(--build-sync-idle-bg);
+  color: var(--build-sync-idle-color);
+  border-color: var(--build-sync-idle-border);
+}
+
 /* 标题栏 */
 .content-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 16px; }
-.content-title-group { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.content-title-group { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; flex-wrap: wrap; }
 .content-title { font-size: 20px; font-weight: 700; color: var(--text-primary); margin: 0; white-space: nowrap; }
 .tx-count-badge { font-size: 12px; color: var(--text-muted); background: var(--bg-badge); padding: 3px 10px; border-radius: 12px; font-weight: 500; }
-.content-actions { display: flex; align-items: center; gap: 8px; }
+.content-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 .domain-search { display: flex; align-items: center; gap: 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; height: 34px; transition: border-color 0.2s, box-shadow 0.2s; }
 .domain-search:focus-within { border-color: #4F7CFF; box-shadow: 0 0 0 3px rgba(79,124,255,0.1); }
@@ -516,4 +698,47 @@ const collapseAll = () => sortedTransactions.value.forEach(tx => cardRefs[tx.id]
 .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; gap: 12px; background: var(--bg-empty); border: 1px dashed var(--border-dashed); border-radius: 10px; }
 .empty-state p { font-size: 15px; color: var(--text-primary); font-weight: 500; margin: 0; }
 .empty-state span { font-size: 13px; color: var(--text-muted); }
+
+@media (max-width: 1280px) {
+  .content-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .content-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .build-sync-inline {
+    width: 100%;
+    margin-left: 0;
+    justify-content: space-between;
+    border-radius: 14px;
+    padding: 10px 12px;
+  }
+
+  .build-sync-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .build-sync-meta + .build-sync-meta {
+    padding-left: 0;
+  }
+
+  .build-sync-meta + .build-sync-meta::before {
+    display: none;
+  }
+
+  .build-sync-version-wrap {
+    max-width: 160px;
+  }
+
+  .content-actions {
+    flex-wrap: wrap;
+  }
+}
 </style>

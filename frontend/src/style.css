@@ -79,6 +79,27 @@
   --node-code:     #4F7CFF;
   --node-name:     #6B7280;
   --node-svc-code: #374151;
+
+  --build-sync-bg:             rgba(255,255,255,0.82);
+  --build-sync-border:         rgba(221,229,242,0.92);
+  --build-sync-shadow:         0 8px 22px rgba(31,45,87,0.07);
+  --build-sync-divider:        rgba(140,148,166,0.18);
+  --build-sync-version-bg:     rgba(79,124,255,0.08);
+  --build-sync-version-border: rgba(79,124,255,0.16);
+  --build-sync-version-color:  #3659D9;
+  --build-sync-pill-border:    transparent;
+  --build-sync-success-bg:     #ECFDF3;
+  --build-sync-success-color:  #12945A;
+  --build-sync-success-border: rgba(18,148,90,0.12);
+  --build-sync-running-bg:     #EEF4FF;
+  --build-sync-running-color:  #3766F5;
+  --build-sync-running-border: rgba(55,102,245,0.12);
+  --build-sync-error-bg:       #FFF1F0;
+  --build-sync-error-color:    #D14343;
+  --build-sync-error-border:   rgba(209,67,67,0.12);
+  --build-sync-idle-bg:        #F3F5F9;
+  --build-sync-idle-color:     #6B7280;
+  --build-sync-idle-border:    rgba(107,114,128,0.1);
 }
 
 /* ── 夜间模式 ── */
@@ -162,6 +183,27 @@
   --node-code:     #7EB8FF;
   --node-name:     #8FA3BF;
   --node-svc-code: #C8D3E8;
+
+  --build-sync-bg:             rgba(19,29,51,0.88);
+  --build-sync-border:         rgba(126,184,255,0.18);
+  --build-sync-shadow:         0 14px 30px rgba(3,8,20,0.32);
+  --build-sync-divider:        rgba(143,163,191,0.22);
+  --build-sync-version-bg:     rgba(126,184,255,0.14);
+  --build-sync-version-border: rgba(126,184,255,0.24);
+  --build-sync-version-color:  #DCE8FF;
+  --build-sync-pill-border:    rgba(255,255,255,0.06);
+  --build-sync-success-bg:     rgba(18,148,90,0.2);
+  --build-sync-success-color:  #8BE5B8;
+  --build-sync-success-border: rgba(139,229,184,0.18);
+  --build-sync-running-bg:     rgba(79,124,255,0.22);
+  --build-sync-running-color:  #B6CDFF;
+  --build-sync-running-border: rgba(182,205,255,0.18);
+  --build-sync-error-bg:       rgba(209,67,67,0.2);
+  --build-sync-error-color:    #FFB5AE;
+  --build-sync-error-border:   rgba(255,181,174,0.18);
+  --build-sync-idle-bg:        rgba(143,163,191,0.16);
+  --build-sync-idle-color:     #C4D2E6;
+  --build-sync-idle-border:    rgba(196,210,230,0.14);
 }
 
 *, *::before, *::after {

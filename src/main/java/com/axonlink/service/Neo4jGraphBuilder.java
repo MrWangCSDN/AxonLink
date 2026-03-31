@@ -361,6 +361,7 @@ public class Neo4jGraphBuilder {
             Map<String, String> importMap = buildImportMap(cu);
 
             String module = detectModule(file);
+            String parentProject = detectParentProject(file);
 
             cu.accept(new VoidVisitorAdapter<Void>() {
                 @Override
@@ -370,7 +371,7 @@ public class Neo4jGraphBuilder {
                     simpleToFqn.putIfAbsent(simpleName, fqn);
                     fqnToModule.put(fqn, module);
 
-                    String domainKey = DomainKeyResolver.resolve(pkg);
+                    String domainKey = DomainKeyResolver.resolveByProjectOrPackage(parentProject, pkg);
                     String filePath  = file.toString();
 
                     if (n.isInterface()) {
@@ -567,13 +568,10 @@ public class Neo4jGraphBuilder {
                 return;
             }
 
-            // 形式3：KxxxDao.method()  ← DAO 调用，同时注册 Dao 节点
-            if (scopeName.matches("K\\w+Dao")) {
-                String tableName = scopeName.replaceAll("Dao$", "");
-                daoNodes.add(Map.of("name", scopeName, "tableName", tableName));
-                callsEdges.add(Map.of(
-                    "callerSig", callerSig, "targetFqn", scopeName,
-                    "methodName", methodName, "lineNo", lineNo, "type", "DAO_CALLS"));
+            // 形式3：KxxxDao.method() / daoField.method()  ← DAO 调用，同时注册 Dao 节点
+            Optional<DaoTarget> daoTarget = resolveDaoTarget(scope, fieldTypeMap);
+            if (daoTarget.isPresent()) {
+                registerDaoCall(callerSig, daoTarget.get(), methodName, lineNo);
                 return;
             }
 
@@ -598,6 +596,15 @@ public class Neo4jGraphBuilder {
                         "callerSig", callerSig, "targetFqn", targetFqn,
                         "methodName", methodName, "lineNo", lineNo, "type", "CALLS"));
                 }
+            }
+            return;
+        }
+
+        // 形式6：A.BDao.method()  ← 静态 DAO 字段/内部 Dao 挂载调用
+        if (scope instanceof FieldAccessExpr) {
+            Optional<DaoTarget> daoTarget = resolveDaoTarget(scope, fieldTypeMap);
+            if (daoTarget.isPresent()) {
+                registerDaoCall(callerSig, daoTarget.get(), methodName, lineNo);
             }
         }
     }
@@ -947,6 +954,7 @@ public class Neo4jGraphBuilder {
     // 辅助方法
     // ─────────────────────────────────────────────────────────────────────────
 
+    private record DaoTarget(String daoName, String tableName) {}
     private record SysUtilResolvedTarget(String typeId, String targetFqn) {}
 
     private boolean isSysUtilGetInstance(Expression expr) {
@@ -1025,6 +1033,61 @@ public class Neo4jGraphBuilder {
         }
         String normalized = rawTypeId.replaceAll("<.*>", "").replaceAll("\\[]", "").trim();
         return normalized.isBlank() ? null : normalized;
+    }
+
+    private Optional<DaoTarget> resolveDaoTarget(Expression scope, Map<String, String> fieldTypeMap) {
+        if (scope instanceof NameExpr nameExpr) {
+            String scopeName = nameExpr.getNameAsString();
+            if (isDaoIdentifier(scopeName)) {
+                return Optional.of(new DaoTarget(scopeName, stripDaoSuffix(scopeName)));
+            }
+            if (fieldTypeMap.containsKey(scopeName)) {
+                String fieldTypeName = simpleTypeName(fieldTypeMap.get(scopeName));
+                if (isDaoIdentifier(fieldTypeName)) {
+                    return Optional.of(new DaoTarget(fieldTypeName, stripDaoSuffix(fieldTypeName)));
+                }
+            }
+            return Optional.empty();
+        }
+
+        if (scope instanceof FieldAccessExpr fieldAccessExpr) {
+            String terminalName = fieldAccessExpr.getNameAsString();
+            if (isDaoIdentifier(terminalName)) {
+                return Optional.of(new DaoTarget(terminalName, stripDaoSuffix(terminalName)));
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private void registerDaoCall(String callerSig, DaoTarget daoTarget, String methodName, int lineNo) {
+        daoNodes.add(Map.of("name", daoTarget.daoName(), "tableName", daoTarget.tableName()));
+        callsEdges.add(Map.of(
+            "callerSig", callerSig,
+            "targetFqn", daoTarget.daoName(),
+            "methodName", methodName,
+            "lineNo", lineNo,
+            "type", "DAO_CALLS"));
+    }
+
+    private boolean isDaoIdentifier(String value) {
+        return value != null && value.matches("\\w+Dao");
+    }
+
+    private String stripDaoSuffix(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        return value.endsWith("Dao") ? value.substring(0, value.length() - 3) : value;
+    }
+
+    private String simpleTypeName(String value) {
+        if (value == null || value.isBlank()) {
+            return value;
+        }
+        String normalized = value.replaceAll("<.*>", "").trim();
+        int idx = normalized.lastIndexOf('.');
+        return idx >= 0 ? normalized.substring(idx + 1) : normalized;
     }
 
     private String resolveTypeName(ClassOrInterfaceType type,
@@ -1119,6 +1182,21 @@ public class Neo4jGraphBuilder {
                 String rel = s.substring(r.length()).replaceFirst("^/", "");
                 String[] parts = rel.split("/");
                 if (parts.length >= 2) return parts[0] + "/" + parts[1];
+            }
+        }
+        return "unknown";
+    }
+
+    private String detectParentProject(Path file) {
+        String s = file.toString().replace('\\', '/');
+        for (String ws : (workspaceRoots == null ? "" : workspaceRoots).split(",")) {
+            String r = ws.trim().replace('\\', '/');
+            if (!r.isEmpty() && s.startsWith(r)) {
+                String rel = s.substring(r.length()).replaceFirst("^/", "");
+                String[] parts = rel.split("/");
+                if (parts.length >= 1 && !parts[0].isBlank()) {
+                    return parts[0];
+                }
             }
         }
         return "unknown";

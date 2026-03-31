@@ -2,6 +2,7 @@ package com.axonlink.controller;
 
 import com.axonlink.common.R;
 import com.axonlink.dto.FlowtranDomain;
+import com.axonlink.service.BuildSyncStatusService;
 import com.axonlink.service.FlowtranService;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,9 +21,12 @@ import java.util.Map;
 public class ApiController {
 
     private final FlowtranService flowtranService;
+    private final BuildSyncStatusService buildSyncStatusService;
 
-    public ApiController(FlowtranService flowtranService) {
+    public ApiController(FlowtranService flowtranService,
+                         BuildSyncStatusService buildSyncStatusService) {
         this.flowtranService = flowtranService;
+        this.buildSyncStatusService = buildSyncStatusService;
     }
 
     /**
@@ -40,5 +44,14 @@ public class ApiController {
         result.put("status", "normal");
         result.put("statusText", "系统运行正常");
         return R.ok(result);
+    }
+
+    /**
+     * 最近一次全量拉取+编译状态
+     * GET /api/system/build-sync-status
+     */
+    @GetMapping("/system/build-sync-status")
+    public R<Map<String, Object>> buildSyncStatus() {
+        return R.ok(buildSyncStatusService.loadBuildSyncStatus());
     }
 }

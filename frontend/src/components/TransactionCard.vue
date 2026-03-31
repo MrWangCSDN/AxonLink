@@ -548,6 +548,16 @@ const componentNodeMap = computed(() =>
 const serviceToServiceMap = computed(() => relations.value.serviceToService || {})
 const serviceToComponentMap = computed(() => relations.value.serviceToComponent || {})
 const componentToComponentMap = computed(() => relations.value.componentToComponent || {})
+const componentParentMap = computed(() => {
+  const reverse = {}
+  Object.entries(componentToComponentMap.value || {}).forEach(([parentCode, children]) => {
+    ;(children || []).forEach(childCode => {
+      if (!reverse[childCode]) reverse[childCode] = []
+      if (!reverse[childCode].includes(parentCode)) reverse[childCode].push(parentCode)
+    })
+  })
+  return reverse
+})
 const nodeToDataMap = computed(() => relations.value.nodeToData || relations.value.componentToData || {})
 
 // ======== 服务路径下钻（serviceTrail）+ 构件层级下钻 ========
@@ -643,6 +653,21 @@ const collectComponentClosure = (startCodes, { includeStart = true } = {}) => {
   return closure
 }
 
+const collectComponentAncestors = (startCodes, { includeStart = true } = {}) => {
+  const closure = walkClosure(startCodes, componentParentMap.value)
+  if (!includeStart) {
+    startCodes.forEach(code => closure.delete(code))
+  }
+  return closure
+}
+
+const collectComponentContext = (componentCode) => {
+  if (!componentCode) return new Set()
+  const context = collectComponentClosure([componentCode])
+  collectComponentAncestors([componentCode], { includeStart: false }).forEach(code => context.add(code))
+  return context
+}
+
 const collectComponentsForService = (serviceCode) => {
   const services = collectServiceClosure(serviceCode)
   const directComponents = new Set()
@@ -675,30 +700,12 @@ const collectTablesForService = (serviceCode) => {
   return tables
 }
 
-const activeCalledServices = computed(() => {
-  if (!selectedServiceCode.value) return calledServices.value
-  const nodes = []
-  const added = new Set()
-  activePath.serviceTrail.slice(1).forEach(code => {
-    const current = serviceNodeMap.value.get(code)
-    if (current && !added.has(code)) {
-      nodes.push(current)
-      added.add(code)
-    }
-  })
-  directServiceChildren(selectedServiceCode.value).forEach(code => {
-    const node = serviceNodeMap.value.get(code)
-    if (node && !added.has(code)) {
-      nodes.push(node)
-      added.add(code)
-    }
-  })
-  return nodes
-})
+// 服务层点击后保留完整服务视图，只联动下游构件/数据层筛选。
+const activeCalledServices = computed(() => calledServices.value)
 
 const visibleComponentCodes = computed(() => {
-  if (activePath.techComp) return collectComponentClosure([activePath.techComp])
-  if (activePath.bizComp) return collectComponentClosure([activePath.bizComp])
+  if (activePath.techComp) return collectComponentContext(activePath.techComp)
+  if (activePath.bizComp) return collectComponentContext(activePath.bizComp)
   if (selectedServiceCode.value) return collectComponentsForService(selectedServiceCode.value)
   return new Set((props.transaction.chain.component || []).map(node => node.code))
 })
@@ -776,7 +783,7 @@ const selectBizComp = (code) => {
 // 点击公共/技术构件（pbcc/pbct）→ 设置 techComp
 const selectTechComp = (code) => {
   activePath.techComp = activePath.techComp === code ? null : code
-  nextTick(recalcCurves)
+  nextTick(() => { recalcCurves(); recalcCompCallArrows() })
 }
 
 // 兼容旧 toggleComponent（现在区分 biz/tech）

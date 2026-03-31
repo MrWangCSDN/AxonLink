@@ -71,16 +71,6 @@ public class FlowServiceMetadataResolver {
         }
     };
 
-    private static final Map<String, String> PARENT_PROJECT_DOMAIN_MAP = Map.of(
-        "ap-parent", "ap",
-        "unvr-parent", "unvr",
-        "stmt-parent", "stmt",
-        "medu-parent", "medu",
-        "inbu-parent", "inbu",
-        "dept-parent", "dept",
-        "aggr-parent", "aggr"
-    );
-
     private static final List<String> KNOWN_SUFFIXES = List.of(
         ".serviceType.xml",
         ".pbs.xml",
@@ -336,11 +326,7 @@ public class FlowServiceMetadataResolver {
     }
 
     private String resolveDomainKey(String parentProject, String packagePath) {
-        String fromParent = PARENT_PROJECT_DOMAIN_MAP.get(parentProject);
-        if (fromParent != null) {
-            return fromParent;
-        }
-        return DomainKeyResolver.resolve(packagePath);
+        return DomainKeyResolver.resolveByProjectOrPackage(parentProject, packagePath);
     }
 
     private String inferNodeKind(String fileName, String typeId) {
