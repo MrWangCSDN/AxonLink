@@ -1,0 +1,462 @@
+{
+  "schemaType": "flowtrans.xml",
+  "version": "draft-v2",
+  "sampleFileCount": 366,
+  "draftNote": "基于 /Users/wangshanhe/Desktop/myproject/sunline/sunline 下 366 个源文件中的 *.flowtrans.xml 提炼而成，当前已结合一轮人工业务确认进行修订；仍保留少量待确认项，后续继续迭代。",
+  "tags": [
+    {
+      "name": "flowtran",
+      "category": "root",
+      "observedCount": 366,
+      "meaningDraft": "联机交易 XML 的最大根标签，表示一整笔联机交易定义。",
+      "businessMeaningDraft": "从业务上对应一笔可以受理和执行的联机交易，定义交易码、交易名称、事务模式以及整体交易结构。",
+      "technicalMeaningDraft": "技术上是整份 flowtrans.xml 的根节点，下面通常挂 description、interface、flow 以及尾部映射区。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "交易码" },
+        { "name": "longname", "meaningDraft": "交易中文名称" },
+        { "name": "kind", "meaningDraft": "交易类型，例如 query、maintain" },
+        { "name": "package", "meaningDraft": "交易的包路径" },
+        { "name": "txnMode", "meaningDraft": "事务模式；A 表示原子事务，R 表示只读事务" },
+        { "name": "xsi:noNamespaceSchemaLocation", "meaningDraft": "使用的 XML 模型定义文件" }
+      ],
+      "openQuestions": [
+        "kind 的取值体系是否还有更细的业务分类，需要结合平台规范确认。",
+        "txnMode 在当前 366 个样本中未观测到，先按平台已确认语义保留。"
+      ]
+    },
+    {
+      "name": "description",
+      "category": "metadata",
+      "observedCount": 314,
+      "meaningDraft": "交易或节点的描述内容标签。",
+      "businessMeaningDraft": "主要用于说明这笔交易或某个流程节点在业务上的用途、场景或规则。",
+      "technicalMeaningDraft": "主要承担文档化和可读性增强作用，一般不直接参与运行时执行。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml",
+        "unvr-parent/unvr-tran/src/main/resources/trans/word/un9017.flowtrans.xml"
+      ],
+      "commonAttributes": [],
+      "openQuestions": []
+    },
+    {
+      "name": "interface",
+      "category": "interface",
+      "observedCount": 366,
+      "meaningDraft": "交易的接口定义区。",
+      "businessMeaningDraft": "用于描述交易对外的输入、输出，以及交易内部流转过程中需要承接的属性数据。",
+      "technicalMeaningDraft": "技术上用于组织 input、output、property、printer 四类接口，其中 input、output、property 最重要，printer 可弱化理解。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "package", "meaningDraft": "接口模型所在包路径" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "input",
+      "category": "interface",
+      "observedCount": 366,
+      "meaningDraft": "交易输入接口定义区。",
+      "businessMeaningDraft": "对应交易受理时由柜面、渠道或上游系统传入的业务字段。",
+      "technicalMeaningDraft": "内部通常由 field 或 fields 组成，定义交易输入部分的数据结构。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "packMode", "meaningDraft": "输入接口是否按平台约定整体封装" }
+      ],
+      "openQuestions": [
+        "packMode 的运行时影响需要再结合平台框架文档确认。"
+      ]
+    },
+    {
+      "name": "output",
+      "category": "interface",
+      "observedCount": 366,
+      "meaningDraft": "交易输出接口定义区。",
+      "businessMeaningDraft": "对应交易执行完成后对外返回的业务结果。",
+      "technicalMeaningDraft": "内部可以直接定义 field，也可以通过 fields 描述复合结构或列表结果。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "asParm", "meaningDraft": "输出是否作为参数对象返回" },
+        { "name": "packMode", "meaningDraft": "输出接口是否按平台约定整体封装" }
+      ],
+      "openQuestions": [
+        "asParm 对调用方签名和序列化格式的影响需要结合框架规范确认。"
+      ]
+    },
+    {
+      "name": "property",
+      "category": "interface",
+      "observedCount": 357,
+      "meaningDraft": "交易属性接口定义区。",
+      "businessMeaningDraft": "它更像交易内部的过渡区，用于承接流程中间数据，方便后续节点继续传递和使用。",
+      "technicalMeaningDraft": "技术上是交易内部上下文数据区，流程里的服务节点可以把结果映射到 property，再由后续节点继续取用；没有 property 往往不方便做中间过渡传递。",
+      "exampleFiles": [
+        "dept-parent/dept-tran/src/main/resources/trans/openclose/dp2227.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "packMode", "meaningDraft": "内部属性是否按平台对象形式封装" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "printer",
+      "category": "interface",
+      "observedCount": 344,
+      "meaningDraft": "打印接口定义区。",
+      "businessMeaningDraft": "用于回单、凭证、打印联等场景的打印字段准备。",
+      "technicalMeaningDraft": "很多交易中只作为结构占位存在，解读时优先级可以低于 input、output、property。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "packMode", "meaningDraft": "打印数据是否以封装对象形式组织" }
+      ],
+      "openQuestions": [
+        "打印模型与 outToPrinterMapping 的联动关系需要继续确认。"
+      ]
+    },
+    {
+      "name": "field",
+      "category": "model",
+      "observedCount": 7323,
+      "meaningDraft": "单个字段定义，是 flowtrans.xml 中最基础的数据单元。",
+      "businessMeaningDraft": "对应一个具体业务字段，例如账号、产品号、机构号、日期、金额等。",
+      "technicalMeaningDraft": "通过 type、required、multi、array、ref 等属性描述字段类型、约束和元数据引用。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "字段英文名称" },
+        { "name": "type", "meaningDraft": "我司自研类型体系中的字段类型，后续可继续扩展映射到基本类型" },
+        { "name": "longname", "meaningDraft": "字段中文名" },
+        { "name": "required", "meaningDraft": "是否必输；true 表示必输，false 表示非必输" },
+        { "name": "multi", "meaningDraft": "是否多值；true 通常表示数组或列表，false 表示单值" },
+        { "name": "array", "meaningDraft": "是否以数组结构承载" },
+        { "name": "desc", "meaningDraft": "字段备注或业务说明" },
+        { "name": "ref", "meaningDraft": "引用的具体字典定义" },
+        { "name": "default", "meaningDraft": "默认值" },
+        { "name": "fixed", "meaningDraft": "固定值或固定格式草案" },
+        { "name": "nullable", "meaningDraft": "是否允许为空，样本较少" },
+        { "name": "identity", "meaningDraft": "是否标识字段，样本较少" },
+        { "name": "primarykey", "meaningDraft": "是否主键字段，样本较少" },
+        { "name": "allowSubType", "meaningDraft": "是否允许子类型扩展" }
+      ],
+      "openQuestions": [
+        "fixed、nullable、identity、primarykey 等扩展属性的运行时语义需要再核对。"
+      ]
+    },
+    {
+      "name": "fields",
+      "category": "model",
+      "observedCount": 232,
+      "meaningDraft": "字段集合定义，用于包装一组 field。",
+      "businessMeaningDraft": "常用来表示业务明细列表、复合对象或一组嵌套字段。",
+      "technicalMeaningDraft": "可以理解成复合结构或列表容器，内部可以继续包装 field。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml",
+        "medu-parent/medu-tran/src/main/resources/trans/cuce/cc5154.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "集合字段英文名称" },
+        { "name": "scope", "meaningDraft": "引用的复合类型定义，可理解为我司元数据模型里的复合类型，类似 JavaBean/POJO" },
+        { "name": "longname", "meaningDraft": "集合中文名" },
+        { "name": "required", "meaningDraft": "是否必输或必返回" },
+        { "name": "multi", "meaningDraft": "是否多值；true 通常表示数组或列表" },
+        { "name": "array", "meaningDraft": "是否以数组结构承载" },
+        { "name": "desc", "meaningDraft": "集合说明" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "element",
+      "category": "model",
+      "observedCount": 2,
+      "meaningDraft": "与 field 非常接近的元素定义标签，样本极少。",
+      "businessMeaningDraft": "看起来也是业务字段定义，只是写法或生成来源不同。",
+      "technicalMeaningDraft": "可能是特定生成器或模型兼容场景下的字段声明方式。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2275.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "元素编码" },
+        { "name": "type", "meaningDraft": "元素类型" },
+        { "name": "longname", "meaningDraft": "元素中文名" },
+        { "name": "required", "meaningDraft": "是否必输" },
+        { "name": "desc", "meaningDraft": "元素说明" }
+      ],
+      "openQuestions": [
+        "element 与 field 的平台级差异需要重点确认，目前暂按同义近似理解。"
+      ]
+    },
+    {
+      "name": "flow",
+      "category": "flow",
+      "observedCount": 366,
+      "meaningDraft": "交易流程编排区。",
+      "businessMeaningDraft": "描述这笔交易在办理过程中如何一步步执行。",
+      "technicalMeaningDraft": "内部主要编排 method 和 service 两类执行节点，也可以包含 case、when、loop、block 等流程控制节点。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "流程块标识，样本中不一定都有" },
+        { "name": "longname", "meaningDraft": "流程中文名" },
+        { "name": "desc", "meaningDraft": "流程说明" },
+        { "name": "test", "meaningDraft": "流程触发条件，少量样本出现" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "service",
+      "category": "flow",
+      "observedCount": 774,
+      "meaningDraft": "流程中的服务节点。",
+      "businessMeaningDraft": "对应交易办理过程中的一个服务步骤，通常是 pbs 基础服务或 pcs 组合服务。",
+      "technicalMeaningDraft": "通过 serviceName 指向唯一服务标识，再通过 in_mappings 和 out_mappings 描述入参与出参绑定。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml",
+        "dept-parent/dept-tran/src/main/resources/trans/openclose/dp2227.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "serviceName", "meaningDraft": "服务的唯一标识" },
+        { "name": "id", "meaningDraft": "流程内服务节点编码" },
+        { "name": "longname", "meaningDraft": "服务节点中文名" },
+        { "name": "desc", "meaningDraft": "服务说明" },
+        { "name": "mappingToProperty", "meaningDraft": "服务结果是否优先回写到 property 区" },
+        { "name": "test", "meaningDraft": "服务节点执行条件" }
+      ],
+      "openQuestions": [
+        "mappingToProperty=true 时的详细赋值规则，需要再结合框架实现确认。"
+      ]
+    },
+    {
+      "name": "in_mappings",
+      "category": "mapping",
+      "observedCount": 774,
+      "meaningDraft": "服务入参映射区。",
+      "businessMeaningDraft": "表示把交易上下文中的字段映射给当前服务使用。",
+      "technicalMeaningDraft": "内部由多个 mapping 组成，通常是把输入接口、属性接口或常量值，映射到当前服务入参对象的字段上。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "by_interface", "meaningDraft": "是否按接口模型进行映射" },
+        { "name": "test", "meaningDraft": "该映射块整体是否有条件执行" }
+      ],
+      "openQuestions": [
+        "by_interface=true 与 false 的细粒度差别，需要结合框架装配规则确认。"
+      ]
+    },
+    {
+      "name": "out_mappings",
+      "category": "mapping",
+      "observedCount": 752,
+      "meaningDraft": "服务出参映射区。",
+      "businessMeaningDraft": "表示把当前服务执行后的结果字段回写到交易上下文中。",
+      "technicalMeaningDraft": "内部通常由多个 mapping 组成，通常是把当前服务输出对象中的字段，映射到交易的输出接口或属性接口。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "by_interface", "meaningDraft": "是否按接口模型进行出参映射" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "mapping",
+      "category": "mapping",
+      "observedCount": 7448,
+      "meaningDraft": "单条字段映射规则。",
+      "businessMeaningDraft": "表示把一个字段或常量值，传递到另一个字段位置。",
+      "technicalMeaningDraft": "mapping 的具体含义取决于所在区域：在 in_mappings 中，src 通常来自输入接口、属性接口或常量，dest 通常是当前服务对象中的字段；在 out_mappings 中，src 通常来自当前服务输出对象中的字段，dest 通常是输出接口或属性接口中的字段。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml",
+        "dept-parent/dept-tran/src/main/resources/trans/openclose/dp2227.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "src", "meaningDraft": "源字段；可来源于输入接口、属性接口、当前服务输出对象，也可以是常量" },
+        { "name": "dest", "meaningDraft": "目标字段；通常是当前服务对象中的字段，或输出接口、属性接口中的字段" },
+        { "name": "by_interface", "meaningDraft": "是否按接口定义进行映射" },
+        { "name": "on_top", "meaningDraft": "是否从顶层交易上下文直接取值/回写" },
+        { "name": "desc", "meaningDraft": "映射说明" }
+      ],
+      "openQuestions": [
+        "常量的书写格式和 on_top=true 的精确语义，建议在后续重点确认。"
+      ]
+    },
+    {
+      "name": "method",
+      "category": "control",
+      "observedCount": 141,
+      "meaningDraft": "交易流程中的方法节点。",
+      "businessMeaningDraft": "通常表示一段不单独抽成服务的内部处理逻辑，例如输入检查、局部计算、属性赋值。",
+      "technicalMeaningDraft": "通过 method 属性指定方法英文名称，longname 表示方法节点中文名称。",
+      "exampleFiles": [
+        "unvr-parent/unvr-tran/src/main/resources/trans/word/un9017.flowtrans.xml",
+        "medu-parent/medu-tran/src/main/resources/trans/cuce/cc5154.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "method", "meaningDraft": "方法英文名称" },
+        { "name": "id", "meaningDraft": "方法节点编码" },
+        { "name": "longname", "meaningDraft": "方法节点中文名" },
+        { "name": "desc", "meaningDraft": "方法说明" },
+        { "name": "test", "meaningDraft": "方法执行条件，少量样本出现" }
+      ],
+      "openQuestions": [
+        "method 节点最终映射到 Java 代码的位置，需要结合实现类进一步定位。"
+      ]
+    },
+    {
+      "name": "case",
+      "category": "control",
+      "observedCount": 49,
+      "meaningDraft": "条件选择节点。",
+      "businessMeaningDraft": "对应业务流程中的条件分支选择。",
+      "technicalMeaningDraft": "通常内部挂多个 when 节点，由各 when 的条件决定走哪条子流程。",
+      "exampleFiles": [
+        "unvr-parent/unvr-tran/src/main/resources/trans/word/un9017.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "分支块编码" },
+        { "name": "longname", "meaningDraft": "分支块中文名" },
+        { "name": "desc", "meaningDraft": "分支块说明" },
+        { "name": "test", "meaningDraft": "少量样本中出现的整体测试条件" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "when",
+      "category": "control",
+      "observedCount": 144,
+      "meaningDraft": "条件分支子节点。",
+      "businessMeaningDraft": "表示满足某个业务条件时执行对应分支。",
+      "technicalMeaningDraft": "核心在 test 条件表达式，满足时执行该节点下面的流程。",
+      "exampleFiles": [
+        "unvr-parent/unvr-tran/src/main/resources/trans/word/un9017.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "条件分支编码" },
+        { "name": "longname", "meaningDraft": "条件分支中文名" },
+        { "name": "test", "meaningDraft": "判断表达式" },
+        { "name": "desc", "meaningDraft": "条件说明" }
+      ],
+      "openQuestions": [
+        "test 表达式语法属于哪套表达式引擎，建议结合平台规范确认。"
+      ]
+    },
+    {
+      "name": "block",
+      "category": "control",
+      "observedCount": 6,
+      "meaningDraft": "代码块节点。",
+      "businessMeaningDraft": "用于把一组相关动作放在一起，作为一个整体步骤执行。",
+      "technicalMeaningDraft": "类似局部流程容器，可带 test 条件，内部可包含多个可执行节点。",
+      "exampleFiles": [
+        "dept-parent/dept-tran/src/main/resources/trans/openclose/dp2227.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "步骤块编码" },
+        { "name": "longname", "meaningDraft": "步骤块中文名" },
+        { "name": "test", "meaningDraft": "块执行条件" },
+        { "name": "desc", "meaningDraft": "块说明" }
+      ],
+      "openQuestions": []
+    },
+    {
+      "name": "loop",
+      "category": "control",
+      "observedCount": 1,
+      "meaningDraft": "循环节点。",
+      "businessMeaningDraft": "表示对一组数据或明细反复执行同一类处理逻辑。",
+      "technicalMeaningDraft": "可通过 test 属性声明执行条件，样本中观察到 while-do 模式。",
+      "exampleFiles": [
+        "medu-parent/medu-tran/src/main/resources/trans/cuce/cc5154.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "longname", "meaningDraft": "循环节点中文名" },
+        { "name": "test", "meaningDraft": "循环条件" },
+        { "name": "mode", "meaningDraft": "循环模式，例如 while-do" }
+      ],
+      "openQuestions": [
+        "loop 在全平台中的完整支持范围需要再确认，目前只观察到极少样本。"
+      ]
+    },
+    {
+      "name": "exit",
+      "category": "control",
+      "observedCount": 0,
+      "meaningDraft": "退出节点。",
+      "businessMeaningDraft": "用于在满足特定条件时提前退出当前流程或分支。",
+      "technicalMeaningDraft": "平台语义上属于流程控制节点，通常会结合 test 条件决定是否退出；当前 366 个样本中尚未观测到真实标签。",
+      "exampleFiles": [],
+      "commonAttributes": [
+        { "name": "id", "meaningDraft": "退出节点编码" },
+        { "name": "longname", "meaningDraft": "退出节点中文名" },
+        { "name": "test", "meaningDraft": "退出条件表达式" },
+        { "name": "desc", "meaningDraft": "退出节点说明" }
+      ],
+      "openQuestions": [
+        "当前样本中未观测到 exit，后续需要结合真实交易样本再确认其完整写法。"
+      ]
+    },
+    {
+      "name": "outMapping",
+      "category": "tail",
+      "observedCount": 193,
+      "meaningDraft": "交易输出的尾部映射区。",
+      "businessMeaningDraft": "可能用于把内部 output 区再做一次统一出参整理。",
+      "technicalMeaningDraft": "样本中大多为空壳或仅带 by_interface 属性，推测是扩展位。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "by_interface", "meaningDraft": "是否按接口方式映射" }
+      ],
+      "openQuestions": [
+        "当前语义信心较低，建议后续结合非空样本或框架解析代码确认。"
+      ]
+    },
+    {
+      "name": "propertyToPrinterMapping",
+      "category": "tail",
+      "observedCount": 170,
+      "meaningDraft": "内部属性到打印模型的尾部映射区。",
+      "businessMeaningDraft": "可能用于将流程中间变量补充到打印输出。",
+      "technicalMeaningDraft": "样本中大多为空或占位，推测是打印装配扩展点。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "by_interface", "meaningDraft": "是否按接口模型方式映射" }
+      ],
+      "openQuestions": [
+        "当前语义信心较低，建议后续结合打印场景交易确认。"
+      ]
+    },
+    {
+      "name": "outToPrinterMapping",
+      "category": "tail",
+      "observedCount": 175,
+      "meaningDraft": "交易输出到打印模型的尾部映射区。",
+      "businessMeaningDraft": "可能用于把正式输出字段转换成打印字段。",
+      "technicalMeaningDraft": "目前样本多为空壳，推测是平台预留的打印适配点。",
+      "exampleFiles": [
+        "aggr-parent/aggr-tran/src/main/resources/trans/dept/dp2028.flowtrans.xml"
+      ],
+      "commonAttributes": [
+        { "name": "by_interface", "meaningDraft": "是否按接口模型方式映射" }
+      ],
+      "openQuestions": [
+        "当前语义信心较低，建议后续结合真实打印交易和框架实现确认。"
+      ]
+    }
+  ]
+}

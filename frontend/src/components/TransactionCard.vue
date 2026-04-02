@@ -74,20 +74,37 @@
     <Teleport to="body">
       <div v-show="codeViewer.visible"
            class="code-modal-backdrop"
-           :class="{ 'code-modal-backdrop-fs': codeViewer.fullscreen }"
-           @click.self="!codeViewer.fullscreen && closeCodeViewer()">
-        <div class="code-modal monaco-modal" :class="{ 'monaco-modal-fs': codeViewer.fullscreen }">
+           :class="{
+             'code-modal-backdrop-fs': codeViewer.fullscreen,
+             'code-modal-backdrop-drawer-right': codeViewer.drawerVisible && !codeViewer.fullscreen && codeViewer.drawerPlacement === 'external-right',
+             'code-modal-backdrop-ai-fullscreen': codeViewer.drawerVisible && codeViewer.drawerPlacement === 'fullscreen',
+           }"
+           :style="{ '--code-modal-reserved-width': `${codeViewer.drawerReservedWidth || 0}px` }"
+           @click.self="!codeViewer.fullscreen && codeViewer.drawerPlacement !== 'fullscreen' && closeCodeViewer()">
+        <div
+          class="code-modal monaco-modal"
+          :class="{
+            'monaco-modal-fs': codeViewer.fullscreen,
+            'monaco-modal-external-right': codeViewer.drawerVisible && !codeViewer.fullscreen && codeViewer.drawerPlacement === 'external-right',
+            'monaco-modal-ai-background': codeViewer.drawerVisible && codeViewer.drawerPlacement === 'fullscreen',
+            'monaco-modal-ai-hidden': codeViewer.drawerVisible && codeViewer.drawerPlacement === 'fullscreen',
+          }"
+          :style="{ '--code-modal-reserved-width': `${codeViewer.drawerReservedWidth || 0}px` }"
+        >
           <!-- Monaco 代码查看器 -->
           <MonacoCodeViewer
             :node="codeViewer.node"
+            :transaction="transaction"
             :file-path="codeViewer.filePath"
             :method-name="codeViewer.methodName"
             :locate-text="codeViewer.locateText"
             :is-dark="isDark"
             :parent-loading="codeViewer.loading"
+            :modal-shift="codeViewer.drawerReservedWidth"
             :visible="codeViewer.visible"
             @close="closeCodeViewer"
-            @fullscreen-change="v => { codeViewer.fullscreen = v }"
+            @fullscreen-change="handleCodeViewerFullscreenChange"
+            @drawer-layout-change="updateCodeViewerDrawer"
           />
 
 
@@ -128,6 +145,32 @@
           Ctrl + 滚轮缩放
         </div>
         <div class="toolbar-right">
+          <div class="ai-toolbar-actions">
+            <button
+              class="ai-toolbar-btn"
+              :class="{ active: aiAnalysis.visible }"
+              :disabled="aiAnalysis.loading"
+              @click.stop="toggleAiPanel"
+            >
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M6.5 1.5L7.6 4.4L10.5 5.5L7.6 6.6L6.5 9.5L5.4 6.6L2.5 5.5L5.4 4.4L6.5 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                <path d="M10.5 1.8L10.9 2.8L11.9 3.2L10.9 3.6L10.5 4.6L10.1 3.6L9.1 3.2L10.1 2.8L10.5 1.8z" fill="currentColor"/>
+              </svg>
+              {{ analysisButtonLabel }}
+            </button>
+            <button
+              v-if="aiAnalysis.visible"
+              class="ai-toolbar-btn secondary"
+              :disabled="aiAnalysis.loading"
+              @click.stop="runAiAnalysis(true)"
+            >
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                <path d="M10.8 5.2A4.8 4.8 0 1 0 11 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                <path d="M8.9 2.5H11.2V4.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              刷新
+            </button>
+          </div>
           <div class="zoom-controls">
             <button class="zoom-btn" @click.stop="zoomOut">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -152,6 +195,98 @@
               <path d="M1.5 5.5H4.5V2.5M9.5 2.5V5.5H12.5M12.5 8.5H9.5V11.5M4.5 11.5V8.5H1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </button>
+        </div>
+      </div>
+
+      <div v-if="aiAnalysis.visible" class="analysis-panel">
+        <div class="analysis-panel-header">
+          <div class="analysis-panel-title-group">
+            <div class="analysis-panel-title-row">
+              <span class="analysis-panel-title">AI 解读</span>
+              <span v-if="aiAnalysis.result?.cached" class="analysis-status-tag cached">缓存结果</span>
+              <span v-if="isAnalysisStale" class="analysis-status-tag stale">路径已变化</span>
+            </div>
+            <span class="analysis-panel-scope">{{ analysisScopeLabel }}</span>
+          </div>
+          <button class="analysis-close-btn" @click.stop="aiAnalysis.visible = false">收起</button>
+        </div>
+
+        <div v-if="aiAnalysis.loading" class="analysis-loading">
+          <div class="analysis-loading-spinner"/>
+          <div class="analysis-loading-text">
+            <span class="analysis-loading-title">正在生成解读</span>
+            <span class="analysis-loading-sub">会结合当前交易链路、选中路径和关键代码片段进行分析</span>
+          </div>
+        </div>
+
+        <div v-else-if="aiAnalysis.error" class="analysis-error-card">
+          <div>
+            <div class="analysis-error-title">AI 解读失败</div>
+            <div class="analysis-error-detail">{{ aiAnalysis.error }}</div>
+          </div>
+        </div>
+
+        <div v-else-if="aiAnalysis.result" class="analysis-content">
+          <div class="analysis-stats">
+            <div v-for="stat in analysisStats" :key="stat.label" class="analysis-stat-chip">
+              <span class="analysis-stat-label">{{ stat.label }}</span>
+              <span class="analysis-stat-value">{{ stat.value }}</span>
+            </div>
+          </div>
+
+          <div class="analysis-section-grid">
+            <section class="analysis-section-card">
+              <div class="analysis-section-title">总览</div>
+              <div class="analysis-section-text">{{ analysisSummaryText || '暂无总览内容' }}</div>
+            </section>
+
+            <section class="analysis-section-card">
+              <div class="analysis-section-title">业务解读</div>
+              <div class="analysis-section-text">{{ analysisBusinessText || '暂无业务解读内容' }}</div>
+            </section>
+
+            <section class="analysis-section-card">
+              <div class="analysis-section-title">技术检查</div>
+              <div class="analysis-section-text">{{ analysisTechnicalText || '暂无技术检查内容' }}</div>
+            </section>
+          </div>
+
+          <section v-if="analysisFindings.length" class="analysis-section-card">
+            <div class="analysis-section-title">规则发现</div>
+            <div class="analysis-finding-list">
+              <article v-for="item in analysisFindings" :key="`${item.key}-${item.title}`" class="analysis-finding-item">
+                <div class="analysis-finding-head">
+                  <span class="analysis-severity-chip" :class="findingSeverityClass(item.severity)">
+                    {{ item.severity || 'INFO' }}
+                  </span>
+                  <span class="analysis-finding-title">{{ item.title || item.key }}</span>
+                </div>
+                <div v-if="item.detail" class="analysis-finding-detail">{{ item.detail }}</div>
+                <div v-if="item.evidence" class="analysis-finding-evidence">{{ item.evidence }}</div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="analysisSnippets.length" class="analysis-section-card">
+            <div class="analysis-section-title">关联代码片段</div>
+            <div class="analysis-snippet-list">
+              <article
+                v-for="snippet in analysisSnippets.slice(0, 3)"
+                :key="`${snippet.nodeCode}-${snippet.methodName}-${snippet.startLine}`"
+                class="analysis-snippet-item"
+              >
+                <div class="analysis-snippet-head">
+                  <span class="analysis-snippet-node">{{ snippet.nodeCode || '未命名节点' }}</span>
+                  <span class="analysis-snippet-method">{{ snippet.methodName || '代码片段' }}</span>
+                </div>
+                <div class="analysis-snippet-path">{{ snippet.filePath }}</div>
+                <div v-if="snippet.startLine > 0 && snippet.endLine > 0" class="analysis-snippet-range">
+                  第 {{ snippet.startLine }} - {{ snippet.endLine }} 行
+                </div>
+                <pre class="analysis-snippet-preview">{{ snippetPreview(snippet.content) }}</pre>
+              </article>
+            </div>
+          </section>
         </div>
       </div>
 
@@ -468,6 +603,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import MonacoCodeViewer from './MonacoCodeViewer.vue'
 import ApiTester from './ApiTester.vue'
+import { analyzeFlowtranTransaction } from '../api/index.js'
 
 const props = defineProps({
   transaction:     { type: Object,  required: true },
@@ -803,6 +939,127 @@ const resetSelection = () => {
 const selectedServices   = computed(() => new Set(activePath.serviceTrail))
 const selectedComponents = computed(() => new Set([activePath.bizComp, activePath.techComp].filter(Boolean)))
 
+const createAnalysisSessionId = () =>
+  `tx-${props.transaction.id}-${Math.random().toString(36).slice(2, 10)}`
+
+const aiSessionId = ref(createAnalysisSessionId())
+const aiAnalysis = reactive({
+  visible: false,
+  loading: false,
+  error: '',
+  result: null,
+  requestKey: '',
+})
+
+const analysisSelectedPath = computed(() => [
+  ...activePath.serviceTrail,
+  ...(activePath.bizComp ? [activePath.bizComp] : []),
+  ...(activePath.techComp ? [activePath.techComp] : []),
+])
+
+const analysisFocus = computed(() =>
+  selectionSummary.value || `${props.transaction.id} ${props.transaction.name}`
+)
+
+const analysisScopeLabel = computed(() =>
+  hasSelection.value ? `当前路径：${selectionSummary.value}` : '当前范围：整笔交易'
+)
+
+const currentAnalysisKey = computed(() =>
+  JSON.stringify({
+    txId: props.transaction.id,
+    path: analysisSelectedPath.value,
+    focus: analysisFocus.value,
+  })
+)
+
+const analysisButtonLabel = computed(() => {
+  if (aiAnalysis.loading) return '解读中'
+  if (aiAnalysis.visible) return '收起解读'
+  if (!aiAnalysis.result) return 'AI解读'
+  return currentAnalysisKey.value === aiAnalysis.requestKey ? '查看解读' : '更新解读'
+})
+
+const isAnalysisStale = computed(() =>
+  !!aiAnalysis.result && !!aiAnalysis.requestKey && aiAnalysis.requestKey !== currentAnalysisKey.value
+)
+
+const analysisFindings = computed(() => aiAnalysis.result?.findings || [])
+const analysisSnippets = computed(() => aiAnalysis.result?.codeSnippets || [])
+const analysisStats = computed(() => {
+  const stats = aiAnalysis.result?.contextStats || {}
+  return [
+    { label: '模式', value: stats.mode || aiAnalysis.result?.mode || '--' },
+    { label: '模型', value: aiAnalysis.result?.model || stats.model || '--' },
+    { label: '片段', value: stats.snippetCount ?? analysisSnippets.value.length },
+    { label: '规则', value: stats.findingCount ?? analysisFindings.value.length },
+  ]
+})
+
+const stripSectionTitle = (text, label) => {
+  if (!text) return ''
+  const pattern = new RegExp(`^##\\s*${label}\\s*\\n?`, 'i')
+  return text.replace(pattern, '').trim()
+}
+
+const analysisSummaryText = computed(() =>
+  stripSectionTitle(aiAnalysis.result?.summary, '总览')
+)
+const analysisBusinessText = computed(() =>
+  stripSectionTitle(aiAnalysis.result?.businessSummary, '业务解读')
+)
+const analysisTechnicalText = computed(() =>
+  stripSectionTitle(aiAnalysis.result?.technicalSummary, '技术检查')
+)
+
+const snippetPreview = (content) => {
+  if (!content) return ''
+  return content.length <= 320 ? content : `${content.slice(0, 320)}...`
+}
+
+const findingSeverityClass = (severity) => {
+  const value = (severity || '').toUpperCase()
+  if (value === 'HIGH' || value === 'ERROR') return 'severity-high'
+  if (value === 'MEDIUM' || value === 'WARN' || value === 'WARNING') return 'severity-medium'
+  if (value === 'LOW' || value === 'INFO') return 'severity-low'
+  return 'severity-default'
+}
+
+const runAiAnalysis = async (forceRefresh = false) => {
+  aiAnalysis.visible = true
+  aiAnalysis.loading = true
+  aiAnalysis.error = ''
+  try {
+    const result = await analyzeFlowtranTransaction(props.transaction.id, {
+      sessionId: aiSessionId.value,
+      focus: analysisFocus.value,
+      mode: 'FULL',
+      includeCode: true,
+      forceRefresh,
+      maxCodeSnippets: 6,
+      selectedPath: analysisSelectedPath.value,
+    })
+    aiAnalysis.result = result
+    aiAnalysis.requestKey = currentAnalysisKey.value
+  } catch (error) {
+    aiAnalysis.error = error?.message || 'AI 解读失败'
+  } finally {
+    aiAnalysis.loading = false
+  }
+}
+
+const toggleAiPanel = async () => {
+  if (aiAnalysis.visible) {
+    aiAnalysis.visible = false
+    return
+  }
+  if (!aiAnalysis.result || isAnalysisStale.value) {
+    await runAiAnalysis(false)
+    return
+  }
+  aiAnalysis.visible = true
+}
+
 // 构件层内部调用箭头（bizComp → techComp）
 const recalcCompCallArrows = async () => {
   await nextTick()
@@ -910,6 +1167,16 @@ onMounted(() => { if (isExpanded.value) initExpanded() })
 
 // 后续手动展开时触发
 watch(isExpanded, (v) => { if (v) initExpanded() })
+watch(() => props.transaction.id, () => {
+  aiSessionId.value = createAnalysisSessionId()
+  Object.assign(aiAnalysis, {
+    visible: false,
+    loading: false,
+    error: '',
+    result: null,
+    requestKey: '',
+  })
+})
 watch(collapsedLayers, recalcAll, { deep: true })
 watch(scale, recalcAll)
 watch([translateX, translateY], recalcAll)
@@ -959,6 +1226,7 @@ const codeViewer = reactive({
   noSource: false, loading: false,
   toast: '', filePath: '', methodName: '', locateText: '',
   fullscreen: false,
+  drawerVisible: false, drawerPlacement: 'hidden', drawerShift: 0, drawerWidth: 0, drawerReservedWidth: 0,
 })
 
 // ── API 测试弹窗状态 ──
@@ -2358,6 +2626,11 @@ const shouldResolveFlowSource = (node, nodeType) =>
 
 // 打开代码查看器：通过全局索引把 className 解析成 filePath，再传给 MonacoCodeViewer
 const openCodeViewer = async (node, nodeType) => {
+  codeViewer.drawerVisible = false
+  codeViewer.drawerPlacement = 'hidden'
+  codeViewer.drawerShift = 0
+  codeViewer.drawerWidth = 0
+  codeViewer.drawerReservedWidth = 0
   const cacheKey = `${props.transaction.id}|${nodeType}|${node?.prefix || ''}|${node.code}`
   const reg = NODE_FILE_REGISTRY[node.code]
 
@@ -2456,9 +2729,36 @@ const openCodeViewer = async (node, nodeType) => {
   }
 }
 
+const updateCodeViewerDrawer = (layout = {}) => {
+  codeViewer.drawerVisible = !!layout.visible
+  codeViewer.drawerPlacement = layout.placement || 'hidden'
+  codeViewer.drawerWidth = layout.visible ? Math.max(0, Number(layout.width) || 0) : 0
+  codeViewer.drawerReservedWidth = layout.visible && !codeViewer.fullscreen && layout.placement === 'external-right'
+    ? codeViewer.drawerWidth + 20
+    : 0
+  codeViewer.drawerShift = layout.visible && !codeViewer.fullscreen
+    ? Math.max(0, Number(layout.modalShift) || 0)
+    : 0
+}
+
+const handleCodeViewerFullscreenChange = (value) => {
+  codeViewer.fullscreen = !!value
+  if (codeViewer.fullscreen) {
+    codeViewer.drawerShift = 0
+    codeViewer.drawerReservedWidth = 0
+  } else if (codeViewer.drawerVisible && codeViewer.drawerPlacement === 'external-right') {
+    codeViewer.drawerReservedWidth = codeViewer.drawerWidth + 20
+  }
+}
+
 const closeCodeViewer = () => {
   codeViewer.visible    = false
   codeViewer.fullscreen = false
+  codeViewer.drawerVisible = false
+  codeViewer.drawerPlacement = 'hidden'
+  codeViewer.drawerShift = 0
+  codeViewer.drawerWidth = 0
+  codeViewer.drawerReservedWidth = 0
   callSitesPopup.visible = false
 }
 
@@ -2571,6 +2871,18 @@ defineExpose({
 .toolbar-right { display: flex; align-items: center; gap: 4px; }
 .fs-close-btn { background: #FEF2F2 !important; color: #EF4444 !important; border-color: #FECACA !important; }
 .fs-close-btn:hover { background: #FEE2E2 !important; border-color: #FCA5A5 !important; }
+.ai-toolbar-actions { display: flex; align-items: center; gap: 6px; margin-right: 4px; }
+.ai-toolbar-btn {
+  height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 0 10px; background: rgba(79,124,255,0.08); border: 1px solid rgba(79,124,255,0.18);
+  border-radius: 6px; cursor: pointer; color: #315fd7; font-size: 12px; font-weight: 600;
+  transition: all 0.15s; font-family: inherit;
+}
+.ai-toolbar-btn:hover:not(:disabled) { background: rgba(79,124,255,0.14); border-color: rgba(79,124,255,0.28); }
+.ai-toolbar-btn.active { background: rgba(79,124,255,0.18); border-color: rgba(79,124,255,0.32); }
+.ai-toolbar-btn.secondary { background: var(--bg-action-btn); color: var(--text-muted); border-color: var(--card-border); }
+.ai-toolbar-btn.secondary:hover:not(:disabled) { background: rgba(79,124,255,0.08); color: #4F7CFF; border-color: rgba(79,124,255,0.22); }
+.ai-toolbar-btn:disabled { opacity: 0.65; cursor: not-allowed; }
 
 /* 选中信息栏 */
 .selection-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: rgba(79,124,255,0.1); border-bottom: 1px solid rgba(79,124,255,0.2); font-size: 12px; }
@@ -2586,6 +2898,97 @@ defineExpose({
 .zoom-btn { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; background: var(--bg-action-btn); border: 1px solid var(--card-border); border-radius: 6px; cursor: pointer; color: var(--text-muted); transition: all 0.15s; }
 .zoom-btn:hover { background: rgba(79,124,255,0.1); color: #4F7CFF; border-color: rgba(79,124,255,0.3); }
 .zoom-value { font-size: 12px; color: var(--text-muted); min-width: 40px; text-align: center; font-family: monospace; }
+
+.analysis-panel {
+  border-bottom: 1px solid var(--layer-nodes-bd);
+  background: linear-gradient(180deg, rgba(79,124,255,0.04), transparent 36%), var(--chain-bg);
+  padding: 14px 16px 16px;
+}
+.analysis-panel-header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px;
+}
+.analysis-panel-title-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.analysis-panel-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.analysis-panel-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.analysis-panel-scope { font-size: 12px; color: var(--text-faint); }
+.analysis-status-tag {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+}
+.analysis-status-tag.cached { background: rgba(18,184,134,0.12); color: #0f9f74; }
+.analysis-status-tag.stale { background: rgba(247,103,7,0.12); color: #d96a02; }
+.analysis-close-btn {
+  height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--card-border);
+  background: var(--card-bg); color: var(--text-muted); cursor: pointer; font-size: 12px; transition: all 0.15s;
+}
+.analysis-close-btn:hover { color: #4F7CFF; border-color: rgba(79,124,255,0.26); background: rgba(79,124,255,0.06); }
+.analysis-loading, .analysis-error-card {
+  display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 10px;
+  background: var(--layer-bg); border: 1px solid var(--layer-bd);
+}
+.analysis-loading-spinner {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 2px solid rgba(79,124,255,0.18); border-top-color: #4F7CFF;
+  animation: spin 0.9s linear infinite; flex-shrink: 0;
+}
+.analysis-loading-text { display: flex; flex-direction: column; gap: 4px; }
+.analysis-loading-title, .analysis-error-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.analysis-loading-sub, .analysis-error-detail { font-size: 12px; color: var(--text-faint); line-height: 1.6; }
+.analysis-content { display: flex; flex-direction: column; gap: 12px; }
+.analysis-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.analysis-stat-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px;
+  border-radius: 999px; background: var(--layer-bg); border: 1px solid var(--layer-bd);
+}
+.analysis-stat-label { font-size: 11px; color: var(--text-faint); }
+.analysis-stat-value { font-size: 11px; color: var(--text-primary); font-weight: 600; }
+.analysis-section-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;
+}
+.analysis-section-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px;
+  border-radius: 12px; background: var(--layer-bg); border: 1px solid var(--layer-bd);
+}
+.analysis-section-title { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+.analysis-section-text {
+  font-size: 12px; line-height: 1.75; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+}
+.analysis-finding-list, .analysis-snippet-list { display: flex; flex-direction: column; gap: 10px; }
+.analysis-finding-item, .analysis-snippet-item {
+  display: flex; flex-direction: column; gap: 7px; padding: 12px;
+  border-radius: 10px; background: var(--card-bg); border: 1px solid var(--card-border);
+}
+.analysis-finding-head, .analysis-snippet-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.analysis-severity-chip {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+}
+.analysis-severity-chip.severity-high { background: rgba(239,68,68,0.12); color: #dc2626; }
+.analysis-severity-chip.severity-medium { background: rgba(245,158,11,0.14); color: #d97706; }
+.analysis-severity-chip.severity-low { background: rgba(18,184,134,0.12); color: #0f9f74; }
+.analysis-severity-chip.severity-default { background: rgba(140,148,166,0.14); color: var(--text-muted); }
+.analysis-finding-title, .analysis-snippet-node { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.analysis-finding-detail, .analysis-snippet-path, .analysis-snippet-range {
+  font-size: 12px; line-height: 1.6; color: var(--text-faint); word-break: break-word;
+}
+.analysis-finding-evidence {
+  font-family: 'Consolas','Cascadia Code','JetBrains Mono','Fira Code',monospace;
+  font-size: 11px; color: var(--text-secondary);
+  background: rgba(79,124,255,0.06); border: 1px solid rgba(79,124,255,0.12);
+  padding: 8px 10px; border-radius: 8px; white-space: pre-wrap; word-break: break-word;
+}
+.analysis-snippet-method {
+  font-size: 11px; color: #4F7CFF; font-family: 'SF Mono','Fira Code',monospace;
+}
+.analysis-snippet-preview {
+  margin: 0; padding: 10px 12px; border-radius: 8px; max-height: 180px; overflow: auto;
+  background: rgba(17,24,39,0.92); color: #E5EDF7; font-size: 11px; line-height: 1.6;
+  font-family: 'Consolas','Cascadia Code','JetBrains Mono','Fira Code',monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
 
 /* 链路图 */
 .chain-view { border-top: 1px solid var(--layer-nodes-bd); background: var(--chain-bg); transition: background 0.3s; }
@@ -2698,6 +3101,15 @@ defineExpose({
   backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center;
   padding: 28px;
+  transition: background 0.24s ease, backdrop-filter 0.24s ease;
+}
+.code-modal-backdrop.code-modal-backdrop-drawer-right {
+  justify-content: flex-start;
+  padding-right: calc(28px + var(--code-modal-reserved-width, 0px));
+}
+.code-modal-backdrop.code-modal-backdrop-ai-fullscreen {
+  background: rgba(2, 6, 23, 0.82);
+  backdrop-filter: blur(12px);
 }
 .code-modal {
   background: var(--code-modal-bg);
@@ -2707,10 +3119,35 @@ defineExpose({
   display: flex; flex-direction: column;
   box-shadow: 0 20px 80px rgba(0,0,0,0.50);
   overflow: hidden;
+  transition: transform 0.24s ease, opacity 0.24s ease, filter 0.24s ease, box-shadow 0.24s ease;
 }
 /* Monaco 版弹窗需要明确高度，让编辑器能计算尺寸 */
 .code-modal.monaco-modal {
   height: 80vh;
+}
+.code-modal.monaco-modal.monaco-modal-external-right {
+  width: min(1400px, calc(100vw - 56px - var(--code-modal-reserved-width, 0px)));
+  max-width: calc(100vw - 56px - var(--code-modal-reserved-width, 0px));
+}
+.code-modal.monaco-modal.monaco-modal-ai-background {
+  opacity: 0.1;
+  transform: scale(0.96);
+  filter: blur(6px) saturate(0.7);
+  box-shadow: none;
+  pointer-events: none;
+}
+.code-modal.monaco-modal.monaco-modal-ai-hidden {
+  opacity: 0;
+  visibility: hidden;
+  width: 0 !important;
+  max-width: 0 !important;
+  height: 0 !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  min-width: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  overflow: hidden;
 }
 /* 全屏模式 */
 .code-modal-backdrop-fs {

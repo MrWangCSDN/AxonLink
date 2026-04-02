@@ -57,6 +57,102 @@ export function getFlowtranChain(txId) {
 }
 
 /**
+ * 基于交易链路触发 AI 解读
+ * @param {string} txId 交易号
+ * @param {object} payload 分析请求
+ */
+export function analyzeFlowtranTransaction(txId, payload = {}) {
+  return request(`/ai/transactions/${encodeURIComponent(txId)}/analysis`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+/**
+ * 对当前代码片段发起流式智能解读
+ * @param {object} payload
+ * @param {object} handlers
+ */
+export async function streamCodeExplanation(payload = {}, handlers = {}) {
+  try {
+    const res = await fetch(`${BASE}/ai/code-explain/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/x-ndjson',
+      },
+      body: JSON.stringify(payload),
+      signal: handlers.signal,
+    })
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: /ai/code-explain/stream`)
+    }
+    if (!res.body) {
+      throw new Error('流式响应不可用')
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+
+    const emit = (event) => {
+      if (!event || typeof event !== 'object') return
+      if (event.type === 'start') handlers.onStart?.(event)
+      else if (event.type === 'delta') handlers.onDelta?.(event)
+      else if (event.type === 'done') handlers.onDone?.(event)
+      else if (event.type === 'error') handlers.onError?.(event)
+    }
+
+    const parseLine = (line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      const event = JSON.parse(trimmed)
+      emit(event)
+    }
+
+    while (true) {
+      const { value, done } = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+
+      let newlineIndex = buffer.indexOf('\n')
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        parseLine(line)
+        newlineIndex = buffer.indexOf('\n')
+      }
+
+      if (done) {
+        if (buffer.trim()) {
+          parseLine(buffer)
+        }
+        break
+      }
+    }
+  } catch (error) {
+    if (handlers.signal?.aborted) {
+      throw error
+    }
+    const message = normalizeStreamError(error)
+    handlers.onError?.({ type: 'error', message })
+    throw new Error(message)
+  }
+}
+
+function normalizeStreamError(error) {
+  const rawMessage = String(error?.message || '').trim()
+  if (!rawMessage) {
+    return '智能解读网络连接异常，请稍后重试'
+  }
+  const lower = rawMessage.toLowerCase()
+  if (lower === 'failed to fetch' || lower === 'network error' || lower.includes('load failed')) {
+    return '智能解读网络连接异常，可能是流式响应超时或模型服务暂时不可用'
+  }
+  return rawMessage
+}
+
+/**
  * 热重载元数据缓存（不重启服务）
  */
 export function refreshFlowtranCache() {

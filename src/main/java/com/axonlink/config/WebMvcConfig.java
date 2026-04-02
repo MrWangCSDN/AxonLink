@@ -3,6 +3,7 @@ package com.axonlink.config;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
+import org.springframework.web.servlet.config.annotation.AsyncSupportConfigurer;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
@@ -16,6 +17,18 @@ import java.io.IOException;
  */
 @Configuration
 public class WebMvcConfig implements WebMvcConfigurer {
+
+    private final AiAnalysisConfig aiAnalysisConfig;
+
+    public WebMvcConfig(AiAnalysisConfig aiAnalysisConfig) {
+        this.aiAnalysisConfig = aiAnalysisConfig;
+    }
+
+    @Override
+    public void configureAsyncSupport(AsyncSupportConfigurer configurer) {
+        long timeoutMillis = Math.max(60_000L, (long) aiAnalysisConfig.getRequestTimeoutSeconds() * 1000L + 15_000L);
+        configurer.setDefaultTimeout(timeoutMillis);
+    }
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {

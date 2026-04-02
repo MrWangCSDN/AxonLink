@@ -57,3 +57,24 @@ benchmark:
     # sunline-benchmark 服务地址，用于查询最近一次拉取+编译状态
     base-url: ${BENCHMARK_BUILD_STATUS_BASE_URL:http://127.0.0.1:8080}
     timeout-ms: ${BENCHMARK_BUILD_STATUS_TIMEOUT_MS:5000}
+
+ai:
+  analysis:
+    enabled: ${AI_ANALYSIS_ENABLED:false}
+    provider: ${AI_ANALYSIS_PROVIDER:glm5}
+    business-prompt-version: ${AI_ANALYSIS_BUSINESS_PROMPT_VERSION:v1}
+    technical-prompt-version: ${AI_ANALYSIS_TECHNICAL_PROMPT_VERSION:v1}
+    max-code-snippets: ${AI_ANALYSIS_MAX_CODE_SNIPPETS:8}
+    max-code-chars-per-snippet: ${AI_ANALYSIS_MAX_CODE_CHARS_PER_SNIPPET:3000}
+    request-timeout-seconds: ${AI_ANALYSIS_REQUEST_TIMEOUT_SECONDS:120}
+    cache:
+      enabled: ${AI_ANALYSIS_CACHE_ENABLED:true}
+      ttl-minutes: ${AI_ANALYSIS_CACHE_TTL_MINUTES:30}
+    glm5:
+      base-url: ${AI_ANALYSIS_GLM5_BASE_URL:}
+      api-key: ${AI_ANALYSIS_GLM5_API_KEY:}
+      model: ${AI_ANALYSIS_GLM5_MODEL:glm-5}
+      chat-path: ${AI_ANALYSIS_GLM5_CHAT_PATH:/v1/chat/completions}
+      stream: ${AI_ANALYSIS_GLM5_STREAM:false}
+      temperature: ${AI_ANALYSIS_GLM5_TEMPERATURE:0.2}
+      max-tokens: ${AI_ANALYSIS_GLM5_MAX_TOKENS:4096}
