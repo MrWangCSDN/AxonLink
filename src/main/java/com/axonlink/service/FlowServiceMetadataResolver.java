@@ -19,12 +19,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.stream.Stream;
 
 /**
  * 从工作区 XML 元数据中补充流程编排服务/构件的文件、类型和领域信息。
@@ -106,11 +106,16 @@ public class FlowServiceMetadataResolver {
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
 
+    private final MetadataResourceScanner metadataResourceScanner;
     private final Object reloadLock = new Object();
 
     private volatile Map<String, ServiceTypeFileMeta> cache = Map.of();
     private volatile String cachedRoots = null;
     private volatile boolean loaded = false;
+
+    public FlowServiceMetadataResolver(MetadataResourceScanner metadataResourceScanner) {
+        this.metadataResourceScanner = metadataResourceScanner;
+    }
 
     public Optional<ServiceTypeFileMeta> findByTypeId(String typeId) {
         if (isBlank(typeId)) {
@@ -150,20 +155,26 @@ public class FlowServiceMetadataResolver {
         }
 
         List<Path> files = collectFiles(roots);
-        Map<String, MutableMeta> mutable = new LinkedHashMap<>();
-
-        for (Path file : files) {
+        Map<Path, FileEnvelope> envelopes = new ConcurrentHashMap<>();
+        files.parallelStream().forEach(file -> {
             try {
                 FileEnvelope envelope = readEnvelope(file);
-                if (isBlank(envelope.typeId)) {
-                    continue;
+                if (!isBlank(envelope.typeId)) {
+                    envelopes.put(file, envelope);
                 }
-
-                MutableMeta meta = mutable.computeIfAbsent(envelope.typeId, MutableMeta::new);
-                meta.merge(envelope);
             } catch (Exception e) {
                 log.debug("[FlowServiceMeta] 解析 {} 失败: {}", file.getFileName(), e.getMessage());
             }
+        });
+        Map<String, MutableMeta> mutable = new LinkedHashMap<>();
+
+        for (Path file : files) {
+            FileEnvelope envelope = envelopes.get(file);
+            if (envelope == null) {
+                continue;
+            }
+            MutableMeta meta = mutable.computeIfAbsent(envelope.typeId, MutableMeta::new);
+            meta.merge(envelope);
         }
 
         Map<String, ServiceTypeFileMeta> result = new LinkedHashMap<>();
@@ -174,68 +185,12 @@ public class FlowServiceMetadataResolver {
     }
 
     private List<Path> collectFiles(String roots) {
-        Map<String, Path> metadataRoots = new LinkedHashMap<>();
-        for (String root : roots.split(",")) {
-            String trimmed = root.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            Path ws = Path.of(trimmed);
-            if (!Files.exists(ws)) {
-                continue;
-            }
-            collectMetadataRoots(ws, metadataRoots);
-        }
-
-        List<Path> files = new ArrayList<>();
-        for (Path metadataRoot : metadataRoots.values()) {
-            try (Stream<Path> walk = Files.walk(metadataRoot, 6)) {
-                walk.filter(Files::isRegularFile)
-                    .filter(path -> hasIndexedSuffix(path.getFileName().toString()))
-                    .forEach(files::add);
-            } catch (Exception e) {
-                log.debug("[FlowServiceMeta] 扫描 {} 失败: {}", metadataRoot, e.getMessage());
-            }
-        }
-        files.sort(Path::compareTo);
-        return files;
-    }
-
-    private void collectMetadataRoots(Path workspaceRoot, Map<String, Path> metadataRoots) {
-        try (Stream<Path> walk = Files.walk(workspaceRoot, 8)) {
-            walk.filter(Files::isDirectory)
-                .filter(this::isMetadataRoot)
-                .sorted(Path::compareTo)
-                .forEach(path -> registerMetadataRoot(metadataRoots, path));
-        } catch (Exception e) {
-            log.debug("[FlowServiceMeta] 扫描 {} 失败: {}", workspaceRoot, e.getMessage());
-        }
-    }
-
-    private boolean isMetadataRoot(Path path) {
-        String normalized = path.toString().replace('\\', '/');
-        return normalized.endsWith("/src/main/resources") || normalized.endsWith("/target/classes");
-    }
-
-    private void registerMetadataRoot(Map<String, Path> metadataRoots, Path candidate) {
-        String normalized = candidate.toString().replace('\\', '/');
-        String suffix = normalized.endsWith("/src/main/resources") ? "/src/main/resources" : "/target/classes";
-        String moduleKey = normalized.substring(0, normalized.length() - suffix.length());
-        Path existing = metadataRoots.get(moduleKey);
-        if (existing == null || isPreferredMetadataRoot(candidate, existing)) {
-            metadataRoots.put(moduleKey, candidate);
-        }
-    }
-
-    private boolean isPreferredMetadataRoot(Path candidate, Path existing) {
-        String candidateText = candidate.toString().replace('\\', '/');
-        String existingText = existing.toString().replace('\\', '/');
-        boolean candidateIsSource = candidateText.endsWith("/src/main/resources");
-        boolean existingIsSource = existingText.endsWith("/src/main/resources");
-        if (candidateIsSource != existingIsSource) {
-            return candidateIsSource;
-        }
-        return candidateText.compareTo(existingText) < 0;
+        return metadataResourceScanner.collectMetadataFiles(
+            roots,
+            8,
+            6,
+            path -> hasIndexedSuffix(path.getFileName().toString())
+        );
     }
 
     private FileEnvelope readEnvelope(Path file) throws Exception {
@@ -411,6 +366,9 @@ public class FlowServiceMetadataResolver {
     }
 
     private String inferNodeKindFromLowercase(String lower) {
+        if (lower.endsWith(".servicetype.xml") || lower.endsWith("servicetype")) {
+            return "service";
+        }
         if (lower.endsWith(".pbs.xml") || lower.endsWith(".pbsimpl.xml") || lower.endsWith("pbs") || lower.endsWith("pbsimpl")) {
             return "pbs";
         }

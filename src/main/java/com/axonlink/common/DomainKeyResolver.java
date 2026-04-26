@@ -17,17 +17,18 @@ import java.util.Map;
 public final class DomainKeyResolver {
 
     /** package_path 关键字 → AxonLink domain_key */
-    private static final Map<String, String> DOMAIN_MAP = Map.of(
-        "dept", "deposit",
-        "loan", "loan",
-        "lntran", "loan",
-        "sett", "settlement",
-        "comm", "public",
-        "unvr", "unvr",
-        "aggr", "aggr",
-        "inbu", "inbu",
-        "medu", "medu",
-        "stmt", "stmt"
+    private static final Map<String, String> DOMAIN_MAP = Map.ofEntries(
+        Map.entry("ap", "platform"),
+        Map.entry("dept", "deposit"),
+        Map.entry("loan", "loan"),
+        Map.entry("lntran", "loan"),
+        Map.entry("sett", "settlement"),
+        Map.entry("comm", "public"),
+        Map.entry("unvr", "unvr"),
+        Map.entry("aggr", "aggr"),
+        Map.entry("inbu", "inbu"),
+        Map.entry("medu", "medu"),
+        Map.entry("stmt", "stmt")
     );
 
     private DomainKeyResolver() {}
@@ -61,7 +62,13 @@ public final class DomainKeyResolver {
         if (matchesProject(normalized, "inbu")) return "inbu";
         if (matchesProject(normalized, "medu")) return "medu";
         if (matchesProject(normalized, "stmt")) return "stmt";
-        if (normalized.equals("ap-parent") || normalized.startsWith("ccbs-ap-")) return "ap";
+        if (normalized.equals("ap-parent")
+            || normalized.equals("ccbs-ap")
+            || normalized.startsWith("ccbs-ap-")
+            || normalized.equals("ap")
+            || normalized.startsWith("ap-")) {
+            return "platform";
+        }
         return null;
     }
 

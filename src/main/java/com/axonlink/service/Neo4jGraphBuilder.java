@@ -2,6 +2,8 @@ package com.axonlink.service;
 
 import com.axonlink.common.DomainKeyResolver;
 import com.axonlink.config.Neo4jConfig;
+import com.axonlink.service.impl.FlowtranImpactServiceImpl;
+import com.axonlink.service.TableMetadataResolver.TableMeta;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
@@ -58,7 +60,14 @@ public class Neo4jGraphBuilder {
     private final Driver driver;
     private final Neo4jConfig neo4jConfig;
     private final FlowtransMetaGraphBuilder flowtransMetaGraphBuilder;
+    private final FlowtranImpactProjectionCache impactProjectionCache;
+    private final FlowtranImpactExportService flowtranImpactExportService;
+    private final FlowtranImpactServiceImpl flowtranImpactService;
+    private final BenchmarkAsyncBuildReporter benchmarkAsyncBuildReporter;
+    private final ProjectIndexer projectIndexer;
+    private final ServiceNodeCache serviceNodeCache;
     private final SysUtilTargetRegistry sysUtilTargetRegistry;
+    private final TableMetadataResolver tableMetadataResolver;
 
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
@@ -89,12 +98,15 @@ public class Neo4jGraphBuilder {
     private final AtomicInteger totalFiles  = new AtomicInteger();
     private final AtomicInteger parsedFiles = new AtomicInteger();
     private volatile long startMs = 0;
+    private volatile BuildRequestContext currentBuildContext = BuildRequestContext.empty();
 
     // 批量缓冲
     private final List<Map<String, Object>> classNodes     = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> interfaceNodes = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> methodNodes    = Collections.synchronizedList(new ArrayList<>());
-    private final List<Map<String, Object>> daoNodes       = Collections.synchronizedList(new ArrayList<>());
+    private final List<Map<String, Object>> tableNodes     = Collections.synchronizedList(new ArrayList<>());
+    private final List<Map<String, Object>> daoMethodNodes = Collections.synchronizedList(new ArrayList<>());
+    private final List<Map<String, Object>> tableDaoEdges  = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> implementsEdges= Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> extendsEdges   = Collections.synchronizedList(new ArrayList<>());
     private final List<Map<String, Object>> callsEdges     = Collections.synchronizedList(new ArrayList<>());
@@ -112,11 +124,25 @@ public class Neo4jGraphBuilder {
     public Neo4jGraphBuilder(Driver driver,
                              Neo4jConfig neo4jConfig,
                              FlowtransMetaGraphBuilder flowtransMetaGraphBuilder,
-                             SysUtilTargetRegistry sysUtilTargetRegistry) {
+                             FlowtranImpactProjectionCache impactProjectionCache,
+                             FlowtranImpactExportService flowtranImpactExportService,
+                             FlowtranImpactServiceImpl flowtranImpactService,
+                             BenchmarkAsyncBuildReporter benchmarkAsyncBuildReporter,
+                             ProjectIndexer projectIndexer,
+                             ServiceNodeCache serviceNodeCache,
+                             SysUtilTargetRegistry sysUtilTargetRegistry,
+                             TableMetadataResolver tableMetadataResolver) {
         this.driver = driver;
         this.neo4jConfig = neo4jConfig;
         this.flowtransMetaGraphBuilder = flowtransMetaGraphBuilder;
+        this.impactProjectionCache = impactProjectionCache;
+        this.flowtranImpactExportService = flowtranImpactExportService;
+        this.flowtranImpactService = flowtranImpactService;
+        this.benchmarkAsyncBuildReporter = benchmarkAsyncBuildReporter;
+        this.projectIndexer = projectIndexer;
+        this.serviceNodeCache = serviceNodeCache;
         this.sysUtilTargetRegistry = sysUtilTargetRegistry;
+        this.tableMetadataResolver = tableMetadataResolver;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -124,20 +150,42 @@ public class Neo4jGraphBuilder {
     // ─────────────────────────────────────────────────────────────────────────
 
     public void startBuildAsync() {
+        startBuildAsync(null, null);
+    }
+
+    public Map<String, Object> startBuildAsync(String operationId, String versionNo) {
+        BuildRequestContext context = BuildRequestContext.of(operationId, versionNo);
         if (!neo4jConfig.isEnabled() || driver == null) {
             log.info("[Neo4j] neo4j.enabled=false 或 Driver 不可用，跳过构建");
-            return;
+            if (context.hasOperationId()) {
+                benchmarkAsyncBuildReporter.reportFailure(context.operationId(), "Neo4j不可用");
+            }
+            return asyncStartResult(false, context, context.hasOperationId() ? "失败:Neo4j不可用" : "Neo4j 不可用，跳过构建");
         }
-        if (building) { log.warn("[Neo4j] 构建正在进行中"); return; }
-        Thread t = new Thread(this::doBuild, "neo4j-graph-builder");
+        if (building) {
+            log.warn("[Neo4j] 构建正在进行中");
+            if (context.hasOperationId()) {
+                benchmarkAsyncBuildReporter.reportFailure(context.operationId(), "已有构建执行中");
+            }
+            return asyncStartResult(false, context,
+                    context.hasOperationId() ? "失败:已有构建执行中" : "构建正在进行中");
+        }
+        currentBuildContext = context;
+        flowtranImpactExportService.clearAllCache("async-build-start");
+        if (context.hasOperationId()) {
+            benchmarkAsyncBuildReporter.reportRunning(context.operationId());
+        }
+        Thread t = new Thread(() -> doBuild(context), "neo4j-graph-builder");
         t.setDaemon(true);
         t.start();
+        return asyncStartResult(true, context, "异步构建中");
     }
 
     public Map<String, Object> buildSync() {
         if (!neo4jConfig.isEnabled() || driver == null)
             return Map.of("skipped", true, "reason", "neo4j.enabled=false");
-        return doBuild();
+        flowtranImpactExportService.clearAllCache("sync-build-start");
+        return doBuild(BuildRequestContext.empty());
     }
 
     public Map<String, Object> getProgress() {
@@ -147,6 +195,12 @@ public class Neo4jGraphBuilder {
         m.put("totalFiles",  totalFiles.get());
         m.put("parsedFiles", parsedFiles.get());
         m.put("elapsedMs",   building ? System.currentTimeMillis() - startMs : 0);
+        if (currentBuildContext.hasOperationId()) {
+            m.put("operationId", currentBuildContext.operationId());
+        }
+        if (currentBuildContext.hasVersionNo()) {
+            m.put("versionNo", currentBuildContext.versionNo());
+        }
         return m;
     }
 
@@ -158,10 +212,12 @@ public class Neo4jGraphBuilder {
             stats.put("classCount", session.run("MATCH (n:Class) RETURN count(n) AS c").single().get("c").asLong());
             stats.put("interfaceCount", session.run("MATCH (n:Interface) RETURN count(n) AS c").single().get("c").asLong());
             stats.put("methodCount", session.run("MATCH (n:Method) RETURN count(n) AS c").single().get("c").asLong());
-            stats.put("daoNodeCount", session.run("MATCH (n:Dao) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("tableNodeCount", session.run("MATCH (n:Table) RETURN count(n) AS c").single().get("c").asLong());
+            stats.put("daoNodeCount", session.run("MATCH (n:DaoMethod) RETURN count(n) AS c").single().get("c").asLong());
             stats.put("callsEdgeCount", session.run("MATCH ()-[r:CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("sysUtilEdgeCount", session.run("MATCH ()-[r:SYS_UTIL_CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("daoEdgeCount", session.run("MATCH ()-[r:DAO_CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
+            stats.put("tableDaoEdgeCount", session.run("MATCH ()-[r:EXPOSES_DAO]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("selfCallEdgeCount", session.run("MATCH ()-[r:SELF_CALLS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("implementsCount", session.run("MATCH ()-[r:IMPLEMENTS]->() RETURN count(r) AS c").single().get("c").asLong());
             stats.put("transactionCount", session.run("MATCH (n:Transaction) RETURN count(n) AS c").single().get("c").asLong());
@@ -211,10 +267,15 @@ public class Neo4jGraphBuilder {
         try (Session session = driver.session()) {
             var result = session.run(
                 "MATCH (start:Method {signature: $sig}) " +
-                "MATCH p = (start)-[:CALLS|SYS_UTIL_CALLS|SELF_CALLS|DAO_CALLS*1.." + hops + "]->(dao:Dao) " +
+                "MATCH p = (start)-[:CALLS|SYS_UTIL_CALLS|SELF_CALLS|DAO_CALLS*1.." + hops + "]->(dao:DaoMethod) " +
+                "OPTIONAL MATCH (table:Table)-[:EXPOSES_DAO]->(dao) " +
                 "UNWIND relationships(p) AS r " +
-                "WITH dao, r WHERE type(r) = 'DAO_CALLS' " +
-                "RETURN dao.name AS daoClass, dao.tableName AS tableName, " +
+                "WITH dao, table, r WHERE type(r) = 'DAO_CALLS' " +
+                "RETURN dao.daoClassName AS daoClass, " +
+                "       dao.methodName AS daoMethod, " +
+                "       coalesce(table.id, dao.tableId) AS tableName, " +
+                "       coalesce(table.longname, dao.tableLongname) AS tableLongname, " +
+                "       coalesce(table.domainKey, dao.domainKey) AS domainKey, " +
                 "       collect(DISTINCT r.methodName) AS operations, count(r) AS callCount " +
                 "ORDER BY callCount DESC",
                 Values.parameters("sig", sig)
@@ -222,8 +283,11 @@ public class Neo4jGraphBuilder {
             List<Map<String, Object>> tables = new ArrayList<>();
             result.forEachRemaining(r -> {
                 Map<String, Object> row = new LinkedHashMap<>();
-                row.put("daoClass",   r.get("daoClass").asString());
-                row.put("tableName",  r.get("tableName").asString());
+                row.put("daoClass",   stringValue(r, "daoClass"));
+                row.put("daoMethod",  stringValue(r, "daoMethod"));
+                row.put("tableName",  stringValue(r, "tableName"));
+                row.put("tableLongname", stringValue(r, "tableLongname"));
+                row.put("domainKey", stringValue(r, "domainKey"));
                 row.put("operations", r.get("operations").asList());
                 row.put("callCount",  r.get("callCount").asLong());
                 tables.add(row);
@@ -231,6 +295,47 @@ public class Neo4jGraphBuilder {
             return Map.of("sig", sig, "depth", depth, "tableCount", tables.size(), "tables", tables);
         } catch (Exception e) {
             return Map.of("error", e.getMessage());
+        }
+    }
+
+    /**
+     * 查询 Neo4j 中的全量数据表目录，可按表英文名/中文名模糊过滤。
+     *
+     * @param keyword 关键词，可为空
+     */
+    public Map<String, Object> listTableCatalog(String keyword) {
+        if (driver == null) return Map.of("total", 0, "items", List.of());
+        String normalizedKeyword = keyword == null ? "" : keyword.trim().toLowerCase(Locale.ROOT);
+        try (Session session = driver.session()) {
+            var result = session.run(
+                "MATCH (table:Table) " +
+                "WHERE $keyword = '' " +
+                "   OR toLower(coalesce(table.id, '')) CONTAINS $keyword " +
+                "   OR toLower(coalesce(table.longname, '')) CONTAINS $keyword " +
+                "RETURN DISTINCT table.id AS id, " +
+                "       coalesce(table.longname, table.id) AS name, " +
+                "       table.longname AS longname, " +
+                "       table.domainKey AS domainKey, " +
+                "       table.projectName AS projectName, " +
+                "       table.daoClassName AS daoClassName " +
+                "ORDER BY id",
+                Values.parameters("keyword", normalizedKeyword)
+            );
+
+            List<Map<String, Object>> items = new ArrayList<>();
+            result.forEachRemaining(record -> {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", stringValue(record, "id"));
+                row.put("name", stringValue(record, "name"));
+                row.put("longname", stringValue(record, "longname"));
+                row.put("domainKey", stringValue(record, "domainKey"));
+                row.put("projectName", stringValue(record, "projectName"));
+                row.put("daoClassName", stringValue(record, "daoClassName"));
+                items.add(row);
+            });
+            return Map.of("total", items.size(), "items", items);
+        } catch (Exception e) {
+            return Map.of("total", 0, "items", List.of(), "error", e.getMessage());
         }
     }
 
@@ -263,7 +368,7 @@ public class Neo4jGraphBuilder {
     // 核心构建流程
     // ─────────────────────────────────────────────────────────────────────────
 
-    private Map<String, Object> doBuild() {
+    private Map<String, Object> doBuild(BuildRequestContext context) {
         building = true;
         startMs = System.currentTimeMillis();
         totalFiles.set(0);
@@ -274,8 +379,16 @@ public class Neo4jGraphBuilder {
         log.info("[Neo4j] ===== AST 图构建开始 =====");
 
         try {
+            setPhase(context, "phase0_bootstrap");
+            Map<String, Object> bootstrapResult = new LinkedHashMap<>();
+            bootstrapResult.put("projectIndex", projectIndexer.refresh());
+            bootstrapResult.put("serviceNodeCache", serviceNodeCache.reload());
+
+            tableMetadataResolver.warmUp();
+            preloadTableNodes();
+
             // 收集文件
-            phase = "collect";
+            setPhase(context, "collect");
             List<Path> allFiles = collectFiles();
             totalFiles.set(allFiles.size());
             log.info("[Neo4j] 共 {} 个 Java 文件", allFiles.size());
@@ -283,7 +396,7 @@ public class Neo4jGraphBuilder {
             int threads = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
 
             // Phase 1：类/接口/方法声明 + implements/extends
-            phase = "phase1_declarations";
+            setPhase(context, "phase1_declarations");
             log.info("[Neo4j] Phase1: 解析声明，线程数={}", threads);
             ForkJoinPool pool = new ForkJoinPool(threads);
             pool.submit(() -> allFiles.parallelStream().forEach(f -> {
@@ -292,13 +405,13 @@ public class Neo4jGraphBuilder {
                 parsedFiles.incrementAndGet();
             })).get();
 
-            log.info("[Neo4j] Phase1 完成: classes={} interfaces={} methods={} implements={} extends={}",
-                     classNodes.size(), interfaceNodes.size(), methodNodes.size(),
+            log.info("[Neo4j] Phase1 完成: classes={} interfaces={} methods={} tables={} implements={} extends={}",
+                     classNodes.size(), interfaceNodes.size(), methodNodes.size(), tableNodes.size(),
                      implementsEdges.size(), extendsEdges.size());
 
             // Phase 2：方法调用关系
             sysUtilTargetRegistry.warmUp();
-            phase = "phase2_calls";
+            setPhase(context, "phase2_calls");
             parsedFiles.set(0);
             log.info("[Neo4j] Phase2: 解析调用关系");
             pool.submit(() -> allFiles.parallelStream().forEach(f -> {
@@ -312,18 +425,32 @@ public class Neo4jGraphBuilder {
             logSysUtilSummary();
 
             // Phase 3：写入 Neo4j
-            phase = "phase3_write";
+            setPhase(context, "phase3_write");
             writeToNeo4j();
 
             // Phase 4：补充 flowtrans / serviceType 元数据图
-            phase = "phase4_flowtrans";
+            setPhase(context, "phase4_flowtrans");
             Map<String, Object> flowtransResult = flowtransMetaGraphBuilder.importMetadata();
             backfillInterfaceNodesFromServiceMetadata();
             backfillImplementsEdges();
             backfillServiceImplementationEdges();
             backfillSysUtilEdgesToServiceOperations();
 
+            Map<String, Object> impactProjectionResult = impactProjectionCache.getStatus();
+            if (impactProjectionCache.isProjectionEnabled()) {
+                setPhase(context, "phase5_impact_projection");
+                impactProjectionResult = impactProjectionCache.publish(flowtranImpactService.buildProjectionData());
+                setPhase(context, "phase6_impact_export");
+                Map<String, Object> exportProjectionResult = flowtranImpactExportService.rebuildAllCache();
+                impactProjectionResult.put("allExport", exportProjectionResult);
+            } else {
+                log.info("[Neo4j] Phase5 跳过：impact projection cache disabled");
+            }
+
             phase = "done";
+            if (context.hasOperationId()) {
+                benchmarkAsyncBuildReporter.reportSuccess(context.operationId());
+            }
             long elapsed = System.currentTimeMillis() - startMs;
             log.info("[Neo4j] ===== 图构建完成，耗时 {}ms =====", elapsed);
 
@@ -331,19 +458,78 @@ public class Neo4jGraphBuilder {
             result.put("classes",    classNodes.size());
             result.put("interfaces", interfaceNodes.size());
             result.put("methods",    methodNodes.size());
+            result.put("tables",     tableNodes.size());
+            result.put("daoMethods", daoMethodNodes.size());
             result.put("calls",      callsEdges.size());
             result.put("implements", implementsEdges.size());
             result.put("extends",    extendsEdges.size());
+            result.put("bootstrap",  bootstrapResult);
             result.put("flowtrans",  flowtransResult);
+            result.put("impactProjection", impactProjectionResult);
             result.put("elapsedMs",  elapsed);
             return result;
 
         } catch (Exception e) {
             log.error("[Neo4j] 构建异常", e);
+            String failedPhase = phase;
             phase = "error";
+            if (context.hasOperationId()) {
+                benchmarkAsyncBuildReporter.reportFailure(context.operationId(),
+                        isBlank(failedPhase) ? "error" : failedPhase);
+            }
             return Map.of("error", e.getMessage());
         } finally {
             building = false;
+            currentBuildContext = BuildRequestContext.empty();
+        }
+    }
+
+    private void setPhase(BuildRequestContext context, String nextPhase) {
+        phase = nextPhase;
+        if (context.hasOperationId()) {
+            benchmarkAsyncBuildReporter.reportPhase(context.operationId(), nextPhase);
+        }
+    }
+
+    private Map<String, Object> asyncStartResult(boolean accepted, BuildRequestContext context, String asyncBuildStatus) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("accepted", accepted);
+        result.put("asyncBuildStatus", asyncBuildStatus);
+        if (context.hasOperationId()) {
+            result.put("operationId", context.operationId());
+        }
+        if (context.hasVersionNo()) {
+            result.put("versionNo", context.versionNo());
+        }
+        result.put("message", accepted
+                ? "Neo4j 图构建已启动，通过 GET /api/neo4j/build/progress 查看进度"
+                : asyncBuildStatus);
+        return result;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private record BuildRequestContext(String operationId, String versionNo, long startedAt) {
+        static BuildRequestContext of(String operationId, String versionNo) {
+            return new BuildRequestContext(blankToNull(operationId), blankToNull(versionNo), System.currentTimeMillis());
+        }
+
+        static BuildRequestContext empty() {
+            return new BuildRequestContext(null, null, 0L);
+        }
+
+        boolean hasOperationId() {
+            return operationId != null && !operationId.isBlank();
+        }
+
+        boolean hasVersionNo() {
+            return versionNo != null && !versionNo.isBlank();
+        }
+
+        private static String blankToNull(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
         }
     }
 
@@ -623,7 +809,10 @@ public class Neo4jGraphBuilder {
             session.run("CREATE INDEX IF NOT EXISTS FOR (i:Interface) ON (i.fqn)").consume();
             session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.signature)").consume();
             session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.classFqn, m.name)").consume();
-            session.run("CREATE INDEX IF NOT EXISTS FOR (d:Dao) ON (d.name)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (t:Table) ON (t.id)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (t:Table) ON (t.daoClassName)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (d:DaoMethod) ON (d.id)").consume();
+            session.run("CREATE INDEX IF NOT EXISTS FOR (d:DaoMethod) ON (d.daoClassName, d.methodName)").consume();
 
             // 写入 Class 节点
             batchWrite(session, classNodes,
@@ -649,18 +838,46 @@ public class Neo4jGraphBuilder {
                 NODE_BATCH_SIZE);
             log.info("[Neo4j] 写入 Method 节点: {}", methodNodes.size());
 
-            // 写入 Dao 节点（去重，同一个 DAO 可能被多处引用）
+            // 写入 Table 节点
+            Map<String, Map<String, Object>> tableMap = new LinkedHashMap<>();
+            for (Map<String, Object> table : tableNodes) {
+                tableMap.putIfAbsent((String) table.get("id"), table);
+            }
+            List<Map<String, Object>> uniqueTableNodes = new ArrayList<>(tableMap.values());
+            batchWrite(session, uniqueTableNodes,
+                "UNWIND $batch AS row " +
+                "MERGE (t:Table {id: row.id}) " +
+                "SET t.longname = row.longname, " +
+                "    t.domainKey = row.domainKey, " +
+                "    t.projectName = row.projectName, " +
+                "    t.xmlFilePath = row.xmlFilePath, " +
+                "    t.packagePath = row.packagePath, " +
+                "    t.schemaId = row.schemaId, " +
+                "    t.outerClassName = row.outerClassName, " +
+                "    t.outerClassFqn = row.outerClassFqn, " +
+                "    t.daoClassName = row.daoClassName",
+                NODE_BATCH_SIZE);
+            log.info("[Neo4j] 写入 Table 节点: {}", uniqueTableNodes.size());
+
+            // 写入 DaoMethod 节点（去重，同一个 DAO 方法可能被多处引用）
             Map<String, Map<String, Object>> daoMap = new LinkedHashMap<>();
-            for (Map<String, Object> dao : daoNodes) {
-                daoMap.putIfAbsent((String) dao.get("name"), dao);
+            for (Map<String, Object> dao : daoMethodNodes) {
+                daoMap.putIfAbsent((String) dao.get("id"), dao);
             }
             List<Map<String, Object>> uniqueDaoNodes = new ArrayList<>(daoMap.values());
             batchWrite(session, uniqueDaoNodes,
                 "UNWIND $batch AS row " +
-                "MERGE (d:Dao {name: row.name}) " +
-                "SET d.tableName = row.tableName",
+                "MERGE (d:DaoMethod {id: row.id}) " +
+                "SET d.daoClassName = row.daoClassName, " +
+                "    d.methodName = row.methodName, " +
+                "    d.tableId = row.tableId, " +
+                "    d.tableLongname = row.tableLongname, " +
+                "    d.domainKey = row.domainKey, " +
+                "    d.projectName = row.projectName, " +
+                "    d.outerClassName = row.outerClassName, " +
+                "    d.outerClassFqn = row.outerClassFqn",
                 NODE_BATCH_SIZE);
-            log.info("[Neo4j] 写入 Dao 节点: {}", uniqueDaoNodes.size());
+            log.info("[Neo4j] 写入 DaoMethod 节点: {}", uniqueDaoNodes.size());
 
             // IMPLEMENTS 边
             batchWrite(session, implementsEdges,
@@ -739,10 +956,20 @@ public class Neo4jGraphBuilder {
                 batchWrite(session, daoCallEdges,
                     "UNWIND $batch AS row " +
                     "MATCH (caller:Method {signature: row.callerSig}) " +
-                    "MATCH (dao:Dao {name: row.targetFqn}) " +
+                    "MATCH (dao:DaoMethod {id: row.targetFqn}) " +
                     "CREATE (caller)-[:DAO_CALLS {methodName: row.methodName, lineNo: row.lineNo}]->(dao)",
                     EDGE_BATCH_SIZE);
                 log.info("[Neo4j] 写入 DAO_CALLS 边: {}", daoCallEdges.size());
+            }
+
+            if (!tableDaoEdges.isEmpty()) {
+                batchWrite(session, tableDaoEdges,
+                    "UNWIND $batch AS row " +
+                    "MATCH (table:Table {id: row.tableId}) " +
+                    "MATCH (dao:DaoMethod {id: row.daoMethodId}) " +
+                    "MERGE (table)-[:EXPOSES_DAO]->(dao)",
+                    EDGE_BATCH_SIZE);
+                log.info("[Neo4j] 写入 EXPOSES_DAO 边: {}", tableDaoEdges.size());
             }
         }
     }
@@ -954,7 +1181,7 @@ public class Neo4jGraphBuilder {
     // 辅助方法
     // ─────────────────────────────────────────────────────────────────────────
 
-    private record DaoTarget(String daoName, String tableName) {}
+    private record DaoTarget(String daoClassName) {}
     private record SysUtilResolvedTarget(String typeId, String targetFqn) {}
 
     private boolean isSysUtilGetInstance(Expression expr) {
@@ -1039,12 +1266,12 @@ public class Neo4jGraphBuilder {
         if (scope instanceof NameExpr nameExpr) {
             String scopeName = nameExpr.getNameAsString();
             if (isDaoIdentifier(scopeName)) {
-                return Optional.of(new DaoTarget(scopeName, stripDaoSuffix(scopeName)));
+                return Optional.of(new DaoTarget(scopeName));
             }
             if (fieldTypeMap.containsKey(scopeName)) {
                 String fieldTypeName = simpleTypeName(fieldTypeMap.get(scopeName));
                 if (isDaoIdentifier(fieldTypeName)) {
-                    return Optional.of(new DaoTarget(fieldTypeName, stripDaoSuffix(fieldTypeName)));
+                    return Optional.of(new DaoTarget(fieldTypeName));
                 }
             }
             return Optional.empty();
@@ -1053,7 +1280,7 @@ public class Neo4jGraphBuilder {
         if (scope instanceof FieldAccessExpr fieldAccessExpr) {
             String terminalName = fieldAccessExpr.getNameAsString();
             if (isDaoIdentifier(terminalName)) {
-                return Optional.of(new DaoTarget(terminalName, stripDaoSuffix(terminalName)));
+                return Optional.of(new DaoTarget(terminalName));
             }
         }
 
@@ -1061,13 +1288,57 @@ public class Neo4jGraphBuilder {
     }
 
     private void registerDaoCall(String callerSig, DaoTarget daoTarget, String methodName, int lineNo) {
-        daoNodes.add(Map.of("name", daoTarget.daoName(), "tableName", daoTarget.tableName()));
+        String daoMethodId = daoTarget.daoClassName() + "#" + methodName;
+        TableMeta tableMeta = tableMetadataResolver.findByDaoClassName(daoTarget.daoClassName()).orElse(null);
+        daoMethodNodes.add(daoMethodNode(daoMethodId, daoTarget.daoClassName(), methodName, tableMeta));
+        if (tableMeta != null) {
+            tableNodes.add(tableNode(tableMeta));
+            tableDaoEdges.add(Map.of(
+                "tableId", tableMeta.tableId(),
+                "daoMethodId", daoMethodId
+            ));
+        }
         callsEdges.add(Map.of(
             "callerSig", callerSig,
-            "targetFqn", daoTarget.daoName(),
+            "targetFqn", daoMethodId,
             "methodName", methodName,
             "lineNo", lineNo,
             "type", "DAO_CALLS"));
+    }
+
+    private void preloadTableNodes() {
+        tableMetadataResolver.allMetadata().forEach(meta -> tableNodes.add(tableNode(meta)));
+    }
+
+    private Map<String, Object> tableNode(TableMeta meta) {
+        return Map.of(
+            "id", meta.tableId(),
+            "longname", meta.tableLongname(),
+            "domainKey", meta.domainKey(),
+            "projectName", meta.projectName(),
+            "xmlFilePath", meta.xmlFilePath(),
+            "packagePath", meta.packagePath(),
+            "schemaId", meta.schemaId(),
+            "outerClassName", meta.outerClassName(),
+            "outerClassFqn", meta.outerClassFqn(),
+            "daoClassName", meta.daoClassName()
+        );
+    }
+
+    private Map<String, Object> daoMethodNode(String id, String daoClassName, String methodName, TableMeta meta) {
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("id", id);
+        node.put("daoClassName", daoClassName);
+        node.put("methodName", methodName);
+        if (meta != null) {
+            node.put("tableId", meta.tableId());
+            node.put("tableLongname", meta.tableLongname());
+            node.put("domainKey", meta.domainKey());
+            node.put("projectName", meta.projectName());
+            node.put("outerClassName", meta.outerClassName());
+            node.put("outerClassFqn", meta.outerClassFqn());
+        }
+        return node;
     }
 
     private boolean isDaoIdentifier(String value) {
@@ -1166,6 +1437,11 @@ public class Neo4jGraphBuilder {
             .collect(Collectors.joining(", "));
     }
 
+    private String stringValue(org.neo4j.driver.Record record, String key) {
+        org.neo4j.driver.Value value = record.get(key);
+        return value == null || value.isNull() ? null : value.asString();
+    }
+
     private String inferNodeKind(String name, String filePath) {
         if (name.endsWith("ApsImpl") || name.endsWith("ApsSvtp")) return "APS";
         if (name.endsWith("BcsImpl")) return "BCS";
@@ -1238,7 +1514,9 @@ public class Neo4jGraphBuilder {
 
     private void clearBuffers() {
         classNodes.clear(); interfaceNodes.clear(); methodNodes.clear();
-        daoNodes.clear();
+        tableNodes.clear();
+        daoMethodNodes.clear();
+        tableDaoEdges.clear();
         implementsEdges.clear(); extendsEdges.clear();
         callsEdges.clear();
         sysUtilChainDetectCount.set(0);

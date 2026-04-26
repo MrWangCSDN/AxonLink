@@ -25,9 +25,18 @@ public class MetadataTool {
         metadata.put("cacheStats", serviceNodeCache.getStats());
         metadata.put("serviceCount", asListSize(chain.get("service")));
         metadata.put("componentCount", asListSize(chain.get("component")));
-        metadata.put("tableCount", asListSize(chain.get("data")));
+        metadata.put("tableCount", tableCount(chain.get("data")));
         metadata.put("layerCount", intValue(chain.get("layers")));
         return metadata;
+    }
+
+    @SuppressWarnings("unchecked")
+    private int tableCount(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Object tableLayer = map.get("table");
+            return asListSize(tableLayer);
+        }
+        return asListSize(value);
     }
 
     @SuppressWarnings("unchecked")

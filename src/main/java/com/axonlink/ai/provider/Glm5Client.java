@@ -51,25 +51,16 @@ public class Glm5Client implements LlmClient {
             return fallback("模型 Provider 尚未启用，当前返回骨架结果。", prompt);
         }
 
+        // analyze() 要返回完整 LlmResult：
+        //   - stream=false：一次拿整段 JSON；
+        //   - stream=true： 走 SSE，内部累积 delta，最终汇总成 LlmResult。
+        // 底层模式由 yml 里 ai.analysis.glm5.stream 决定。
+        boolean useStream = config.getGlm5().isStream();
         try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(resolveChatUrl()))
-                    .timeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "application/json");
-            if (!isBlank(config.getGlm5().getApiKey())) {
-                builder.header("Authorization", "Bearer " + config.getGlm5().getApiKey());
-            }
-            HttpRequest httpRequest = builder
-                    .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(prompt, config.getGlm5().isStream())))
-                    .build();
+            String content = useStream
+                    ? doStreamRequestAndCollect(prompt)
+                    : doBlockingRequest(prompt);
 
-            HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("模型请求失败，HTTP " + response.statusCode() + "，响应：" + response.body());
-            }
-
-            String content = extractContent(response.body());
             LlmResult result = new LlmResult();
             result.setModel(config.getGlm5().getModel());
             result.setSummary(extractSection(content, "总览", 400));
@@ -91,31 +82,82 @@ public class Glm5Client implements LlmClient {
             onDelta.accept("模型 Provider 尚未启用，当前无法生成流式解读。");
             return;
         }
-        try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder()
-                    .uri(URI.create(resolveChatUrl()))
-                    .timeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream");
-            if (!isBlank(config.getGlm5().getApiKey())) {
-                builder.header("Authorization", "Bearer " + config.getGlm5().getApiKey());
-            }
-            HttpRequest httpRequest = builder
-                    .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(prompt, true)))
-                    .build();
 
-            HttpResponse<InputStream> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                String errorBody = readAll(response.body());
-                throw new IllegalStateException("模型流式请求失败，HTTP " + response.statusCode() + "，响应：" + errorBody);
+        // stream() 始终"逐 delta 回调"，但底层协议由配置决定：
+        //   - stream=true： SSE，按 token/chunk 实时触发 onDelta（前端可见逐字出现效果）；
+        //   - stream=false：非流式一次拿整段，触发一次 onDelta 把整段给调用方。
+        boolean useStream = config.getGlm5().isStream();
+        try {
+            if (useStream) {
+                doStreamRequest(prompt, onDelta);
+            } else {
+                String content = doBlockingRequest(prompt);
+                if (!isBlank(content)) {
+                    onDelta.accept(content);
+                }
             }
-            consumeStream(response.body(), onDelta);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("调用模型失败：" + e.getMessage(), e);
         } catch (IOException e) {
             throw new IllegalStateException("调用模型失败：" + e.getMessage(), e);
         }
+    }
+
+    /** 非流式：一次拿整段 JSON，返回 assistant.content。 */
+    private String doBlockingRequest(AnalysisPrompt prompt) throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(resolveChatUrl()))
+                .timeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json");
+        if (!isBlank(config.getGlm5().getApiKey())) {
+            builder.header("Authorization", "Bearer " + config.getGlm5().getApiKey());
+        }
+        HttpRequest httpRequest = builder
+                .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(prompt, false)))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException(
+                    "模型请求失败，HTTP " + response.statusCode() + "，响应：" + response.body());
+        }
+        return extractContent(response.body());
+    }
+
+    /** 流式：SSE 逐 delta 触发 onDelta。 */
+    private void doStreamRequest(AnalysisPrompt prompt, Consumer<String> onDelta) throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(resolveChatUrl()))
+                .timeout(Duration.ofSeconds(config.getRequestTimeoutSeconds()))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream");
+        if (!isBlank(config.getGlm5().getApiKey())) {
+            builder.header("Authorization", "Bearer " + config.getGlm5().getApiKey());
+        }
+        HttpRequest httpRequest = builder
+                .POST(HttpRequest.BodyPublishers.ofString(buildRequestBody(prompt, true)))
+                .build();
+
+        HttpResponse<InputStream> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            String errorBody = readAll(response.body());
+            throw new IllegalStateException(
+                    "模型流式请求失败，HTTP " + response.statusCode() + "，响应：" + errorBody);
+        }
+        consumeStream(response.body(), onDelta);
+    }
+
+    /** 流式：用于 analyze() 内部累积，拿到整段文本后返回。 */
+    private String doStreamRequestAndCollect(AnalysisPrompt prompt) throws IOException, InterruptedException {
+        StringBuilder buf = new StringBuilder();
+        doStreamRequest(prompt, delta -> {
+            if (delta != null) {
+                buf.append(delta);
+            }
+        });
+        return buf.toString();
     }
 
     private String buildRequestBody(AnalysisPrompt prompt, boolean streamEnabled) throws IOException {
@@ -176,14 +218,49 @@ public class Glm5Client implements LlmClient {
         JsonNode root = objectMapper.readTree(responseBody);
         JsonNode choices = root.path("choices");
         if (!choices.isArray() || choices.isEmpty()) {
-            throw new IllegalStateException("模型响应缺少 choices 字段");
+            throw new IllegalStateException("模型响应缺少 choices 字段，原文：" + truncateForError(responseBody));
         }
-        JsonNode contentNode = choices.get(0).path("message").path("content");
-        String content = normalizeContent(contentNode);
+        JsonNode choice = choices.get(0);
+        JsonNode message = choice.path("message");
+
+        // 优先读标准 content 字段
+        String content = normalizeContent(message.path("content"));
+
+        // 兼容 glm 系列：如果 content 空，尝试 reasoning_content（思考过程字段）
         if (isBlank(content)) {
-            throw new IllegalStateException("模型响应未返回 message.content");
+            content = normalizeContent(message.path("reasoning_content"));
+        }
+        // 再兼容：部分网关把内容放在 text 或 output 字段
+        if (isBlank(content)) {
+            content = normalizeContent(message.path("text"));
+        }
+        if (isBlank(content)) {
+            content = normalizeContent(choice.path("text"));
+        }
+
+        if (isBlank(content)) {
+            // 诊断信息：finish_reason + usage + 完整响应片段，便于排查
+            String finishReason = choice.path("finish_reason").asText("unknown");
+            JsonNode usage = root.path("usage");
+            String usageInfo = usage.isMissingNode() ? "n/a" :
+                    String.format("prompt=%d completion=%d total=%d",
+                            usage.path("prompt_tokens").asInt(0),
+                            usage.path("completion_tokens").asInt(0),
+                            usage.path("total_tokens").asInt(0));
+            throw new IllegalStateException(
+                    "模型响应未返回 message.content"
+                    + " | finish_reason=" + finishReason
+                    + " | usage=" + usageInfo
+                    + " | 可能原因：max_tokens 被思考过程耗尽（把 max_tokens 调到 4096+）/ 模型返回格式异常"
+                    + " | 响应片段：" + truncateForError(responseBody));
         }
         return sanitizeAssistantContent(content);
+    }
+
+    /** 错误日志用：响应体可能很长，只截前 500 字符。 */
+    private static String truncateForError(String s) {
+        if (s == null) return "null";
+        return s.length() <= 500 ? s : s.substring(0, 500) + "...<truncated>";
     }
 
     private String normalizeContent(JsonNode contentNode) {

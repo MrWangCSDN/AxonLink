@@ -24,6 +24,10 @@ logging:
     org.apache.tomcat.util.net: warn
     org.apache.tomcat: warn
     org.apache.catalina: warn
+    # DAO 索引巡检模块排查时打开 DEBUG：
+    #   com.axonlink.ai.daoindex.sqlinspect.llm: DEBUG       # LLM 分析各阶段耗时明细
+    #   com.axonlink.ai.daoindex.sqlinspect.explain: DEBUG   # EXPLAIN 尝试序列 / 字段采样
+    #   com.axonlink.ai.daoindex.sqlinspect.service: DEBUG   # 规则引擎编排
 
 # ── 源码索引配置 ────────────────────────────────────────────────────────────
 # source-roots：直接写死若干 src/main/java 目录（逗号分隔）
@@ -46,11 +50,19 @@ neo4j:
   password: ${NEO4J_PASSWORD:axonlink123}
 
 flowtran:
+  # 服务启动完成后是否自动触发一次 Neo4j 异步构建
+  startup-auto-build: ${FLOWTRAN_STARTUP_AUTO_BUILD:true}
   # 当前运行环境标识，仅用于页面展示与日志标记
   datasource: ${FLOWTRAN_DATASOURCE:local}
   cache:
     # 是否启动时预热 XML/Neo4j 元数据缓存
     enabled: ${FLOWTRAN_CACHE_ENABLED:true}
+    # 是否启用影响分析投影缓存
+    impact-projection-enabled: ${FLOWTRAN_IMPACT_PROJECTION_ENABLED:true}
+    # 影响分析投影快照目录
+    impact-projection-dir: ${FLOWTRAN_IMPACT_PROJECTION_DIR:data/cache}
+    # 是否在启动时读取影响分析投影快照
+    impact-projection-load-on-startup: ${FLOWTRAN_IMPACT_PROJECTION_LOAD_ON_STARTUP:true}
 
 benchmark:
   build-status:
@@ -71,10 +83,98 @@ ai:
       enabled: ${AI_ANALYSIS_CACHE_ENABLED:true}
       ttl-minutes: ${AI_ANALYSIS_CACHE_TTL_MINUTES:30}
     glm5:
-      base-url: ${AI_ANALYSIS_GLM5_BASE_URL:}
+      # ⚠️ base-url 只写到端口，不要带 /v1（chat-path 里已经有 /v1 了，否则会 /v1/v1 重复）
+      base-url: ${AI_ANALYSIS_GLM5_BASE_URL:http://aihub.spdbdev.com:3000}
       api-key: ${AI_ANALYSIS_GLM5_API_KEY:}
-      model: ${AI_ANALYSIS_GLM5_MODEL:glm-5}
+      # ⚠️ 内网 aihub 注册的模型 id 是 glm-47（无点号，见 /v1/models 响应）
+      model: ${AI_ANALYSIS_GLM5_MODEL:glm-47}
       chat-path: ${AI_ANALYSIS_GLM5_CHAT_PATH:/v1/chat/completions}
+      # 底层 HTTP 是否使用 SSE 流式协议，analyze() 与 stream() 都会尊重此配置：
+      #   false → 非流式，整段一次返回（前端 XML 解读 loading 后整段一次出现）
+      #   true  → SSE 流式，逐 token 推送（前端 XML 解读可见逐字出现效果）
       stream: ${AI_ANALYSIS_GLM5_STREAM:false}
       temperature: ${AI_ANALYSIS_GLM5_TEMPERATURE:0.2}
+      # max-tokens：
+      #   ⚠️ 内网 glm-47 是"思考模型"，内部先输出 reasoning_content（思考过程），
+      #      再输出 content（最终 JSON）。如果 max_tokens 小于"思考 + 输出"总和，
+      #      思考过程会把所有 token 吃光，content 为空 → 报错"模型响应未返回 message.content"。
+      #   所以 max_tokens 要给足：
+      #     - 输入 ~1200 tokens
+      #     - 思考 ~2000~3000 tokens（glm-47 思考阶段很能写）
+      #     - 输出 ~500 tokens（JSON 结构化结果）
+      #     - 合计需要 4096 ~ 6144
+      #   默认 4096 是最低稳妥值，如果还遇到 content 为空就继续往上调。
       max-tokens: ${AI_ANALYSIS_GLM5_MAX_TOKENS:4096}
+
+# ── DAO 索引巡检模块 ─────────────────────────────────────────────────────────
+# 默认 enabled=false，不影响现有业务；内网部署时将 enabled 置为 true 并填充连接信息。
+# 建议将真实连接信息放到 application-local.yml，避免密码泄漏到仓库。
+dao-index-analysis:
+  enabled: ${DII_ENABLED:false}
+
+  # 源码扫描：抽取 @Statement 注解里的 SQL
+  scan:
+    project-roots: ${DII_PROJECT_ROOTS:}        # 逗号分隔的多个工程根目录
+    module-pattern: ${DII_MODULE_PATTERN:*-bcc}
+    source-root-relative: ${DII_SOURCE_ROOT_RELATIVE:target/gen}
+    required-parent-dir: ${DII_REQUIRED_PARENT_DIR:tables}
+    file-pattern: ${DII_FILE_PATTERN:**/*.java}
+    annotation-fqns:
+      - ${DII_ANNOTATION_FQN:com.spdb.ccbs.aps.common.metadata.annotation.Statement}
+    sql-attribute-name: ${DII_SQL_ATTRIBUTE_NAME:sql}
+
+  # 目标库（被巡检的 GaussDB/OpenGauss，多环境）
+  targets:
+    dev:
+      url: ${DII_TARGET_DEV_URL:jdbc:opengauss://localhost:5432/database_dev}
+      username: ${DII_TARGET_DEV_USERNAME:gaussdb_user}
+      password: ${DII_TARGET_DEV_PASSWORD:password123}
+    sit:
+      url: ${DII_TARGET_SIT_URL:jdbc:opengauss://localhost:5432/database_sit}
+      username: ${DII_TARGET_SIT_USERNAME:gaussdb_user}
+      password: ${DII_TARGET_SIT_PASSWORD:password123}
+    uat:
+      url: ${DII_TARGET_UAT_URL:jdbc:opengauss://localhost:5432/database_uat}
+      username: ${DII_TARGET_UAT_USERNAME:gaussdb_user}
+      password: ${DII_TARGET_UAT_PASSWORD:password123}
+  default-env: ${DII_DEFAULT_ENV:dev}
+
+  # 结果库（写入巡检结果的 MySQL，建议与 sunline-benchmark 共库）
+  result-datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DII_RESULT_URL:jdbc:mysql://21.64.203.16:3306/benchmarkdb?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${DII_RESULT_USERNAME:benchmark}
+    password: ${DII_RESULT_PASSWORD:benchmark123}
+    maximum-pool-size: ${DII_RESULT_MAX_POOL:8}
+    minimum-idle: ${DII_RESULT_MIN_IDLE:2}
+    connection-test-query: SELECT 1
+
+  # 并发与超时
+  concurrency:
+    project-parallel: ${DII_PROJECT_PARALLEL:1}
+    sql-parallel-per-project: ${DII_SQL_PARALLEL:8}
+    llm-parallel: ${DII_LLM_PARALLEL:4}
+    single-sql-timeout-seconds: ${DII_SQL_TIMEOUT_SECONDS:30}
+    llm-retry: ${DII_LLM_RETRY:1}
+    explain-retry: ${DII_EXPLAIN_RETRY:1}
+
+  # 幂等窗口：同 sql_hash + env 在该窗口内已存在成功记录则跳过（日级调度用）
+  skip-if-analyzed-within-hours: ${DII_SKIP_WITHIN_HOURS:24}
+
+  # 并发复用窗口（分钟）：同 sql_hash + env 在该窗口内有 DONE 记录，直接复用不重新分析
+  # 用于保护"多任务/并发压测"下的重复计算。设为 0 可关闭。
+  concurrent-reuse-minutes: ${DII_CONCURRENT_REUSE_MINUTES:5}
+
+  # 定时任务
+  schedule:
+    # 定时任务总开关：false 时彻底屏蔽 01:00 规则批量 + 03:00 LLM 回填，
+    # 两个 @Scheduled 方法在执行前都会检查这个开关。
+    # 想临时关掉定时任务但不停服，把它设为 false 并重启即可。
+    enabled: ${DII_SCHEDULE_ENABLED:false}
+    # 每日批量巡检 cron（秒 分 时 日 月 周），默认每天 01:00:00
+    daily-cron: ${DII_DAILY_CRON:0 0 1 * * ?}
+
+  # Excel 报告导出
+  export:
+    output-dir: ${DII_REPORT_DIR:/home/cbs/logs/dii-reports}
+    retain-days: ${DII_REPORT_RETAIN_DAYS:30}

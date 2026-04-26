@@ -138,8 +138,14 @@ public class CodeExplainPromptService {
                      P1->>P2: 发起查询
                      P2-->>P1: 返回结果
                    ```
-                10. Mermaid 代码块中的控制关键字和连线符号必须使用英文半角语法，例如 sequenceDiagram、participant、alt、else、end、->>、-->>、: ，不要使用全角冒号或中文关键字。
-                11. Mermaid 时序图里的参与者定义，优先使用 ASCII 别名 + 中文展示名的形式，例如 `participant P1 as 柜面`，后续消息线也用别名，例如 `P1->>P2: 发起查询`。
+                10. Mermaid 代码块必须严格遵守以下语法规则，否则会导致渲染失败：
+                    a. 所有关键字必须英文半角：sequenceDiagram、participant、actor、note、alt、else、opt、loop、par、end、activate、deactivate，禁止使用中文或全角字符。
+                    b. 消息线符号只允许：->>, -->>, ->, -->, --x, -x，禁止使用其他符号。
+                    c. 消息文字中禁止出现 < > & 等 HTML 特殊字符，如需表示"小于"请写"小于"，不要写 <。
+                    d. 参与者数量不超过 6 个，避免图过宽。
+                    e. alt/loop/opt/par 等控制块必须有对应的 end 关闭，且不允许跨块嵌套超过 2 层。
+                    f. note 语法只允许：note over P1: 说明文字 或 note right of P1: 说明文字，禁止 note over P1,P2 多参与者写法。
+                11. 参与者定义必须使用 ASCII 别名 + 中文展示名，格式固定为 `participant P1 as 中文名`，后续消息线统一用别名（P1、P2 等），禁止在消息线里直接写中文参与者名。
                 12. 语言使用简体中文，面向系统分析、需求分析和研发人员，表达要清晰、直接。
                 """;
     }

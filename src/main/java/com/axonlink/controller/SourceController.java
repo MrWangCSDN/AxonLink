@@ -143,6 +143,18 @@ public class SourceController {
                 }
                 return resolveTransactionMethod(txId, nodeCode);
             }
+            if ("dao".equalsIgnoreCase(nodeType)) {
+                if (!neo4jConfig.isEnabled() || driver == null) {
+                    return ResponseEntity.notFound().build();
+                }
+                return resolveDaoMethodSource(nodeCode);
+            }
+            if ("table".equalsIgnoreCase(nodeType)) {
+                if (!neo4jConfig.isEnabled() || driver == null) {
+                    return ResponseEntity.notFound().build();
+                }
+                return resolveTableSource(nodeCode);
+            }
             if (nodeCode.contains(".")) {
                 return resolveServiceTypeSource(nodeCode);
             }
@@ -227,6 +239,86 @@ public class SourceController {
                 return ResponseEntity.notFound().build();
             }
             return ResponseEntity.ok(pointer(file.get().toString(), methodName, "", "java"));
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> resolveDaoMethodSource(String nodeCode) {
+        try (Session session = driver.session()) {
+            List<Record> records = session.run(
+                    "MATCH (dao:DaoMethod {id: $nodeCode}) " +
+                    "RETURN dao.outerClassFqn AS outerClassFqn, " +
+                    "       dao.outerClassName AS outerClassName, " +
+                    "       dao.daoClassName AS daoClassName, " +
+                    "       dao.methodName AS methodName " +
+                    "LIMIT 1",
+                    Values.parameters("nodeCode", nodeCode)).list();
+            if (records.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+
+            Record record = records.get(0);
+            String outerClassFqn = stringValue(record, "outerClassFqn");
+            String outerClassName = stringValue(record, "outerClassName");
+            String daoClassName = stringValue(record, "daoClassName");
+            String methodName = stringValue(record, "methodName");
+            if (isBlank(methodName)) {
+                return ResponseEntity.notFound().build();
+            }
+
+            Optional<Path> file = Optional.empty();
+            if (!isBlank(outerClassFqn)) {
+                file = projectIndexer.findByFqn(outerClassFqn);
+            }
+            if (file.isEmpty() && !isBlank(outerClassName)) {
+                file = projectIndexer.findBySimpleName(outerClassName);
+            }
+            if (file.isEmpty() && !isBlank(daoClassName)) {
+                file = projectIndexer.findBySimpleName(daoClassName);
+            }
+            if (file.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+
+            int lineNo = findDaoMethodLine(file.get(), daoClassName, methodName);
+            String locateText = !isBlank(daoClassName)
+                    ? "class " + daoClassName
+                    : methodName;
+            return ResponseEntity.ok(pointer(file.get().toString(), methodName, locateText, "java", lineNo));
+        } catch (IOException e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> resolveTableSource(String nodeCode) {
+        try (Session session = driver.session()) {
+            List<Record> records = session.run(
+                    "MATCH (table:Table {id: $nodeCode}) " +
+                    "RETURN table.id AS tableId, " +
+                    "       table.longname AS tableLongname, " +
+                    "       table.xmlFilePath AS xmlFilePath " +
+                    "LIMIT 1",
+                    Values.parameters("nodeCode", nodeCode)).list();
+            if (records.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+
+            Record record = records.get(0);
+            String filePath = stringValue(record, "xmlFilePath");
+            String tableId = stringValue(record, "tableId");
+            if (isBlank(filePath)) {
+                return ResponseEntity.notFound().build();
+            }
+
+            String locateText = !isBlank(tableId) ? "id=\"" + tableId + "\"" : "<table";
+            int lineNo = findTextLine(preferSourceMetadataPath(filePath), locateText);
+            return ResponseEntity.ok(pointer(
+                    preferSourceMetadataPath(filePath).toString(),
+                    "",
+                    locateText,
+                    "xml",
+                    lineNo));
+        } catch (IOException e) {
+            return ResponseEntity.internalServerError().build();
         }
     }
 
@@ -437,12 +529,75 @@ public class SourceController {
     }
 
     private Map<String, Object> pointer(String filePath, String methodName, String locateText, String language) {
+        return pointer(filePath, methodName, locateText, language, -1);
+    }
+
+    private Map<String, Object> pointer(String filePath, String methodName, String locateText, String language, int lineNo) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("filePath", filePath);
         result.put("methodName", methodName);
         result.put("locateText", locateText);
         result.put("language", language);
+        if (lineNo > 0) {
+            result.put("lineNo", lineNo);
+        }
         return result;
+    }
+
+    private int findDaoMethodLine(Path file, String daoClassName, String methodName) throws IOException {
+        String source = Files.readString(file);
+        ParserConfiguration cfg = new ParserConfiguration();
+        cfg.setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
+        ParseResult<CompilationUnit> result = new JavaParser(cfg).parse(source);
+        if (!result.isSuccessful() || result.getResult().isEmpty()) {
+            return -1;
+        }
+
+        CompilationUnit cu = result.getResult().get();
+        List<Integer> nestedMatches = new ArrayList<>();
+        List<Integer> fallbackMatches = new ArrayList<>();
+        cu.accept(new VoidVisitorAdapter<Void>() {
+            @Override
+            public void visit(ClassOrInterfaceDeclaration n, Void arg) {
+                super.visit(n, arg);
+                boolean classMatched = !isBlank(daoClassName) && daoClassName.equals(n.getNameAsString());
+                for (MethodDeclaration method : n.getMethods()) {
+                    if (!methodName.equals(method.getNameAsString())) {
+                        continue;
+                    }
+                    int line = method.getBegin().map(p -> p.line).orElse(-1);
+                    if (line < 1) {
+                        continue;
+                    }
+                    if (classMatched) {
+                        nestedMatches.add(line);
+                    } else {
+                        fallbackMatches.add(line);
+                    }
+                }
+            }
+        }, null);
+
+        if (!nestedMatches.isEmpty()) {
+            return nestedMatches.get(0);
+        }
+        if (!fallbackMatches.isEmpty()) {
+            return fallbackMatches.get(0);
+        }
+        return -1;
+    }
+
+    private int findTextLine(Path file, String text) throws IOException {
+        if (isBlank(text) || !Files.exists(file) || !Files.isReadable(file)) {
+            return -1;
+        }
+        List<String> lines = Files.readAllLines(file);
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).contains(text)) {
+                return i + 1;
+            }
+        }
+        return -1;
     }
 
     private String stringValue(Record record, String key) {

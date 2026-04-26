@@ -1,10 +1,16 @@
 target/
-frontend/node_modules/
 src/main/resources/static/
 src/main/resources/application-local.yml
 .node/
+tmp/
 *.log
 .DS_Store
 axon-link.pid
 .cursor/
 .vscode/
+.venv-docx/
+.claude/
+.idea/
+output/
+src/main/resources/111.txt
+src/main/resources/111.txt.zip

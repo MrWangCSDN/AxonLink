@@ -54,9 +54,9 @@ public class BuildSyncStatusServiceImpl implements BuildSyncStatusService {
             enrichResult(result, buildStatus, latestTask);
         } catch (Exception e) {
             log.warn("[BuildSyncStatus] load failed: {}", e.getMessage());
-            result.put("statusText", "状态未知");
-            result.put("statusType", "unknown");
-            result.put("message", "构建状态服务暂不可用");
+            result.put("statusText", "构建中");
+            result.put("statusType", "running");
+            result.put("message", "正在等待异步构建完成");
             result.put("connected", false);
         }
         result.put("refreshedAt", LocalDateTime.now().format(REFRESH_FMT));
@@ -66,6 +66,9 @@ public class BuildSyncStatusServiceImpl implements BuildSyncStatusService {
     private void enrichResult(Map<String, Object> result, Map<String, Object> buildStatus, Map<String, Object> latestTask) {
         String snapshotStatus = stringValue(buildStatus == null ? null : buildStatus.get("status"));
         String phase = stringValue(buildStatus == null ? null : buildStatus.get("phase"));
+        String asyncBuildStatus = firstNonBlank(
+                stringValue(buildStatus == null ? null : buildStatus.get("asyncBuildStatus")),
+                stringValue(latestTask == null ? null : latestTask.get("asyncBuildStatus")));
         String operationId = firstNonBlank(
                 stringValue(buildStatus == null ? null : buildStatus.get("operationId")),
                 stringValue(latestTask == null ? null : latestTask.get("operationId")));
@@ -77,11 +80,12 @@ public class BuildSyncStatusServiceImpl implements BuildSyncStatusService {
 
         result.put("operationId", operationId);
         result.put("versionNo", versionNo);
-        result.put("rawStatus", firstNonBlank(snapshotStatus, taskStatus, "IDLE"));
+        result.put("rawStatus", firstNonBlank(asyncBuildStatus, snapshotStatus, taskStatus, "RUNNING"));
+        result.put("asyncBuildStatus", asyncBuildStatus == null ? "" : asyncBuildStatus);
         result.put("phase", phase == null ? "" : phase);
-        result.put("message", resolveMessage(snapshotStatus, phase, taskMessage, buildStatus));
-        result.put("statusText", resolveStatusText(snapshotStatus, phase, taskStatus, taskMessage));
-        result.put("statusType", resolveStatusType(snapshotStatus, phase, taskStatus, taskMessage));
+        result.put("message", resolveMessage(asyncBuildStatus, taskMessage, buildStatus));
+        result.put("statusText", resolveStatusText(asyncBuildStatus));
+        result.put("statusType", resolveStatusType(asyncBuildStatus));
         result.put("connected", true);
         result.put("updatedAt", firstNonBlank(
                 stringValue(latestTask == null ? null : latestTask.get("updateTime")),
@@ -90,80 +94,55 @@ public class BuildSyncStatusServiceImpl implements BuildSyncStatusService {
                 ""));
     }
 
-    private String resolveStatusText(String snapshotStatus, String phase, String taskStatus, String taskMessage) {
-        if ("RUNNING".equalsIgnoreCase(snapshotStatus)) {
-            if ("PULLING".equalsIgnoreCase(phase)) {
-                return "拉取中";
-            }
-            if ("BUILDING".equalsIgnoreCase(phase)) {
-                return "编译中";
-            }
-            return "执行中";
-        }
-
-        if ("SUCCESS".equalsIgnoreCase(taskStatus)) {
+    private String resolveStatusText(String asyncBuildStatus) {
+        String normalized = normalizeAsyncBuildStatus(asyncBuildStatus);
+        if ("成功".equals(normalized)) {
             return "成功";
         }
-        if ("FAILED".equalsIgnoreCase(taskStatus)) {
-            if (taskMessage != null && taskMessage.contains("拉取阶段失败")) {
-                return "拉取失败";
-            }
-            if (taskMessage != null && taskMessage.contains("编译失败")) {
-                return "编译失败";
-            }
-            return "执行失败";
+        if (isFailureAsyncStatus(normalized)) {
+            return "失败";
         }
-        if ("RUNNING".equalsIgnoreCase(taskStatus)) {
-            if ("PULLING".equalsIgnoreCase(phase)) {
-                return "拉取中";
-            }
-            if ("BUILDING".equalsIgnoreCase(phase)) {
-                return "编译中";
-            }
-            return "执行中";
-        }
-        return "未执行";
+        return "构建中";
     }
 
-    private String resolveStatusType(String snapshotStatus, String phase, String taskStatus, String taskMessage) {
-        if ("RUNNING".equalsIgnoreCase(snapshotStatus)) {
-            return "running";
-        }
-        if ("SUCCESS".equalsIgnoreCase(taskStatus)) {
+    private String resolveStatusType(String asyncBuildStatus) {
+        String normalized = normalizeAsyncBuildStatus(asyncBuildStatus);
+        if ("成功".equals(normalized)) {
             return "success";
         }
-        if ("FAILED".equalsIgnoreCase(taskStatus)) {
-            if (taskMessage != null && taskMessage.contains("拉取阶段失败")) {
-                return "error";
-            }
-            if (taskMessage != null && taskMessage.contains("编译失败")) {
-                return "error";
-            }
+        if (isFailureAsyncStatus(normalized)) {
             return "error";
         }
-        if ("RUNNING".equalsIgnoreCase(taskStatus)) {
-            return "running";
-        }
-        if ("IDLE".equalsIgnoreCase(snapshotStatus) || taskStatus == null || taskStatus.isBlank()) {
-            return "idle";
-        }
-        return "unknown";
+        return "running";
     }
 
-    private String resolveMessage(String snapshotStatus, String phase, String taskMessage, Map<String, Object> buildStatus) {
-        if ("RUNNING".equalsIgnoreCase(snapshotStatus)) {
-            if ("PULLING".equalsIgnoreCase(phase)) {
-                return "最近一次任务正在拉取代码";
-            }
-            if ("BUILDING".equalsIgnoreCase(phase)) {
-                return "最近一次任务正在按批次编译";
-            }
-            return "最近一次任务正在执行";
+    private String resolveMessage(String asyncBuildStatus, String taskMessage, Map<String, Object> buildStatus) {
+        String normalized = normalizeAsyncBuildStatus(asyncBuildStatus);
+        if ("成功".equals(normalized)) {
+            return firstNonBlank(
+                    taskMessage,
+                    stringValue(buildStatus == null ? null : buildStatus.get("finishMessage")),
+                    "异步构建完成");
         }
-        return firstNonBlank(
-                taskMessage,
-                stringValue(buildStatus == null ? null : buildStatus.get("finishMessage")),
-                "");
+        if (isFailureAsyncStatus(normalized)) {
+            return normalized;
+        }
+        if (normalized != null && !normalized.isBlank()) {
+            return "当前阶段：" + normalized;
+        }
+        return "正在等待异步构建完成";
+    }
+
+    private String normalizeAsyncBuildStatus(String asyncBuildStatus) {
+        String normalized = firstNonBlank(asyncBuildStatus);
+        return normalized == null ? "" : normalized.trim();
+    }
+
+    private boolean isFailureAsyncStatus(String asyncBuildStatus) {
+        if (asyncBuildStatus == null || asyncBuildStatus.isBlank()) {
+            return false;
+        }
+        return "触发失败".equals(asyncBuildStatus) || asyncBuildStatus.contains("失败");
     }
 
     private Map<String, Object> fetchMapData(String path) throws Exception {
@@ -207,11 +186,12 @@ public class BuildSyncStatusServiceImpl implements BuildSyncStatusService {
         result.put("project", "axon-link-server");
         result.put("branch", "Master");
         result.put("versionNo", "--");
-        result.put("statusText", "未执行");
-        result.put("statusType", "idle");
-        result.put("message", "");
+        result.put("statusText", "构建中");
+        result.put("statusType", "running");
+        result.put("message", "正在等待异步构建完成");
         result.put("operationId", "");
         result.put("updatedAt", "");
+        result.put("asyncBuildStatus", "");
         result.put("connected", false);
         return result;
     }

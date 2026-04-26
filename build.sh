@@ -5,11 +5,19 @@
 # ================================================
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FRONTEND_DIR="${SCRIPT_DIR}/../axon-link-frontend"
+
+if [ ! -d "${FRONTEND_DIR}" ]; then
+  echo "前端目录不存在: ${FRONTEND_DIR}"
+  exit 1
+fi
+
 echo "=== [1/3] 构建前端 ==="
-cd frontend
+cd "${FRONTEND_DIR}"
 npm install
 npm run build
-cd ..
+cd "${SCRIPT_DIR}"
 
 echo "=== [2/3] 构建后端 ==="
 export JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || echo $JAVA_HOME)

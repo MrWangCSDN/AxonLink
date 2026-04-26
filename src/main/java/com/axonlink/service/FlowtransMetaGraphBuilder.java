@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,6 +69,7 @@ public class FlowtransMetaGraphBuilder {
     private final Driver driver;
     private final Neo4jConfig neo4jConfig;
     private final ServiceNodeCache serviceNodeCache;
+    private final MetadataResourceScanner metadataResourceScanner;
 
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
@@ -91,10 +93,14 @@ public class FlowtransMetaGraphBuilder {
     private final Set<String> seenServiceTypes = new LinkedHashSet<>();
     private final Set<String> seenServiceOperations = new LinkedHashSet<>();
 
-    public FlowtransMetaGraphBuilder(Driver driver, Neo4jConfig neo4jConfig, ServiceNodeCache serviceNodeCache) {
+    public FlowtransMetaGraphBuilder(Driver driver,
+                                     Neo4jConfig neo4jConfig,
+                                     ServiceNodeCache serviceNodeCache,
+                                     MetadataResourceScanner metadataResourceScanner) {
         this.driver = driver;
         this.neo4jConfig = neo4jConfig;
         this.serviceNodeCache = serviceNodeCache;
+        this.metadataResourceScanner = metadataResourceScanner;
     }
 
     public Map<String, Object> importMetadata() {
@@ -481,59 +487,33 @@ public class FlowtransMetaGraphBuilder {
     }
 
     private Map<String, ServiceTypeMeta> parseServiceTypes(List<Path> files) {
-        Map<String, ServiceTypeMeta> result = new LinkedHashMap<>();
-        for (Path file : files) {
+        Map<Path, ServiceTypeParseResult> parsedByFile = new ConcurrentHashMap<>();
+        files.parallelStream().forEach(file -> {
             try {
-                Document doc = parseXml(file);
-                Element root = doc.getDocumentElement();
-                if (root == null) {
-                    continue;
-                }
-
-                String fileName = file.getFileName().toString();
-                String serviceTypeId = firstNonBlank(attr(root, "id"), stripServiceMetaSuffix(fileName));
-                if (isBlank(serviceTypeId)) {
-                    continue;
-                }
-
-                String packagePath = attr(root, "package");
-                Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.findByTypeId(serviceTypeId);
-                ServiceTypeMeta meta = new ServiceTypeMeta(
-                    serviceTypeId,
-                    attr(root, "longname"),
-                    packagePath,
-                    detectModule(file),
-                    file.toString().replace('\\', '/'),
-                    resolveServiceDomainKey(file, packagePath, cacheEntry),
-                    firstNonBlank(
-                        inferServiceNodeKind(fileName),
-                        cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null)
-                    )
-                );
-                result.put(serviceTypeId, meta);
-                addServiceTypeNode(meta);
-
-                for (Element serviceEl : childElements(root, "service")) {
-                    String serviceId = attr(serviceEl, "id");
-                    if (isBlank(serviceId)) {
-                        continue;
-                    }
-
-                    String operationKey = serviceOperationKey(serviceTypeId, serviceId);
-                    ServiceOperationMeta operation = new ServiceOperationMeta(
-                        operationKey,
-                        serviceTypeId,
-                        serviceId,
-                        attr(serviceEl, "name"),
-                        attr(serviceEl, "longname"),
-                        packagePath
-                    );
-                    meta.operations.put(operationKey, operation);
-                    addServiceOperationNode(operation, meta);
-                    graphEdges.add(edge("DECLARES_OPERATION", serviceTypeKey(serviceTypeId), operationKey));
+                ServiceTypeParseResult parseResult = parseServiceTypeFile(file);
+                if (parseResult != null && parseResult.meta != null) {
+                    parsedByFile.put(file, parseResult);
                 }
             } catch (Exception e) {
                 log.warn("[FlowtransMeta] 解析 service 元数据失败: {} - {}", file.getFileName(), e.getMessage());
+            }
+        });
+
+        Map<String, ServiceTypeMeta> result = new LinkedHashMap<>();
+        for (Path file : files) {
+            ServiceTypeParseResult parseResult = parsedByFile.get(file);
+            if (parseResult == null || parseResult.meta == null) {
+                continue;
+            }
+
+            ServiceTypeMeta meta = parseResult.meta;
+            result.put(meta.id, meta);
+            addServiceTypeNode(meta);
+
+            for (ServiceOperationMeta operation : parseResult.operations) {
+                meta.operations.put(operation.key, operation);
+                addServiceOperationNode(operation, meta);
+                graphEdges.add(edge("DECLARES_OPERATION", serviceTypeKey(meta.id), operation.key));
             }
         }
         return result;
@@ -577,7 +557,9 @@ public class FlowtransMetaGraphBuilder {
             serviceId,
             null,
             null,
-            packagePath
+            packagePath,
+            meta != null ? meta.nodeKind : null,
+            meta != null ? meta.domainKey : null
         );
         if (meta != null) {
             meta.operations.put(operationKey, operation);
@@ -617,6 +599,8 @@ public class FlowtransMetaGraphBuilder {
             "serviceId", operation.serviceId,
             "methodName", operation.methodName,
             "longname", operation.longname,
+            "nodeKind", firstNonBlank(operation.nodeKind, meta != null ? meta.nodeKind : null),
+            "domainKey", firstNonBlank(operation.domainKey, meta != null ? meta.domainKey : null),
             "packagePath", packagePath,
             "interfaceFqn", buildInterfaceFqn(packagePath, operation.serviceTypeId)
         ));
@@ -760,69 +744,12 @@ public class FlowtransMetaGraphBuilder {
         if (workspaceRoots == null || workspaceRoots.isBlank()) {
             return List.of();
         }
-
-        Map<String, Path> metadataRoots = new LinkedHashMap<>();
-        for (String root : workspaceRoots.split(",")) {
-            String trimmed = root.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            Path ws = Path.of(trimmed);
-            if (!Files.exists(ws)) {
-                continue;
-            }
-            collectMetadataRoots(ws, metadataRoots);
-        }
-
-        List<Path> files = new ArrayList<>();
-        for (Path metadataRoot : metadataRoots.values()) {
-            try (Stream<Path> walk = Files.walk(metadataRoot, 6)) {
-                walk.filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().endsWith(suffix))
-                    .forEach(files::add);
-            } catch (Exception e) {
-                log.debug("[FlowtransMeta] 鎵弿 {} 澶辫触: {}", metadataRoot, e.getMessage());
-            }
-        }
-        Collections.sort(files);
-        return files;
-    }
-
-    private void collectMetadataRoots(Path workspaceRoot, Map<String, Path> metadataRoots) {
-        try (Stream<Path> walk = Files.walk(workspaceRoot, 8)) {
-            walk.filter(Files::isDirectory)
-                .filter(this::isMetadataRoot)
-                .sorted(Path::compareTo)
-                .forEach(path -> registerMetadataRoot(metadataRoots, path));
-        } catch (Exception e) {
-            log.debug("[FlowtransMeta] 鎵弿 {} 澶辫触: {}", workspaceRoot, e.getMessage());
-        }
-    }
-
-    private boolean isMetadataRoot(Path path) {
-        String normalized = path.toString().replace('\\', '/');
-        return normalized.endsWith("/src/main/resources") || normalized.endsWith("/target/classes");
-    }
-
-    private void registerMetadataRoot(Map<String, Path> metadataRoots, Path candidate) {
-        String normalized = candidate.toString().replace('\\', '/');
-        String suffix = normalized.endsWith("/src/main/resources") ? "/src/main/resources" : "/target/classes";
-        String moduleKey = normalized.substring(0, normalized.length() - suffix.length());
-        Path existing = metadataRoots.get(moduleKey);
-        if (existing == null || isPreferredMetadataRoot(candidate, existing)) {
-            metadataRoots.put(moduleKey, candidate);
-        }
-    }
-
-    private boolean isPreferredMetadataRoot(Path candidate, Path existing) {
-        String candidateText = candidate.toString().replace('\\', '/');
-        String existingText = existing.toString().replace('\\', '/');
-        boolean candidateIsSource = candidateText.endsWith("/src/main/resources");
-        boolean existingIsSource = existingText.endsWith("/src/main/resources");
-        if (candidateIsSource != existingIsSource) {
-            return candidateIsSource;
-        }
-        return candidateText.compareTo(existingText) < 0;
+        return metadataResourceScanner.collectMetadataFiles(
+            workspaceRoots,
+            8,
+            6,
+            path -> path.getFileName().toString().endsWith(suffix)
+        );
     }
 
     private String detectModule(Path file) {
@@ -986,6 +913,9 @@ public class FlowtransMetaGraphBuilder {
 
     private static String inferServiceNodeKind(String fileName) {
         String lowered = fileName.toLowerCase();
+        if (lowered.endsWith(".servicetype.xml")) {
+            return "service";
+        }
         if (lowered.endsWith(".pbs.xml")) {
             return "pbs";
         }
@@ -1022,7 +952,60 @@ public class FlowtransMetaGraphBuilder {
         if (lowered.endsWith("pbct")) {
             return "pbct";
         }
+        if (lowered.endsWith("servicetype")) {
+            return "service";
+        }
         return null;
+    }
+
+    private ServiceTypeParseResult parseServiceTypeFile(Path file) throws Exception {
+        Document doc = parseXml(file);
+        Element root = doc.getDocumentElement();
+        if (root == null) {
+            return null;
+        }
+
+        String fileName = file.getFileName().toString();
+        String serviceTypeId = firstNonBlank(attr(root, "id"), stripServiceMetaSuffix(fileName));
+        if (isBlank(serviceTypeId)) {
+            return null;
+        }
+
+        String packagePath = attr(root, "package");
+        Optional<NodeCacheEntry> cacheEntry = serviceNodeCache.findByTypeId(serviceTypeId);
+        ServiceTypeMeta meta = new ServiceTypeMeta(
+            serviceTypeId,
+            attr(root, "longname"),
+            packagePath,
+            detectModule(file),
+            file.toString().replace('\\', '/'),
+            resolveServiceDomainKey(file, packagePath, cacheEntry),
+            firstNonBlank(
+                inferServiceNodeKind(fileName),
+                cacheEntry.map(NodeCacheEntry::getNodeKind).orElse(null)
+            )
+        );
+
+        List<ServiceOperationMeta> operations = new ArrayList<>();
+        for (Element serviceEl : childElements(root, "service")) {
+            String serviceId = attr(serviceEl, "id");
+            if (isBlank(serviceId)) {
+                continue;
+            }
+
+            String operationKey = serviceOperationKey(serviceTypeId, serviceId);
+            operations.add(new ServiceOperationMeta(
+                operationKey,
+                serviceTypeId,
+                serviceId,
+                attr(serviceEl, "name"),
+                attr(serviceEl, "longname"),
+                packagePath,
+                meta.nodeKind,
+                meta.domainKey
+            ));
+        }
+        return new ServiceTypeParseResult(meta, operations);
     }
 
     private static String buildInterfaceFqn(String packagePath, String serviceTypeId) {
@@ -1127,19 +1110,27 @@ public class FlowtransMetaGraphBuilder {
         private final String methodName;
         private final String longname;
         private final String packagePath;
+        private final String nodeKind;
+        private final String domainKey;
 
         private ServiceOperationMeta(String key,
                                      String serviceTypeId,
                                      String serviceId,
                                      String methodName,
                                      String longname,
-                                     String packagePath) {
+                                     String packagePath,
+                                     String nodeKind,
+                                     String domainKey) {
             this.key = key;
             this.serviceTypeId = serviceTypeId;
             this.serviceId = serviceId;
             this.methodName = methodName;
             this.longname = longname;
             this.packagePath = packagePath;
+            this.nodeKind = nodeKind;
+            this.domainKey = domainKey;
         }
     }
+
+    private record ServiceTypeParseResult(ServiceTypeMeta meta, List<ServiceOperationMeta> operations) {}
 }

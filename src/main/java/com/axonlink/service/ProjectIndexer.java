@@ -96,7 +96,7 @@ public class ProjectIndexer {
         return Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
     }
 
-    // ── 启动时异步建索引（不阻塞 Spring 启动） ───────────────────────────────────
+    // ── 启动时不再自动建索引，统一收口到异步 build phase0_bootstrap ───────────────
     @PostConstruct
     public void buildIndex() {
         boolean hasSource    = sourceRootsConfig    != null && !sourceRootsConfig.isBlank();
@@ -106,9 +106,8 @@ public class ProjectIndexer {
             indexPhase = "idle";
             return;
         }
-        Thread t = new Thread(() -> doIndex(false), "project-indexer");
-        t.setDaemon(true);
-        t.start();
+        indexPhase = "idle";
+        log.info("[ProjectIndexer] 启动自动索引已关闭，等待异步 build 的 phase0_bootstrap");
     }
 
     /** 热重载：编译后主动调用，清空旧索引重新扫描 */

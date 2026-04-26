@@ -93,6 +93,15 @@ public class AiAnalysisConfig {
         private String apiKey = "";
         private String model = "glm-5";
         private String chatPath = "/v1/chat/completions";
+        /**
+         * 底层 HTTP 请求是否使用 SSE 流式协议。
+         * <ul>
+         *   <li>{@code false}（默认）：HTTP 非流式，一次性拿整段响应。
+         *       analyze() 直接返回，stream() 拿到后整段一次性回调 onDelta。</li>
+         *   <li>{@code true}：HTTP SSE 流式，逐 token 推送。
+         *       analyze() 内部累积后返回，stream() 每个 delta 立即回调 onDelta（前端可见逐字出现效果）。</li>
+         * </ul>
+         */
         private boolean stream = false;
         private double temperature = 0.2d;
         private int maxTokens = 4096;

@@ -37,9 +37,10 @@ public class Neo4jGraphController {
 
     /** 异步构建 */
     @PostMapping("/build/async")
-    public R<String> buildAsync() {
-        builder.startBuildAsync();
-        return R.ok("Neo4j 图构建已启动，通过 GET /api/neo4j/build/progress 查看进度");
+    public R<Map<String, Object>> buildAsync(
+            @RequestHeader(value = "X-Build-Operation-Id", required = false) String operationId,
+            @RequestHeader(value = "X-Build-Version-No", required = false) String versionNo) {
+        return R.ok(builder.startBuildAsync(operationId, versionNo));
     }
 
     /** 构建进度 */
@@ -52,6 +53,13 @@ public class Neo4jGraphController {
     @GetMapping("/stats")
     public R<Map<String, Object>> stats() {
         return R.ok(builder.getStats());
+    }
+
+    /** 全量表目录 */
+    @GetMapping("/tables/catalog")
+    public R<Map<String, Object>> tableCatalog(
+            @RequestParam(required = false) String keyword) {
+        return R.ok(builder.listTableCatalog(keyword));
     }
 
     /**

@@ -39,6 +39,7 @@ public class FlowtranServiceImpl implements FlowtranService {
     private static final Map<String, String> DOMAIN_NAME_MAP = Map.of(
         "deposit", "存款领域",
         "loan", "贷款领域",
+        "platform", "平台",
         "settlement", "结算领域",
         "public", "公共领域",
         "unvr", "通联领域",
@@ -51,12 +52,14 @@ public class FlowtranServiceImpl implements FlowtranService {
     private static final Map<String, String> DOMAIN_ICON_MAP = Map.of(
         "deposit", "bank",
         "loan", "credit-card",
+        "platform", "layers",
         "settlement", "exchange",
         "public", "globe"
     );
 
     private static final Map<String, String> FLOWTRAN_DOMAIN_NAME_OVERRIDES = Map.of(
-        "ap", "AP",
+        "ap", "平台",
+        "platform", "平台",
         "dept", "DEPT",
         "unvr", "UNVR",
         "stmt", "STMT",
@@ -67,6 +70,7 @@ public class FlowtranServiceImpl implements FlowtranService {
 
     private static final Map<String, String> FLOWTRAN_DOMAIN_ICON_OVERRIDES = Map.of(
         "ap", "layers",
+        "platform", "layers",
         "dept", "bank",
         "unvr", "globe",
         "stmt", "file-text",
@@ -209,7 +213,8 @@ public class FlowtranServiceImpl implements FlowtranService {
 
             LinkedHashMap<String, Map<String, Object>> serviceLayer = new LinkedHashMap<>();
             LinkedHashMap<String, Map<String, Object>> componentLayer = new LinkedHashMap<>();
-            LinkedHashMap<String, Map<String, Object>> dataLayer = new LinkedHashMap<>();
+            LinkedHashMap<String, Map<String, Object>> tableLayer = new LinkedHashMap<>();
+            LinkedHashMap<String, Map<String, Object>> daoLayer = new LinkedHashMap<>();
 
             for (FlowStepRef step : steps) {
                 LogicalSeed seed = new LogicalSeed(
@@ -232,12 +237,22 @@ public class FlowtranServiceImpl implements FlowtranService {
             Map<String, List<String>> serviceToService = new LinkedHashMap<>();
             Map<String, List<String>> serviceToComponent = new LinkedHashMap<>();
             Map<String, List<String>> componentToComponent = new LinkedHashMap<>();
-            Map<String, List<String>> componentToData = new LinkedHashMap<>();
-            Map<String, List<String>> nodeToData = new LinkedHashMap<>();
+            Map<String, List<String>> nodeToTable = new LinkedHashMap<>();
+            Map<String, List<String>> tableToDao = new LinkedHashMap<>();
 
-            List<LogicalSeed> serviceQueue = new ArrayList<>(topServiceSeeds.values());
+            Map<String, Integer> processedServiceSignatureCounts = new HashMap<>();
+            List<String> serviceQueue = new ArrayList<>(topServiceSeeds.keySet());
             for (int i = 0; i < serviceQueue.size(); i++) {
-                LogicalSeed seed = topServiceSeeds.getOrDefault(serviceQueue.get(i).code, serviceQueue.get(i));
+                String seedCode = serviceQueue.get(i);
+                LogicalSeed seed = topServiceSeeds.get(seedCode);
+                if (seed == null) {
+                    continue;
+                }
+                int processedSignatureCount = processedServiceSignatureCounts.getOrDefault(seedCode, 0);
+                if (processedSignatureCount >= seed.methodSignatures.size()) {
+                    continue;
+                }
+                processedServiceSignatureCounts.put(seedCode, seed.methodSignatures.size());
                 BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
                 for (LogicalSeed target : directTargets.serviceTargets.values()) {
                     serviceLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
@@ -245,42 +260,73 @@ public class FlowtranServiceImpl implements FlowtranService {
                     LogicalSeed existing = topServiceSeeds.get(target.code);
                     if (existing == null) {
                         topServiceSeeds.put(target.code, target);
-                        serviceQueue.add(target);
+                        serviceQueue.add(target.code);
                     } else {
-                        topServiceSeeds.put(target.code, existing.merge(target));
+                        LogicalSeed merged = existing.merge(target);
+                        topServiceSeeds.put(target.code, merged);
+                        if (merged.methodSignatures.size() > existing.methodSignatures.size()) {
+                            serviceQueue.add(target.code);
+                        }
                     }
                 }
                 for (LogicalSeed target : directTargets.componentTargets.values()) {
                     componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
-                    componentSeeds.merge(target.code, target, LogicalSeed::merge);
+                    LogicalSeed existing = componentSeeds.get(target.code);
+                    if (existing == null) {
+                        componentSeeds.put(target.code, target);
+                    } else {
+                        componentSeeds.put(target.code, existing.merge(target));
+                    }
                     addRelation(serviceToComponent, seed.code, target.code);
                 }
-                for (String table : directTargets.tables) {
-                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
-                    addRelation(componentToData, seed.code, table);
-                    addRelation(nodeToData, seed.code, table);
+                BoundaryResult dataTargets = discoverDataTargets(session, seed.methodSignatures);
+                for (TableTarget target : mergeTableTargets(directTargets, dataTargets).values()) {
+                    tableLayer.putIfAbsent(target.code, target.toNode(displayDomainName(target.domainKey)));
+                    addRelation(nodeToTable, seed.code, target.code);
+                }
+                for (DaoTarget target : mergeDaoTargets(directTargets, dataTargets).values()) {
+                    daoLayer.putIfAbsent(target.code, target.toNode(displayDomainName(target.domainKey)));
+                    addRelation(tableToDao, target.tableCode, target.code);
                 }
             }
 
-            List<LogicalSeed> componentQueue = new ArrayList<>(componentSeeds.values());
+            Map<String, Integer> processedComponentSignatureCounts = new HashMap<>();
+            List<String> componentQueue = new ArrayList<>(componentSeeds.keySet());
             for (int i = 0; i < componentQueue.size(); i++) {
-                LogicalSeed seed = componentSeeds.getOrDefault(componentQueue.get(i).code, componentQueue.get(i));
+                String seedCode = componentQueue.get(i);
+                LogicalSeed seed = componentSeeds.get(seedCode);
+                if (seed == null) {
+                    continue;
+                }
+                int processedSignatureCount = processedComponentSignatureCounts.getOrDefault(seedCode, 0);
+                if (processedSignatureCount >= seed.methodSignatures.size()) {
+                    continue;
+                }
+                processedComponentSignatureCounts.put(seedCode, seed.methodSignatures.size());
                 BoundaryResult directTargets = discoverDirectTargets(session, seed.methodSignatures, resolver);
                 for (LogicalSeed target : directTargets.componentTargets.values()) {
                     componentLayer.putIfAbsent(target.code, displayNode(target.code, target.name, target.prefix, tx.domainKey, target.domainKey));
                     LogicalSeed existing = componentSeeds.get(target.code);
                     if (existing == null) {
                         componentSeeds.put(target.code, target);
-                        componentQueue.add(target);
+                        componentQueue.add(target.code);
                     } else {
-                        componentSeeds.put(target.code, existing.merge(target));
+                        LogicalSeed merged = existing.merge(target);
+                        componentSeeds.put(target.code, merged);
+                        if (merged.methodSignatures.size() > existing.methodSignatures.size()) {
+                            componentQueue.add(target.code);
+                        }
                     }
                     addRelation(componentToComponent, seed.code, target.code);
                 }
-                for (String table : directTargets.tables) {
-                    dataLayer.putIfAbsent(table, node("code", table, "name", table));
-                    addRelation(componentToData, seed.code, table);
-                    addRelation(nodeToData, seed.code, table);
+                BoundaryResult dataTargets = discoverDataTargets(session, seed.methodSignatures);
+                for (TableTarget target : mergeTableTargets(directTargets, dataTargets).values()) {
+                    tableLayer.putIfAbsent(target.code, target.toNode(displayDomainName(target.domainKey)));
+                    addRelation(nodeToTable, seed.code, target.code);
+                }
+                for (DaoTarget target : mergeDaoTargets(directTargets, dataTargets).values()) {
+                    daoLayer.putIfAbsent(target.code, target.toNode(displayDomainName(target.domainKey)));
+                    addRelation(tableToDao, target.tableCode, target.code);
                 }
             }
 
@@ -289,14 +335,17 @@ public class FlowtranServiceImpl implements FlowtranService {
             relations.put("serviceToService", serviceToService);
             relations.put("serviceToComponent", serviceToComponent);
             relations.put("componentToComponent", componentToComponent);
-            relations.put("componentToData", componentToData);
-            relations.put("nodeToData", nodeToData);
+            relations.put("nodeToTable", nodeToTable);
+            relations.put("tableToDao", tableToDao);
 
             Map<String, Object> chain = new LinkedHashMap<>();
             chain.put("orchestration", orchestration);
             chain.put("service", new ArrayList<>(serviceLayer.values()));
             chain.put("component", new ArrayList<>(componentLayer.values()));
-            chain.put("data", new ArrayList<>(dataLayer.values()));
+            chain.put("data", node(
+                "table", new ArrayList<>(tableLayer.values()),
+                "dao", new ArrayList<>(daoLayer.values())
+            ));
             chain.put("relations", relations);
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -305,8 +354,9 @@ public class FlowtranServiceImpl implements FlowtranService {
             result.put("domain", txDomainName);
             result.put("serviceCount", (long) serviceLayer.size());
             result.put("componentCount", (long) componentLayer.size());
-            result.put("tableCount", (long) dataLayer.size());
-            result.put("layers", 4);
+            result.put("tableCount", (long) tableLayer.size());
+            result.put("daoCount", (long) daoLayer.size());
+            result.put("layers", 5);
             result.put("chain", chain);
             return result;
         } catch (Exception e) {
@@ -429,10 +479,30 @@ public class FlowtranServiceImpl implements FlowtranService {
 
             for (String signature : frontier) {
                 for (CallTarget target : outgoing.getOrDefault(signature, List.of())) {
-                    if ("Dao".equals(target.targetLabel)) {
-                        String table = firstNonBlank(target.tableName, stripDaoSuffix(target.targetName));
-                        if (!isBlank(table)) {
-                            result.tables.add(table);
+                    if ("DaoMethod".equals(target.targetLabel)) {
+                        String tableId = target.targetTableId;
+                        String methodName = firstNonBlank(target.targetMethodName, target.edgeMethodName);
+                        if (!isBlank(tableId) && !isBlank(methodName)) {
+                            TableTarget tableTarget = new TableTarget(
+                                tableId,
+                                firstNonBlank(target.targetTableLongname, tableId),
+                                target.targetDomainKey,
+                                target.targetProjectName,
+                                target.targetDaoClassName
+                            );
+                            result.tableTargets.putIfAbsent(tableTarget.code, tableTarget);
+
+                            String daoCode = !isBlank(target.targetDaoClassName)
+                                ? target.targetDaoClassName + "#" + methodName
+                                : tableId + "#" + methodName;
+                            DaoTarget daoTarget = new DaoTarget(
+                                daoCode,
+                                methodName,
+                                tableId,
+                                target.targetDaoClassName,
+                                target.targetDomainKey
+                            );
+                            result.daoTargets.putIfAbsent(daoTarget.code, daoTarget);
                         }
                         continue;
                     }
@@ -457,7 +527,6 @@ public class FlowtranServiceImpl implements FlowtranService {
                         } else {
                             result.serviceTargets.merge(seed.code, seed, LogicalSeed::merge);
                         }
-                        continue;
                     }
 
                     if ("Method".equals(target.targetLabel)
@@ -474,6 +543,69 @@ public class FlowtranServiceImpl implements FlowtranService {
         return result;
     }
 
+    private BoundaryResult discoverDataTargets(Session session, Collection<String> startSignatures) {
+        List<String> signatures = startSignatures.stream()
+            .filter(sig -> !isBlank(sig))
+            .distinct()
+            .collect(Collectors.toList());
+        if (signatures.isEmpty()) {
+            return new BoundaryResult();
+        }
+
+        BoundaryResult result = new BoundaryResult();
+        session.run(
+            "UNWIND $signatures AS signature " +
+            "MATCH (entry:Method {signature: signature}) " +
+            "MATCH p = (entry)-[:CALLS|SELF_CALLS*0.." + MAX_METHOD_DEPTH + "]->(:Method)-[:DAO_CALLS]->(dao:DaoMethod) " +
+            "OPTIONAL MATCH (table:Table)-[:EXPOSES_DAO]->(dao) " +
+            "RETURN DISTINCT coalesce(table.id, dao.tableId) AS tableId, " +
+            "       coalesce(table.longname, dao.tableLongname, dao.tableId) AS tableLongname, " +
+            "       coalesce(table.domainKey, dao.domainKey) AS domainKey, " +
+            "       coalesce(table.projectName, dao.projectName) AS projectName, " +
+            "       coalesce(table.daoClassName, dao.daoClassName) AS daoClassName, " +
+            "       dao.id AS daoId, " +
+            "       dao.methodName AS daoMethodName",
+            Values.parameters("signatures", signatures))
+            .forEachRemaining(record -> {
+                String tableId = stringValue(record, "tableId");
+                String daoId = stringValue(record, "daoId");
+                String daoMethodName = stringValue(record, "daoMethodName");
+                if (isBlank(tableId) || isBlank(daoId) || isBlank(daoMethodName)) {
+                    return;
+                }
+                TableTarget tableTarget = new TableTarget(
+                    tableId,
+                    firstNonBlank(stringValue(record, "tableLongname"), tableId),
+                    stringValue(record, "domainKey"),
+                    stringValue(record, "projectName"),
+                    stringValue(record, "daoClassName")
+                );
+                result.tableTargets.putIfAbsent(tableTarget.code, tableTarget);
+
+                DaoTarget daoTarget = new DaoTarget(
+                    daoId,
+                    daoMethodName,
+                    tableId,
+                    stringValue(record, "daoClassName"),
+                    stringValue(record, "domainKey")
+                );
+                result.daoTargets.putIfAbsent(daoTarget.code, daoTarget);
+            });
+        return result;
+    }
+
+    private Map<String, TableTarget> mergeTableTargets(BoundaryResult primary, BoundaryResult extra) {
+        Map<String, TableTarget> merged = new LinkedHashMap<>(primary.tableTargets);
+        merged.putAll(extra.tableTargets);
+        return merged;
+    }
+
+    private Map<String, DaoTarget> mergeDaoTargets(BoundaryResult primary, BoundaryResult extra) {
+        Map<String, DaoTarget> merged = new LinkedHashMap<>(primary.daoTargets);
+        merged.putAll(extra.daoTargets);
+        return merged;
+    }
+
     private Map<String, List<CallTarget>> loadOutgoingCalls(Session session, Collection<String> methodSignatures) {
         if (methodSignatures.isEmpty()) {
             return Map.of();
@@ -483,6 +615,7 @@ public class FlowtranServiceImpl implements FlowtranService {
         session.run(
             "UNWIND $signatures AS signature " +
             "MATCH (m:Method {signature: signature})-[r:CALLS|SYS_UTIL_CALLS|SELF_CALLS|DAO_CALLS]->(target) " +
+            "OPTIONAL MATCH (table:Table)-[:EXPOSES_DAO]->(target) " +
             "RETURN signature AS sourceSignature, " +
             "       type(r) AS relationType, " +
             "       r.methodName AS edgeMethodName, " +
@@ -490,7 +623,12 @@ public class FlowtranServiceImpl implements FlowtranService {
             "       target.signature AS targetSignature, " +
             "       target.fqn AS targetFqn, " +
             "       target.name AS targetName, " +
-            "       target.tableName AS tableName, " +
+            "       target.methodName AS targetMethodName, " +
+            "       coalesce(target.daoClassName, table.daoClassName) AS targetDaoClassName, " +
+            "       coalesce(table.id, target.tableId) AS targetTableId, " +
+            "       coalesce(table.longname, target.tableLongname) AS targetTableLongname, " +
+            "       coalesce(table.domainKey, target.domainKey) AS targetDomainKey, " +
+            "       coalesce(table.projectName, target.projectName) AS targetProjectName, " +
             "       target.serviceTypeId AS targetServiceTypeId, " +
             "       target.serviceId AS targetServiceId",
             Values.parameters("signatures", methodSignatures))
@@ -503,7 +641,12 @@ public class FlowtranServiceImpl implements FlowtranService {
                     stringValue(record, "targetSignature"),
                     stringValue(record, "targetFqn"),
                     stringValue(record, "targetName"),
-                    stringValue(record, "tableName"),
+                    stringValue(record, "targetMethodName"),
+                    stringValue(record, "targetDaoClassName"),
+                    stringValue(record, "targetTableId"),
+                    stringValue(record, "targetTableLongname"),
+                    stringValue(record, "targetDomainKey"),
+                    stringValue(record, "targetProjectName"),
                     stringValue(record, "targetServiceTypeId"),
                     stringValue(record, "targetServiceId")
                 ));
@@ -864,7 +1007,78 @@ public class FlowtranServiceImpl implements FlowtranService {
     private static final class BoundaryResult {
         private final Map<String, LogicalSeed> serviceTargets = new LinkedHashMap<>();
         private final Map<String, LogicalSeed> componentTargets = new LinkedHashMap<>();
-        private final Set<String> tables = new LinkedHashSet<>();
+        private final Map<String, TableTarget> tableTargets = new LinkedHashMap<>();
+        private final Map<String, DaoTarget> daoTargets = new LinkedHashMap<>();
+    }
+
+    private static final class TableTarget {
+        private final String code;
+        private final String name;
+        private final String domainKey;
+        private final String projectName;
+        private final String daoClassName;
+
+        private TableTarget(String code,
+                            String name,
+                            String domainKey,
+                            String projectName,
+                            String daoClassName) {
+            this.code = code;
+            this.name = name;
+            this.domainKey = domainKey;
+            this.projectName = projectName;
+            this.daoClassName = daoClassName;
+        }
+
+        private Map<String, Object> toNode(String domainName) {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("code", code);
+            node.put("name", name);
+            node.put("tableId", code);
+            node.put("tableLongname", name);
+            node.put("domainKey", domainKey);
+            node.put("projectName", projectName);
+            node.put("daoClassName", daoClassName);
+            if (domainName != null && !domainName.isBlank()) {
+                node.put("domain", domainName);
+            }
+            return node;
+        }
+    }
+
+    private static final class DaoTarget {
+        private final String code;
+        private final String name;
+        private final String tableCode;
+        private final String daoClassName;
+        private final String domainKey;
+
+        private DaoTarget(String code,
+                          String name,
+                          String tableCode,
+                          String daoClassName,
+                          String domainKey) {
+            this.code = code;
+            this.name = name;
+            this.tableCode = tableCode;
+            this.daoClassName = daoClassName;
+            this.domainKey = domainKey;
+        }
+
+        private Map<String, Object> toNode(String domainName) {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("prefix", "dao");
+            node.put("code", code);
+            node.put("name", name);
+            node.put("methodName", name);
+            node.put("tableCode", tableCode);
+            node.put("daoClassName", daoClassName);
+            node.put("domainKey", domainKey);
+            if (domainName != null && !domainName.isBlank()) {
+                node.put("domain", domainName);
+            }
+            return node;
+        }
     }
 
     private static final class CallTarget {
@@ -874,7 +1088,12 @@ public class FlowtranServiceImpl implements FlowtranService {
         private final String targetSignature;
         private final String targetFqn;
         private final String targetName;
-        private final String tableName;
+        private final String targetMethodName;
+        private final String targetDaoClassName;
+        private final String targetTableId;
+        private final String targetTableLongname;
+        private final String targetDomainKey;
+        private final String targetProjectName;
         private final String targetServiceTypeId;
         private final String targetServiceId;
 
@@ -884,7 +1103,12 @@ public class FlowtranServiceImpl implements FlowtranService {
                            String targetSignature,
                            String targetFqn,
                            String targetName,
-                           String tableName,
+                           String targetMethodName,
+                           String targetDaoClassName,
+                           String targetTableId,
+                           String targetTableLongname,
+                           String targetDomainKey,
+                           String targetProjectName,
                            String targetServiceTypeId,
                            String targetServiceId) {
             this.relationType = relationType;
@@ -893,7 +1117,12 @@ public class FlowtranServiceImpl implements FlowtranService {
             this.targetSignature = targetSignature;
             this.targetFqn = targetFqn;
             this.targetName = targetName;
-            this.tableName = tableName;
+            this.targetMethodName = targetMethodName;
+            this.targetDaoClassName = targetDaoClassName;
+            this.targetTableId = targetTableId;
+            this.targetTableLongname = targetTableLongname;
+            this.targetDomainKey = targetDomainKey;
+            this.targetProjectName = targetProjectName;
             this.targetServiceTypeId = targetServiceTypeId;
             this.targetServiceId = targetServiceId;
         }

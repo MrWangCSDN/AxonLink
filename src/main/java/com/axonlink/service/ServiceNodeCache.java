@@ -64,9 +64,7 @@ public class ServiceNodeCache {
             log.info("[ServiceNodeCache] flowtran.cache.enabled=false，跳过缓存加载");
             return;
         }
-        Thread t = new Thread(this::loadAll, "service-node-cache-loader");
-        t.setDaemon(true);
-        t.start();
+        log.info("[ServiceNodeCache] 启动自动加载已关闭，等待异步 build 的 phase0_bootstrap");
     }
 
     public Map<String, Object> reload() {
@@ -167,7 +165,9 @@ public class ServiceNodeCache {
                 "       stype.domainKey AS domainKey, " +
                 "       op.serviceId AS serviceId, " +
                 "       op.methodName AS serviceName, " +
-                "       op.longname AS serviceLongname " +
+                "       op.longname AS serviceLongname, " +
+                "       op.nodeKind AS operationNodeKind, " +
+                "       op.domainKey AS operationDomainKey " +
                 "ORDER BY typeId, serviceId")
                 .list();
 
@@ -196,6 +196,7 @@ public class ServiceNodeCache {
                 );
 
                 String nodeKind = normalizeNodeKind(firstNonBlank(
+                    stringValue(row, "operationNodeKind"),
                     stringValue(row, "nodeKind"),
                     fileMeta != null ? fileMeta.getNodeKind() : null
                 ));
@@ -204,6 +205,7 @@ public class ServiceNodeCache {
                     fileMeta != null ? fileMeta.getPackagePath() : null
                 );
                 String domainKey = firstNonBlank(
+                    stringValue(row, "operationDomainKey"),
                     stringValue(row, "domainKey"),
                     fileMeta != null ? fileMeta.getDomainKey() : null
                 );

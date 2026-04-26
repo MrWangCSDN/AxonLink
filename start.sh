@@ -52,6 +52,61 @@ fi
 JVM_OPTS="-Xms256m -Xmx1024m"
 APP_ARGS=""
 
+# ── HTTP 代理（容器部署场景）──────────────────────
+# 自动读环境变量：HTTP_PROXY / HTTPS_PROXY / NO_PROXY（大小写都认）
+# 格式：http://proxy-host:port 或 http://user:pass@proxy-host:port
+#
+# 示例：
+#   export HTTP_PROXY=http://10.0.0.1:8080
+#   export HTTPS_PROXY=http://10.0.0.1:8080
+#   export NO_PROXY=localhost,127.0.0.1,.spdb.com
+#   ./start.sh
+#
+# 解析出 host+port 后翻译成 JVM 系统属性，Java 的 HttpClient 才会真正走代理。
+parse_proxy() {
+    # 入参 $1 = 代理 URL，设置同名环境变量 _PROXY_HOST / _PROXY_PORT
+    local url="$1"
+    # 去掉协议前缀
+    url="${url#http://}"
+    url="${url#https://}"
+    # 去掉 user:pass@
+    url="${url##*@}"
+    # 去掉末尾 / 和路径
+    url="${url%%/*}"
+    _PROXY_HOST="${url%:*}"
+    _PROXY_PORT="${url##*:}"
+    # 没端口则默认 80
+    [ "$_PROXY_HOST" = "$_PROXY_PORT" ] && _PROXY_PORT=80
+}
+
+HTTP_PROXY_VAL="${HTTP_PROXY:-$http_proxy}"
+HTTPS_PROXY_VAL="${HTTPS_PROXY:-$https_proxy}"
+NO_PROXY_VAL="${NO_PROXY:-$no_proxy}"
+
+if [ -n "$HTTP_PROXY_VAL" ]; then
+    parse_proxy "$HTTP_PROXY_VAL"
+    JVM_OPTS="$JVM_OPTS -Dhttp.proxyHost=$_PROXY_HOST -Dhttp.proxyPort=$_PROXY_PORT"
+    echo "[AxonLink] HTTP 代理：$_PROXY_HOST:$_PROXY_PORT"
+fi
+
+if [ -n "$HTTPS_PROXY_VAL" ]; then
+    parse_proxy "$HTTPS_PROXY_VAL"
+    JVM_OPTS="$JVM_OPTS -Dhttps.proxyHost=$_PROXY_HOST -Dhttps.proxyPort=$_PROXY_PORT"
+    echo "[AxonLink] HTTPS 代理：$_PROXY_HOST:$_PROXY_PORT"
+fi
+
+if [ -n "$NO_PROXY_VAL" ]; then
+    # Java 要求 nonProxyHosts 用 | 分隔，逗号分隔要转成 |
+    JAVA_NO_PROXY=$(echo "$NO_PROXY_VAL" | sed 's/,/|/g')
+    JVM_OPTS="$JVM_OPTS -Dhttp.nonProxyHosts=$JAVA_NO_PROXY -Dhttps.nonProxyHosts=$JAVA_NO_PROXY"
+    echo "[AxonLink] 代理白名单：$NO_PROXY_VAL"
+fi
+
+# 允许通过 JAVA_OPTS 额外追加 JVM 参数（比如 -Dfile.encoding=UTF-8）
+if [ -n "$JAVA_OPTS" ]; then
+    JVM_OPTS="$JVM_OPTS $JAVA_OPTS"
+fi
+
 # 如果 application-local.yml 存在，通过 --spring.config.import 加载
 if [ -f "$CONFIG" ]; then
     APP_ARGS="$APP_ARGS --spring.config.import=optional:file:${CONFIG}"

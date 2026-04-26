@@ -59,3 +59,28 @@ benchmark:
 #   build-status:
 #     base-url: http://127.0.0.1:8080
 #     timeout-ms: 5000
+
+
+# ┌──────────────────────────────────────────────────────────┐
+# │  AI 代码解读模块（内网 aihub / GLM-4.7）                  │
+# │                                                          │
+# │  ⚠️ 关键配置注意：                                        │
+# │    1. base-url 只到端口，不要再带 /v1                     │
+# │       （chat-path 里已经有 /v1，否则 /v1/v1 重复）        │
+# │    2. model 是 glm-47（aihub 注册的 id，无点号）          │
+# │    3. chat-path 保持 /v1/chat/completions 不变            │
+# └──────────────────────────────────────────────────────────┘
+# ai:
+#   analysis:
+#     enabled: true
+#     provider: aihub
+#     request-timeout-seconds: 180
+#     glm5:
+#       base-url: http://aihub.spdbdev.com:3000
+#       api-key: sk-你的key
+#       model: glm-47
+#       chat-path: /v1/chat/completions
+#       # stream=true：前端能看到字一个个蹦出来；false：loading 后整段出现。两种都可用。
+#       stream: true
+#       temperature: 0.2
+#       max-tokens: 4096
