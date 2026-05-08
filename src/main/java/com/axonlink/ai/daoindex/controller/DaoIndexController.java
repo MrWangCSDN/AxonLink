@@ -735,21 +735,28 @@ public class DaoIndexController {
     }
 
     /**
-     * 查任务列表。
+     * 列出最近的 N 条批量巡检任务，每行带回 5 项 dii_analysis_item 聚合统计。
      *
      * <p>支持按 env 与 status 过滤；前端拉"最新一条 DONE 任务"用：
-     * {@code GET /batch-tasks?env=uat&status=DONE&limit=1}
+     * {@code GET /batch-tasks?env=uat&status=DONE&limit=1}（兼容老调用）。
      *
-     * <p>注意：无 status 过滤时返回**所有状态**任务（含 PENDING/RUNNING/FAILED），
-     * 业务前端展示"上一轮巡检数据"时一定要带 status=DONE。
+     * <p>响应包装为 {@code {total, items}}，其中 total 用相同过滤条件单独
+     * SELECT COUNT(*)，给前端分页器用。
+     *
+     * <p>status 支持特殊值 {@code RUNNING_OR_PENDING}，DAO 翻译为 IN 子句。
      */
     @GetMapping("/batch-tasks")
-    public R<java.util.List<Map<String, Object>>> listBatchTasks(
+    public R<Map<String, Object>> listBatchTasks(
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") int offset,
             @RequestParam(required = false) String env,
             @RequestParam(required = false) String status) {
-        return R.ok(taskDao.list(limit, offset, env, status));
+        List<Map<String, Object>> items = taskDao.list(limit, offset, env, status);
+        long total = taskDao.countAll(env, status);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("total", total);
+        payload.put("items", items);
+        return R.ok(payload);
     }
 
     /**
