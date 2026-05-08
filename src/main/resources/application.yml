@@ -87,6 +87,9 @@ ai:
     technical-prompt-version: ${AI_ANALYSIS_TECHNICAL_PROMPT_VERSION:v1}
     max-code-snippets: ${AI_ANALYSIS_MAX_CODE_SNIPPETS:8}
     max-code-chars-per-snippet: ${AI_ANALYSIS_MAX_CODE_CHARS_PER_SNIPPET:3000}
+    # 单次 LLM HTTP 请求超时（秒）。
+    # ⚠️ 不要随便调到 600+：上游 504 时本地 HTTP 客户端要等满整个超时时间才知道失败，
+    # 配合重试一条 item 可能浪费 10+ 分钟。120 秒已经能容纳带思考链的慢响应。
     request-timeout-seconds: ${AI_ANALYSIS_REQUEST_TIMEOUT_SECONDS:120}
     cache:
       enabled: ${AI_ANALYSIS_CACHE_ENABLED:true}
@@ -149,8 +152,12 @@ dao-index-analysis:
   llm:
     # 不含首次的重试次数。0=不重试，2=最多 3 次尝试。建议 2~3。
     retry-attempts: ${DII_LLM_RETRY_ATTEMPTS:2}
-    # 线性退避：第 N 次重试前等 N*backoff 毫秒（500 / 1000 / 1500…）
-    retry-backoff-ms: ${DII_LLM_RETRY_BACKOFF_MS:500}
+    # 普通错误（JSON 解析失败、空响应等）的线性退避基数：第 N 次重试前等 N*backoff 毫秒。
+    # 从 500 调到 2000：500ms 几乎等于"立刻重试"，对真错误作用不大，对瞬时故障也来不及恢复。
+    retry-backoff-ms: ${DII_LLM_RETRY_BACKOFF_MS:2000}
+    # 网关过载（HTTP 502/503/504）专用退避基数，远大于普通退避。
+    # 过载场景下立刻重试只会加剧雪崩；默认 15s × attempt 让上游 MiniMax / 网关先喘口气。
+    overload-backoff-ms: ${DII_LLM_OVERLOAD_BACKOFF_MS:15000}
 
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:
@@ -193,6 +200,10 @@ dao-index-analysis:
   concurrency:
     project-parallel: ${DII_PROJECT_PARALLEL:1}
     sql-parallel-per-project: ${DII_SQL_PARALLEL:8}
+    # LLM 并发上限：批量回填 LlmEnrichService 用此值初始化 diiLlmExecutor 线程池
+    # （core=max=本值），同时也是 SQL 巡检规则引擎里 LLM 并发的上限。
+    # 调大可显著提升批量回填吞吐，但也会同步放大对上游 MiniMax/GLM 的压力。
+    # 经验：4 适合常规批量；上游稳定时可调到 6~8。
     llm-parallel: ${DII_LLM_PARALLEL:4}
     single-sql-timeout-seconds: ${DII_SQL_TIMEOUT_SECONDS:30}
     llm-retry: ${DII_LLM_RETRY:1}
