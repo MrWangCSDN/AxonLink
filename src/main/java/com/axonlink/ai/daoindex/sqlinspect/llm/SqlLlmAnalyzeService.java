@@ -6,16 +6,20 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableRating;
 import com.axonlink.ai.daoindex.sqlinspect.metadata.TableMetadataService;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
+import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.axonlink.ai.dto.AnalysisMode;
 import com.axonlink.ai.dto.AnalysisPrompt;
 import com.axonlink.ai.dto.LlmResult;
 import com.axonlink.ai.provider.LlmClient;
+import com.axonlink.ai.provider.LlmClientRouter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -42,7 +46,6 @@ import java.util.regex.Pattern;
  * 不抛异常给上层（避免批量层被单条拖垮）。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SqlLlmAnalyzeService {
 
     private static final Logger log = LoggerFactory.getLogger(SqlLlmAnalyzeService.class);
@@ -57,19 +60,43 @@ public class SqlLlmAnalyzeService {
     private final SameTableAccessPatternCollector patternCollector;
     private final SqlLlmPromptBuilder promptBuilder;
     private final ObjectProvider<LlmClient> llmClientProvider;
+    private final LlmClientRouter llmRouter;
     private final ObjectMapper objectMapper;
+
+    /** LLM 调用 / JSON 解析失败时的重试次数（不含首次）。默认 2 = 最多 3 次尝试。 */
+    @Value("${dao-index-analysis.llm.retry-attempts:2}")
+    private int llmRetryAttempts;
+    /**
+     * 普通错误（JSON 解析失败、空响应等）的重试退避基数。
+     * 线性递增：第 1 次重试等 backoff，第 2 次等 2*backoff…
+     * <p>从 500ms 调到 2000ms：500ms 几乎等于"立刻重试"，对真错误（模型抽风）作用不大，
+     * 而对偶发瞬时故障也来不及恢复。
+     */
+    @Value("${dao-index-analysis.llm.retry-backoff-ms:2000}")
+    private long llmRetryBackoffMs;
+    /**
+     * 网关过载（HTTP 502/503/504）专用退避基数，远大于普通退避。
+     * <p>过载场景下立刻重试只会加剧雪崩；这里默认 15s × attempt 让服务端先喘口气。
+     */
+    @Value("${dao-index-analysis.llm.overload-backoff-ms:15000}")
+    private long llmOverloadBackoffMs;
+    /** 重跑场景下用，懒加载避免与 SqlInspectionService 循环依赖 */
+    @Autowired
+    private org.springframework.beans.factory.ObjectProvider<SqlInspectionService> inspectionServiceProvider;
 
     public SqlLlmAnalyzeService(DiiAnalysisItemDao itemDao,
                                 TableMetadataService tableMetadataService,
                                 SameTableAccessPatternCollector patternCollector,
                                 SqlLlmPromptBuilder promptBuilder,
                                 ObjectProvider<LlmClient> llmClientProvider,
+                                LlmClientRouter llmRouter,
                                 ObjectMapper objectMapper) {
         this.itemDao = itemDao;
         this.tableMetadataService = tableMetadataService;
         this.patternCollector = patternCollector;
         this.promptBuilder = promptBuilder;
         this.llmClientProvider = llmClientProvider;
+        this.llmRouter = llmRouter;
         this.objectMapper = objectMapper;
     }
 
@@ -84,17 +111,78 @@ public class SqlLlmAnalyzeService {
         return promptBuilder.build(ctx);
     }
 
+    /** 兼容老调用：默认模型，无 SQL 覆写。 */
+    public SqlLlmResult analyzeItem(long itemId) {
+        return analyzeItem(itemId, null, null);
+    }
+
+    /**
+     * 异步触发单条 LLM 分析（前端"重新分析"按钮专用）。
+     *
+     * <p>调用方必须在调本方法之前先调 {@link DiiAnalysisItemDao#forceMarkLlmPending(long)}
+     * 把状态打成 PENDING，让前端首次轮询就能看到蒙版稳定显示。
+     *
+     * <p>本方法 {@code @Async} 立即返回；真正的 LLM 调用在 {@code diiBatchExecutor} 线程池里跑。
+     * 内部直接复用同步版的 {@link #analyzeItem}，所有错误处理 / DB 落库都已经在那里完成。
+     *
+     * <p>⚠️ 必须由其它 bean（如 Controller）调用，不能在本类内部 {@code this.analyzeItemAsync(...)}：
+     * Spring AOP 代理对自身调用不生效，会退化为同步执行。
+     */
+    @Async("diiBatchExecutor")
+    public void analyzeItemAsync(long itemId, String overrideSql, String modelKey) {
+        try {
+            log.info("[dii-llm][itemId={}] ── 异步 LLM 分析任务启动 ──", itemId);
+            analyzeItem(itemId, overrideSql, modelKey);
+        } catch (Throwable t) {
+            // analyzeItem 内部已经把所有失败路径都落库 FAILED 了，这里是防御兜底
+            log.error("[dii-llm][itemId={}] ✖ 异步任务未捕获异常：{}",
+                    itemId, t.getMessage(), t);
+            try {
+                itemDao.updateLlmStatusOnly(itemId, "FAILED",
+                        "异步任务未捕获异常：" + t.getClass().getSimpleName() + ": " + t.getMessage());
+            } catch (Exception ignore) { /* 落库失败也不影响线程池 */ }
+        }
+    }
+
     /**
      * 真正调 LLM 分析单条 item。
      * 失败不抛：失败信息记入 {@link SqlLlmResult#getError} 并落库 FAILED，可手动重跑。
+     *
+     * @param itemId       要分析的 item id
+     * @param overrideSql  若非空，构造 prompt 时用该 SQL（前端"重新执行"模态框允许用户改 SQL 再分析）
+     * @param modelKey     模型路由 key：{@code glm-4.7} / {@code minimax-2.5}；为空回退到默认 GLM
      */
-    public SqlLlmResult analyzeItem(long itemId) {
+    public SqlLlmResult analyzeItem(long itemId, String overrideSql, String modelKey) {
         long entryMs = System.currentTimeMillis();
-        log.info("[dii-llm][itemId={}] ── 开始 LLM 分析 ──", itemId);
+        log.info("[dii-llm][itemId={}] ── 开始 LLM 分析 model={} overrideSql={} ──",
+                itemId, modelKey, overrideSql == null ? "no" : "yes(" + overrideSql.length() + " chars)");
 
         SqlLlmResult result = new SqlLlmResult();
 
-        // ① 加载上下文
+        // ⓪ 用户改了 SQL：先重跑规则引擎 + EXPLAIN，把新结果 UPDATE 进库；
+        //    然后用更新后的上下文继续走 LLM 流程，所有结果都落到同一 itemId 行
+        if (overrideSql != null && !overrideSql.isBlank()) {
+            SqlInspectionService inspectionService = inspectionServiceProvider.getIfAvailable();
+            if (inspectionService == null) {
+                log.error("[dii-llm][itemId={}] ✖ SqlInspectionService 未装配，无法重跑规则引擎", itemId);
+                result.setError("SqlInspectionService 未装配，无法重跑规则引擎");
+                itemDao.updateLlmStatusOnly(itemId, "FAILED", result.getError());
+                return result;
+            }
+            try {
+                SqlInspectionResult reinspectResult = inspectionService.reinspect(itemId, overrideSql);
+                log.info("[dii-llm][itemId={}] ⓪ 重跑规则引擎+EXPLAIN 完成 rating={} runtimeRating={}",
+                        itemId, reinspectResult.getOverallRatingLabel(),
+                        reinspectResult.getRuntimeRating() == null ? null : reinspectResult.getRuntimeRating().name());
+            } catch (Throwable t) {
+                log.error("[dii-llm][itemId={}] ✖ 重跑规则引擎/EXPLAIN 失败: {}", itemId, t.getMessage(), t);
+                result.setError("重跑规则引擎/EXPLAIN 失败：" + t.getMessage());
+                itemDao.updateLlmStatusOnly(itemId, "FAILED", result.getError());
+                return result;
+            }
+        }
+
+        // ① 加载上下文（如果走了 ⓪ 重跑，loadContext 读到的是 UPDATE 后的最新行）
         SqlLlmPromptBuilder.Context ctx = loadContext(itemId);
         if (ctx == null) {
             log.warn("[dii-llm][itemId={}] ✖ 上下文加载失败：item 不存在", itemId);
@@ -102,6 +190,7 @@ public class SqlLlmAnalyzeService {
             itemDao.updateLlmStatusOnly(itemId, "FAILED", result.getError());
             return result;
         }
+
         int tableCount = ctx.tableMetadataMap == null ? 0 : ctx.tableMetadataMap.size();
         int patternCount = ctx.sameTablePatterns == null ? 0 : ctx.sameTablePatterns.size();
         log.info("[dii-llm][itemId={}] ① 上下文加载完成 env={} sqlHash={} 涉及表={} 访问模式={}",
@@ -131,62 +220,87 @@ public class SqlLlmAnalyzeService {
         log.info("[dii-llm][itemId={}] ② Prompt 构造完成 version={} systemLen={} userLen={} 估算 tokens≈{}",
                 itemId, prompt.getPromptVersion(), sysLen, userLen, (sysLen + userLen) / 4);
 
-        // ③ 调 LLM
-        LlmClient llm = llmClientProvider.getIfAvailable();
+        // ③ 调 LLM —— 通过 router 按 modelKey 选择具体客户端
+        LlmClient llm = llmRouter.route(modelKey);
         if (llm == null) {
             log.error("[dii-llm][itemId={}] ✖ LlmClient 未装配，检查 ai.analysis.enabled=true", itemId);
             result.setError("LlmClient 未装配，确认 ai.analysis.enabled=true");
             itemDao.updateLlmStatusOnly(itemId, "FAILED", result.getError());
             return result;
         }
-        log.info("[dii-llm][itemId={}] ③ 调用 LLM...", itemId);
-        long llmStart = System.currentTimeMillis();
-        LlmResult raw;
-        try {
-            raw = llm.analyze(prompt, AnalysisMode.FULL, null);
-        } catch (Throwable t) {
-            long elapsed = System.currentTimeMillis() - llmStart;
-            log.warn("[dii-llm][itemId={}] ✖ LLM 调用异常 elapsed={}ms {}: {}",
-                    itemId, elapsed, t.getClass().getSimpleName(), t.getMessage());
-            result.setError("LLM 调用异常：" + t.getClass().getSimpleName() + ": " + t.getMessage());
-            result.setElapsedMs(elapsed);
-            saveFailed(itemId, result);
-            return result;
-        }
-        long llmElapsed = System.currentTimeMillis() - llmStart;
-        result.setElapsedMs(llmElapsed);
-        result.setModel(raw == null ? null : raw.getModel());
-        int rawLen = (raw == null || raw.getRawText() == null) ? 0 : raw.getRawText().length();
-        log.info("[dii-llm][itemId={}] ④ LLM 返回 model={} rawLen={} elapsed={}ms",
-                itemId, result.getModel(), rawLen, llmElapsed);
+        // ③+④+⑤：调 LLM → 校验非空 → 解析 JSON。三步任一失败都触发重试，
+        //         最多 (1 + llmRetryAttempts) 次。整个块通过后 result 被替换为 parsed。
+        int maxAttempts = Math.max(1, 1 + llmRetryAttempts);
+        long llmTotalElapsed = 0;
+        SqlLlmResult parsedOk = null;
+        String lastErr = null;
+        String lastRawHead = null;
+        String lastModel = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            String tag = attempt == 1 ? "首次" : ("重试#" + (attempt - 1));
+            log.info("[dii-llm][itemId={}] ③ 调用 LLM model={} 路由到 {} ({})",
+                    itemId, modelKey, llm.getClass().getSimpleName(), tag);
 
-        if (raw == null || raw.getRawText() == null || raw.getRawText().isBlank()) {
-            log.warn("[dii-llm][itemId={}] ✖ LLM 返回为空", itemId);
-            result.setError("LLM 返回为空");
-            saveFailed(itemId, result);
-            return result;
+            long llmStart = System.currentTimeMillis();
+            LlmResult raw;
+            try {
+                raw = llm.analyze(prompt, AnalysisMode.FULL, null);
+            } catch (Throwable t) {
+                long elapsed = System.currentTimeMillis() - llmStart;
+                llmTotalElapsed += elapsed;
+                lastErr = "LLM 调用异常：" + t.getClass().getSimpleName() + ": " + t.getMessage();
+                boolean overloaded = isGatewayOverload(t);
+                log.warn("[dii-llm][itemId={}] ✖ {} 调用异常 elapsed={}ms overloaded={} {}: {}",
+                        itemId, tag, elapsed, overloaded, t.getClass().getSimpleName(), t.getMessage());
+                if (attempt < maxAttempts) { sleepBackoff(attempt, overloaded); continue; }
+                break;
+            }
+            long llmElapsed = System.currentTimeMillis() - llmStart;
+            llmTotalElapsed += llmElapsed;
+            lastModel = raw == null ? null : raw.getModel();
+            int rawLen = (raw == null || raw.getRawText() == null) ? 0 : raw.getRawText().length();
+            log.info("[dii-llm][itemId={}] ④ {} 返回 model={} rawLen={} elapsed={}ms",
+                    itemId, tag, lastModel, rawLen, llmElapsed);
+
+            if (raw == null || raw.getRawText() == null || raw.getRawText().isBlank()) {
+                lastErr = "LLM 返回为空";
+                log.warn("[dii-llm][itemId={}] ✖ {} 返回为空", itemId, tag);
+                if (attempt < maxAttempts) { sleepBackoff(attempt, false); continue; }
+                break;
+            }
+
+            try {
+                SqlLlmResult parsed = parseLlmJson(raw.getRawText());
+                log.info("[dii-llm][itemId={}] ⑤ {} JSON 解析成功 findings={} suggestions={} confidence={}",
+                        itemId, tag,
+                        parsed.getFindings() == null ? 0 : parsed.getFindings().size(),
+                        parsed.getSuggestions() == null ? 0 : parsed.getSuggestions().size(),
+                        parsed.getConfidence());
+                parsedOk = parsed;
+                break;
+            } catch (Exception e) {
+                lastRawHead = truncate(raw.getRawText(), 300);
+                lastErr = "LLM 返回 JSON 解析失败：" + e.getMessage();
+                log.warn("[dii-llm][itemId={}] ✖ {} JSON 解析失败：{} | rawHead={}",
+                        itemId, tag, e.getMessage(), lastRawHead);
+                if (attempt < maxAttempts) { sleepBackoff(attempt, false); continue; }
+            }
         }
 
-        // ⑤ 解析 JSON
-        try {
-            SqlLlmResult parsed = parseLlmJson(raw.getRawText());
-            parsed.setElapsedMs(result.getElapsedMs());
-            parsed.setModel(result.getModel());
-            parsed.setPromptVersion(result.getPromptVersion());
-            result = parsed;
-            log.info("[dii-llm][itemId={}] ⑤ JSON 解析成功 findings={} suggestions={} confidence={}",
-                    itemId,
-                    result.getFindings() == null ? 0 : result.getFindings().size(),
-                    result.getSuggestions() == null ? 0 : result.getSuggestions().size(),
-                    result.getConfidence());
-        } catch (Exception e) {
-            log.warn("[dii-llm][itemId={}] ✖ JSON 解析失败：{} | rawHead={}",
-                    itemId, e.getMessage(), truncate(raw.getRawText(), 300));
-            result.setError("LLM 返回 JSON 解析失败：" + e.getMessage()
-                    + " | rawHead=" + truncate(raw.getRawText(), 300));
+        result.setElapsedMs(llmTotalElapsed);
+        result.setModel(lastModel);
+        if (parsedOk == null) {
+            result.setError(lastErr + (lastRawHead == null ? "" : " | rawHead=" + lastRawHead));
+            log.warn("[dii-llm][itemId={}] ✖ 全部 {} 次尝试均失败，最后错误：{}",
+                    itemId, maxAttempts, lastErr);
             saveFailed(itemId, result);
             return result;
         }
+        parsedOk.setElapsedMs(result.getElapsedMs());
+        parsedOk.setModel(result.getModel());
+        parsedOk.setPromptVersion(result.getPromptVersion());
+        result = parsedOk;
+        long llmElapsed = llmTotalElapsed;
 
         // ⑥ DDL 长度兜底
         int beforeGuard = countCreateIndexSuggestions(result);
@@ -340,11 +454,16 @@ public class SqlLlmAnalyzeService {
     }
 
     /**
-     * LLM 返回一般是 JSON 文本，但可能包裹在 markdown 代码块里 / 带前后闲聊。
-     * 这里尽量"宽容提取"：剥掉 ```json / ```、取第一个 {...} 平衡括号块。
+     * LLM 返回一般是 JSON 文本，但可能包裹在 markdown 代码块 / &lt;think&gt; 思考块里，
+     * 或被 max_tokens 截断、混入非法转义字符。这里做三层兜底：
+     * <ol>
+     *   <li>剥壳：去掉 ```json / ``` markdown 围栏 + &lt;think&gt;...&lt;/think&gt; 思考块</li>
+     *   <li>补齐：找第一个 {，按括号 depth 取平衡块；若被截断则尝试补 " 和 } 强行收尾</li>
+     *   <li>消毒：把 Jackson 不认的非法转义（{@code \*} {@code \(} 等）降级为裸字符</li>
+     * </ol>
      */
     private SqlLlmResult parseLlmJson(String raw) throws Exception {
-        String cleaned = stripMarkdown(raw);
+        String cleaned = stripWrappers(raw);
         int braceStart = cleaned.indexOf('{');
         if (braceStart < 0) throw new IllegalStateException("未找到 JSON 开始 {");
         int depth = 0;
@@ -363,14 +482,66 @@ public class SqlLlmAnalyzeService {
                 if (depth == 0) { end = i; break; }
             }
         }
-        if (end < 0) throw new IllegalStateException("JSON 括号不平衡");
-        String jsonText = cleaned.substring(braceStart, end + 1);
+
+        String jsonText;
+        if (end >= 0) {
+            jsonText = cleaned.substring(braceStart, end + 1);
+        } else {
+            // 截断兜底：补 " 关闭未闭合字符串，再按当前 depth 追加 }
+            StringBuilder sb = new StringBuilder(cleaned.substring(braceStart));
+            if (inString) sb.append('"');
+            int needClose = depth;
+            for (int i = 0; i < needClose; i++) sb.append('}');
+            jsonText = sb.toString();
+            log.warn("[dii-llm] LLM 响应疑似截断，已自动补齐 {} 个 '}}' 兜底解析", needClose);
+        }
+
+        // 清洗 Jackson 不认的非法 \X 转义（保留 \" \\ \/ \b \f \n \r \t 和 unicode 转义）
+        jsonText = sanitizeInvalidEscapes(jsonText);
+
         return objectMapper.readValue(jsonText, SqlLlmResult.class);
     }
 
-    private String stripMarkdown(String s) {
+    /**
+     * 去掉 markdown 围栏 + DeepSeek-R1 / GLM-Z1 风格的 &lt;think&gt; 思考块。
+     * 即使 think 块没闭合也兼容（一些模型会把 think 输出截断）。
+     */
+    private String stripWrappers(String s) {
         if (s == null) return "";
-        return s.replaceAll("(?s)```(?:json)?\\s*", "").replaceAll("```", "").trim();
+        // 闭合的 <think>...</think>
+        s = s.replaceAll("(?is)<think>.*?</think>", "");
+        // 未闭合的 <think>...EOF（直接吞到末尾）
+        s = s.replaceAll("(?is)<think>.*", "");
+        // markdown 代码块围栏（json / sql / 无标记都剥）
+        s = s.replaceAll("(?s)```(?:json|sql)?\\s*", "").replaceAll("```", "");
+        return s.trim();
+    }
+
+    /**
+     * Jackson 严格模式下，字符串内的 {@code \*} {@code \(} 等无效转义会直接抛
+     * "Unrecognized character escape"。LLM 偶尔会写 {@code SELECT \*} 这种，
+     * 这里把所有非法 \X 转义降级为裸字符 X，保留 JSON 本身合法的 9 种转义。
+     */
+    private String sanitizeInvalidEscapes(String json) {
+        StringBuilder out = new StringBuilder(json.length());
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '\\' && i + 1 < json.length()) {
+                char nx = json.charAt(i + 1);
+                // JSON 合法转义白名单：\" \\ \/ \b \f \n \r \t 以及 \\uXXXX
+                if ("\"\\/bfnrtu".indexOf(nx) >= 0) {
+                    out.append(c).append(nx);
+                    i++;
+                } else {
+                    // 非法转义：丢掉反斜杠，保留原字符
+                    out.append(nx);
+                    i++;
+                }
+            } else {
+                out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     /**
@@ -446,5 +617,42 @@ public class SqlLlmAnalyzeService {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    /** 重试退避：第 N 次重试睡 N * backoff 毫秒（线性退避），中断时复位 interrupt 标志。 */
+    /**
+     * 重试前的退避睡眠。
+     * <p>普通错误：{@link #llmRetryBackoffMs} × attempt（默认 2s 起）。
+     * <p>网关过载（502/503/504）：{@link #llmOverloadBackoffMs} × attempt（默认 15s 起），
+     * 给上游 MiniMax / 网关足够时间恢复，避免雪崩。
+     */
+    private void sleepBackoff(int attempt, boolean overloaded) {
+        long base = overloaded ? llmOverloadBackoffMs : llmRetryBackoffMs;
+        long ms = Math.max(0, base) * attempt;
+        if (ms <= 0) return;
+        log.info("[dii-llm] retry backoff sleeping {}ms (overloaded={})", ms, overloaded);
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 判断异常是否为"网关过载"类。
+     * <p>当前 {@link com.axonlink.ai.provider.OpenAiCompatibleClient} 在 HTTP 非 2xx 时会抛
+     * {@code IllegalStateException("模型请求失败，HTTP 502/503/504...")}，所以这里
+     * 直接用消息文本匹配，不需要把状态码穿透到 dto。
+     */
+    private boolean isGatewayOverload(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            String msg = cur.getMessage();
+            if (msg != null && (msg.contains("HTTP 502") || msg.contains("HTTP 503") || msg.contains("HTTP 504"))) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 }
