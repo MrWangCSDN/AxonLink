@@ -118,31 +118,110 @@ public class DiiAnalysisTaskDao {
     }
 
     /**
-     * 列出任务，可选 env / status 过滤。
-     * 用于"取最新一条 DONE 任务"场景：list(1, 0, "uat", "DONE")。
+     * 列出任务，可选 env / status 过滤；每行带回 5 项 dii_analysis_item 聚合统计。
+     *
+     * <p>聚合统计字段（POOR 子集，因 LLM 只对 POOR/GOOD 跑，POOR 是真正需要看的）：
+     * <ul>
+     *   <li>{@code poor_total}    — runtime_rating='POOR' 总数</li>
+     *   <li>{@code explain_err}   — 上面里 explain_error 非空的数量</li>
+     *   <li>{@code llm_done}      — llm_status='DONE' 且 llm_suggestions_json 非空</li>
+     *   <li>{@code llm_failed}    — llm_status='FAILED'</li>
+     *   <li>{@code llm_running}   — llm_status='PENDING' 或 llm_pending=1（即未跑完的）</li>
+     * </ul>
+     *
+     * <p>{@code status} 参数支持特殊值 {@code RUNNING_OR_PENDING}，DAO 翻译为
+     * {@code WHERE status IN ('PENDING','RUNNING')}，方便前端"进行中"过滤。
+     *
+     * <p><b>性能兜底：</b>子查询走 {@code (task_id, runtime_rating)} 索引最佳。
+     * 如果实测慢可加：
+     * <pre>{@code
+     *   CREATE INDEX idx_item_task_runtime ON dii_analysis_item(task_id, runtime_rating);
+     * }</pre>
      *
      * @param limit  限制条数（1~500）
      * @param offset 偏移
      * @param env    可选环境过滤（null 不过滤）
-     * @param status 可选状态过滤（null 不过滤；典型值 PENDING / RUNNING / DONE / FAILED）
+     * @param status 可选状态过滤（null 不过滤；除标准 PENDING/RUNNING/DONE/FAILED 外
+     *               支持特殊值 RUNNING_OR_PENDING）
      */
     public List<Map<String, Object>> list(int limit, int offset, String env, String status) {
         int eff = Math.min(Math.max(limit, 1), 500);
         StringBuilder sb = new StringBuilder(
-                "SELECT id, task_no, env, status, total_sqls, analyzed_sqls, failed_sqls, skipped_sqls, " +
-                "       trigger_type, owner, error_msg, created_at, updated_at " +
-                "  FROM dii_analysis_task WHERE 1=1");
+                "SELECT t.id, t.task_no, t.env, t.status, t.total_sqls, t.analyzed_sqls, " +
+                "       t.failed_sqls, t.skipped_sqls, t.trigger_type, t.owner, " +
+                "       t.error_msg, t.created_at, t.updated_at, " +
+                "       COALESCE(s.poor_total,  0) AS poor_total, " +
+                "       COALESCE(s.explain_err, 0) AS explain_err, " +
+                "       COALESCE(s.llm_done,    0) AS llm_done, " +
+                "       COALESCE(s.llm_failed,  0) AS llm_failed, " +
+                "       COALESCE(s.llm_running, 0) AS llm_running " +
+                "  FROM dii_analysis_task t " +
+                "  LEFT JOIN ( " +
+                "    SELECT task_id, " +
+                "           COUNT(*) AS poor_total, " +
+                "           SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' " +
+                "                    THEN 1 ELSE 0 END) AS explain_err, " +
+                "           SUM(CASE WHEN llm_status='DONE' " +
+                "                     AND llm_suggestions_json IS NOT NULL " +
+                "                     AND llm_suggestions_json NOT IN ('','[]') " +
+                "                    THEN 1 ELSE 0 END) AS llm_done, " +
+                "           SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS llm_failed, " +
+                "           SUM(CASE WHEN llm_status='PENDING' OR llm_pending=1 " +
+                "                    THEN 1 ELSE 0 END) AS llm_running " +
+                "      FROM dii_analysis_item " +
+                "     WHERE runtime_rating='POOR' " +
+                "     GROUP BY task_id " +
+                "  ) s ON s.task_id = t.id " +
+                " WHERE 1=1");
         List<Object> args = new java.util.ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?"); args.add(env.trim());
+            sb.append(" AND t.env = ?");
+            args.add(env.trim());
         }
         if (status != null && !status.isBlank()) {
-            sb.append(" AND status = ?"); args.add(status.trim());
+            String st = status.trim();
+            if ("RUNNING_OR_PENDING".equalsIgnoreCase(st)) {
+                // 前端"进行中"过滤的特殊值，DAO 翻译为 IN 子句
+                sb.append(" AND t.status IN ('PENDING','RUNNING')");
+            } else {
+                sb.append(" AND t.status = ?");
+                args.add(st);
+            }
         }
-        sb.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
+        sb.append(" ORDER BY t.id DESC LIMIT ? OFFSET ?");
         args.add(eff);
         args.add(Math.max(offset, 0));
         return jdbc.queryForList(sb.toString(), args.toArray());
+    }
+
+    /**
+     * 按相同 env / status 过滤条件统计总数（不分页），供前端分页器使用。
+     *
+     * <p>跟 {@link #list(int, int, String, String)} 用完全相同的 WHERE 子句
+     * （含 RUNNING_OR_PENDING 特殊值翻译），保证 total 与 items 的总数一致。
+     *
+     * @param env    可选环境过滤
+     * @param status 可选状态过滤（含特殊值 RUNNING_OR_PENDING）
+     * @return 符合条件的任务总数
+     */
+    public long countAll(String env, String status) {
+        StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_task WHERE 1=1");
+        List<Object> args = new java.util.ArrayList<>();
+        if (env != null && !env.isBlank()) {
+            sb.append(" AND env = ?");
+            args.add(env.trim());
+        }
+        if (status != null && !status.isBlank()) {
+            String st = status.trim();
+            if ("RUNNING_OR_PENDING".equalsIgnoreCase(st)) {
+                sb.append(" AND status IN ('PENDING','RUNNING')");
+            } else {
+                sb.append(" AND status = ?");
+                args.add(st);
+            }
+        }
+        Long n = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
+        return n == null ? 0L : n;
     }
 
     private static String truncate(String s, int max) {
