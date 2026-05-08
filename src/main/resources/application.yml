@@ -123,11 +123,11 @@ ai:
       #   true：保留思考行为（部分场景可能需要看推理过程）。
       enable-thinking: ${AI_ANALYSIS_GLM5_ENABLE_THINKING:false}
 
-    # MiniMax：与 GLM 同走 OpenAI 兼容协议，路由 key=minimax-2.5
+    # MiniMax：与 GLM 同走 OpenAI 兼容协议，路由 key=minimax-2.7
     minimax:
       base-url:    ${AI_ANALYSIS_MINIMAX_BASE_URL:http://aihub.spdbdev.com:3000}
       api-key:     ${AI_ANALYSIS_MINIMAX_API_KEY:}
-      model:       ${AI_ANALYSIS_MINIMAX_MODEL:minimax-m2.5}
+      model:       ${AI_ANALYSIS_MINIMAX_MODEL:minimax-m2.7}
       chat-path:   ${AI_ANALYSIS_MINIMAX_CHAT_PATH:/v1/chat/completions}
       stream:      ${AI_ANALYSIS_MINIMAX_STREAM:false}
       temperature: ${AI_ANALYSIS_MINIMAX_TEMPERATURE:0.2}

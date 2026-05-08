@@ -176,12 +176,12 @@ public class AiAnalysisConfig {
 
     /**
      * MiniMax 模型配置：与 GLM 同样走 OpenAI 兼容协议。
-     * 模型 key 在前后端约定为 {@code minimax-2.5}。
+     * 模型 key 在前后端约定为 {@code minimax-2.7}。
      */
     public static class MiniMax implements com.axonlink.ai.provider.OpenAiCompatibleConfig {
         private String baseUrl = "";
         private String apiKey = "";
-        private String model = "minimax-m2.5";
+        private String model = "minimax-m2.7";
         private String chatPath = "/v1/chat/completions";
         private boolean stream = false;
         private double temperature = 0.2d;

@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * 模型路由：把前端传来的 {@code modelKey}（{@code glm-4.7} / {@code minimax-2.5} 等）
+ * 模型路由：把前端传来的 {@code modelKey}（{@code glm-4.7} / {@code minimax-2.7} 等）
  * 解析成具体的 {@link LlmClient} 实现。
  *
  * <p>路由规则（大小写不敏感、横线/下划线/小数点都接受）：

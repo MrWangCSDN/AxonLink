@@ -50,7 +50,7 @@ public class LlmEnrichService {
     private static final int MAX_BATCH_SIZE = 5000;
 
     /** 批量回填默认使用的模型（按需求：minimax）。 */
-    private static final String BATCH_DEFAULT_MODEL = "minimax-2.5";
+    private static final String BATCH_DEFAULT_MODEL = "minimax-2.7";
 
     private final DiiAnalysisItemDao itemDao;
     private final SqlLlmAnalyzeService llmAnalyzer;

@@ -150,7 +150,7 @@ public class SqlLlmAnalyzeService {
      *
      * @param itemId       要分析的 item id
      * @param overrideSql  若非空，构造 prompt 时用该 SQL（前端"重新执行"模态框允许用户改 SQL 再分析）
-     * @param modelKey     模型路由 key：{@code glm-4.7} / {@code minimax-2.5}；为空回退到默认 GLM
+     * @param modelKey     模型路由 key：{@code glm-4.7} / {@code minimax-2.7}；为空回退到默认 GLM
      */
     public SqlLlmResult analyzeItem(long itemId, String overrideSql, String modelKey) {
         long entryMs = System.currentTimeMillis();
