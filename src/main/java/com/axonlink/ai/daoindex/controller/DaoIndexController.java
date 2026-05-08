@@ -1,5 +1,6 @@
 package com.axonlink.ai.daoindex.controller;
 
+import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.health.DaoIndexHealthIndicator;
 import com.axonlink.ai.daoindex.health.DaoIndexHealthReport;
 import com.axonlink.ai.daoindex.sqlinspect.dto.IndexMeta;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -92,6 +94,8 @@ public class DaoIndexController {
     private final ObjectProvider<TableMetadataService> tableMetadataServiceProvider;
     private final ObjectProvider<SqlLlmAnalyzeService> llmAnalyzeServiceProvider;
     private final ObjectProvider<LlmEnrichService> llmEnrichServiceProvider;
+    // 注入 DAO 索引巡检模块的总配置，主要用于读取批量触发口令（batch-trigger.token）
+    private final DaoIndexAnalysisProperties props;
 
     public DaoIndexController(DaoIndexHealthIndicator healthIndicator,
                               ObjectProvider<LlmClient> llmClientProvider,
@@ -106,7 +110,8 @@ public class DaoIndexController {
                               ObjectProvider<ColumnSampleService> columnSampleServiceProvider,
                               ObjectProvider<TableMetadataService> tableMetadataServiceProvider,
                               ObjectProvider<SqlLlmAnalyzeService> llmAnalyzeServiceProvider,
-                              ObjectProvider<LlmEnrichService> llmEnrichServiceProvider) {
+                              ObjectProvider<LlmEnrichService> llmEnrichServiceProvider,
+                              DaoIndexAnalysisProperties props) {
         this.healthIndicator = healthIndicator;
         this.llmClientProvider = llmClientProvider;
         this.aiConfigProvider = aiConfigProvider;
@@ -121,6 +126,7 @@ public class DaoIndexController {
         this.tableMetadataServiceProvider = tableMetadataServiceProvider;
         this.llmAnalyzeServiceProvider = llmAnalyzeServiceProvider;
         this.llmEnrichServiceProvider = llmEnrichServiceProvider;
+        this.props = props;
     }
 
     @GetMapping("/health")
@@ -696,15 +702,41 @@ public class DaoIndexController {
     }
 
     /**
-     * 手动触发一次批量巡检。异步执行，立即返回 taskId，用 {@link #getBatchTask} 轮询进度。
+     * 手动触发一次批量巡检（写入 dii_analysis_task + 异步执行）。
      *
-     * <p>示例：{@code POST /api/ai/dao-index/batch-analyze?env=uat}
+     * <p>受口令保护：请求头 {@code X-DII-Trigger-Token} 必须匹配
+     * {@code dao-index-analysis.batch-trigger.token} 配置；
+     * 配置为空（含全空白）时跳过校验（仅开发环境）。
+     *
+     * <p>错误返回真正的 HTTP 401，方便浏览器 / 网关 / 监控统一识别。
+     *
+     * <p>示例：
+     * <pre>{@code
+     * curl -X POST 'http://host/api/ai/dao-index/batch-analyze?env=uat' \
+     *      -H 'X-DII-Trigger-Token: sunline300348'
+     * }</pre>
      *
      * <p>单条 SQL 的分析失败不会中断批量；失败信息落到 {@code dii_analysis_item.status='FAILED'}。
      */
     @PostMapping("/batch-analyze")
-    public R<Map<String, Object>> triggerBatch(@RequestParam(required = false) String env,
-                                               @RequestParam(required = false, defaultValue = "manual") String owner) {
+    public ResponseEntity<R<Map<String, Object>>> triggerBatch(
+            @RequestParam(required = false) String env,
+            @RequestParam(required = false, defaultValue = "manual") String owner,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            jakarta.servlet.http.HttpServletRequest request) {
+        // ① 口令校验：配置为空（含全空白）= 跳过；非空 + 不匹配 → 真 HTTP 401
+        String expected = props.getBatchTrigger().getToken();
+        if (expected != null && !expected.trim().isEmpty()) {
+            if (token == null || !expected.equals(token)) {
+                // 审计日志：防爆破 / 排查配置漂移
+                log.warn("[dii-batch] 触发口令校验失败 remoteAddr={} env={} owner={} hasToken={}",
+                        request.getRemoteAddr(), env, owner, token != null);
+                R<Map<String, Object>> body = R.fail("口令错误");
+                body.setCode(401);
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(body);
+            }
+        }
+        // ② 走原有 startAsync 流程
         try {
             String effEnv = (env == null || env.isBlank())
                     ? targetRegistry.getDefaultEnv() : env;
@@ -714,12 +746,13 @@ public class DaoIndexController {
             payload.put("env", effEnv);
             payload.put("status", "RUNNING");
             payload.put("pollUrl", "/api/ai/dao-index/batch-tasks/" + taskId);
-            return R.ok(payload);
+            return ResponseEntity.ok(R.ok(payload));
         } catch (IllegalArgumentException e) {
-            return R.fail(e.getMessage());
+            return ResponseEntity.badRequest().body(R.fail(e.getMessage()));
         } catch (Exception e) {
             log.error("[dii-batch] 触发批量失败", e);
-            return R.fail("触发批量失败：" + buildErrorChain(e));
+            return ResponseEntity.internalServerError()
+                    .body(R.<Map<String, Object>>fail("触发批量失败：" + buildErrorChain(e)));
         }
     }
 
