@@ -5,7 +5,6 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.IndexMeta;
 import com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating;
 import com.axonlink.ai.daoindex.sqlinspect.dto.PredicateExtract;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableRating;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -44,7 +43,6 @@ import java.util.stream.Collectors;
  * </ul>
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class IndexHitRuleEngine {
 
     /**

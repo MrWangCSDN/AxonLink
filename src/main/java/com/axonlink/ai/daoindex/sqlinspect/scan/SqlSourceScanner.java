@@ -4,7 +4,6 @@ import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.sqlinspect.dto.SqlCandidate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -33,7 +32,6 @@ import java.util.regex.Pattern;
  * <p>用 regex 抽取，兼容单行和字符串拼接形式（"a" + "b" + "c"）。
  */
 @Component
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SqlSourceScanner {
 
     private static final Logger log = LoggerFactory.getLogger(SqlSourceScanner.class);

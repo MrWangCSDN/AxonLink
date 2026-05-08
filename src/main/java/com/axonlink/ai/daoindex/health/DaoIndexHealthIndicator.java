@@ -7,7 +7,6 @@ import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -28,7 +27,6 @@ import java.util.Map;
  * 真正的 EXPLAIN 语法解析和 LLM 调用会在后续 PR 的 debug 接口里做。
  */
 @Component
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class DaoIndexHealthIndicator {
 
     private static final Logger log = LoggerFactory.getLogger(DaoIndexHealthIndicator.class);

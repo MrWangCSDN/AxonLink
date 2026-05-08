@@ -27,7 +27,6 @@ import com.axonlink.config.AiAnalysisConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -75,7 +74,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/ai/dao-index")
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class DaoIndexController {
 
     private static final Logger log = LoggerFactory.getLogger(DaoIndexController.class);
@@ -320,13 +318,38 @@ public class DaoIndexController {
      */
     @GetMapping("/debug/indexes")
     public R<List<IndexMeta>> listIndexes(@RequestParam(required = false) String env,
-                                          @RequestParam String table) {
+                                          @RequestParam String table,
+                                          @RequestParam(required = false, defaultValue = "false") boolean refresh) {
         try {
-            return R.ok(indexMetaService.getIndexes(env, table));
+            return R.ok(indexMetaService.getIndexes(env, table, refresh));
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 查询索引元数据失败 env={} table={}", env, table, e);
             return R.fail("查询索引失败：" + buildErrorChain(e));
         }
+    }
+
+    /**
+     * 主动失效索引元数据缓存。用于在 DDL 变更或权限修复后立即让系统看到新结果。
+     *
+     * <p>不传 table 则清空全部缓存；传 table 只清这一张表。
+     * <p>示例：
+     * <pre>
+     * POST /api/ai/dao-index/debug/indexes/invalidate                              （清全部）
+     * POST /api/ai/dao-index/debug/indexes/invalidate?env=uat&table=foo            （清一张）
+     * </pre>
+     */
+    @PostMapping("/debug/indexes/invalidate")
+    public R<Map<String, Object>> invalidateIndexes(@RequestParam(required = false) String env,
+                                                    @RequestParam(required = false) String table) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        if (table == null || table.isBlank()) {
+            indexMetaService.invalidateAll();
+            resp.put("invalidated", "ALL");
+        } else {
+            indexMetaService.invalidate(env, table);
+            resp.put("invalidated", (env == null ? "default" : env) + ":" + table);
+        }
+        return R.ok(resp);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -343,16 +366,65 @@ public class DaoIndexController {
      *
      * <p>示例：{@code POST /api/ai/dao-index/debug/llm-analyze/1234}
      */
+    /**
+     * 手动重跑请求体（前端"重新执行 AI 分析"模态框）。
+     * sql 非空时按用户改过的 SQL 重新构造 prompt；model 决定模型路由。
+     * body 整个为空时退化到旧调用语义。
+     */
+    public static class LlmAnalyzeRequest {
+        public String sql;
+        public String model;
+    }
+
+    /**
+     * 异步触发单条 LLM 分析（"重新分析"按钮专用，前端轮询查状态）。
+     *
+     * <p>同步操作：把 llm_status 立刻打成 PENDING，前端首次 GET item 即可看到蒙版稳定显示。
+     * <p>异步操作：把 LLM 分析任务交给 {@code diiBatchExecutor} 线程池，本接口立即返回 202。
+     * <p>前端轮询 {@code GET /debug/analysis-items/{id}}，看到 llm_status ≠ PENDING 即停止轮询。
+     */
+    @PostMapping("/debug/llm-analyze/{itemId}/async")
+    public R<Map<String, Object>> llmAnalyzeOneAsync(
+            @PathVariable long itemId,
+            @RequestBody(required = false) LlmAnalyzeRequest body) {
+        String overrideSql = body == null ? null : body.sql;
+        String modelKey    = body == null ? null : body.model;
+        log.info("[dii-llm-api] POST /debug/llm-analyze/{}/async 异步触发 model={} overrideSql={}",
+                itemId, modelKey, overrideSql == null ? "no" : "yes");
+        SqlLlmAnalyzeService svc = llmAnalyzeServiceProvider.getIfAvailable();
+        if (svc == null) {
+            return R.fail("SqlLlmAnalyzeService 未装配（确认 ai.analysis.enabled=true 且 LlmClient 可用）");
+        }
+        // 1. 同步打 PENDING：保证前端首次轮询就看到蒙版
+        int updated = itemDao.forceMarkLlmPending(itemId);
+        if (updated == 0) {
+            return R.fail("item 不存在 id=" + itemId);
+        }
+        // 2. 异步交线程池跑 LLM（必须通过代理 bean 调用，所以走 svc 而不是 this）
+        svc.analyzeItemAsync(itemId, overrideSql, modelKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("accepted", true);
+        data.put("itemId", itemId);
+        data.put("status", "PENDING");
+        data.put("hint", "请轮询 GET /debug/analysis-items/" + itemId + " 查看 llm_status");
+        return R.ok(data);
+    }
+
     @PostMapping("/debug/llm-analyze/{itemId}")
-    public R<SqlLlmResult> llmAnalyzeOne(@PathVariable long itemId) {
-        log.info("[dii-llm-api] POST /debug/llm-analyze/{} 手动触发", itemId);
+    public R<SqlLlmResult> llmAnalyzeOne(
+            @PathVariable long itemId,
+            @RequestBody(required = false) LlmAnalyzeRequest body) {
+        String overrideSql = body == null ? null : body.sql;
+        String modelKey    = body == null ? null : body.model;
+        log.info("[dii-llm-api] POST /debug/llm-analyze/{} 手动触发 model={} overrideSql={}",
+                itemId, modelKey, overrideSql == null ? "no" : "yes");
         SqlLlmAnalyzeService svc = llmAnalyzeServiceProvider.getIfAvailable();
         if (svc == null) {
             log.warn("[dii-llm-api] SqlLlmAnalyzeService 未装配");
             return R.fail("SqlLlmAnalyzeService 未装配（确认 ai.analysis.enabled=true 且 LlmClient 可用）");
         }
         try {
-            SqlLlmResult r = svc.analyzeItem(itemId);
+            SqlLlmResult r = svc.analyzeItem(itemId, overrideSql, modelKey);
             log.info("[dii-llm-api] 手动分析完成 itemId={} error={} suggestions={}",
                     itemId, r.getError(),
                     r.getSuggestions() == null ? 0 : r.getSuggestions().size());
@@ -664,13 +736,20 @@ public class DaoIndexController {
 
     /**
      * 查任务列表。
-     * <p>示例：{@code GET /api/ai/dao-index/batch-tasks?limit=20}
+     *
+     * <p>支持按 env 与 status 过滤；前端拉"最新一条 DONE 任务"用：
+     * {@code GET /batch-tasks?env=uat&status=DONE&limit=1}
+     *
+     * <p>注意：无 status 过滤时返回**所有状态**任务（含 PENDING/RUNNING/FAILED），
+     * 业务前端展示"上一轮巡检数据"时一定要带 status=DONE。
      */
     @GetMapping("/batch-tasks")
     public R<java.util.List<Map<String, Object>>> listBatchTasks(
             @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(defaultValue = "0") int offset) {
-        return R.ok(taskDao.list(limit, offset));
+            @RequestParam(defaultValue = "0") int offset,
+            @RequestParam(required = false) String env,
+            @RequestParam(required = false) String status) {
+        return R.ok(taskDao.list(limit, offset, env, status));
     }
 
     /**
@@ -764,6 +843,24 @@ public class DaoIndexController {
             return R.ok(payload);
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 查问题列表失败 env={} taskId={}", env, taskId, e);
+            return R.fail("查询失败：" + buildErrorChain(e));
+        }
+    }
+
+    /**
+     * "SQL 分析 - 问题列表" 4 个 KPI 统计：总数 / DB 报错 / AI 完成 / AI 失败。
+     *
+     * <p>一条 SQL 同时统计 4 项，前端不再需要全量拉取 items 后本地 group。
+     *
+     * <p>返回字段：{@code total / explainError / llmFindings / llmError}（均为 long）。
+     */
+    @GetMapping("/debug/analysis-items-issues/stats")
+    public R<Map<String, Long>> getIssuesStats(@RequestParam(required = false) String env,
+                                               @RequestParam(required = false) Long taskId) {
+        try {
+            return R.ok(itemDao.getIssuesStats(env, taskId));
+        } catch (Exception e) {
+            log.error("[dii-sqlinspect] 查 issues stats 失败 env={} taskId={}", env, taskId, e);
             return R.fail("查询失败：" + buildErrorChain(e));
         }
     }

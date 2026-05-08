@@ -12,7 +12,7 @@ import java.util.Map;
  * DAO 索引巡检模块配置。
  *
  * <p>绑定 application.yml 中 {@code dao-index-analysis.*} 节点。
- * <p>本模块为自包含模块，默认通过 {@code enabled=false} 关闭；开启后：
+ * <p>模块默认开启（不再有 enabled 总开关），需要：
  * <ul>
  *     <li>{@code scan.*} 控制从哪些工程哪些目录抽取 @Statement SQL；</li>
  *     <li>{@code targets.*} 配置被巡检的目标库（支持多环境，按 env 选择）；</li>
@@ -25,7 +25,6 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "dao-index-analysis")
 public class DaoIndexAnalysisProperties {
 
-    private boolean enabled = false;
     private Scan scan = new Scan();
     private Map<String, Target> targets = new LinkedHashMap<>();
     private String defaultEnv = "dev";
@@ -41,9 +40,6 @@ public class DaoIndexAnalysisProperties {
     private int concurrentReuseMinutes = 5;
     private Export export = new Export();
     private Schedule schedule = new Schedule();
-
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -77,16 +73,30 @@ public class DaoIndexAnalysisProperties {
     public void setSchedule(Schedule schedule) { this.schedule = schedule; }
 
     /**
-     * 定时任务总开关配置。
-     * <p>本模块所有 {@code @Scheduled} 方法都会在执行前检查 {@link #enabled}，
-     * 设为 {@code false} 即可彻底屏蔽 01:00 规则批量 + 03:00 LLM 回填。
+     * 定时任务配置。
+     * <p>本模块两条 {@code @Scheduled} 方法都会在执行前检查 {@link #enabled}，
+     * 设为 {@code false} 即可临时屏蔽规则批量 + LLM 回填两条 cron。
+     * <p>cron 表达式（{@link #dailyCron} / {@link #dailyLlmCron}）由 yml 注入到 {@code @Scheduled}
+     * 注解的 SpEL 表达式中；这里同时保留字段以便代码内引用与未来扩展（动态调度等）。
      */
     public static class Schedule {
-        /** 总开关，默认 {@code false} 关闭所有定时任务。只有显式开启才会跑。 */
-        private boolean enabled = false;
+        /** 定时任务总开关，默认开启。 */
+        private boolean enabled = true;
+        /** 规则引擎 + EXPLAIN 批量巡检 cron，默认每天 01:00:00。 */
+        private String dailyCron = "0 0 1 * * ?";
+        /** LLM 批量回填 cron，默认每天 02:00:00。 */
+        private String dailyLlmCron = "0 0 2 * * ?";
+        /** LLM 回填单次最多处理的 item 数（兜底防爆）。 */
+        private int dailyLlmMaxItems = 2000;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getDailyCron() { return dailyCron; }
+        public void setDailyCron(String dailyCron) { this.dailyCron = dailyCron; }
+        public String getDailyLlmCron() { return dailyLlmCron; }
+        public void setDailyLlmCron(String dailyLlmCron) { this.dailyLlmCron = dailyLlmCron; }
+        public int getDailyLlmMaxItems() { return dailyLlmMaxItems; }
+        public void setDailyLlmMaxItems(int n) { this.dailyLlmMaxItems = n; }
     }
 
     /** 源码扫描配置。 */

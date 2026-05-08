@@ -5,7 +5,6 @@ import com.axonlink.ai.dto.AnalysisPrompt;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -36,13 +35,12 @@ import java.util.Map;
  * </ol>
  */
 @Component
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SqlLlmPromptBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(SqlLlmPromptBuilder.class);
 
     /** Prompt 模板版本号，便于追溯。改 prompt 内容后必须升版本。 */
-    public static final String PROMPT_VERSION = "sql-v4";
+    public static final String PROMPT_VERSION = "sql-v5";
 
     private final ObjectMapper objectMapper;
 
@@ -101,7 +99,7 @@ public class SqlLlmPromptBuilder {
             "1. 只用语料里的字段名和索引名，绝不编造。\n" +
             "2. 建议区分 scope：\n" +
             "   - scope=TABLE：DDL 动作（CREATE_INDEX / DROP_INDEX / MERGE_INDEX），此建议同时影响同表其他 SQL。\n" +
-            "   - scope=SQL：仅本 SQL 相关的修改（REWRITE_SQL / FIX_IMPLICIT_CAST / CODE_LEVEL / NO_ACTION）。\n" +
+            "   - scope=SQL：仅本 SQL 相关的修改（REWRITE_SQL / CODE_LEVEL / NO_ACTION）。\n" +
             "3. DDL 建议尽量能覆盖同表多条 SQL 的访问模式（看 sameTableAccessPattern.byPredicate）。\n" +
             "4. **findings 数组必须至少包含 1 条**，空数组是不可接受的。即使评级已是 优，也要说明：\n" +
             "   - matchedColumnCount < totalColumnCount → 输出 INDEX_NOT_FULLY_COVERED（severity 按未用列比例：>=50% → MEDIUM，否则 LOW）；\n" +
@@ -112,19 +110,24 @@ public class SqlLlmPromptBuilder {
             "   - 如果评级已是 优 且无同表其他 POOR 的 SQL，suggestions 可以只输出一条 NO_ACTION（scope=SQL）；\n" +
             "   - 但 findings 仍然不能为空（见规则 4）。\n" +
             "6. 如果语料不够确定判断，把 confidence 设成 LOW 而不是编造。\n" +
+            "7. **隐式类型转换（implicit cast）相关一律不要分析、不要输出 finding、不要输出 suggestion**：\n" +
+            "   - 即使在 explain_plan 的 Filter 字段里看到 col::text = 'xxx'::text 这类强制转换，也要忽略。\n" +
+            "   - 不要输出 type=IMPLICIT_CAST 的 finding，也不要输出 type=FIX_IMPLICIT_CAST 的 suggestion。\n" +
+            "   - 原因：GaussDB 在大多数情况下 cast 不会真的让索引失效，规则引擎已专门处理；LLM 在此层判断会大量误报。\n" +
             "\n" +
             "【输出长度硬约束（为节省 token 和响应时间，严格控制）】\n" +
             "- summary ≤ 30 字\n" +
             "- findings 最多 3 条，每条 description ≤ 60 字，evidence ≤ 40 字\n" +
             "- suggestions 最多 2 条，每条 reason ≤ 60 字，ddl 必须是单行标准 SQL\n" +
             "- 不要输出 markdown 代码块（```json），不要输出任何解释性前言或结语\n" +
-            "- 直接以 { 开头，} 结尾，输出纯 JSON\n" +
+            "- 不要输出 <think> 思考块或任何推理过程，直接给结论\n" +
+            "- 直接以 { 开头，} 结尾，输出纯 JSON，第一个字符必须是 {\n" +
             "\n" +
             "【输出 JSON Schema（严格遵守，不要加 markdown 代码块）】\n" +
             "{\n" +
             "  \"summary\": \"一句话总结，30 字以内\",\n" +
             "  \"findings\": [\n" +
-            "    {\"type\": \"INDEX_NOT_FULLY_COVERED|POTENTIAL_INDEX_MERGE|REDUNDANT_INDEX|OVERSIZED_INDEX_KEY|INDEX_COUNT_WARNING|MISSING_HOT_PATH|IMPLICIT_CAST|LOW_SELECTIVITY|OTHER\",\n" +
+            "    {\"type\": \"INDEX_NOT_FULLY_COVERED|POTENTIAL_INDEX_MERGE|REDUNDANT_INDEX|OVERSIZED_INDEX_KEY|INDEX_COUNT_WARNING|MISSING_HOT_PATH|LOW_SELECTIVITY|OTHER\",\n" +
             "     \"severity\": \"HIGH|MEDIUM|LOW\",\n" +
             "     \"description\": \"人话描述 30~80 字\",\n" +
             "     \"evidence\": \"指向语料里的字段，如 matchedIndex.matchedColumnCount=1/4\"}\n" +
@@ -136,7 +139,7 @@ public class SqlLlmPromptBuilder {
             "     \"ddl\": \"CREATE INDEX idx_xxx ON t (a, b)\",\n" +
             "     \"reason\": \"理由\"},\n" +
             "    {\"scope\": \"SQL\",\n" +
-            "     \"type\": \"REWRITE_SQL|FIX_IMPLICIT_CAST|CODE_LEVEL|NO_ACTION\",\n" +
+            "     \"type\": \"REWRITE_SQL|CODE_LEVEL|NO_ACTION\",\n" +
             "     \"priority\": 2,\n" +
             "     \"newSql\": \"若是 REWRITE_SQL 才填\",\n" +
             "     \"reason\": \"理由\"}\n" +

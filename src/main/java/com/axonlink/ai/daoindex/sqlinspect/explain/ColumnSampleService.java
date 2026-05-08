@@ -6,7 +6,6 @@ import com.axonlink.ai.daoindex.sqlinspect.metadata.TableMetadataService;
 import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -40,7 +39,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * </ul>
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class ColumnSampleService {
 
     private static final Logger log = LoggerFactory.getLogger(ColumnSampleService.class);

@@ -66,9 +66,18 @@ flowtran:
 
 benchmark:
   build-status:
-    # sunline-benchmark 服务地址，用于查询最近一次拉取+编译状态
+    # ⚠️ 已弃用：原本 axon-link-server 通过 HTTP 调 sunline-benchmark 取构建状态。
+    # 现在改成共享 MySQL 库（benchmarkdb）直接 SELECT build_operation_record 表，
+    # 不再需要这个 base-url。保留配置项是为了兼容老部署 yml，新部署可以不填。
     base-url: ${BENCHMARK_BUILD_STATUS_BASE_URL:http://127.0.0.1:8080}
     timeout-ms: ${BENCHMARK_BUILD_STATUS_TIMEOUT_MS:5000}
+
+# 编译完成后自动拉起 Neo4j 图谱重建（phase0_bootstrap → ...）
+build-sync:
+  auto-phase:
+    # true：发现 build_operation_record 出现新的 SUCCESS TASK → 自动调 neo4j build/async
+    # false：完全人工，需手动 POST /api/neo4j/build/async
+    enabled: ${BUILD_SYNC_AUTO_PHASE_ENABLED:true}
 
 ai:
   analysis:
@@ -103,14 +112,45 @@ ai:
       #     - 思考 ~2000~3000 tokens（glm-47 思考阶段很能写）
       #     - 输出 ~500 tokens（JSON 结构化结果）
       #     - 合计需要 4096 ~ 6144
-      #   默认 4096 是最低稳妥值，如果还遇到 content 为空就继续往上调。
-      max-tokens: ${AI_ANALYSIS_GLM5_MAX_TOKENS:4096}
+      #   默认 8192 给思考型模型留足配额，避免 JSON 输出被截断。
+      max-tokens: ${AI_ANALYSIS_GLM5_MAX_TOKENS:8192}
+      # enable-thinking：是否允许思考型模型（GLM-Z1 / DeepSeek-R1）输出 reasoning_content。
+      #   false（默认，强烈建议）：请求体追加 enable_thinking=false，模型直接给最终 JSON，
+      #          不浪费 token 在 <think> 块上，彻底避免 max_tokens 被吃光导致截断。
+      #   true：保留思考行为（部分场景可能需要看推理过程）。
+      enable-thinking: ${AI_ANALYSIS_GLM5_ENABLE_THINKING:false}
+
+    # MiniMax：与 GLM 同走 OpenAI 兼容协议，路由 key=minimax-2.5
+    minimax:
+      base-url:    ${AI_ANALYSIS_MINIMAX_BASE_URL:http://aihub.spdbdev.com:3000}
+      api-key:     ${AI_ANALYSIS_MINIMAX_API_KEY:}
+      model:       ${AI_ANALYSIS_MINIMAX_MODEL:minimax-m2.5}
+      chat-path:   ${AI_ANALYSIS_MINIMAX_CHAT_PATH:/v1/chat/completions}
+      stream:      ${AI_ANALYSIS_MINIMAX_STREAM:false}
+      temperature: ${AI_ANALYSIS_MINIMAX_TEMPERATURE:0.2}
+      max-tokens:  ${AI_ANALYSIS_MINIMAX_MAX_TOKENS:8192}
+      enable-thinking: ${AI_ANALYSIS_MINIMAX_ENABLE_THINKING:false}
 
 # ── DAO 索引巡检模块 ─────────────────────────────────────────────────────────
-# 默认 enabled=false，不影响现有业务；内网部署时将 enabled 置为 true 并填充连接信息。
+# 模块默认开启，不再需要 enabled 总开关；部署时填充连接信息即可。
 # 建议将真实连接信息放到 application-local.yml，避免密码泄漏到仓库。
 dao-index-analysis:
-  enabled: ${DII_ENABLED:false}
+
+  # 索引元数据缓存（pg_index/pg_attribute 查询去重）
+  # 缓存粒度 = (env, tableName)，用来减少目标库压力。
+  index-meta:
+    # 非空结果缓存秒数：批量分析期间同表去重 + DDL 变更后 N 秒内自动生效。
+    # 默认 300（5 分钟）；如果你们 DDL 变更很频繁可调到 60～120。
+    cache-seconds: ${DII_INDEX_META_CACHE_SECONDS:300}
+    # 空结果缓存秒数：抵御短时连接抖动，权限/连通性修复后能在 N 秒内自愈。
+    empty-cache-seconds: ${DII_INDEX_META_EMPTY_CACHE_SECONDS:30}
+
+  # LLM 调用 / JSON 解析失败时的重试策略（适配偶发的网络抖动 + 思考型模型 JSON 截断）
+  llm:
+    # 不含首次的重试次数。0=不重试，2=最多 3 次尝试。建议 2~3。
+    retry-attempts: ${DII_LLM_RETRY_ATTEMPTS:2}
+    # 线性退避：第 N 次重试前等 N*backoff 毫秒（500 / 1000 / 1500…）
+    retry-backoff-ms: ${DII_LLM_RETRY_BACKOFF_MS:500}
 
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:
@@ -167,12 +207,15 @@ dao-index-analysis:
 
   # 定时任务
   schedule:
-    # 定时任务总开关：false 时彻底屏蔽 01:00 规则批量 + 03:00 LLM 回填，
-    # 两个 @Scheduled 方法在执行前都会检查这个开关。
-    # 想临时关掉定时任务但不停服，把它设为 false 并重启即可。
-    enabled: ${DII_SCHEDULE_ENABLED:false}
-    # 每日批量巡检 cron（秒 分 时 日 月 周），默认每天 01:00:00
+    # 定时任务总开关：false 时彻底屏蔽规则批量 + LLM 回填两条 cron。
+    # 默认开启，需要临时停掉时把它改为 false 并重启服务即可。
+    enabled: ${DII_SCHEDULE_ENABLED:true}
+    # 每日规则引擎 + EXPLAIN 批量巡检 cron（秒 分 时 日 月 周），默认每天 01:00:00
     daily-cron: ${DII_DAILY_CRON:0 0 1 * * ?}
+    # 每日 LLM 回填 cron，默认每天 02:00:00（在规则巡检之后跑，此时 llm_pending=1 已就位）
+    daily-llm-cron: ${DII_DAILY_LLM_CRON:0 0 2 * * ?}
+    # 每日 LLM 回填单次最多处理多少条 item（兜底防爆）
+    daily-llm-max-items: ${DII_DAILY_LLM_MAX_ITEMS:2000}
 
   # Excel 报告导出
   export:

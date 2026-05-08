@@ -154,40 +154,37 @@ public class ParameterTypeResolver {
                                           String ownerTable) {
         List<String> out = new ArrayList<>(paramCtx.size());
         for (ParamCtx ctx : paramCtx) {
+            // 字段名识别失败（复杂 SQL：函数包裹、子查询等）→ 用最通用的字符串字面量 'X'
+            // 不再用 NULL，避免 GaussDB 优化器把 WHERE col = NULL 短路成 One-Time Filter: false
             if (ctx.columnName == null) {
-                out.add("NULL");
-                continue;
-            }
-            // 先定位字段归属的表
-            String tableForColumn = findOwnerTable(ctx.columnName, tableMetadataMap, ownerTable);
-            if (tableForColumn == null) {
-                out.add("NULL");
+                out.add("'X'");
                 continue;
             }
 
-            // 1. 优先真实采样
+            // 1. 真实采样（仅当显式传入 sampler 时启用；ExplainExecutor 默认已不传 sampler，跳过整段）
             if (sampleService != null) {
                 try {
-                    String sampled = sampleService.sampleLiteral(env, tableForColumn, ctx.columnName);
-                    if (sampled != null) {
-                        out.add(sampled);
-                        continue;
+                    String tableForColumn = findOwnerTable(ctx.columnName, tableMetadataMap, ownerTable);
+                    if (tableForColumn != null) {
+                        String sampled = sampleService.sampleLiteral(env, tableForColumn, ctx.columnName);
+                        if (sampled != null) {
+                            out.add(sampled);
+                            continue;
+                        }
                     }
-                    // sampled == null：字段全 NULL（合法情况），回退类型默认
                 } catch (ColumnSampleService.SchemaDriftException e) {
                     // 🚨 表 / 字段不存在：schema 漂移是严重数据错误，必须暴露到上层入库
-                    // 不做任何 fallback，直接向上抛，让 ExplainExecutor 捕获后写进 explain_error
                     throw e;
                 } catch (ColumnSampleService.ColumnSampleException e) {
-                    // 纯技术异常（查询超时、连接失败）：降级用类型默认字面量继续 EXPLAIN
-                    log.warn("[dii-sample] 字段采样技术故障 table={} column={}：{}，回退类型默认",
-                            tableForColumn, ctx.columnName, e.getMessage());
+                    log.warn("[dii-sample] 字段采样技术故障 column={}：{}，回退类型默认",
+                            ctx.columnName, e.getMessage());
                 }
             }
 
-            // 2. 类型默认字面量
+            // 2. 类型默认字面量。findColumnType 返回 null 时 literalFor(null) 会兜底返回 'X'，
+            //    所以这一步永远不会出 NULL。
             String dataType = findColumnType(ctx.columnName, tableMetadataMap);
-            out.add(dataType == null ? "NULL" : literalFor(dataType));
+            out.add(literalFor(dataType));
         }
         return out;
     }
@@ -235,49 +232,89 @@ public class ParameterTypeResolver {
     }
 
     /**
-     * 根据 PostgreSQL 风格的类型名（{@code format_type} 输出）返回类型安全字面量。
+     * 根据 PostgreSQL 风格的类型名（{@code format_type} 输出，或 {@code pg_type.typname}）
+     * 返回类型安全字面量。
      *
-     * <p>覆盖银行场景高频类型，未覆盖的返回 {@code 'X'}（用户要求的默认字符串）。
+     * <p>类型来源覆盖：内网 ccbs_uat_db GaussDB 全表扫描得到的 147 个类型分布，
+     * 包括：varchar / int8 / int4 / int2 / numeric / bpchar / timestamp / time /
+     *       text / clob / blob / _text(数组) / bytea / uuid / boolean / date 等。
+     * <p>未识别的类型一律返回 {@code 'X'}（GaussDB 对绝大多数字符类型有隐式 cast，安全兜底）。
      */
     public static String literalFor(String dataType) {
         if (dataType == null) return "'X'";
         String t = dataType.toLowerCase(Locale.ROOT).trim();
 
-        // 整数
+        // ── 数组类型（pg_type.typname 形如 _text / _varchar / _int4 ...）──
+        // GaussDB 列声明为 text[] 时，pg_type.typname 是 "_text"。
+        // 必须用空数组字面量 + 元素类型 cast，单值 'X' 会报"类型不匹配"。
+        if (t.startsWith("_") && t.length() > 1) {
+            String elem = t.substring(1);     // _text → text，_int4 → int4，_varchar → varchar
+            return "'{}'::" + elem + "[]";
+        }
+
+        // ── 整数 ──
         if (t.startsWith("smallint") || t.startsWith("integer") || t.startsWith("int")
-                || t.startsWith("bigint") || t.startsWith("serial")) {
+                || t.startsWith("bigint") || t.startsWith("serial")
+                || t.equals("tinyint")) {           // GaussDB 兼容 MySQL 的 tinyint
             return "1";
         }
-        // 小数
+        // ── 小数 ──
         if (t.startsWith("numeric") || t.startsWith("decimal")
-                || t.startsWith("real") || t.startsWith("double")) {
+                || t.startsWith("real") || t.startsWith("double")
+                || t.startsWith("float")) {
             return "1";
         }
-        // 布尔
+        // ── 布尔 ──
         if (t.startsWith("boolean") || t.equals("bool")) {
             return "true";
         }
-        // 时间戳（timestamp / timestamp(0) / timestamp without time zone ...）
+        // ── 时间戳（timestamp / timestamp(0) / timestamp without time zone / timestamptz ...）──
         if (t.startsWith("timestamp")) {
             return "CURRENT_TIMESTAMP";
         }
-        // 日期
+        // ── 日期 ──
         if (t.startsWith("date")) {
             return "CURRENT_DATE";
         }
-        // 时间
+        // ── 时间 ──
         if (t.startsWith("time")) {
             return "CURRENT_TIME";
         }
-        // 二进制
-        if (t.startsWith("bytea")) {
+        // ── 间隔 ──
+        if (t.startsWith("interval")) {
+            return "INTERVAL '0 seconds'";
+        }
+        // ── 二进制：bytea / blob / raw（GaussDB 兼容 Oracle 风格 RAW）──
+        if (t.startsWith("bytea") || t.startsWith("blob") || t.startsWith("raw")) {
             return "'\\x00'::bytea";
         }
-        // UUID
+        // ── UUID ──
         if (t.startsWith("uuid")) {
             return "'00000000-0000-0000-0000-000000000000'::uuid";
         }
-        // 字符串（character / character varying / text / varchar / char）— 默认兜底
+        // ── JSON ──
+        if (t.equals("json")) {
+            return "'{}'::json";
+        }
+        if (t.equals("jsonb")) {
+            return "'{}'::jsonb";
+        }
+        // ── XML ──
+        if (t.equals("xml")) {
+            return "'<x/>'::xml";
+        }
+        // ── 网络地址 ──
+        if (t.equals("inet"))      return "'127.0.0.1'::inet";
+        if (t.equals("cidr"))      return "'127.0.0.1/32'::cidr";
+        if (t.equals("macaddr"))   return "'00:00:00:00:00:00'::macaddr";
+
+        // ── 大文本：clob（GaussDB 兼容 Oracle 风格 CLOB / NCLOB）──
+        // 大对象类型对字符串字面量有隐式 cast，'X' 即可
+        if (t.startsWith("clob") || t.startsWith("nclob") || t.equals("ntext")) {
+            return "'X'";
+        }
+        // ── 字符串（character / character varying / text / varchar / char / bpchar / nvarchar2）──
+        // 默认兜底也走这里
         return "'X'";
     }
 

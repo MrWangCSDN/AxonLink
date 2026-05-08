@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -19,7 +18,6 @@ import java.util.*;
  * 这样给出的"建议加索引"建议能考虑"一次索引 DDL 能同时优化多条 SQL"的全局收益。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SameTableAccessPatternCollector {
 
     private static final Logger log = LoggerFactory.getLogger(SameTableAccessPatternCollector.class);

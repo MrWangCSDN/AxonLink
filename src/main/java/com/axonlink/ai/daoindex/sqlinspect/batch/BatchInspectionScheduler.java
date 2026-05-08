@@ -5,7 +5,6 @@ import com.axonlink.ai.daoindex.sqlinspect.llm.LlmEnrichService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -15,10 +14,6 @@ import org.springframework.stereotype.Component;
  * <p>可通过配置 {@code dao-index-analysis.schedule.daily-cron} 覆盖，比如改成 2 点。
  */
 @Component
-@ConditionalOnProperty(
-        prefix = "dao-index-analysis",
-        name = "enabled",
-        havingValue = "true")
 public class BatchInspectionScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(BatchInspectionScheduler.class);
@@ -42,9 +37,6 @@ public class BatchInspectionScheduler {
      */
     @Scheduled(cron = "${dao-index-analysis.schedule.daily-cron:0 0 1 * * ?}")
     public void runDailyBatch() {
-        if (!props.isEnabled()) {
-            return;
-        }
         if (!props.getSchedule().isEnabled()) {
             log.debug("[dii-scheduler] schedule.enabled=false，跳过每日批量巡检");
             return;
@@ -61,14 +53,13 @@ public class BatchInspectionScheduler {
     }
 
     /**
-     * 每日 03:00 触发 LLM 批量回填。
+     * 每日 02:00 触发 LLM 批量回填。
      *
      * <p>在 01:00 规则批量之后跑，此时 llm_pending=1 的 items 已经就位。
      * 拉取数量由 {@code dao-index-analysis.schedule.daily-llm-max-items} 控制，默认 2000。
      */
-    @Scheduled(cron = "${dao-index-analysis.schedule.daily-llm-cron:0 0 3 * * ?}")
+    @Scheduled(cron = "${dao-index-analysis.schedule.daily-llm-cron:0 0 2 * * ?}")
     public void runDailyLlmEnrich() {
-        if (!props.isEnabled()) return;
         if (!props.getSchedule().isEnabled()) {
             log.debug("[dii-scheduler] schedule.enabled=false，跳过每日 LLM 回填");
             return;
@@ -79,7 +70,8 @@ public class BatchInspectionScheduler {
             return;
         }
         String env = props.getDefaultEnv();
-        int maxItems = Integer.getInteger("dao-index-analysis.schedule.daily-llm-max-items", 2000);
+        // 之前用 Integer.getInteger 读 System property，从来没生效；改为从 properties bean 读
+        int maxItems = props.getSchedule().getDailyLlmMaxItems();
         log.info("[dii-scheduler] 触发每日 LLM 回填 env={} maxItems={}", env, maxItems);
         try {
             svc.enrichAsync(env, null, false, maxItems);

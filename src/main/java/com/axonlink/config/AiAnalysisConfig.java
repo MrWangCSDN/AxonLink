@@ -22,6 +22,7 @@ public class AiAnalysisConfig {
     private int requestTimeoutSeconds = 120;
 
     private final Glm5 glm5 = new Glm5();
+    private final MiniMax minimax = new MiniMax();
     private final Cache cache = new Cache();
 
     public boolean isEnabled() {
@@ -84,11 +85,15 @@ public class AiAnalysisConfig {
         return glm5;
     }
 
+    public MiniMax getMinimax() {
+        return minimax;
+    }
+
     public Cache getCache() {
         return cache;
     }
 
-    public static class Glm5 {
+    public static class Glm5 implements com.axonlink.ai.provider.OpenAiCompatibleConfig {
         private String baseUrl = "";
         private String apiKey = "";
         private String model = "glm-5";
@@ -105,6 +110,8 @@ public class AiAnalysisConfig {
         private boolean stream = false;
         private double temperature = 0.2d;
         private int maxTokens = 4096;
+        /** 默认 false：关闭思考链，节省 token、提速、避免 JSON 输出被截断。 */
+        private boolean enableThinking = false;
 
         public String getBaseUrl() {
             return baseUrl;
@@ -161,6 +168,45 @@ public class AiAnalysisConfig {
         public void setMaxTokens(int maxTokens) {
             this.maxTokens = maxTokens;
         }
+
+        @Override
+        public boolean isEnableThinking() { return enableThinking; }
+        public void setEnableThinking(boolean enableThinking) { this.enableThinking = enableThinking; }
+    }
+
+    /**
+     * MiniMax 模型配置：与 GLM 同样走 OpenAI 兼容协议。
+     * 模型 key 在前后端约定为 {@code minimax-2.5}。
+     */
+    public static class MiniMax implements com.axonlink.ai.provider.OpenAiCompatibleConfig {
+        private String baseUrl = "";
+        private String apiKey = "";
+        private String model = "minimax-m2.5";
+        private String chatPath = "/v1/chat/completions";
+        private boolean stream = false;
+        private double temperature = 0.2d;
+        private int maxTokens = 4096;
+        /** 默认 false：关闭思考链。 */
+        private boolean enableThinking = false;
+
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
+        public String getChatPath() { return chatPath; }
+        public void setChatPath(String chatPath) { this.chatPath = chatPath; }
+        public boolean isStream() { return stream; }
+        public void setStream(boolean stream) { this.stream = stream; }
+        public double getTemperature() { return temperature; }
+        public void setTemperature(double temperature) { this.temperature = temperature; }
+        public int getMaxTokens() { return maxTokens; }
+        public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
+
+        @Override
+        public boolean isEnableThinking() { return enableThinking; }
+        public void setEnableThinking(boolean enableThinking) { this.enableThinking = enableThinking; }
     }
 
     public static class Cache {

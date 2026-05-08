@@ -10,7 +10,6 @@ import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -35,7 +34,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </ol>
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class BatchInspectionService {
 
     private static final Logger log = LoggerFactory.getLogger(BatchInspectionService.class);

@@ -5,7 +5,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -31,7 +30,6 @@ import java.util.stream.Collectors;
  * </ol>
  */
 @Repository
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class DiiAnalysisItemDao {
 
     private static final Logger log = LoggerFactory.getLogger(DiiAnalysisItemDao.class);
@@ -235,6 +233,65 @@ public class DiiAnalysisItemDao {
                 itemId);
     }
 
+    /**
+     * 强制把 item 置为 PENDING（不挑现状态）。用于"重新分析"按钮异步触发：
+     * 控制器先同步打 PENDING，再异步交后台跑 LLM；前端立刻轮询到 PENDING，蒙版稳定显示。
+     * 同时清空旧 llm_error / llm_summary 等字段，避免界面看到"PENDING 但仍展示旧错误信息"。
+     */
+    public int forceMarkLlmPending(long itemId) {
+        return jdbc.update(
+                "UPDATE dii_analysis_item SET llm_pending=1, llm_status='PENDING', " +
+                "       llm_error=NULL, llm_summary=NULL, llm_findings_json=NULL, " +
+                "       llm_suggestions_json=NULL, llm_confidence=NULL, " +
+                "       llm_called_at=NOW() WHERE id=?",
+                itemId);
+    }
+
+    /**
+     * 重跑场景：用新的规则引擎 + EXPLAIN 结果 UPDATE 已存在行（不新建行）。
+     * 同步把 LLM 字段清空，让上层接着重跑 LLM。
+     */
+    public int updateInspectionFields(long itemId, SqlInspectionResult r) {
+        String involvedTables = r.getTableRatings() == null ? null
+                : r.getTableRatings().stream()
+                        .map(tr -> tr.getTable())
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .collect(Collectors.joining(","));
+        String tableRatingsJson = toJson(r.getTableRatings());
+        String warningsJson     = toJson(r.getWarnings());
+
+        return jdbc.update(
+                "UPDATE dii_analysis_item SET " +
+                "  sql_hash = ?, sql_text = ?, " +
+                "  overall_rating = ?, rating_label = ?, involved_tables = ?, table_ratings_json = ?, " +
+                "  rule_engine_elapsed_ms = ?, status = 'DONE', warnings_json = ?, " +
+                "  runtime_rating = ?, runtime_rating_label = ?, disagreement = ?, disagreement_reason = ?, " +
+                "  explain_plan = ?, explain_top_cost = ?, explain_est_rows = ?, " +
+                "  explain_has_seq_scan = ?, explain_elapsed_ms = ?, explain_error = ?, " +
+                "  table_stats_json = ?, column_stats_json = ?, table_ddl_json = ?, " +
+                // 重置 LLM 字段，让后续重跑覆盖
+                "  llm_pending = 1, llm_status = NULL, llm_summary = NULL, " +
+                "  llm_findings_json = NULL, llm_suggestions_json = NULL, " +
+                "  llm_confidence = NULL, llm_model = NULL, llm_prompt_version = NULL, " +
+                "  llm_elapsed_ms = NULL, llm_error = NULL, llm_called_at = NULL " +
+                "WHERE id = ?",
+                r.getSqlHash(), r.getSql(),
+                r.getOverallRating() == null ? null : r.getOverallRating().name(),
+                r.getOverallRatingLabel(), involvedTables, tableRatingsJson,
+                r.getRuleEngineElapsedMs() <= 0 ? null : r.getRuleEngineElapsedMs(),
+                warningsJson,
+                r.getRuntimeRating() == null ? null : r.getRuntimeRating().name(),
+                r.getRuntimeRatingLabel(),
+                r.isDisagreement() ? 1 : 0,
+                r.getDisagreementReason(),
+                r.getExplainPlanJson(), r.getExplainTopCost(), r.getExplainEstRows(),
+                r.getExplainHasSeqScan() == null ? null : (r.getExplainHasSeqScan() ? 1 : 0),
+                r.getExplainElapsedMs(), r.getExplainError(),
+                r.getTableStatsJson(), r.getColumnStatsJson(), r.getTableDdlJson(),
+                itemId);
+    }
+
     /** LLM 分析失败或解析失败，只更新状态与错误。 */
     public int updateLlmStatusOnly(long itemId, String status, String errorMsg) {
         return jdbc.update(
@@ -377,7 +434,7 @@ public class DiiAnalysisItemDao {
      * <p>过滤逻辑（OR）：
      * <pre>
      *   (explain_error IS NOT NULL AND explain_error &lt;&gt; '')
-     *   OR llm_status IN ('DONE','FAILED')
+     *   OR llm_status IN ('DONE','PENDING','FAILED')
      * </pre>
      *
      * <p>典型调用场景：前端"SQL 分析"页切到某个任务后，只看真正"有料"的行。
@@ -409,7 +466,7 @@ public class DiiAnalysisItemDao {
         }
         // OR 组合：EXPLAIN 报错 或 LLM 有终态
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','FAILED'))");
+          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         int eff = Math.min(Math.max(limit, 1), 500);
         int off = Math.max(offset, 0);
         sb.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
@@ -451,7 +508,7 @@ public class DiiAnalysisItemDao {
             sb.append(" AND task_id = ?"); args.add(taskId);
         }
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','FAILED'))");
+          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         if (afterId != null) {
             sb.append(" AND id < ?"); args.add(afterId);
         }
@@ -461,6 +518,62 @@ public class DiiAnalysisItemDao {
         return jdbc.queryForList(sb.toString(), args.toArray());
     }
 
+    /**
+     * 一次 SQL 算出"问题列表"的 4 个 KPI：总数 / 数据库报错 / AI 分析完成 / AI 分析失败。
+     *
+     * <p>替代之前"前端全量拉所有 items 再 group by"的方案，O(1) 网络请求 + O(1) SQL，
+     * 即便单 task 有几万条 issues 也不影响 KPI 渲染速度。
+     *
+     * <p>返回 Map 字段：
+     * <ul>
+     *   <li>{@code total}         总问题数</li>
+     *   <li>{@code explainError}  EXPLAIN 报错数（explain_error 非空）</li>
+     *   <li>{@code llmFindings}   AI 分析完成数（llm_status=DONE 且 explain_error 为空）</li>
+     *   <li>{@code llmError}      AI 分析失败数（llm_status=FAILED 且 explain_error 为空）</li>
+     * </ul>
+     */
+    public Map<String, Long> getIssuesStats(String env, Long taskId) {
+        StringBuilder sb = new StringBuilder(
+                "SELECT " +
+                "  SUM(CASE WHEN explain_error IS NOT NULL AND explain_error<>'' THEN 1 ELSE 0 END) AS explain_error_cnt, " +
+                "  SUM(CASE WHEN (explain_error IS NULL OR explain_error='') AND llm_status='DONE'    THEN 1 ELSE 0 END) AS llm_findings_cnt, " +
+                "  SUM(CASE WHEN (explain_error IS NULL OR explain_error='') AND llm_status='PENDING' THEN 1 ELSE 0 END) AS llm_pending_cnt, " +
+                "  SUM(CASE WHEN (explain_error IS NULL OR explain_error='') AND llm_status='FAILED'  THEN 1 ELSE 0 END) AS llm_error_cnt, " +
+                "  COUNT(*) AS total_cnt " +
+                " FROM dii_analysis_item WHERE 1=1");
+        List<Object> args = new ArrayList<>();
+        if (env != null && !env.isBlank()) {
+            sb.append(" AND env = ?"); args.add(env.trim());
+        }
+        if (taskId != null) {
+            sb.append(" AND task_id = ?"); args.add(taskId);
+        }
+        sb.append(" AND ((explain_error IS NOT NULL AND explain_error<>'')")
+          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+
+        Map<String, Object> row;
+        try {
+            row = jdbc.queryForMap(sb.toString(), args.toArray());
+        } catch (Exception e) {
+            log.warn("[dii-item-dao] 查询 issues stats 失败 env={} taskId={}: {}",
+                    env, taskId, e.getMessage());
+            row = java.util.Collections.emptyMap();
+        }
+        Map<String, Long> r = new java.util.LinkedHashMap<>();
+        r.put("total",        toLong(row.get("total_cnt")));
+        r.put("explainError", toLong(row.get("explain_error_cnt")));
+        r.put("llmFindings",  toLong(row.get("llm_findings_cnt")));
+        r.put("llmPending",   toLong(row.get("llm_pending_cnt")));
+        r.put("llmError",     toLong(row.get("llm_error_cnt")));
+        return r;
+    }
+
+    private static long toLong(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number n) return n.longValue();
+        try { return Long.parseLong(String.valueOf(v)); } catch (NumberFormatException e) { return 0L; }
+    }
+
     /** 与 {@link #searchIssuesOnly} 同过滤条件下的总行数。 */
     public long countIssuesOnly(String env, Long taskId) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
@@ -468,7 +581,7 @@ public class DiiAnalysisItemDao {
         if (env != null && !env.isBlank()) { sb.append(" AND env = ?"); args.add(env.trim()); }
         if (taskId != null) { sb.append(" AND task_id = ?"); args.add(taskId); }
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','FAILED'))");
+          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
     }

@@ -11,7 +11,6 @@ import com.alibaba.druid.util.JdbcConstants;
 import com.axonlink.ai.daoindex.sqlinspect.dto.PredicateExtract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -30,7 +29,6 @@ import java.util.regex.Pattern;
  * <p>输出按表聚合（一条 SQL 可能涉及多张表，如 JOIN / 子查询）。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SqlPredicateAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(SqlPredicateAnalyzer.class);
@@ -68,7 +66,22 @@ public class SqlPredicateAnalyzer {
      * sunline / iBatis / MyBatis 等会写成 {@code #xxx#}、{@code ${xxx}}、{@code :xxx}，
      * 这些不是标准 SQL，Druid 解析会失败。统一替换成 {@code ?}。
      */
-    private static final Pattern SUNLINE_HASH_PLACEHOLDER = Pattern.compile("#([A-Za-z_][A-Za-z0-9_.]*)#");
+    /**
+     * sunline / iBatis 风格 {@code #xxx#} 占位符。
+     *
+     * <p>放宽到匹配 {@code #} 之间任意非 {@code #}、非换行字符，以兼容真实业务 SQL 里
+     * 出现的复杂表达式占位符，例如：
+     * <ul>
+     *   <li>{@code #FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000000)#} — 嵌套函数 + 算术</li>
+     *   <li>{@code #FUNC(a, b)#} — 多参函数</li>
+     *   <li>{@code #col + 1#} — 算术表达式</li>
+     * </ul>
+     * 否则这类占位符不会被替换成 {@code ?}，残留进 Druid 会直接解析失败、把 sql_kind
+     * 误判成 UNKNOWN。
+     *
+     * <p>使用 reluctant {@code [^#\n]*?} 而非 {@code .*?} 避免跨行 / 跨多个占位符吞匹配。
+     */
+    private static final Pattern SUNLINE_HASH_PLACEHOLDER = Pattern.compile("#([^#\\n]*?)#");
     private static final Pattern DOLLAR_BRACE_PLACEHOLDER = Pattern.compile("\\$\\{[^}]+\\}");
     /**
      * Spring NamedParameterJdbcTemplate 形式的 {@code :paramName}；

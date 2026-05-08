@@ -2,7 +2,6 @@ package com.axonlink.ai.daoindex.sqlinspect.persistence;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -20,7 +19,6 @@ import java.util.Map;
  * 简单直接：START / UPDATE_COUNTERS / DONE / FAILED。
  */
 @Repository
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class DiiAnalysisTaskDao {
 
     private static final Logger log = LoggerFactory.getLogger(DiiAnalysisTaskDao.class);
@@ -116,8 +114,35 @@ public class DiiAnalysisTaskDao {
     }
 
     public List<Map<String, Object>> list(int limit, int offset) {
+        return list(limit, offset, null, null);
+    }
+
+    /**
+     * 列出任务，可选 env / status 过滤。
+     * 用于"取最新一条 DONE 任务"场景：list(1, 0, "uat", "DONE")。
+     *
+     * @param limit  限制条数（1~500）
+     * @param offset 偏移
+     * @param env    可选环境过滤（null 不过滤）
+     * @param status 可选状态过滤（null 不过滤；典型值 PENDING / RUNNING / DONE / FAILED）
+     */
+    public List<Map<String, Object>> list(int limit, int offset, String env, String status) {
         int eff = Math.min(Math.max(limit, 1), 500);
-        return jdbc.queryForList(LIST, eff, Math.max(offset, 0));
+        StringBuilder sb = new StringBuilder(
+                "SELECT id, task_no, env, status, total_sqls, analyzed_sqls, failed_sqls, skipped_sqls, " +
+                "       trigger_type, owner, error_msg, created_at, updated_at " +
+                "  FROM dii_analysis_task WHERE 1=1");
+        List<Object> args = new java.util.ArrayList<>();
+        if (env != null && !env.isBlank()) {
+            sb.append(" AND env = ?"); args.add(env.trim());
+        }
+        if (status != null && !status.isBlank()) {
+            sb.append(" AND status = ?"); args.add(status.trim());
+        }
+        sb.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
+        args.add(eff);
+        args.add(Math.max(offset, 0));
+        return jdbc.queryForList(sb.toString(), args.toArray());
     }
 
     private static String truncate(String s, int max) {

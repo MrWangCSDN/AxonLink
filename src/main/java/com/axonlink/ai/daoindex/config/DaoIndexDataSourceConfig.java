@@ -5,7 +5,6 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -26,7 +25,6 @@ import java.util.Map;
  * <p>全部手动构建 HikariDataSource，不参与 {@code spring.datasource} 自动装配，避免与项目其它业务配置冲突。
  */
 @Configuration
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class DaoIndexDataSourceConfig {
 
     private static final Logger log = LoggerFactory.getLogger(DaoIndexDataSourceConfig.class);
@@ -36,7 +34,7 @@ public class DaoIndexDataSourceConfig {
         DaoIndexAnalysisProperties.ResultDatasource cfg = props.getResultDatasource();
         if (cfg == null || isBlank(cfg.getUrl())) {
             throw new IllegalStateException(
-                    "dao-index-analysis.enabled=true 时必须配置 result-datasource.url");
+                    "必须配置 dao-index-analysis.result-datasource.url");
         }
         HikariConfig hc = new HikariConfig();
         if (!isBlank(cfg.getDriverClassName())) {
@@ -66,7 +64,7 @@ public class DaoIndexDataSourceConfig {
         Map<String, DaoIndexAnalysisProperties.Target> targets = props.getTargets();
         if (targets == null || targets.isEmpty()) {
             throw new IllegalStateException(
-                    "dao-index-analysis.enabled=true 时必须至少配置一个 targets.<env>");
+                    "必须至少配置一个 dao-index-analysis.targets.<env>");
         }
         Map<String, HikariDataSource> dsMap = new LinkedHashMap<>();
         for (Map.Entry<String, DaoIndexAnalysisProperties.Target> entry : targets.entrySet()) {

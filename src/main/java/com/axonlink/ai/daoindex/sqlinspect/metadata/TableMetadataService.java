@@ -5,7 +5,6 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
 import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -28,7 +27,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * 不影响主分析链路；元数据是"喂 LLM 的语料"，缺一块也能跑。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class TableMetadataService {
 
     private static final Logger log = LoggerFactory.getLogger(TableMetadataService.class);

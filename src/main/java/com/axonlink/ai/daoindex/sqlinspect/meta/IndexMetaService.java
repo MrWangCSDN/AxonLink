@@ -4,7 +4,6 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.IndexMeta;
 import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -32,7 +31,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * 这是最左匹配判定的关键输入。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class IndexMetaService {
 
     private static final Logger log = LoggerFactory.getLogger(IndexMetaService.class);
@@ -79,6 +77,24 @@ public class IndexMetaService {
     private final TargetDataSourceRegistry targetRegistry;
     private final Map<CacheKey, CacheEntry> cache = new ConcurrentHashMap<>();
 
+    /**
+     * 非空结果缓存秒数：默认 5 分钟（300s）。
+     * 设计目标：让一次批量分析（通常 1~10 分钟）内的同表查询能去重，
+     * 同时让 DBA 加 / 删索引后最迟 5 分钟自动生效，不需要手动调 invalidate。
+     */
+    @org.springframework.beans.factory.annotation.Value(
+            "${dao-index-analysis.index-meta.cache-seconds:300}")
+    private long cacheSeconds;
+
+    /**
+     * 空结果缓存秒数：默认 30 秒。
+     * 用来抵御短时网络抖 / 临时连接失败造成的假阳性"空"，
+     * 但保持足够短让权限或连通性修复后系统能快速自愈。
+     */
+    @org.springframework.beans.factory.annotation.Value(
+            "${dao-index-analysis.index-meta.empty-cache-seconds:30}")
+    private long emptyCacheSeconds;
+
     public IndexMetaService(TargetDataSourceRegistry targetRegistry) {
         this.targetRegistry = targetRegistry;
     }
@@ -91,18 +107,45 @@ public class IndexMetaService {
      * @return 索引列表；若表不存在或无索引则返回空列表
      */
     public List<IndexMeta> getIndexes(String env, String tableName) {
+        return getIndexes(env, tableName, false);
+    }
+
+    /**
+     * 同 {@link #getIndexes(String, String)}，但 {@code forceRefresh=true} 时绕过缓存重新查目标库。
+     *
+     * <h3>缓存策略</h3>
+     * <ul>
+     *   <li><b>非空结果：</b>缓存 {@code cache-seconds}（默认 300s = 5 分钟）。
+     *       一次批量分析内同表去重 + DDL 变更 5 分钟内自动生效。</li>
+     *   <li><b>空结果：</b>缓存 {@code empty-cache-seconds}（默认 30s）。
+     *       抵御短时连接抖动，但保持足够短让权限/连通性修复后能快速自愈。</li>
+     * </ul>
+     * <p>DBA 改完 DDL 想立即生效，可以调
+     * {@code POST /api/ai/dao-index/debug/indexes/invalidate}（无需等缓存过期）。
+     */
+    public List<IndexMeta> getIndexes(String env, String tableName, boolean forceRefresh) {
         String effEnv = resolveEnv(env);
         String normTable = tableName == null ? "" : tableName.trim().toLowerCase(Locale.ROOT);
         if (normTable.isEmpty()) {
             return Collections.emptyList();
         }
         CacheKey key = new CacheKey(effEnv, normTable);
-        CacheEntry cached = cache.get(key);
-        if (cached != null && !cached.isExpired()) {
-            return cached.indexes;
+        if (!forceRefresh) {
+            CacheEntry cached = cache.get(key);
+            if (cached != null && !cached.isExpired()) {
+                return cached.indexes;
+            }
         }
         List<IndexMeta> fresh = query(effEnv, normTable);
-        cache.put(key, new CacheEntry(fresh, Instant.now().plus(Duration.ofHours(24))));
+        boolean isEmpty = fresh == null || fresh.isEmpty();
+        long ttlSec = isEmpty
+                ? Math.max(0, emptyCacheSeconds)
+                : Math.max(0, cacheSeconds);
+        cache.put(key, new CacheEntry(fresh, Instant.now().plus(Duration.ofSeconds(ttlSec))));
+        if (isEmpty) {
+            log.warn("[dii-sqlinspect] 索引元数据为空 env={} table={}（缓存 {}s 后自动重试）",
+                    effEnv, normTable, ttlSec);
+        }
         return fresh;
     }
 

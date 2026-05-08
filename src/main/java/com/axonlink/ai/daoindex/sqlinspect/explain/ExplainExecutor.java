@@ -12,7 +12,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import javax.sql.DataSource;
@@ -39,7 +38,6 @@ import java.util.Set;
  * 不会抛异常，统一返回 {@link ExplainResult#failed}，调用方落到 {@code explain_error} 字段即可。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class ExplainExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(ExplainExecutor.class);
@@ -100,261 +98,72 @@ public class ExplainExecutor {
         }
 
         // ════════════════════════════════════════════════════════════════════
-        // 策略 1：按字段类型生成类型安全字面量替换 ?（最佳方案）
+        // 唯一策略：按字段类型生成类型安全字面量替换 ?（绝不出 NULL）
         //
         // WHERE txn_dt = ? AND acct_no = ?
-        //   ↓ 解析每个 ? 的字段 + 查元数据字段类型
+        //   ↓ ParameterTypeResolver 识别每个 ? 对应的字段 + 元数据查类型
+        //   ↓ ParameterTypeResolver.literalFor(dataType) 返回类型默认值，永不返回 NULL
         // WHERE txn_dt = CURRENT_DATE AND acct_no = 'X'
         //
-        // 优化器能按真实值生成 plan，不会被 NULL 短路。
+        // 不再做：① 真实数据采样（避开 SELECT 权限和 DB 开销）
+        //         ② NULL 兜底（避免 GaussDB 把 col=NULL 短路成 One-Time Filter:false）
+        //         ③ PREPARE+GENERIC_PLAN（typed 替换已稳定有效，无需参数化兜底）
         // ════════════════════════════════════════════════════════════════════
-        if (tableMetadataMap != null && !tableMetadataMap.isEmpty() && sql.indexOf('?') >= 0) {
-            String typedSql;
-            try {
-                typedSql = substituteQuestionMarksTyped(sql, env, tableMetadataMap);
-            } catch (ColumnSampleService.SchemaDriftException e) {
-                // 🚨 表 / 字段不存在：直接终止整个 EXPLAIN，写入 explain_error，DBA 报表可筛
-                long elapsed = System.currentTimeMillis() - start;
-                log.warn("[dii-explain] Schema 漂移导致 EXPLAIN 终止：{}", e.getMessage());
-                return ExplainResult.failed("[SCHEMA_DRIFT] " + e.getMessage(), elapsed);
-            }
-            String qualifiedTypedSql = rewriteWithSchema(typedSql, schemaHint);
-            ExplainResult typed = runExplainOnce(ds,
-                    "EXPLAIN (FORMAT JSON, COSTS) " + qualifiedTypedSql, null, start);
-            if (typed.isSuccess() && !typed.isOneTimeFilterFalse()) {
-                log.info("[dii-explain] 类型安全替换成功，cost={} seqScan={} elapsed={}ms",
-                        typed.getTopCost(), typed.isHasSeqScan(), typed.getElapsedMs());
-                return typed;
-            }
-            if (typed.isSuccess()) {
-                log.debug("[dii-explain] 类型安全替换仍短路（可能某字段类型识别失败），继续走兜底");
-            } else {
-                log.debug("[dii-explain] 类型安全替换失败：{}", typed.getErrorMessage());
-            }
+        String typedSql;
+        try {
+            typedSql = substituteQuestionMarksTyped(sql, env, tableMetadataMap);
+        } catch (ColumnSampleService.SchemaDriftException e) {
+            // 🚨 表 / 字段不存在（如果未来再开 sampler）：直接终止 EXPLAIN，写入 explain_error
+            long elapsed = System.currentTimeMillis() - start;
+            log.warn("[dii-explain] Schema 漂移导致 EXPLAIN 终止：{}", e.getMessage());
+            return ExplainResult.failed("[SCHEMA_DRIFT] " + e.getMessage(), elapsed);
         }
 
-        // 占位符规范化：? → $1, $2, ...
-        String sqlWithDollar = substituteQuestionMarks(sql);
-        int paramCount = countDollarParams(sqlWithDollar);
-
-        // Schema 限定：把表名重写成 schema.table
-        String qualifiedSql = rewriteWithSchema(sqlWithDollar, schemaHint);
-
-        // ════════════════════════════════════════════════════════════════════
-        // 策略 1：PREPARE + EXECUTE + EXPLAIN GENERIC_PLAN（带参数 SQL 的正确姿势）
-        //
-        // 为什么必须用 PREPARE 而不是直接 EXPLAIN ... WHERE x = $1：
-        //   直接形式下，GaussDB 把 $1 当 NULL 字面量处理，整条 SQL 变成 WHERE x = NULL（恒假），
-        //   优化器短路，plan 里出现 "One-Time Filter: false"，结构上的 Seq Scan 永远不会真跑。
-        //   导致 runtime_rating 系统性误判为"差"。
-        //
-        //   PREPARE 形式下，$1 成为真正的"未知参数"，GENERIC_PLAN 让优化器按参数化通用场景估算，
-        //   plan 能真实反映实际运行表现。
-        // ════════════════════════════════════════════════════════════════════
-        if (paramCount > 0) {
-            log.info("[dii-explain] 走 PREPARE 路径，paramCount={} schemaHint={}", paramCount, schemaHint);
-            ExplainResult prepared = tryPreparedExplain(ds, qualifiedSql, paramCount, schemaHint, start);
-            if (prepared.isSuccess()) {
-                log.info("[dii-explain] PREPARE 成功，cost={} seqScan={} oneTimeFilterFalse={} elapsed={}ms",
-                        prepared.getTopCost(), prepared.isHasSeqScan(),
-                        prepared.isOneTimeFilterFalse(), prepared.getElapsedMs());
-                return prepared;
-            }
-            // PREPARE 失败，继续兜底
-            log.warn("[dii-explain] PREPARE 方案失败，走 NULL 兜底：{}", prepared.getErrorMessage());
-        } else {
-            log.info("[dii-explain] 无参数 SQL，直接跑 EXPLAIN");
+        // 优先带 schema 限定执行；失败再退回不限定 + SET search_path
+        String qualifiedTypedSql = rewriteWithSchema(typedSql, schemaHint);
+        ExplainResult result = runExplainOnce(ds,
+                "EXPLAIN (FORMAT JSON, COSTS) " + qualifiedTypedSql, null, start);
+        if (result.isSuccess()) {
+            log.info("[dii-explain] 类型安全替换成功，cost={} seqScan={} elapsed={}ms",
+                    result.getTopCost(), result.isHasSeqScan(), result.getElapsedMs());
+            return result;
         }
-
-        // ════════════════════════════════════════════════════════════════════
-        // 策略 2：NULL 兜底（无参数或 PREPARE 失败时用）
-        //
-        // 把 $n / ? 全换成 NULL，plan 可能被短路（One-Time Filter: false），
-        // 但 RuntimeRatingDeriver 会识别这种情况并返回 null，避免系统性误判。
-        // ════════════════════════════════════════════════════════════════════
-        String sqlWithNull = substituteQuestionMarksWithNull(sql);
-        String qualifiedSqlWithNull = rewriteWithSchema(sqlWithNull, schemaHint);
-
-        List<Attempt> attempts = new ArrayList<>();
-        attempts.add(new Attempt("EXPLAIN (FORMAT JSON, COSTS) " + qualifiedSqlWithNull, null));
-        if (!qualifiedSqlWithNull.equals(sqlWithNull)) {
-            attempts.add(new Attempt("EXPLAIN (FORMAT JSON, COSTS) " + sqlWithNull, schemaHint));
-        }
-
-        Throwable lastErr = null;
-        for (Attempt att : attempts) {
-            try (Connection conn = ds.getConnection();
-                 Statement stmt = conn.createStatement()) {
-                conn.setAutoCommit(true);
-                stmt.setQueryTimeout(15);
-
-                if (att.schemaToSet != null && !att.schemaToSet.isBlank()) {
-                    String safeSchema = att.schemaToSet.replaceAll("[^A-Za-z0-9_]", "");
-                    if (!safeSchema.isEmpty()) {
-                        stmt.execute("SET search_path TO " + safeSchema + ", public");
-                    }
-                }
-
-                try (ResultSet rs = stmt.executeQuery(att.explainSql)) {
-                    StringBuilder json = new StringBuilder();
-                    while (rs.next()) {
-                        json.append(rs.getString(1));
-                    }
-                    long elapsed = System.currentTimeMillis() - start;
-                    return parsePlan(json.toString(), elapsed);
-                }
-            } catch (Throwable t) {
-                lastErr = t;
-                log.debug("[dii-explain] 兜底尝试失败：{}", t.getMessage());
+        // 第一次带 schema 失败时，再不限定试一次（用 SET search_path 提示）
+        if (!qualifiedTypedSql.equals(typedSql) && schemaHint != null && !schemaHint.isBlank()) {
+            ExplainResult retry = runExplainOnce(ds,
+                    "EXPLAIN (FORMAT JSON, COSTS) " + typedSql, schemaHint, start);
+            if (retry.isSuccess()) {
+                log.info("[dii-explain] 类型安全替换+search_path 成功，cost={} seqScan={} elapsed={}ms",
+                        retry.getTopCost(), retry.isHasSeqScan(), retry.getElapsedMs());
+                return retry;
             }
         }
         long elapsed = System.currentTimeMillis() - start;
-        String msg = lastErr == null ? "未知失败" : (lastErr.getClass().getSimpleName() + ": " + lastErr.getMessage());
         log.warn("[dii-explain] 失败 env={} schemaHint={} elapsed={}ms reason={}",
-                env, schemaHint, elapsed, msg);
-        return ExplainResult.failed(msg, elapsed);
-    }
-
-    /**
-     * PREPARE + EXECUTE + EXPLAIN GENERIC_PLAN 三段式执行。
-     *
-     * <p>关键点：
-     * <ul>
-     *   <li>PREPARE 时不绑参数值，{@code $n} 成为真正的 Placeholder</li>
-     *   <li>EXECUTE 时传 NULL 值数组，但 GENERIC_PLAN 选项让优化器忽略这些具体值，
-     *       生成"通用计划"——即不依赖具体参数的 plan</li>
-     *   <li>finally 必清理 DEALLOCATE，避免 prepared stmt 累积</li>
-     * </ul>
-     */
-    private ExplainResult tryPreparedExplain(DataSource ds, String preparedSql, int paramCount,
-                                             String schemaHint, long start) {
-        // 唯一语句名，避免同 session 复用（理论上每次新连接，但防御式保护）
-        String stmtName = "dii_stmt_" + Thread.currentThread().getId() + "_" + Math.abs(System.nanoTime());
-        // EXECUTE 的参数列表：按数量填 NULL
-        StringBuilder nullArgs = new StringBuilder();
-        for (int i = 1; i <= paramCount; i++) {
-            if (i > 1) nullArgs.append(", ");
-            nullArgs.append("NULL");
-        }
-
-        try (Connection conn = ds.getConnection();
-             Statement stmt = conn.createStatement()) {
-            conn.setAutoCommit(true);
-            stmt.setQueryTimeout(15);
-
-            // 1. SET search_path
-            if (schemaHint != null && !schemaHint.isBlank()) {
-                String safeSchema = schemaHint.replaceAll("[^A-Za-z0-9_]", "");
-                if (!safeSchema.isEmpty()) {
-                    stmt.execute("SET search_path TO " + safeSchema + ", public");
-                    log.debug("[dii-explain-prep] set search_path={}", safeSchema);
-                }
-            }
-
-            // 2. PREPARE
-            String prepSql = "PREPARE " + stmtName + " AS " + preparedSql;
-            log.debug("[dii-explain-prep] PREPARE sql: {}", prepSql);
-            stmt.execute(prepSql);
-
-            try {
-                // 3. EXPLAIN EXECUTE（不加 GENERIC_PLAN，GaussDB 5 不支持这个选项）
-                //
-                // 注意：没有 GENERIC_PLAN 时，GaussDB 会按 EXECUTE 传入的具体值优化 plan。
-                // 我们传的是 NULL，所以 `WHERE x = NULL` 会恒假，plan 出现 One-Time Filter: false。
-                // 这时候 RuntimeRatingDeriver 会识别到短路并返回 null（不派生 runtime_rating），
-                // 避免系统性误判；规则引擎评级依然有效。
-                //
-                // 对于无 WHERE 参数的 SQL（如 SELECT COUNT(*) FROM t），plan 不会短路，runtime_rating 正常派生。
-                String explainSql = "EXPLAIN (FORMAT JSON, COSTS) " +
-                        "EXECUTE " + stmtName + "(" + nullArgs + ")";
-                log.debug("[dii-explain-prep] EXPLAIN sql: {}", explainSql);
-                try (ResultSet rs = stmt.executeQuery(explainSql)) {
-                    StringBuilder json = new StringBuilder();
-                    while (rs.next()) {
-                        json.append(rs.getString(1));
-                    }
-                    long elapsed = System.currentTimeMillis() - start;
-                    ExplainResult r = parsePlan(json.toString(), elapsed);
-                    log.debug("[dii-explain-prep] PREPARE EXECUTE 返回 json 长度={}, success={}",
-                            json.length(), r.isSuccess());
-                    return r;
-                }
-            } finally {
-                // 4. 清理：必跑，即便 EXPLAIN 抛异常
-                try {
-                    stmt.execute("DEALLOCATE " + stmtName);
-                } catch (Exception ignore) { /* 清理失败不影响主逻辑 */ }
-            }
-        } catch (Throwable t) {
-            long elapsed = System.currentTimeMillis() - start;
-            log.warn("[dii-explain-prep] 失败：{} ({})", t.getClass().getSimpleName(), t.getMessage());
-            return ExplainResult.failed("PREPARE+EXECUTE 失败：" + t.getMessage(), elapsed);
-        }
-    }
-
-    /** 统计 SQL 里 {@code $n} 占位符的最大编号（即所需参数个数）。 */
-    private static int countDollarParams(String sql) {
-        if (sql == null) return 0;
-        int max = 0;
-        int i = 0, n = sql.length();
-        while (i < n) {
-            char c = sql.charAt(i);
-            if (c == '$' && i + 1 < n && Character.isDigit(sql.charAt(i + 1))) {
-                int j = i + 1;
-                int num = 0;
-                while (j < n && Character.isDigit(sql.charAt(j))) {
-                    num = num * 10 + (sql.charAt(j) - '0');
-                    j++;
-                }
-                if (num > max) max = num;
-                i = j;
-            } else {
-                i++;
-            }
-        }
-        return max;
-    }
-
-    /** 一次 EXPLAIN 尝试：SQL 文本 + 是否需要先 SET search_path。 */
-    private static class Attempt {
-        final String explainSql;
-        final String schemaToSet;
-        Attempt(String explainSql, String schemaToSet) {
-            this.explainSql = explainSql;
-            this.schemaToSet = schemaToSet;
-        }
-    }
-
-    /**
-     * 把 SQL 里的 {@code ?} 占位符依次替换成 {@code $1}, {@code $2}, ...
-     *
-     * <p>为什么不用 NULL：
-     * <ul>
-     *   <li>{@code WHERE a = NULL} 永远为 false，优化器会选择 Seq Scan（哪怕列上有索引），
-     *       导致 runtime_rating 系统性偏差（总是被判为"差"）。</li>
-     *   <li>{@code $n} 是 PostgreSQL / GaussDB 的原生参数标记，优化器会按"未知值"估算，
-     *       产生的 plan 更贴近真实运行。</li>
-     * </ul>
-     *
-     * <p>跳过字符串字面量、标识符引号、SQL 注释，不误伤里面的 {@code ?}。
-     */
-    static String substituteQuestionMarks(String sql) {
-        return substituteQuestionMarksImpl(sql, null, true);
+                env, schemaHint, elapsed, result.getErrorMessage());
+        return result;
     }
 
     /**
      * 按字段类型逐个替换 {@code ?} 为类型安全的 SQL 字面量。
-     * 优先从数据库采样真实值，采样不到再退类型默认。
+     *
+     * <p><b>已改为纯"类型默认值"模式，不再做真实数据采样</b>：
+     * <ul>
+     *   <li>避开 ColumnSampleService 对目标库 SELECT 权限的依赖</li>
+     *   <li>省掉每个 ? 一次 DB 往返（一条 SQL 多个 ? 时差距明显）</li>
+     *   <li>类型默认值（'X' / 1 / CURRENT_DATE / 'X'::uuid 等）已覆盖银行 GaussDB 全部高频类型，
+     *       未识别的字段类型也兜底成 {@code 'X'}，不会出现 NULL → 不会触发优化器短路</li>
+     * </ul>
+     * <p>plan 准确性影响：很小。优化器对单点等值条件的 selectivity 估计基于直方图统计，
+     * 跟字面量是否"真实存在"没关系；只要类型匹配 + 不是 NULL 即可。
      */
     String substituteQuestionMarksTyped(String sql, String env,
                                         Map<String, TableMetadata> tableMetadataMap) {
         if (sql == null || sql.indexOf('?') < 0) return sql;
         List<ParameterTypeResolver.ParamCtx> ctxs = ParameterTypeResolver.resolve(sql);
-        String ownerTable = (tableMetadataMap == null || tableMetadataMap.isEmpty())
-                ? null : tableMetadataMap.keySet().iterator().next();
-        ColumnSampleService sampler = sampleServiceProvider == null ? null : sampleServiceProvider.getIfAvailable();
+        // 不再传 sampler，强制走纯类型默认值路径
         List<String> literals = ParameterTypeResolver.toLiterals(
-                ctxs, tableMetadataMap, sampler, env, ownerTable);
+                ctxs, tableMetadataMap, /* sampleService */ null, env, /* ownerTable */ null);
 
         StringBuilder out = new StringBuilder(sql.length() + 32);
         int i = 0, n = sql.length();
@@ -415,46 +224,6 @@ public class ExplainExecutor {
                     t.getClass().getSimpleName() + ": " + t.getMessage(),
                     System.currentTimeMillis() - start);
         }
-    }
-
-    /** 兜底版：把 ? 全部替换成 NULL，用于 GaussDB 不支持 $n 语法的 fallback。 */
-    static String substituteQuestionMarksWithNull(String sql) {
-        return substituteQuestionMarksImpl(sql, "NULL", false);
-    }
-
-    /** 内部实现：mode=true 用 $n 递增，mode=false 用 fixed token（如 NULL）。 */
-    private static String substituteQuestionMarksImpl(String sql, String token, boolean numbered) {
-        if (sql == null || sql.indexOf('?') < 0) return sql;
-        StringBuilder out = new StringBuilder(sql.length() + 16);
-        int i = 0, n = sql.length();
-        int paramIdx = 0;
-        while (i < n) {
-            char c = sql.charAt(i);
-            if (c == '\'') {
-                out.append(c); i++;
-                while (i < n) {
-                    char ch = sql.charAt(i); out.append(ch);
-                    if (ch == '\'') {
-                        if (i + 1 < n && sql.charAt(i + 1) == '\'') { out.append('\''); i += 2; }
-                        else { i++; break; }
-                    } else i++;
-                }
-            } else if (c == '\"') {
-                out.append(c); i++;
-                while (i < n) { char ch = sql.charAt(i); out.append(ch); i++; if (ch == '\"') break; }
-            } else if (c == '-' && i + 1 < n && sql.charAt(i + 1) == '-') {
-                while (i < n && sql.charAt(i) != '\n') { out.append(sql.charAt(i)); i++; }
-            } else if (c == '/' && i + 1 < n && sql.charAt(i + 1) == '*') {
-                int end = sql.indexOf("*/", i + 2);
-                if (end < 0) { out.append(sql.substring(i)); i = n; }
-                else { out.append(sql, i, end + 2); i = end + 2; }
-            } else if (c == '?') {
-                if (numbered) { paramIdx++; out.append('$').append(paramIdx); }
-                else out.append(token);
-                i++;
-            } else { out.append(c); i++; }
-        }
-        return out.toString();
     }
 
     /**

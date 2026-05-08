@@ -55,6 +55,18 @@ public class ProjectIndexer {
     @Value("${project.workspace-roots:}")
     private String workspaceRootsConfig;
 
+    /**
+     * 启动后是否自动扫一遍源码索引。
+     * <ul>
+     *   <li>{@code true}（推荐）：后台线程异步索引，不阻塞 Spring Boot 启动；
+     *       好处是节点 → Java 代码定位等功能开箱即用，不用手动调 /index/refresh。</li>
+     *   <li>{@code false}（默认，向后兼容）：等异步 build 的 phase0_bootstrap 触发，
+     *       或者外部手动调 /api/source/index/refresh。</li>
+     * </ul>
+     */
+    @Value("${project.auto-index-on-startup:true}")
+    private boolean autoIndexOnStartup;
+
     /** 并行索引线程数（0=自动） */
     @Value("${project.index-threads:0}")
     private int indexThreads;
@@ -107,7 +119,22 @@ public class ProjectIndexer {
             return;
         }
         indexPhase = "idle";
-        log.info("[ProjectIndexer] 启动自动索引已关闭，等待异步 build 的 phase0_bootstrap");
+        if (autoIndexOnStartup) {
+            log.info("[ProjectIndexer] 启动后将异步触发一次源码索引（不阻塞 Spring Boot 启动）");
+            // 用单独线程跑，避免阻塞 @PostConstruct → 阻塞容器启动
+            Thread t = new Thread(() -> {
+                try {
+                    Thread.sleep(2_000);   // 等容器其它 bean 都装配完
+                    doIndex(false);
+                } catch (Throwable e) {
+                    log.warn("[ProjectIndexer] 启动期自动索引失败：{}", e.getMessage(), e);
+                }
+            }, "dii-startup-indexer");
+            t.setDaemon(true);
+            t.start();
+        } else {
+            log.info("[ProjectIndexer] 启动自动索引已关闭，等待异步 build 的 phase0_bootstrap");
+        }
     }
 
     /** 热重载：编译后主动调用，清空旧索引重新扫描 */

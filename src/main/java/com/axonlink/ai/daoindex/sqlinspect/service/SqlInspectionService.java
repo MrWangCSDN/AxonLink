@@ -20,7 +20,6 @@ import com.axonlink.ai.daoindex.sqlinspect.rule.IndexHitRuleEngine;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -44,7 +43,6 @@ import java.util.Map;
  * <p>Phase 2a.1 不接入 LLM、不落库、不执行 EXPLAIN。
  */
 @Service
-@ConditionalOnProperty(prefix = "dao-index-analysis", name = "enabled", havingValue = "true")
 public class SqlInspectionService {
 
     private static final Logger log = LoggerFactory.getLogger(SqlInspectionService.class);
@@ -102,6 +100,14 @@ public class SqlInspectionService {
     }
 
     public SqlInspectionResult inspect(SqlInspectionRequest request) {
+        return inspect(request, true);
+    }
+
+    /**
+     * 内部入口：{@code persist=false} 时只跑分析，不查幂等缓存、不写库；调用方自行决定如何持久化。
+     * 用于 {@link #reinspect(long, String)} 这种"用同一 itemId UPDATE"的重跑场景。
+     */
+    SqlInspectionResult inspect(SqlInspectionRequest request, boolean persist) {
         if (request == null || request.getSql() == null || request.getSql().isBlank()) {
             throw new IllegalArgumentException("SQL 不能为空");
         }
@@ -113,9 +119,9 @@ public class SqlInspectionService {
         result.setEnv(request.getEnv());
         result.setSqlHash(sha256Hex(normalizedSql));
 
-        // ── 0. 5 分钟幂等窗口：同 sql_hash + env 最近已分析过，直接复用旧结果 ──
+        // ── 0. 5 分钟幂等窗口（仅在 persist 模式下生效，重跑不查缓存） ──
         int reuseMinutes = props.getConcurrentReuseMinutes();
-        if (reuseMinutes > 0) {
+        if (persist && reuseMinutes > 0) {
             Long reusedId = itemDao.findRecentDone(result.getSqlHash(), result.getEnv(), reuseMinutes);
             if (reusedId != null) {
                 Map<String, Object> cached = itemDao.loadById(reusedId);
@@ -142,7 +148,7 @@ public class SqlInspectionService {
             result.getWarnings().add("SQL 解析失败或不支持该 SQL 类型");
             result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
             // 落库让审计链完整：解析失败的记录也要留痕
-            persistResult(result, parsed);
+            if (persist) persistResult(result, parsed);
             return result;
         }
 
@@ -162,7 +168,7 @@ public class SqlInspectionService {
             result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
             log.info("[dii-sqlinspect] INSERT VALUES 落库 env={} sqlHash={}",
                     request.getEnv(), result.getSqlHash());
-            persistResult(result, parsed);
+            if (persist) persistResult(result, parsed);
             return result;
         }
 
@@ -188,12 +194,38 @@ public class SqlInspectionService {
             result.setExplainError("收集失败：" + t.getMessage());
         }
 
-        persistResult(result, parsed);
+        if (persist) persistResult(result, parsed);
 
         log.info("[dii-sqlinspect] 分析完成 env={} kind={} rating={} tables={} elapsed={}ms itemId={} sqlHash={}",
                 request.getEnv(), parsed.kind, result.getOverallRatingLabel(),
                 result.getTableRatings().size(), result.getRuleEngineElapsedMs(),
                 result.getItemId(), result.getSqlHash());
+        return result;
+    }
+
+    /**
+     * 重跑入口：用新 SQL 重新执行规则引擎 + EXPLAIN，UPDATE 已有 itemId 行。
+     * 不走幂等缓存，不新建行；同时把 LLM 字段清空让上层重跑 LLM。
+     *
+     * @return 跑完的 inspection 结果（itemId 仍为传入的 id）
+     */
+    public SqlInspectionResult reinspect(long itemId, String newSql) {
+        Map<String, Object> existing = itemDao.loadById(itemId);
+        if (existing == null) {
+            throw new IllegalArgumentException("item 不存在 id=" + itemId);
+        }
+        String env = (String) existing.get("env");
+        SqlInspectionRequest req = new SqlInspectionRequest();
+        req.setSql(newSql);
+        req.setEnv(env);
+
+        SqlInspectionResult result = inspect(req, false);
+        itemDao.updateInspectionFields(itemId, result);
+        result.setItemId(itemId);
+        log.info("[dii-sqlinspect] 重跑 itemId={} env={} 新 sqlHash={} rating={} runtimeRating={}",
+                itemId, env, result.getSqlHash(),
+                result.getOverallRatingLabel(),
+                result.getRuntimeRating() == null ? null : result.getRuntimeRating().name());
         return result;
     }
 
