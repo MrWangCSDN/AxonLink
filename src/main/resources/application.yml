@@ -159,6 +159,13 @@ dao-index-analysis:
     # 过载场景下立刻重试只会加剧雪崩；默认 15s × attempt 让上游 MiniMax / 网关先喘口气。
     overload-backoff-ms: ${DII_LLM_OVERLOAD_BACKOFF_MS:15000}
 
+  # 手动触发巡检任务的口令保护
+  # 默认 token = sunline300348（开发/演示口令，部署到生产前请通过环境变量覆盖）。
+  # 关闭口令校验：export DII_BATCH_TRIGGER_TOKEN= （留空字符串）
+  # 前端调用时通过请求头 X-DII-Trigger-Token 透传，后端单点校验。
+  batch-trigger:
+    token: ${DII_BATCH_TRIGGER_TOKEN:sunline300348}
+
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:
     project-roots: ${DII_PROJECT_ROOTS:}        # 逗号分隔的多个工程根目录

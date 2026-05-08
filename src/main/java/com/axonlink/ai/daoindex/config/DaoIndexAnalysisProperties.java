@@ -40,6 +40,7 @@ public class DaoIndexAnalysisProperties {
     private int concurrentReuseMinutes = 5;
     private Export export = new Export();
     private Schedule schedule = new Schedule();
+    private BatchTrigger batchTrigger = new BatchTrigger();
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -72,6 +73,9 @@ public class DaoIndexAnalysisProperties {
     public Schedule getSchedule() { return schedule; }
     public void setSchedule(Schedule schedule) { this.schedule = schedule; }
 
+    public BatchTrigger getBatchTrigger() { return batchTrigger; }
+    public void setBatchTrigger(BatchTrigger batchTrigger) { this.batchTrigger = batchTrigger; }
+
     /**
      * 定时任务配置。
      * <p>本模块两条 {@code @Scheduled} 方法都会在执行前检查 {@link #enabled}，
@@ -97,6 +101,31 @@ public class DaoIndexAnalysisProperties {
         public void setDailyLlmCron(String dailyLlmCron) { this.dailyLlmCron = dailyLlmCron; }
         public int getDailyLlmMaxItems() { return dailyLlmMaxItems; }
         public void setDailyLlmMaxItems(int n) { this.dailyLlmMaxItems = n; }
+    }
+
+    /**
+     * 手动触发巡检任务的口令保护配置。
+     *
+     * <p>对应 yml：{@code dao-index-analysis.batch-trigger.token}
+     * <p>{@link com.axonlink.ai.daoindex.controller.DaoIndexController#triggerBatch}
+     * 在执行前会校验请求 header {@code X-DII-Trigger-Token}：
+     * <ul>
+     *   <li>{@link #token} 为空 → 跳过校验（仅开发环境用）</li>
+     *   <li>{@link #token} 非空 + header 不匹配 → 401 拒绝</li>
+     *   <li>{@link #token} 非空 + header 匹配 → 走原有 startAsync 流程</li>
+     * </ul>
+     */
+    public static class BatchTrigger {
+        /**
+         * 触发口令。
+         * <p>⚠️ 生产部署严禁留空：留空 = 任何人都能触发批量巡检（一次跑 30 分钟+ 且消耗 LLM 配额）。
+         * <p>关闭校验仅限本地开发：{@code export DII_BATCH_TRIGGER_TOKEN=}（空字符串）。
+         * <p>默认值 {@code sunline300348} 仅用于演示，部署前必须通过环境变量覆盖。
+         */
+        private String token = "";
+
+        public String getToken() { return token; }
+        public void setToken(String token) { this.token = token; }
     }
 
     /** 源码扫描配置。 */
