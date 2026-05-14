@@ -118,24 +118,25 @@ public class DiiAnalysisTaskDao {
     }
 
     /**
-     * 列出任务，可选 env / status 过滤；每行带回 5 项 dii_analysis_item 聚合统计。
+     * 列出任务，可选 env / status 过滤；每行带回 4 项 dii_analysis_item 聚合统计。
      *
-     * <p>聚合统计字段（POOR 子集，因 LLM 只对 POOR/GOOD 跑，POOR 是真正需要看的）：
+     * <p>聚合统计字段（<b>全集口径</b>，覆盖该任务下所有 SQL，不再仅限 POOR）：
      * <ul>
-     *   <li>{@code poor_total}    — runtime_rating='POOR' 总数</li>
-     *   <li>{@code explain_err}   — 上面里 explain_error 非空的数量</li>
-     *   <li>{@code llm_done}      — llm_status='DONE' 且 llm_suggestions_json 非空</li>
-     *   <li>{@code llm_failed}    — llm_status='FAILED'</li>
-     *   <li>{@code llm_running}   — llm_status='PENDING' 或 llm_pending=1（即未跑完的）</li>
+     *   <li>{@code explain_err}   — explain_error 非空的数量（执行报错数）</li>
+     *   <li>{@code llm_done}      — llm_status='DONE' 且 llm_suggestions_json 非空（AI 整改）</li>
+     *   <li>{@code llm_failed}    — llm_status='FAILED'（AI 报错）</li>
+     *   <li>{@code llm_running}   — llm_status='PENDING' 或 llm_pending=1（保留供后续诊断）</li>
      * </ul>
+     *
+     * <p>"巡检总数"直接用 task 表的 {@code total_sqls} 字段，无需聚合。
      *
      * <p>{@code status} 参数支持特殊值 {@code RUNNING_OR_PENDING}，DAO 翻译为
      * {@code WHERE status IN ('PENDING','RUNNING')}，方便前端"进行中"过滤。
      *
-     * <p><b>性能兜底：</b>子查询走 {@code (task_id, runtime_rating)} 索引最佳。
-     * 如果实测慢可加：
+     * <p><b>性能兜底：</b>子查询全表扫 {@code dii_analysis_item} 然后 GROUP BY task_id。
+     * 如果实测慢可加索引：
      * <pre>{@code
-     *   CREATE INDEX idx_item_task_runtime ON dii_analysis_item(task_id, runtime_rating);
+     *   CREATE INDEX idx_item_task ON dii_analysis_item(task_id);
      * }</pre>
      *
      * @param limit  限制条数（1~500）
@@ -150,7 +151,6 @@ public class DiiAnalysisTaskDao {
                 "SELECT t.id, t.task_no, t.env, t.status, t.total_sqls, t.analyzed_sqls, " +
                 "       t.failed_sqls, t.skipped_sqls, t.trigger_type, t.owner, " +
                 "       t.error_msg, t.created_at, t.updated_at, " +
-                "       COALESCE(s.poor_total,  0) AS poor_total, " +
                 "       COALESCE(s.explain_err, 0) AS explain_err, " +
                 "       COALESCE(s.llm_done,    0) AS llm_done, " +
                 "       COALESCE(s.llm_failed,  0) AS llm_failed, " +
@@ -158,7 +158,6 @@ public class DiiAnalysisTaskDao {
                 "  FROM dii_analysis_task t " +
                 "  LEFT JOIN ( " +
                 "    SELECT task_id, " +
-                "           COUNT(*) AS poor_total, " +
                 "           SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' " +
                 "                    THEN 1 ELSE 0 END) AS explain_err, " +
                 "           SUM(CASE WHEN llm_status='DONE' " +
@@ -169,7 +168,6 @@ public class DiiAnalysisTaskDao {
                 "           SUM(CASE WHEN llm_status='PENDING' OR llm_pending=1 " +
                 "                    THEN 1 ELSE 0 END) AS llm_running " +
                 "      FROM dii_analysis_item " +
-                "     WHERE runtime_rating='POOR' " +
                 "     GROUP BY task_id " +
                 "  ) s ON s.task_id = t.id " +
                 " WHERE 1=1");

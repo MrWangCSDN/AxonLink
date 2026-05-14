@@ -16,6 +16,7 @@ import com.axonlink.ai.daoindex.sqlinspect.batch.BatchInspectionService;
 import com.axonlink.ai.daoindex.sqlinspect.dto.SqlCandidate;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisTaskDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiDashboardDao;
 import com.axonlink.ai.daoindex.sqlinspect.scan.SqlSourceScanner;
 import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
 import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
@@ -89,6 +90,7 @@ public class DaoIndexController {
     private final DiiAnalysisItemDao itemDao;
     private final BatchInspectionService batchInspectionService;
     private final DiiAnalysisTaskDao taskDao;
+    private final DiiDashboardDao dashboardDao;
     private final SqlSourceScanner scanner;
     private final ObjectProvider<ColumnSampleService> columnSampleServiceProvider;
     private final ObjectProvider<TableMetadataService> tableMetadataServiceProvider;
@@ -111,7 +113,8 @@ public class DaoIndexController {
                               ObjectProvider<TableMetadataService> tableMetadataServiceProvider,
                               ObjectProvider<SqlLlmAnalyzeService> llmAnalyzeServiceProvider,
                               ObjectProvider<LlmEnrichService> llmEnrichServiceProvider,
-                              DaoIndexAnalysisProperties props) {
+                              DaoIndexAnalysisProperties props,
+                              DiiDashboardDao dashboardDao) {
         this.healthIndicator = healthIndicator;
         this.llmClientProvider = llmClientProvider;
         this.aiConfigProvider = aiConfigProvider;
@@ -127,6 +130,47 @@ public class DaoIndexController {
         this.llmAnalyzeServiceProvider = llmAnalyzeServiceProvider;
         this.llmEnrichServiceProvider = llmEnrichServiceProvider;
         this.props = props;
+        this.dashboardDao = dashboardDao;
+    }
+
+    /**
+     * 概览仪表盘聚合接口（4 块数据合并返回，前端一次拿全）：
+     *
+     * <ul>
+     *   <li>{@code latestTask} — 最新 DONE 任务元信息（taskNo / 时间 / 总数）</li>
+     *   <li>{@code byDomain} — 按领域聚合的"巡检 SQL 数 / EXPLAIN 报错 / LLM 整改"</li>
+     *   <li>{@code ratingByDomain} — 按领域聚合的"优/良/差/报错"四档</li>
+     *   <li>{@code trend7d} — 最近 7 个 DONE 任务的四档评级趋势</li>
+     *   <li>{@code elapsed7d} — 最近 7 个 DONE 任务的执行时长（秒）</li>
+     * </ul>
+     *
+     * <p>无最新 DONE 任务时（env 下还没跑过批量），返回 {@code latestTask=null}，
+     * 各 List 字段为空数组，前端展示空状态即可。
+     *
+     * <p>示例：{@code GET /api/ai/dao-index/dashboard?env=uat}
+     */
+    @GetMapping("/dashboard")
+    public R<Map<String, Object>> dashboard(@RequestParam(required = false) String env) {
+        String effEnv = (env == null || env.isBlank())
+                ? targetRegistry.getDefaultEnv() : env;
+
+        Map<String, Object> latest = dashboardDao.latestDoneTask(effEnv);
+        Long latestId = latest == null ? null
+                : ((Number) latest.get("id")).longValue();
+
+        // elapsed 接口返回的是"最近 N 条 DESC"，前端要正序展示，这里翻转成 ASC
+        java.util.List<Map<String, Object>> elapsed = new java.util.ArrayList<>(
+                dashboardDao.elapsedRecentTasks(effEnv, 7));
+        java.util.Collections.reverse(elapsed);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("env", effEnv);
+        payload.put("latestTask", latest);
+        payload.put("byDomain", dashboardDao.aggregateByDomain(latestId));
+        payload.put("ratingByDomain", dashboardDao.aggregateRatingByDomain(latestId));
+        payload.put("trend7d", dashboardDao.trendRecentTasks(effEnv, 7));
+        payload.put("elapsed7d", elapsed);
+        return R.ok(payload);
     }
 
     @GetMapping("/health")
