@@ -46,9 +46,15 @@ public class DiiDashboardDao {
      */
     public List<Map<String, Object>> aggregateByDomain(Long taskId) {
         if (taskId == null) return Collections.emptyList();
+        // total 口径：与 aggregateRatingByDomain 的"优/良/差/报错"四档完全对齐，
+        // 即 total ≡ 报错 + 优 + 良 + 差。排除 overall_rating='NOT_APPLICABLE'（不适用，
+        // 如 INSERT VALUES 无需索引评级）和 overall_rating IS NULL（未评级/LLM 未跑）。
+        // 这样概览仪表盘"巡检 SQL 总数"与"评级分布"两图恒等闭合，不再出现总数对不上。
         String sql = ""
                 + "SELECT " + DOMAIN_CASE + " AS domain, "
-                + "       COUNT(*) AS total, "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' THEN 1 "
+                + "                WHEN overall_rating IN ('EXCELLENT','GOOD','POOR') THEN 1 "
+                + "                ELSE 0 END) AS total, "
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
                 + "       SUM(CASE WHEN llm_status='DONE' "
