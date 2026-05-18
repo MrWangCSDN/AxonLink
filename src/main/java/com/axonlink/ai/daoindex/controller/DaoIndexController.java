@@ -139,7 +139,7 @@ public class DaoIndexController {
      * <ul>
      *   <li>{@code latestTask} — 最新 DONE 任务元信息（taskNo / 时间 / 总数）</li>
      *   <li>{@code byDomain} — 按领域聚合的"巡检 SQL 数 / EXPLAIN 报错 / LLM 整改"</li>
-     *   <li>{@code ratingByDomain} — 按领域聚合的"优/良/差/报错"四档</li>
+     *   <li>{@code ratingByDomain} — 按领域聚合的"整改分布"两档（error_count 报错 / need_fix 待整改）</li>
      *   <li>{@code trend7d} — 最近 7 个 DONE 任务的四档评级趋势</li>
      *   <li>{@code elapsed7d} — 最近 7 个 DONE 任务的执行时长（秒）</li>
      * </ul>

@@ -13,8 +13,8 @@ import java.util.Map;
  * <p>四块数据来源（全部基于 dii_analysis_task + dii_analysis_item）：
  * <ol>
  *   <li><b>byDomain</b> — 最新 DONE 任务下，按业务领域聚合"巡检 SQL 数 / EXPLAIN 报错数 / LLM 整改数"</li>
- *   <li><b>ratingByDomain</b> — 同任务下，按业务领域聚合"优/良/差/报错"四档</li>
- *   <li><b>trend7d</b> — 最近 7 个 DONE 任务的"优/良/差/报错"四档趋势（按任务一行）</li>
+ *   <li><b>ratingByDomain</b> — 同任务下，按业务领域聚合"整改分布"两档（报错 / 待整改）</li>
+ *   <li><b>trend7d</b> — 最近 7 个 DONE 任务的"优/良/差/报错"四档趋势（按任务一行，保持四档不变）</li>
  *   <li><b>elapsed7d</b> — 最近 7 个 DONE 任务的执行时长（秒）</li>
  * </ol>
  *
@@ -22,8 +22,8 @@ import java.util.Map;
  * project_name 包含 dept-bcc → 存款；loan-bcc → 贷款；comm-bcc → 公共；
  * sett-bcc → 结算；其余 → 其他。
  *
- * <p><b>"报错"与"评级"的关系：</b>4 档互斥取数 — 任何 explain_error 非空都算"报错"
- * 不再参与"优/良/差"统计，避免重复计数。
+ * <p><b>"报错"与"整改"的关系：</b>互斥取数 — 任何 explain_error 非空都算"报错"，
+ * 不再参与"待整改"统计，避免重复计数。trend7d 仍按旧"优/良/差/报错"四档（未改）。
  *
  * <p><b>性能兜底</b>：trend7d 用相关子查询，每个任务跑一次聚合；
  * 如实测慢可加索引 {@code idx_item_task_rating ON dii_analysis_item(task_id, overall_rating)}。
@@ -51,9 +51,8 @@ public class DiiDashboardDao {
                 + "       COUNT(*) AS total, "
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
-                + "       SUM(CASE WHEN llm_status='DONE' "
-                + "                 AND llm_suggestions_json IS NOT NULL "
-                + "                 AND llm_suggestions_json NOT IN ('','[]') "
+                // 整改口径：以 LLM 整改判定 NEED_FIX 为准（与第二块"整改分布"统一）
+                + "       SUM(CASE WHEN llm_fix_verdict='NEED_FIX' "
                 + "                THEN 1 ELSE 0 END) AS llm_fix "
                 + "  FROM dii_analysis_item "
                 + " WHERE task_id = ? "
@@ -63,27 +62,34 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 按领域聚合"优/良/差/报错"四档，限定到给定 task。
-     * 用于第二块评级分布。
+     * 按领域聚合"整改分布"两档，限定到给定 task。
+     * 用于第二块整改分布图。
      *
-     * <p>四档互斥：任何 explain_error 非空一律算"报错"，不再参与 overall_rating 计数。
+     * <p>口径（与原"评级分布"区别）：不再按 overall_rating 出"优/良/差"，
+     * 改为只关心"要不要 DBA 动手"两类：
+     * <ul>
+     *   <li>{@code error_count} —— EXPLAIN 报错（explain_error 非空），保留</li>
+     *   <li>{@code need_fix}    —— 待整改：非报错 + overall_rating='POOR'（有 Seq Scan）
+     *       + LLM 整改判定 llm_fix_verdict='NEED_FIX'</li>
+     * </ul>
+     * 二者互斥：explain_error 非空只算 error_count，不进 need_fix。
+     * <p><b>注意：返回字段已由 excellent/good/poor/error_count 变为 error_count/need_fix，
+     * 前端取数 key 需同步调整。</b>
      */
     public List<Map<String, Object>> aggregateRatingByDomain(Long taskId) {
         if (taskId == null) return Collections.emptyList();
         String sql = ""
                 + "SELECT " + DOMAIN_CASE + " AS domain, "
-                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='EXCELLENT' THEN 1 ELSE 0 END) AS excellent, "
-                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='GOOD' THEN 1 ELSE 0 END) AS good, "
-                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='POOR' THEN 1 ELSE 0 END) AS poor, "
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
-                + "                THEN 1 ELSE 0 END) AS error_count "
+                + "                THEN 1 ELSE 0 END) AS error_count, "
+                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
+                + "                 AND overall_rating='POOR' "
+                + "                 AND llm_fix_verdict='NEED_FIX' "
+                + "                THEN 1 ELSE 0 END) AS need_fix "
                 + "  FROM dii_analysis_item "
                 + " WHERE task_id = ? "
                 + " GROUP BY domain "
-                + " ORDER BY (SUM(CASE WHEN overall_rating='POOR' THEN 1 ELSE 0 END)) DESC";
+                + " ORDER BY need_fix DESC";
         return jdbc.queryForList(sql, taskId);
     }
 
