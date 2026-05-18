@@ -13,5 +13,6 @@ ALTER TABLE dii_analysis_item
     ADD COLUMN llm_fix_verdict VARCHAR(16)
         COMMENT 'LLM 整改判定: NEED_FIX(待整改)/NO_NEED(无需整改); NULL=未判定';
 
--- 看板"整改分布"按 (llm_fix_verdict, env) 过滤聚合，建联合索引加速
-CREATE INDEX idx_dii_fix_verdict ON dii_analysis_item (llm_fix_verdict, env);
+-- 看板"整改分布/需整改"聚合按 task_id 过滤再 GROUP BY domain，
+-- task_id 作前导列才能命中；llm_fix_verdict 跟随用于覆盖过滤条件。
+CREATE INDEX idx_dii_task_fix_verdict ON dii_analysis_item (task_id, llm_fix_verdict);
