@@ -94,19 +94,26 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 最近 7 个 DONE 任务的评级趋势。
-     * 用于第三块 7 天趋势折线/分组柱状图。
+     * 最近 7 个 DONE 任务的评级趋势，<b>按领域明细</b>。
+     * 用于第三块 7 天趋势堆叠柱图（前端支持"汇总 / 按领域"单选切换）。
+     *
+     * <p>四档口径与 {@link #aggregateRatingByDomain} 完全一致（explain 非空一律算
+     * "报错"，不参与优良差），保证趋势图与评级分布图口径统一。
+     *
+     * <p>"汇总"由前端对同一 task 跨 domain 求和得出，后端只返回领域明细行。
      *
      * @param env 环境过滤（必填）
-     * @return 每行含 task_id / day / excellent / good / poor / error_count，按时间正序
+     * @return 每行含 task_id / day / domain / excellent / good / poor / error_count，
+     *         按 task 时间正序、领域名次序；最多 N 任务 × 5 领域
      */
     public List<Map<String, Object>> trendRecentTasks(String env, int limit) {
         int eff = Math.min(Math.max(limit, 1), 30);
-        // MySQL 用 INNER 子查询限定最近 N 个任务，再 JOIN 明细聚合
+        // MySQL 用 INNER 子查询限定最近 N 个任务，再 JOIN 明细按 (任务,领域) 聚合
         // ORDER BY t.id ASC 让前端从左到右按时间正序铺图
         String sql = ""
                 + "SELECT t.id AS task_id, "
                 + "       DATE(t.created_at) AS day, "
+                + "       " + domainCase("i.project_name") + " AS domain, "
                 + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
                 + "                 AND i.overall_rating='EXCELLENT' THEN 1 ELSE 0 END) AS excellent, "
                 + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
@@ -121,8 +128,8 @@ public class DiiDashboardDao {
                 + "     ORDER BY id DESC LIMIT ? "
                 + "  ) t "
                 + "  LEFT JOIN dii_analysis_item i ON i.task_id = t.id "
-                + " GROUP BY t.id, day "
-                + " ORDER BY t.id ASC";
+                + " GROUP BY t.id, day, domain "
+                + " ORDER BY t.id ASC, domain";
         return jdbc.queryForList(sql, env, eff);
     }
 
@@ -166,15 +173,25 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 复用的 project_name → 领域 SQL CASE 子句。
+     * project_name → 领域 SQL CASE 子句生成器。
+     *
+     * <p>带 JOIN 的查询里 dii_analysis_item 有表别名（如 {@code i}），
+     * 需用 {@code domainCase("i.project_name")}；无别名查询用默认 {@link #DOMAIN_CASE}。
      * 与 DaoIndexController#mapDomainLabel 一致，避免前后端口径漂移。
+     *
+     * @param col project_name 的列引用（可带表别名前缀）
      */
-    private static final String DOMAIN_CASE = ""
-            + "CASE "
-            + "  WHEN LOWER(project_name) LIKE '%dept-bcc%' THEN '存款' "
-            + "  WHEN LOWER(project_name) LIKE '%loan-bcc%' THEN '贷款' "
-            + "  WHEN LOWER(project_name) LIKE '%comm-bcc%' THEN '公共' "
-            + "  WHEN LOWER(project_name) LIKE '%sett-bcc%' THEN '结算' "
-            + "  ELSE '其他' "
-            + "END";
+    private static String domainCase(String col) {
+        return ""
+                + "CASE "
+                + "  WHEN LOWER(" + col + ") LIKE '%dept-bcc%' THEN '存款' "
+                + "  WHEN LOWER(" + col + ") LIKE '%loan-bcc%' THEN '贷款' "
+                + "  WHEN LOWER(" + col + ") LIKE '%comm-bcc%' THEN '公共' "
+                + "  WHEN LOWER(" + col + ") LIKE '%sett-bcc%' THEN '结算' "
+                + "  ELSE '其他' "
+                + "END";
+    }
+
+    /** 无表别名场景（FROM dii_analysis_item 直查）的领域 CASE 子句。 */
+    private static final String DOMAIN_CASE = domainCase("project_name");
 }
