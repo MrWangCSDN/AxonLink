@@ -96,13 +96,9 @@ public class DiiAnalysisItemDao {
      * @return 新 itemId
      */
     public long insertFromResult(SqlInspectionResult result, SqlSource source) {
-        String involvedTables = result.getTableRatings() == null ? null
-                : result.getTableRatings().stream()
-                        .map(tr -> tr.getTable())
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .collect(Collectors.joining(","));
+        String involvedTables = resolveInvolvedTables(result);
 
+        // 规则引擎下线后 tableRatings 恒为空 → toJson 得到 "[]"（不破坏列，保持非 null 字符串）
         String tableRatingsJson = toJson(result.getTableRatings());
         String warningsJson     = toJson(result.getWarnings());
 
@@ -252,12 +248,7 @@ public class DiiAnalysisItemDao {
      * 同步把 LLM 字段清空，让上层接着重跑 LLM。
      */
     public int updateInspectionFields(long itemId, SqlInspectionResult r) {
-        String involvedTables = r.getTableRatings() == null ? null
-                : r.getTableRatings().stream()
-                        .map(tr -> tr.getTable())
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .collect(Collectors.joining(","));
+        String involvedTables = resolveInvolvedTables(r);
         String tableRatingsJson = toJson(r.getTableRatings());
         String warningsJson     = toJson(r.getWarnings());
 
@@ -324,9 +315,9 @@ public class DiiAnalysisItemDao {
     /**
      * 查"待 LLM 分析"列表。
      *
-     * <p><b>硬过滤</b>：只捡 {@code runtime_rating IN ('POOR','GOOD')} 的 item。
-     * 即使历史数据把 llm_pending=1 错标到了 EXCELLENT / NULL 行上，这里也兜底不捡，
-     * 防止把时间浪费在不需要 LLM 解读的行上。
+     * <p><b>硬过滤</b>：只捡 {@code explain_has_seq_scan = 1} 的 item（有全表扫描才送 LLM）。
+     * 即使历史数据把 llm_pending=1 错标到了无 Seq Scan / EXPLAIN 失败的行上，这里也兜底不捡，
+     * 与 {@code SqlInspectionService} 标 llm_pending 的口径（仅 hasSeqScan）保持一致。
      *
      * @param env       过滤环境，可 null
      * @param taskId    过滤任务，可 null
@@ -342,8 +333,8 @@ public class DiiAnalysisItemDao {
         } else {
             sb.append(" AND llm_pending=1 AND (llm_status IS NULL OR llm_status='PENDING') ");
         }
-        // 最后一公里防护：只有 runtime_rating 是 POOR 或 GOOD 才跑 LLM
-        sb.append(" AND runtime_rating IN ('POOR','GOOD') ");
+        // 最后一公里防护：只有 explain_has_seq_scan=1（有全表扫描）才跑 LLM
+        sb.append(" AND explain_has_seq_scan = 1 ");
         if (env != null && !env.isBlank()) {
             sb.append(" AND env=? "); args.add(env);
         }
@@ -584,6 +575,31 @@ public class DiiAnalysisItemDao {
           .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
+    }
+
+    /**
+     * 解析 involved_tables：优先用新管线的 {@link SqlInspectionResult#getInvolvedTables()}
+     * （轻量表名抽取结果），为空时回退到旧的 tableRatings（兼容历史 / 重跑路径）。
+     * 规则引擎下线后 tableRatings 恒为空，正常走 involvedTables 分支。
+     */
+    private static String resolveInvolvedTables(SqlInspectionResult result) {
+        if (result == null) return null;
+        List<String> tables = result.getInvolvedTables();
+        if (tables != null && !tables.isEmpty()) {
+            return tables.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .distinct()
+                    .collect(Collectors.joining(","));
+        }
+        // 回退：旧逻辑从 tableRatings 取（规则引擎下线后通常为空）
+        if (result.getTableRatings() == null) return null;
+        return result.getTableRatings().stream()
+                .map(tr -> tr.getTable())
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.joining(","));
     }
 
     private String toJson(Object obj) {

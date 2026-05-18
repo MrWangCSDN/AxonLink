@@ -171,9 +171,9 @@ public class SqlLlmAnalyzeService {
             }
             try {
                 SqlInspectionResult reinspectResult = inspectionService.reinspect(itemId, overrideSql);
-                log.info("[dii-llm][itemId={}] ⓪ 重跑规则引擎+EXPLAIN 完成 rating={} runtimeRating={}",
+                log.info("[dii-llm][itemId={}] ⓪ 重跑 EXPLAIN 完成 rating={} hasSeqScan={}",
                         itemId, reinspectResult.getOverallRatingLabel(),
-                        reinspectResult.getRuntimeRating() == null ? null : reinspectResult.getRuntimeRating().name());
+                        reinspectResult.getExplainHasSeqScan());
             } catch (Throwable t) {
                 log.error("[dii-llm][itemId={}] ✖ 重跑规则引擎/EXPLAIN 失败: {}", itemId, t.getMessage(), t);
                 result.setError("重跑规则引擎/EXPLAIN 失败：" + t.getMessage());
@@ -199,13 +199,13 @@ public class SqlLlmAnalyzeService {
                 ctx.inspectionResult == null ? null : ctx.inspectionResult.getSqlHash(),
                 tableCount, patternCount);
 
-        // ── 兜底：runtime_rating 必须是 POOR 或 GOOD 才跑 LLM ──
-        com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating rr =
-                ctx.inspectionResult == null ? null : ctx.inspectionResult.getRuntimeRating();
-        boolean allowLlm = (rr == com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating.POOR
-                         || rr == com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating.GOOD);
-        if (!allowLlm) {
-            String reason = "runtime_rating=" + rr + "（非 POOR/GOOD），跳过 LLM";
+        // ── 兜底：必须有全表扫描（explain_has_seq_scan=1）才跑 LLM ──
+        //    新管线口径：与 SqlInspectionService 标 llm_pending、DAO findPendingLlmIds 完全一致，
+        //    避免 reconstructResult 拿不到 runtime_rating 而把所有行误判 SKIPPED。
+        boolean hasSeqScan = ctx.inspectionResult != null
+                && Boolean.TRUE.equals(ctx.inspectionResult.getExplainHasSeqScan());
+        if (!hasSeqScan) {
+            String reason = "explain_has_seq_scan != 1（无全表扫描），跳过 LLM";
             log.info("[dii-llm][itemId={}] ✖ {}", itemId, reason);
             result.setError(reason);
             itemDao.updateLlmStatusOnly(itemId, "SKIPPED", reason);

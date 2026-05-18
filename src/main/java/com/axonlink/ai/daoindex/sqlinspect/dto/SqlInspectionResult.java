@@ -17,8 +17,16 @@ public class SqlInspectionResult {
     /** 整体评级（多表场景取最差档）。 */
     private IndexRating overallRating;
     private String overallRatingLabel;
-    /** 每张表的评级详情。 */
+    /** 每张表的评级详情。规则引擎下线后恒为空（保留字段仅为 DTO/JSON 兼容）。 */
     private List<TableRating> tableRatings = new ArrayList<>();
+    /**
+     * SQL 涉及的表名（小写、去 schema）。
+     *
+     * <p>规则引擎下线后 {@link #tableRatings} 不再填充，但 {@code involved_tables}
+     * 列仍需要（LLM 上下文按它查表元数据、同表访问模式、问题列表过滤都依赖它），
+     * 故单独用本字段承载「轻量表名抽取」结果。
+     */
+    private List<String> involvedTables = new ArrayList<>();
     /** 规则引擎的处理警告（不可解析字段、未识别谓词等）。 */
     private List<String> warnings = new ArrayList<>();
     /** 规则引擎处理耗时 ms。 */
@@ -72,6 +80,10 @@ public class SqlInspectionResult {
     public void setOverallRatingLabel(String overallRatingLabel) { this.overallRatingLabel = overallRatingLabel; }
     public List<TableRating> getTableRatings() { return tableRatings; }
     public void setTableRatings(List<TableRating> tableRatings) { this.tableRatings = tableRatings; }
+    public List<String> getInvolvedTables() { return involvedTables; }
+    public void setInvolvedTables(List<String> involvedTables) {
+        this.involvedTables = involvedTables == null ? new ArrayList<>() : involvedTables;
+    }
     public List<String> getWarnings() { return warnings; }
     public void setWarnings(List<String> warnings) { this.warnings = warnings; }
     public long getRuleEngineElapsedMs() { return ruleEngineElapsedMs; }

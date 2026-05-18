@@ -257,6 +257,8 @@ public class SqlInspectionService {
                                               String env) {
         // 1. 尽力抽涉及表名（仅表名，不抽谓词），供表元数据采集 + EXPLAIN schemaHint
         Map<String, PredicateExtract> tableMap = analyzer.analyze(normalizedSql).predicatesByTable;
+        // involved_tables 列仍需要：LLM 上下文 / 问题列表过滤 / 同表访问模式都依赖它
+        result.setInvolvedTables(new java.util.ArrayList<>(tableMap.keySet()));
 
         // 2. 表元数据（失败不抛，仅影响 schemaHint 和 LLM 语料）
         Map<String, TableMetadata> tableMetadataMap = tableMetadataService.getAll(env,
