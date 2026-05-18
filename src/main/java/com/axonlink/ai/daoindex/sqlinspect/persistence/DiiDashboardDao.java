@@ -94,16 +94,23 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 最近 7 个 DONE 任务的评级趋势，<b>按领域明细</b>。
-     * 用于第三块 7 天趋势堆叠柱图（前端支持"汇总 / 按领域"单选切换）。
+     * 最近 7 个 DONE 任务的<b>整改趋势</b>，按领域明细。
+     * 用于第三块 7 天趋势图（前端折线 + 领域多选）。
      *
-     * <p>四档口径与 {@link #aggregateRatingByDomain} 完全一致（explain 非空一律算
-     * "报错"，不参与优良差），保证趋势图与评级分布图口径统一。
+     * <p>口径与 {@link #aggregateRatingByDomain}（整改分布）<b>完全一致</b>，
+     * 保证"整改分布"快照图与其时间趋势图同口径：
+     * <ul>
+     *   <li>{@code error_count} —— EXPLAIN 报错（explain_error 非空）</li>
+     *   <li>{@code need_fix}    —— 待整改：非报错 + overall_rating='POOR'（有 Seq Scan）
+     *       + llm_fix_verdict='NEED_FIX'（AI 判定需整改）</li>
+     * </ul>
+     * AI 判无需整改 / EXCELLENT / GOOD / 未分析(verdict NULL) 天然不计入。
+     * 注：need_fix 依赖 refactor 分支的 llm_fix_verdict 列（V10），同整改分布的跨分支耦合。
      *
      * <p>"汇总"由前端对同一 task 跨 domain 求和得出，后端只返回领域明细行。
      *
      * @param env 环境过滤（必填）
-     * @return 每行含 task_id / day / domain / excellent / good / poor / error_count，
+     * @return 每行含 task_id / day / domain / error_count / need_fix，
      *         按 task 时间正序、领域名次序；最多 N 任务 × 5 领域
      */
     public List<Map<String, Object>> trendRecentTasks(String env, int limit) {
@@ -114,14 +121,11 @@ public class DiiDashboardDao {
                 + "SELECT t.id AS task_id, "
                 + "       DATE(t.created_at) AS day, "
                 + "       " + domainCase("i.project_name") + " AS domain, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='EXCELLENT' THEN 1 ELSE 0 END) AS excellent, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='GOOD' THEN 1 ELSE 0 END) AS good, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='POOR' THEN 1 ELSE 0 END) AS poor, "
                 + "       SUM(CASE WHEN i.explain_error IS NOT NULL AND i.explain_error <> '' "
-                + "                THEN 1 ELSE 0 END) AS error_count "
+                + "                THEN 1 ELSE 0 END) AS error_count, "
+                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
+                + "                 AND i.overall_rating='POOR' "
+                + "                 AND i.llm_fix_verdict='NEED_FIX' THEN 1 ELSE 0 END) AS need_fix "
                 + "  FROM ( "
                 + "    SELECT id, created_at FROM dii_analysis_task "
                 + "     WHERE env = ? AND status='DONE' "
