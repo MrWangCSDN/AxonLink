@@ -239,6 +239,7 @@ public class DiiAnalysisItemDao {
                 "UPDATE dii_analysis_item SET llm_pending=1, llm_status='PENDING', " +
                 "       llm_error=NULL, llm_summary=NULL, llm_findings_json=NULL, " +
                 "       llm_suggestions_json=NULL, llm_confidence=NULL, " +
+                "       llm_fix_verdict=NULL, " +
                 "       llm_called_at=NOW() WHERE id=?",
                 itemId);
     }
@@ -264,7 +265,8 @@ public class DiiAnalysisItemDao {
                 // 重置 LLM 字段，让后续重跑覆盖
                 "  llm_pending = 1, llm_status = NULL, llm_summary = NULL, " +
                 "  llm_findings_json = NULL, llm_suggestions_json = NULL, " +
-                "  llm_confidence = NULL, llm_model = NULL, llm_prompt_version = NULL, " +
+                "  llm_confidence = NULL, llm_fix_verdict = NULL, " +
+                "  llm_model = NULL, llm_prompt_version = NULL, " +
                 "  llm_elapsed_ms = NULL, llm_error = NULL, llm_called_at = NULL " +
                 "WHERE id = ?",
                 r.getSqlHash(), r.getSql(),
@@ -296,17 +298,18 @@ public class DiiAnalysisItemDao {
     /** LLM 分析成功：一次性写入所有 LLM 字段。 */
     public int updateLlmFull(long itemId, String status,
                              String summary, String findingsJson, String suggestionsJson,
-                             String confidence, String model, String promptVersion,
+                             String confidence, String fixVerdict,
+                             String model, String promptVersion,
                              long elapsedMs, String error) {
         return jdbc.update(
                 "UPDATE dii_analysis_item SET " +
                 " llm_pending=0, llm_status=?, " +
                 " llm_summary=?, llm_findings_json=?, llm_suggestions_json=?, " +
-                " llm_confidence=?, llm_model=?, llm_prompt_version=?, " +
+                " llm_confidence=?, llm_fix_verdict=?, llm_model=?, llm_prompt_version=?, " +
                 " llm_elapsed_ms=?, llm_error=?, llm_called_at=NOW() " +
                 "WHERE id=?",
                 status, truncate(summary, 500), findingsJson, suggestionsJson,
-                confidence, model, promptVersion,
+                confidence, fixVerdict, model, promptVersion,
                 (int) Math.min(elapsedMs, Integer.MAX_VALUE),
                 truncate(error, 1000),
                 itemId);

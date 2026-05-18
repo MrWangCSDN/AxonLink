@@ -41,7 +41,7 @@ public class SqlLlmPromptBuilder {
     private static final Logger log = LoggerFactory.getLogger(SqlLlmPromptBuilder.class);
 
     /** Prompt 模板版本号，便于追溯。改 prompt 内容后必须升版本。 */
-    public static final String PROMPT_VERSION = "sql-v6";
+    public static final String PROMPT_VERSION = "sql-v7";
 
     private final ObjectMapper objectMapper;
     private final IndexMetaService indexMetaService;
@@ -114,6 +114,12 @@ public class SqlLlmPromptBuilder {
             "   - 即使在 explain_plan 的 Filter 字段里看到 col::text = 'xxx'::text 这类强制转换，也要忽略。\n" +
             "   - 不要输出 type=IMPLICIT_CAST 的 finding，也不要输出 type=FIX_IMPLICIT_CAST 的 suggestion。\n" +
             "   - 原因：GaussDB 在大多数情况下 cast 不会真的让索引失效；LLM 在此层判断会大量误报。\n" +
+            "8. **必须输出 fixVerdict（整改判定），二选一，不可缺省**：\n" +
+            "   - fixVerdict=NEED_FIX：该 SQL 全表扫描，且确有可落地优化（加索引 / 改写 SQL）才给；\n" +
+            "   - fixVerdict=NO_NEED：经综合分析无需任何整改 / 现状可接受（如小表全表扫描成本很低、\n" +
+            "     或加索引收益不抵成本）；此时 suggestions 可以只含一条 type=NO_ACTION(scope=SQL)；\n" +
+            "   - 判定要与 suggestions 一致：给了 CREATE_INDEX/MERGE_INDEX/DROP_INDEX/REWRITE_SQL\n" +
+            "     等可落地动作 → 必须 NEED_FIX；只有 NO_ACTION → 必须 NO_NEED。\n" +
             "\n" +
             "【输出长度硬约束（为节省 token 和响应时间，严格控制）】\n" +
             "- summary ≤ 30 字\n" +
@@ -144,7 +150,9 @@ public class SqlLlmPromptBuilder {
             "     \"newSql\": \"若是 REWRITE_SQL 才填\",\n" +
             "     \"reason\": \"理由\"}\n" +
             "  ],\n" +
-            "  \"confidence\": \"HIGH|MEDIUM|LOW\"\n" +
+            "  \"confidence\": \"HIGH|MEDIUM|LOW\",\n" +
+            // NEED_FIX=该 SQL 全表扫描确需整改（有可落地优化）；NO_NEED=经分析无需任何整改/现状可接受
+            "  \"fixVerdict\": \"NEED_FIX | NO_NEED\"\n" +
             "}\n";
 
     /** User prompt：把当前 SQL 的所有语料打成一个 JSON。 */

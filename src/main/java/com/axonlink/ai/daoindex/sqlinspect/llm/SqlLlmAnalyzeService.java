@@ -597,6 +597,7 @@ public class SqlLlmAnalyzeService {
                     findingsJson,
                     suggestionsJson,
                     r.getConfidence(),
+                    r.getFixVerdict(),
                     r.getModel(),
                     r.getPromptVersion(),
                     r.getElapsedMs() == null ? 0L : r.getElapsedMs(),

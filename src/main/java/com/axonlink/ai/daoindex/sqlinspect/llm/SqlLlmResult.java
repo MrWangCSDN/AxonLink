@@ -17,6 +17,17 @@ public class SqlLlmResult {
     /** HIGH / MEDIUM / LOW */
     private String confidence;
 
+    /**
+     * LLM 整改判定。取值：
+     * <ul>
+     *   <li>{@code NEED_FIX} —— 待整改：该 SQL 全表扫描，确有可落地优化（加索引/改写）</li>
+     *   <li>{@code NO_NEED}  —— 无需整改：经分析无需任何整改 / 现状可接受</li>
+     *   <li>{@code null}     —— 未判定（历史行 / 旧 prompt 没产出此字段）</li>
+     * </ul>
+     * 看板"整改分布"按此字段过滤统计。
+     */
+    private String fixVerdict;
+
     /** 本次调用用的 prompt 模板版本号。 */
     private String promptVersion;
     /** 本次调用用的 LLM 模型名。 */
@@ -36,6 +47,8 @@ public class SqlLlmResult {
     public void setSuggestions(List<LlmSuggestion> suggestions) { this.suggestions = suggestions; }
     public String getConfidence() { return confidence; }
     public void setConfidence(String confidence) { this.confidence = confidence; }
+    public String getFixVerdict() { return fixVerdict; }
+    public void setFixVerdict(String fixVerdict) { this.fixVerdict = fixVerdict; }
     public String getPromptVersion() { return promptVersion; }
     public void setPromptVersion(String promptVersion) { this.promptVersion = promptVersion; }
     public String getModel() { return model; }
