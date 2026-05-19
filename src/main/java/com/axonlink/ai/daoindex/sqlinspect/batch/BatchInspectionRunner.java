@@ -1,7 +1,9 @@
 package com.axonlink.ai.daoindex.sqlinspect.batch;
 
+import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.sqlinspect.dto.SqlCandidate;
 import com.axonlink.ai.daoindex.sqlinspect.dto.SqlInspectionRequest;
+import com.axonlink.ai.daoindex.sqlinspect.llm.LlmEnrichService;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisTaskDao;
 import com.axonlink.ai.daoindex.sqlinspect.scan.SqlSourceScanner;
@@ -9,6 +11,7 @@ import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
@@ -47,7 +50,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ul>
  *   <li>扫描阶段异常：catch 后 {@code taskDao.markFailed}，任务标记 FAILED，绝不静默吞</li>
  *   <li>单条 SQL 异常：独立 try-catch-Throwable，单条失败不中断整个任务</li>
- *   <li>循环结束（无论正常/异常）：{@code finally} 里 {@code markDone}，保证任务不会卡 RUNNING</li>
+ *   <li>EXPLAIN+链式 LLM 全程结束（无论正常/异常）：{@code runAsync} 的 {@code finally}
+ *       里 {@code markDone}，任务态全程保持 RUNNING 到此才落终态，保证不会卡 RUNNING</li>
  * </ul>
  */
 @Component
@@ -59,15 +63,21 @@ public class BatchInspectionRunner {
     private final DiiAnalysisTaskDao taskDao;
     private final DiiAnalysisItemDao itemDao;
     private final SqlInspectionService inspectionService;
+    private final ObjectProvider<LlmEnrichService> llmEnrichServiceProvider;
+    private final DaoIndexAnalysisProperties props;
 
     public BatchInspectionRunner(SqlSourceScanner scanner,
                                  DiiAnalysisTaskDao taskDao,
                                  DiiAnalysisItemDao itemDao,
-                                 SqlInspectionService inspectionService) {
+                                 SqlInspectionService inspectionService,
+                                 ObjectProvider<LlmEnrichService> llmEnrichServiceProvider,
+                                 DaoIndexAnalysisProperties props) {
         this.scanner = scanner;
         this.taskDao = taskDao;
         this.itemDao = itemDao;
         this.inspectionService = inspectionService;
+        this.llmEnrichServiceProvider = llmEnrichServiceProvider;
+        this.props = props;
     }
 
     /**
@@ -107,7 +117,39 @@ public class BatchInspectionRunner {
                     taskId, env, candidates.size());
 
             // ═════ 4. 逐条巡检（所有异常都被捕获，单条失败绝不中断整个任务）═════
-            runLoop(taskId, env, candidates);
+            int[] c = {0, 0, 0};
+            try {
+                c = runLoop(taskId, env, candidates);
+
+                // 增强 v5：批量 EXPLAIN 跑完，按开关同步链式触发 LLM 回填。
+                // 本线程已是 diiBatchExecutor 异步线程（非 HTTP 线程），直接调同步 enrich()；
+                // per-item 仍在 diiLlmExecutor 并发。LLM 整体失败只 log，不影响巡检任务终态。
+                if (props.getBatch().isAutoLlmAfterBatch()) {
+                    LlmEnrichService svc = llmEnrichServiceProvider.getIfAvailable();
+                    if (svc != null) {
+                        int maxItems = props.getSchedule().getDailyLlmMaxItems();
+                        try {
+                            log.info("[dii-batch] 任务 id={} EXPLAIN 完成，链式触发 LLM 回填 taskId 限定 maxItems={}",
+                                    taskId, maxItems);
+                            svc.enrich(env, taskId, false, maxItems);
+                        } catch (Throwable t) {
+                            log.error("[dii-batch] 任务 id={} 链式 LLM 回填异常（不影响巡检任务终态）：{}",
+                                    taskId, t.getMessage(), t);
+                        }
+                    } else {
+                        log.warn("[dii-batch] 任务 id={} LlmEnrichService 未装配，跳过链式 LLM（检查 ai.analysis 配置）",
+                                taskId);
+                    }
+                } else {
+                    log.info("[dii-batch] 任务 id={} auto-llm-after-batch=false，跳过链式 LLM（保持两步管线）", taskId);
+                }
+            } finally {
+                // 任务态在 EXPLAIN+LLM 全程保持 RUNNING，到这里才 markDone（=真全完）。
+                // 放 finally 保证「任务绝不卡 RUNNING」：runLoop 或 enrich 抛异常也会 markDone。
+                taskDao.markDone(taskId, c[0], c[1], c[2]);
+                log.info("[dii-batch] 任务 id={} 完成 analyzed={} failed={} skipped={}",
+                        taskId, c[0], c[1], c[2]);
+            }
         } finally {
             MDC.remove("diiTaskId");
         }
@@ -116,60 +158,54 @@ public class BatchInspectionRunner {
     /**
      * 422 条 EXPLAIN 主循环（逻辑原样从旧 {@code BatchInspectionService.runAsync} 搬来，未改判定）。
      */
-    private void runLoop(long taskId, String env, List<SqlCandidate> candidates) {
+    private int[] runLoop(long taskId, String env, List<SqlCandidate> candidates) {
         AtomicInteger analyzed = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
         AtomicInteger skipped = new AtomicInteger();
         long progressReportInterval = 20;  // 每 20 条写一次计数
         long lastReportAt = System.currentTimeMillis();
 
-        try {
-            for (int i = 0; i < candidates.size(); i++) {
-                SqlCandidate cand = candidates.get(i);
-                String sqlText = cand.getSql();
-                String sqlHash = sha256(sqlText);
+        for (int i = 0; i < candidates.size(); i++) {
+            SqlCandidate cand = candidates.get(i);
+            String sqlText = cand.getSql();
+            String sqlHash = sha256(sqlText);
 
-                // ═════ 单 SQL 隔离执行 ═════
-                try {
-                    SqlInspectionRequest req = new SqlInspectionRequest();
-                    req.setSql(sqlText);
-                    req.setEnv(env);
-                    var result = inspectionService.inspectForBatch(req, taskId, cand);
+            // ═════ 单 SQL 隔离执行 ═════
+            try {
+                SqlInspectionRequest req = new SqlInspectionRequest();
+                req.setSql(sqlText);
+                req.setEnv(env);
+                var result = inspectionService.inspectForBatch(req, taskId, cand);
 
-                    if (result.getReusedItemId() != null) {
-                        skipped.incrementAndGet();
-                    } else {
-                        analyzed.incrementAndGet();
-                    }
-                } catch (Throwable t) {
-                    // 最后的防线：任何异常/Error 都在这里被捕获
-                    failed.incrementAndGet();
-                    log.error("[dii-batch] 单条 SQL 失败 taskId={} #{} sqlHash={} class={}: {}",
-                            taskId, i + 1, sqlHash, cand.getClassFqn(), t.getMessage(), t);
-                    try {
-                        itemDao.insertFailed(taskId, sqlHash, sqlText, env,
-                                cand.getProjectName(), cand.getClassFqn(),
-                                cand.getSourceFile(),
-                                t.getClass().getSimpleName() + ": " + t.getMessage());
-                    } catch (Throwable inner) {
-                        // 落库失败也吞掉，继续下一条
-                        log.error("[dii-batch] 记录失败也失败了 taskId={}: {}", taskId, inner.getMessage());
-                    }
+                if (result.getReusedItemId() != null) {
+                    skipped.incrementAndGet();
+                } else {
+                    analyzed.incrementAndGet();
                 }
-
-                // ═════ 周期性更新进度 ═════
-                long now = System.currentTimeMillis();
-                if (i > 0 && (i % progressReportInterval == 0 || now - lastReportAt > 10_000)) {
-                    taskDao.updateCounters(taskId, analyzed.get(), failed.get(), skipped.get());
-                    lastReportAt = now;
+            } catch (Throwable t) {
+                // 最后的防线：任何异常/Error 都在这里被捕获
+                failed.incrementAndGet();
+                log.error("[dii-batch] 单条 SQL 失败 taskId={} #{} sqlHash={} class={}: {}",
+                        taskId, i + 1, sqlHash, cand.getClassFqn(), t.getMessage(), t);
+                try {
+                    itemDao.insertFailed(taskId, sqlHash, sqlText, env,
+                            cand.getProjectName(), cand.getClassFqn(),
+                            cand.getSourceFile(),
+                            t.getClass().getSimpleName() + ": " + t.getMessage());
+                } catch (Throwable inner) {
+                    // 落库失败也吞掉，继续下一条
+                    log.error("[dii-batch] 记录失败也失败了 taskId={}: {}", taskId, inner.getMessage());
                 }
             }
-        } finally {
-            // 不管怎样，最后都标记 DONE（failedSqls > 0 就体现在计数里），保证任务不卡 RUNNING
-            taskDao.markDone(taskId, analyzed.get(), failed.get(), skipped.get());
-            log.info("[dii-batch] 任务 id={} 完成 analyzed={} failed={} skipped={}",
-                    taskId, analyzed.get(), failed.get(), skipped.get());
+
+            // ═════ 周期性更新进度 ═════
+            long now = System.currentTimeMillis();
+            if (i > 0 && (i % progressReportInterval == 0 || now - lastReportAt > 10_000)) {
+                taskDao.updateCounters(taskId, analyzed.get(), failed.get(), skipped.get());
+                lastReportAt = now;
+            }
         }
+        return new int[]{analyzed.get(), failed.get(), skipped.get()};
     }
 
     private String sha256(String s) {

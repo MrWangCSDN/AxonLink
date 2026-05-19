@@ -41,6 +41,7 @@ public class DaoIndexAnalysisProperties {
     private Export export = new Export();
     private Schedule schedule = new Schedule();
     private BatchTrigger batchTrigger = new BatchTrigger();
+    private Batch batch = new Batch();
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -75,6 +76,9 @@ public class DaoIndexAnalysisProperties {
 
     public BatchTrigger getBatchTrigger() { return batchTrigger; }
     public void setBatchTrigger(BatchTrigger batchTrigger) { this.batchTrigger = batchTrigger; }
+
+    public Batch getBatch() { return batch; }
+    public void setBatch(Batch batch) { this.batch = batch; }
 
     /**
      * 定时任务配置。
@@ -126,6 +130,25 @@ public class DaoIndexAnalysisProperties {
 
         public String getToken() { return token; }
         public void setToken(String token) { this.token = token; }
+    }
+
+    /**
+     * 批量巡检完成后的链式行为配置（增强 v5）。
+     *
+     * <p>对应 yml：{@code dao-index-analysis.batch.auto-llm-after-batch}
+     * <p>控制批量巡检 EXPLAIN 跑完后，是否在同一异步线程内同步链式触发
+     * {@link com.axonlink.ai.daoindex.sqlinspect.llm.LlmEnrichService#enrich} 做 LLM 回填：
+     * <ul>
+     *   <li>{@code true}（默认）：一步到位，batch-analyze 跑完直接补 LLM，无需再手动触发</li>
+     *   <li>{@code false}：回退老两步行为，需手动 {@code POST /llm-enrich} 或等 02:00 定时</li>
+     * </ul>
+     */
+    public static class Batch {
+        /** 批量巡检 EXPLAIN 跑完后，是否自动链式触发 LLM 回填（默认 true=一步到位；
+         *  false=回退老两步行为，需手动 POST /llm-enrich 或等 02:00 定时）。 */
+        private boolean autoLlmAfterBatch = true;
+        public boolean isAutoLlmAfterBatch() { return autoLlmAfterBatch; }
+        public void setAutoLlmAfterBatch(boolean v) { this.autoLlmAfterBatch = v; }
     }
 
     /** 源码扫描配置。 */

@@ -223,6 +223,11 @@ dao-index-analysis:
   # 用于保护"多任务/并发压测"下的重复计算。设为 0 可关闭。
   concurrent-reuse-minutes: ${DII_CONCURRENT_REUSE_MINUTES:5}
 
+  # 批量巡检 EXPLAIN 跑完是否自动链式触发 LLM 回填（增强 v5）。
+  # true=一步到位（推荐）；false=回退老两步，需手动/定时跑 llm-enrich。
+  batch:
+    auto-llm-after-batch: ${DII_AUTO_LLM_AFTER_BATCH:true}
+
   # 定时任务
   schedule:
     # 定时任务总开关：false 时彻底屏蔽规则批量 + LLM 回填两条 cron。
