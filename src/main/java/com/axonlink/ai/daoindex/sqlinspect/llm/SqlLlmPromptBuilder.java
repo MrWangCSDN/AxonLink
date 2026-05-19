@@ -41,7 +41,7 @@ public class SqlLlmPromptBuilder {
     private static final Logger log = LoggerFactory.getLogger(SqlLlmPromptBuilder.class);
 
     /** Prompt 模板版本号，便于追溯。改 prompt 内容后必须升版本。 */
-    public static final String PROMPT_VERSION = "sql-v7";
+    public static final String PROMPT_VERSION = "sql-v8";
 
     private final ObjectMapper objectMapper;
     private final IndexMetaService indexMetaService;
@@ -72,6 +72,7 @@ public class SqlLlmPromptBuilder {
             "你是 GaussDB 数据库索引优化专家，负责对银行 DAO 层 SQL 做索引合规与性能 review。\n" +
             "\n" +
             "下面会给你一条 SQL 的完整语料（EXPLAIN 真实计划 + 表元数据 + 表上现有索引清单 + 同表其他 SQL 访问模式）。\n" +
+            "该 SQL 因「全表扫描，或虽命中索引但 EXPLAIN 估算扫描行数 ≥ 1000」被判为需整改候选，故送你复核。\n" +
             "你必须从以下 5 个视角综合分析，每个视角缺一不可：\n" +
             "\n" +
             "【视角 1：索引是否覆盖】\n" +
@@ -115,7 +116,8 @@ public class SqlLlmPromptBuilder {
             "   - 不要输出 type=IMPLICIT_CAST 的 finding，也不要输出 type=FIX_IMPLICIT_CAST 的 suggestion。\n" +
             "   - 原因：GaussDB 在大多数情况下 cast 不会真的让索引失效；LLM 在此层判断会大量误报。\n" +
             "8. **必须输出 fixVerdict（整改判定），二选一，不可缺省**：\n" +
-            "   - fixVerdict=NEED_FIX：该 SQL 全表扫描，且确有可落地优化（加索引 / 改写 SQL）才给；\n" +
+            "   - fixVerdict=NEED_FIX：该 SQL（全表扫描，或命中索引但扫描行数偏大）确有可落地优化\n" +
+            "     （加索引 / 改写 SQL）才给；\n" +
             "   - fixVerdict=NO_NEED：经综合分析无需任何整改 / 现状可接受（如小表全表扫描成本很低、\n" +
             "     或加索引收益不抵成本）；此时 suggestions 可以只含一条 type=NO_ACTION(scope=SQL)；\n" +
             "   - 判定要与 suggestions 一致：给了 CREATE_INDEX/MERGE_INDEX/DROP_INDEX/REWRITE_SQL\n" +
@@ -151,7 +153,7 @@ public class SqlLlmPromptBuilder {
             "     \"reason\": \"理由\"}\n" +
             "  ],\n" +
             "  \"confidence\": \"HIGH|MEDIUM|LOW\",\n" +
-            // NEED_FIX=该 SQL 全表扫描确需整改（有可落地优化）；NO_NEED=经分析无需任何整改/现状可接受
+            // NEED_FIX=该需整改候选 SQL 确需整改（有可落地优化）；NO_NEED=经分析无需任何整改/现状可接受
             "  \"fixVerdict\": \"NEED_FIX | NO_NEED\"\n" +
             "}\n";
 
