@@ -42,6 +42,7 @@ public class DaoIndexAnalysisProperties {
     private Schedule schedule = new Schedule();
     private BatchTrigger batchTrigger = new BatchTrigger();
     private Batch batch = new Batch();
+    private Rating rating = new Rating();
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -79,6 +80,9 @@ public class DaoIndexAnalysisProperties {
 
     public Batch getBatch() { return batch; }
     public void setBatch(Batch batch) { this.batch = batch; }
+
+    public Rating getRating() { return rating; }
+    public void setRating(Rating rating) { this.rating = rating; }
 
     /**
      * 定时任务配置。
@@ -149,6 +153,19 @@ public class DaoIndexAnalysisProperties {
         private boolean autoLlmAfterBatch = true;
         public boolean isAutoLlmAfterBatch() { return autoLlmAfterBatch; }
         public void setAutoLlmAfterBatch(boolean v) { this.autoLlmAfterBatch = v; }
+    }
+
+    /**
+     * EXPLAIN 派生评级阈值配置（增强 v6）。
+     * <p>对应 yml：{@code dao-index-analysis.rating.seq-scan-cost-min}
+     */
+    public static class Rating {
+        /** Seq Scan 判"需整改候选"的最小 EXPLAIN 估算成本（topCost）。
+         *  低于此值视为便宜小表全扫——优化器最优选择、非问题，判无需整改不送 LLM。
+         *  默认 50.0（依 PG/GaussDB 成本模型，cost<50≈小表数十页内）。 */
+        private double seqScanCostMin = 50.0;
+        public double getSeqScanCostMin() { return seqScanCostMin; }
+        public void setSeqScanCostMin(double v) { this.seqScanCostMin = v; }
     }
 
     /** 源码扫描配置。 */

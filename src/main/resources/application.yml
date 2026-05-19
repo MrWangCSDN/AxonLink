@@ -228,6 +228,11 @@ dao-index-analysis:
   batch:
     auto-llm-after-batch: ${DII_AUTO_LLM_AFTER_BATCH:true}
 
+  # Seq Scan 判需整改的最小 EXPLAIN 估算成本阈值（增强 v6）。
+  # 低于此值=便宜小表全扫（优化器最优选择、非问题），判无需整改不送 LLM；可不重新打包直接调。
+  rating:
+    seq-scan-cost-min: ${DII_SEQ_SCAN_COST_MIN:50.0}
+
   # 定时任务
   schedule:
     # 定时任务总开关：false 时彻底屏蔽规则批量 + LLM 回填两条 cron。
