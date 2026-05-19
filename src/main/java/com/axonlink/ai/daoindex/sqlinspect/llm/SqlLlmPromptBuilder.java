@@ -41,7 +41,7 @@ public class SqlLlmPromptBuilder {
     private static final Logger log = LoggerFactory.getLogger(SqlLlmPromptBuilder.class);
 
     /** Prompt 模板版本号，便于追溯。改 prompt 内容后必须升版本。 */
-    public static final String PROMPT_VERSION = "sql-v8";
+    public static final String PROMPT_VERSION = "sql-v9";
 
     private final ObjectMapper objectMapper;
     private final IndexMetaService indexMetaService;
@@ -82,7 +82,9 @@ public class SqlLlmPromptBuilder {
             "\n" +
             "【视角 2：索引合并】\n" +
             "  - 表上的多个索引列序是否可以合并？比如 idx_a(a) 可以被 idx_ab(a,b) 完全替代。\n" +
-            "  - 合并时，建议的新索引要同时满足其他同表 SQL 的访问模式（看 sameTableAccessPattern）。\n" +
+            "  - 合并时：若 sameTableAccessPattern.topPredicateBuckets 非空，建议的新索引应同时满足这些\n" +
+            "    同表 SQL 访问模式；若该数组为空，则仅依据本 SQL + sameTableAccessPattern.ratingCounts\n" +
+            "    （同表热度/同表需整改条数）+ 现有索引清单判断，不要臆造跨 SQL 的合并诉求。\n" +
             "\n" +
             "【视角 3：重复索引】\n" +
             "  - 是否有两个索引列序完全相同，或前缀重叠度 >80%？建议删除冗余。\n" +
@@ -102,7 +104,8 @@ public class SqlLlmPromptBuilder {
             "2. 建议区分 scope：\n" +
             "   - scope=TABLE：DDL 动作（CREATE_INDEX / DROP_INDEX / MERGE_INDEX），此建议同时影响同表其他 SQL。\n" +
             "   - scope=SQL：仅本 SQL 相关的修改（REWRITE_SQL / CODE_LEVEL / NO_ACTION）。\n" +
-            "3. DDL 建议尽量能覆盖同表多条 SQL 的访问模式（看 sameTableAccessPattern.byPredicate）。\n" +
+            "3. DDL 建议：仅当 sameTableAccessPattern.topPredicateBuckets 非空时，才尽量覆盖同表多条 SQL\n" +
+            "   的访问模式；该数组为空属正常（本批无同表谓词语料），此时只针对本 SQL 给最优 DDL，勿编造合并。\n" +
             "4. **findings 数组必须至少包含 1 条**，空数组是不可接受的。即使评级已是 优，也要说明：\n" +
             "   - 有 Seq Scan / 大表 / 估算行数偏高 等，都要作为 finding 单独列出；\n" +
             "   - 评级为 优（无 Seq Scan、成本低）→ 输出一条 severity=LOW 的 finding（type 可为 OTHER），\n" +
