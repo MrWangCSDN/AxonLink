@@ -793,6 +793,13 @@ public class DaoIndexController {
             return ResponseEntity.ok(R.ok(payload));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(R.fail(e.getMessage()));
+        } catch (IllegalStateException e) {
+            // 「一天一次·覆盖式」：当天该 env 已有 RUNNING 巡检在跑 → 预期内的业务拒绝，
+            // 不是系统故障：用 WARN（不打 ERROR 堆栈，避免噪声），返回非 200（HTTP 409 +
+            // body.code=500 + 中文 message），前端按 code!==200 显示「触发失败：…」。
+            log.warn("[dii-batch] 触发被拒绝 env={} owner={}：{}", env, owner, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(R.<Map<String, Object>>fail(e.getMessage()));
         } catch (Exception e) {
             log.error("[dii-batch] 触发批量失败", e);
             return ResponseEntity.internalServerError()

@@ -410,6 +410,23 @@ public class DiiAnalysisItemDao {
         return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 
+    /**
+     * 物理删除某任务下的全部 item（「一天一次·覆盖式」用，<b>真删非软删</b>）。
+     *
+     * <p>新建当天巡检任务时，若当天已有 DONE/FAILED 的旧任务，先用本方法清掉旧
+     * 任务的全部分析明细，再删旧 task 行，最后建新 task——保证每 env 每天恰好
+     * 1 份 dii_analysis_item 数据，不残留历史明细。
+     *
+     * <p><b>性能说明</b>：按 {@code task_id} 等值删除；该列若有索引（如
+     * {@code idx_item_task}）则很快，否则单 env 单天的量级也可接受，本任务不加 DDL。
+     *
+     * @param taskId 旧任务 id
+     * @return 删除的明细条数
+     */
+    public int deleteByTaskId(long taskId) {
+        return jdbc.update("DELETE FROM dii_analysis_item WHERE task_id = ?", taskId);
+    }
+
     /** 查与 {@link #search} 同过滤条件下的总行数，便于分页展示。 */
     public long count(String env, String rating, String tableName, Long taskId) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
