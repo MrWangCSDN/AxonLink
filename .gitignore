@@ -1,9 +1,3 @@
-target/
-# 例外：源码包 com.axonlink.ai.daoindex.target 不是 Maven 构建产物，
-# 但被上面的 target/ 误伤而漏入 git。src/main/java 下不可能有构建产物，
-# 故安全地重新纳入（修复 TargetDataSourceRegistry 长期未被跟踪的 bug）。
-!src/main/java/**/target/
-!src/main/java/**/target/**
 src/main/resources/static/
 src/main/resources/application-local.yml
 .node/
