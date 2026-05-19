@@ -33,6 +33,11 @@ public class DiiAnalysisTaskDao {
             "   SET analyzed_sqls = ?, failed_sqls = ?, skipped_sqls = ?, updated_at = NOW() " +
             " WHERE id = ?";
 
+    // scanAll 已移到异步线程执行：建 task 时 total_sqls 还是未知的（先填 0），
+    // 等异步扫描+去重完成后再用本语句回填真实候选数，列表/进度才准确。
+    private static final String UPDATE_TOTAL =
+            "UPDATE dii_analysis_task SET total_sqls = ?, updated_at = NOW() WHERE id = ?";
+
     private static final String MARK_DONE =
             "UPDATE dii_analysis_task SET status = 'DONE', analyzed_sqls = ?, " +
             " failed_sqls = ?, skipped_sqls = ?, updated_at = NOW() WHERE id = ?";
@@ -73,6 +78,21 @@ public class DiiAnalysisTaskDao {
         log.info("[dii-task] 创建任务 id={} taskNo={} env={} total={} trigger={}",
                 id, taskNo, env, totalSqls, triggerType);
         return id;
+    }
+
+    /**
+     * 回填巡检候选总数。
+     *
+     * <p>因为 {@code scanner.scanAll} 已从 HTTP 请求线程移到异步线程执行，
+     * 建 task 记录时还不知道 total_sqls（先建成 RUNNING、total=0），
+     * 异步扫描+去重完成后调用本方法把真实总数写回去。
+     */
+    public void updateTotal(long taskId, int totalSqls) {
+        try {
+            jdbc.update(UPDATE_TOTAL, totalSqls, taskId);
+        } catch (Exception e) {
+            log.warn("[dii-task] 回填 total_sqls 失败 taskId={}: {}", taskId, e.getMessage());
+        }
     }
 
     /** 更新运行时计数器。 */
