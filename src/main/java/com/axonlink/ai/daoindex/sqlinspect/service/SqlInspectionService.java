@@ -37,14 +37,15 @@ import java.util.Map;
  *        └─ 其它（SELECT/UPDATE/DELETE/WITH/UNKNOWN…）→ 无条件跑 EXPLAIN
  *              ├─ EXPLAIN 失败 → explain_error；overall_rating = null（看板靠
  *              │                  explain_error 归"报错"档）；不 LLM
- *              └─ EXPLAIN 成功 → 由执行计划派生 overall_rating：
- *                    - 有 Seq Scan（任意表）→ POOR → 标 llm_pending（送 LLM）
- *                    - 无 Seq Scan 且全 Index Scan 且 topCost 低 → EXCELLENT → 不 LLM
- *                    - 其它 → GOOD → 不 LLM
+ *              └─ EXPLAIN 成功 → 由执行计划派生 overall_rating（是否需整改）：
+ *                    - 全表扫描 / 命中索引但估算扫描行数≥1000 → POOR（需整改候选）
+ *                      → 标 llm_pending（送 LLM）
+ *                    - 命中索引且估算扫描行数&lt;1000 → EXCELLENT（无需整改）→ 不 LLM
  * </pre>
  *
- * <p><b>LLM 触发判据</b>：{@code explain_has_seq_scan = 1}（有全表扫描才送 LLM 解读），
- * 不再看旧的 {@code runtime_rating ∈ {POOR,GOOD}}。
+ * <p><b>LLM 触发判据（v3）</b>：{@code overall_rating = POOR}（需整改候选：全表扫描
+ * 或命中索引但估算扫描行数≥1000 才送 LLM 解读），不再用 {@code explain_has_seq_scan=1}
+ * （命中索引≥1000 行没有 Seq Scan 也要送）。
  *
  * <p>规则引擎（最左匹配评级）已整体下线；表名抽取仍复用
  * {@link SqlPredicateAnalyzer}（仅取表名，不取谓词）供表元数据采集 / EXPLAIN 用。
@@ -205,16 +206,15 @@ public class SqlInspectionService {
      * 统一落库入口：不论 SELECT / UPDATE / DELETE / INSERT / UNKNOWN，都在
      * {@code dii_analysis_item} 留一条记录，确保 {@code total_sqls} 和表行数对得上。
      *
-     * <p><b>LLM 触发条件（新口径）</b>：{@code explain_has_seq_scan = true} 才送 LLM。
+     * <p><b>LLM 触发条件（v3 口径）</b>：{@code overall_rating = POOR}（需整改候选：
+     * 全表扫描 或 命中索引但 EXPLAIN 估算扫描行数≥1000）才送 LLM。
      * <ul>
-     *   <li>有全表扫描（hasSeqScan=true，overall_rating 已被派生为 POOR）→ 标 llm_pending=1，
-     *       后续异步跑 LLM 解读；</li>
-     *   <li>无全表扫描（EXCELLENT / GOOD）→ 不跑 LLM（执行计划没有显著问题）；</li>
-     *   <li>EXPLAIN 失败 / NOT_APPLICABLE（hasSeqScan=null/false）→ 不跑 LLM
-     *       （没有可解读的全表扫描）。</li>
+     *   <li>需整改候选（overall_rating=POOR）→ 标 llm_pending=1，后续异步跑 LLM 解读；</li>
+     *   <li>无需整改（EXCELLENT）→ 不跑 LLM（执行计划没有显著问题）；</li>
+     *   <li>EXPLAIN 失败（overall_rating=null）/ NOT_APPLICABLE → 不跑 LLM。</li>
      * </ul>
-     * 与 {@link DiiAnalysisItemDao#findPendingLlmIds} 的 {@code explain_has_seq_scan=1}
-     * 过滤口径保持一致。
+     * 与 {@link DiiAnalysisItemDao#findPendingLlmIds} 的 {@code overall_rating='POOR'}
+     * 过滤口径、{@code SqlLlmAnalyzeService} 兜底守卫口径三处字面保持一致。
      */
     private void persistResult(SqlInspectionResult result,
                                SqlPredicateAnalyzer.SqlKind kind) {
@@ -224,18 +224,23 @@ public class SqlInspectionService {
             long newId = itemDao.insertFromResult(result, source);
             result.setItemId(newId);
 
-            // ── LLM 触发：有全表扫描才送（与 DAO findPendingLlmIds 口径一致） ──
-            boolean hasSeqScan = Boolean.TRUE.equals(result.getExplainHasSeqScan());
-            if (newId > 0 && hasSeqScan) {
+            // ── LLM 触发：仅"需整改候选"(overall_rating=POOR) 才送 ──
+            //    与 DAO findPendingLlmIds 的 overall_rating='POOR' 过滤、
+            //    SqlLlmAnalyzeService 兜底守卫三处字面一致。
+            //    注意：命中索引但估算扫描行数≥1000 时 hasSeqScan=false 但 rating=POOR，
+            //    必须按 rating 判，不能再用 hasSeqScan（否则会漏送）。
+            boolean needFix = result.getOverallRating() == IndexRating.POOR;
+            if (newId > 0 && needFix) {
                 try {
                     itemDao.markLlmPending(newId);
-                    log.info("[dii-sqlinspect] 标记 llm_pending itemId={} hasSeqScan=true", newId);
+                    log.info("[dii-sqlinspect] 标记 llm_pending itemId={} overall_rating=POOR hasSeqScan={}",
+                            newId, result.getExplainHasSeqScan());
                 } catch (Exception e) {
                     log.warn("[dii-sqlinspect] 标记 llm_pending 失败 itemId={}: {}", newId, e.getMessage());
                 }
             } else if (newId > 0) {
-                log.debug("[dii-sqlinspect] 跳过 LLM itemId={} hasSeqScan={}（无全表扫描）",
-                        newId, result.getExplainHasSeqScan());
+                log.debug("[dii-sqlinspect] 跳过 LLM itemId={} rating={}（非需整改候选）hasSeqScan={}",
+                        newId, result.getOverallRatingLabel(), result.getExplainHasSeqScan());
             }
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 落库失败 env={} sqlHash={}: {}",
@@ -250,7 +255,8 @@ public class SqlInspectionService {
      * <p>表元数据 / EXPLAIN 各自允许失败：EXPLAIN 失败仍可填表元数据，反之亦然。
      * 但 {@code overall_rating} 完全由 EXPLAIN 结果决定：
      * EXPLAIN 失败 → null（看板靠 explain_error 归"报错"档）；
-     * 成功 → 任意 Seq Scan=POOR / 全索引低成本=EXCELLENT / 其余=GOOD。
+     * 成功 → 全表扫描 / 命中索引但估算扫描行数≥1000 = POOR（需整改候选），
+     * 否则 = EXCELLENT（无需整改）。
      */
     private void enrichWithExplainAndMetadata(SqlInspectionResult result,
                                               String normalizedSql,
@@ -324,7 +330,7 @@ public class SqlInspectionService {
             result.setTableDdlJson(buildTableDdlJson(tableMetadataMap));
         }
 
-        // 5. 由执行计划派生 overall_rating（新口径：任意 Seq Scan → POOR）
+        // 5. 由执行计划派生 overall_rating（v3：全表扫描 / 命中索引但估算行数≥1000 → POOR）
         //    EXPLAIN 失败 → derive 返回 null → overall_rating=null，看板靠 explain_error 归档
         IndexRating rating = runtimeRatingDeriver.derive(explain, tableMetadataMap);
         result.setOverallRating(rating);

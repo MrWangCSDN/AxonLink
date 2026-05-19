@@ -199,13 +199,15 @@ public class SqlLlmAnalyzeService {
                 ctx.inspectionResult == null ? null : ctx.inspectionResult.getSqlHash(),
                 tableCount, patternCount);
 
-        // ── 兜底：必须有全表扫描（explain_has_seq_scan=1）才跑 LLM ──
-        //    新管线口径：与 SqlInspectionService 标 llm_pending、DAO findPendingLlmIds 完全一致，
-        //    避免 reconstructResult 拿不到 runtime_rating 而把所有行误判 SKIPPED。
-        boolean hasSeqScan = ctx.inspectionResult != null
-                && Boolean.TRUE.equals(ctx.inspectionResult.getExplainHasSeqScan());
-        if (!hasSeqScan) {
-            String reason = "explain_has_seq_scan != 1（无全表扫描），跳过 LLM";
+        // ── 兜底：仅"需整改候选"(overall_rating=POOR) 才跑 LLM ──
+        //    v3 口径：与 SqlInspectionService 标 llm_pending、DAO findPendingLlmIds 字面一致。
+        //    overall_rating 由 reconstructResult 从 DB 列 overall_rating 经 IndexRating.valueOf
+        //    回填（见 reconstructResult），故这里能可靠拿到；命中索引但估算行数≥1000 时
+        //    hasSeqScan=false 但 rating=POOR，必须按 rating 判，不能再用 hasSeqScan。
+        boolean needFix = ctx.inspectionResult != null
+                && ctx.inspectionResult.getOverallRating() == IndexRating.POOR;
+        if (!needFix) {
+            String reason = "overall_rating != POOR（非需整改候选），跳过 LLM";
             log.info("[dii-llm][itemId={}] ✖ {}", itemId, reason);
             result.setError(reason);
             itemDao.updateLlmStatusOnly(itemId, "SKIPPED", reason);

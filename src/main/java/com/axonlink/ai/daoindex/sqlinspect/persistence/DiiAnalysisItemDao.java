@@ -219,8 +219,8 @@ public class DiiAnalysisItemDao {
 
     /**
      * 标记 item 为"待 LLM 分析"。
-     * 触发条件（由上层 SqlInspectionService 判断）：
-     * rating ≤ GOOD / disagreement=true / schema drift / llm 建议作用 scope=TABLE 的高优先级场景。
+     * 触发条件（由上层 {@code SqlInspectionService} 判断）：{@code overall_rating='POOR'}
+     * （需整改候选：全表扫描 或 命中索引但 EXPLAIN 估算扫描行数≥1000）。
      */
     public int markLlmPending(long itemId) {
         return jdbc.update(
@@ -318,9 +318,10 @@ public class DiiAnalysisItemDao {
     /**
      * 查"待 LLM 分析"列表。
      *
-     * <p><b>硬过滤</b>：只捡 {@code explain_has_seq_scan = 1} 的 item（有全表扫描才送 LLM）。
-     * 即使历史数据把 llm_pending=1 错标到了无 Seq Scan / EXPLAIN 失败的行上，这里也兜底不捡，
-     * 与 {@code SqlInspectionService} 标 llm_pending 的口径（仅 hasSeqScan）保持一致。
+     * <p><b>硬过滤</b>：只捡 {@code overall_rating = 'POOR'}（需整改候选：全表扫描，或
+     * 命中索引但 EXPLAIN 估算扫描行数≥1000）的 item。即使历史数据把 llm_pending=1 错标到
+     * 非需整改候选 / EXPLAIN 失败的行上，这里也兜底不捡，与 {@code SqlInspectionService}
+     * 标 llm_pending、{@code SqlLlmAnalyzeService} 兜底守卫三处口径字面一致。
      *
      * @param env       过滤环境，可 null
      * @param taskId    过滤任务，可 null
@@ -336,8 +337,8 @@ public class DiiAnalysisItemDao {
         } else {
             sb.append(" AND llm_pending=1 AND (llm_status IS NULL OR llm_status='PENDING') ");
         }
-        // 最后一公里防护：只有 explain_has_seq_scan=1（有全表扫描）才跑 LLM
-        sb.append(" AND explain_has_seq_scan = 1 ");
+        // 最后一公里防护：只有 overall_rating='POOR'（需整改候选）才跑 LLM
+        sb.append(" AND overall_rating = 'POOR' ");
         if (env != null && !env.isBlank()) {
             sb.append(" AND env=? "); args.add(env);
         }
