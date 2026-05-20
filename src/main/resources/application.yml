@@ -18,6 +18,31 @@ spring:
       cache:
         period: 3600
 
+  # ── LDAP 连接（仅当 axon-link.security.enabled=true 时被使用）────────────────
+  # 全部走 ENV 注入；yml 占位空字符串，避免服务账号密码入仓。
+  # AD 与 OpenLDAP 通用：差异在 axon-link.security.user-search-filter（见下方块）。
+  ldap:
+    urls: ${LDAP_URL:ldap://localhost:389}
+    base: ${LDAP_BASE:DC=corp,DC=bank,DC=com}
+    username: ${LDAP_BIND_DN:}
+    password: ${LDAP_BIND_PWD:}
+
+# ── 安全与认证（LDAP B 档：仅登录保护，不分角色）──────────────────────────────
+# 灰度开关：axon-link.security.enabled=false 时整个 Security 配置不装配，
+# 等价于"从未引入"，所有 /api/** 仍开放（兼容现有 dev/CI 流程）。
+# prod 启用：AXON_SECURITY_ENABLED=true。
+# X-DII-Trigger-Token 双轨保留：脚本/curl 不受影响（见 DiiTokenBypassFilter）。
+axon-link:
+  security:
+    enabled: ${AXON_SECURITY_ENABLED:false}
+    user-search-base: ${LDAP_USER_BASE:OU=Users}
+    # AD 使用 sAMAccountName；OpenLDAP 使用 uid。{0} 会被替换为登录用户名。
+    user-search-filter: ${LDAP_USER_FILTER:(sAMAccountName={0})}
+    # 组搜索：B 档不读组，仅预留给未来 C 档（接口级 RBAC）零成本铺路。
+    group-search-base: ${LDAP_GROUP_BASE:OU=Groups}
+    group-search-filter: ${LDAP_GROUP_FILTER:(member={0})}
+    session-timeout-minutes: ${AXON_SESSION_TIMEOUT_MIN:120}
+
 logging:
   level:
     com.axonlink: info
