@@ -283,3 +283,5 @@ dao-index-analysis:
   export:
     output-dir: ${DII_REPORT_DIR:/home/cbs/logs/dii-reports}
     retain-days: ${DII_REPORT_RETAIN_DAYS:30}
+code-analysis:
+  enabled: true

@@ -21,6 +21,13 @@ neo4j:
 project:
   workspace-roots: /Users/wangshanhe/Desktop/myproject/sunline/sunline
 
+# ── 代码提交分析（Phase 8）────────────────────────────────────────────────────
+# 默认关闭；投产时必须显式开启，否则定时扫描永远 no-op。
+code-analysis:
+  enabled: true
+  # workspace-roots 下的直接子目录含 .git 则纳入每日扫描（增量模式）
+  # 等价于环境变量 PROJECT_WORKSPACE_ROOTS；两者二选一即可。
+
 callgraph:
   include-packages: cn.sunline.ltts.busi
 
@@ -48,6 +55,9 @@ benchmark:
 #
 # project:
 #   workspace-roots: /home/cbs/code
+#
+# code-analysis:
+#   enabled: true
 #
 # callgraph:
 #   include-packages: com.spdb.ccbs
