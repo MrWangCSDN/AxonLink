@@ -44,6 +44,9 @@ public class SecurityProperties {
     /** 会话超时（分钟），默认 120。当前依赖 Spring Boot 默认 session，预留字段供未来扩展。 */
     private int sessionTimeoutMinutes = 120;
 
+    /** UIAS（行内统一认证）配置（增强 v2）。 */
+    private UiasConfig uias = new UiasConfig();
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
@@ -62,5 +65,35 @@ public class SecurityProperties {
     public int getSessionTimeoutMinutes() { return sessionTimeoutMinutes; }
     public void setSessionTimeoutMinutes(int sessionTimeoutMinutes) {
         this.sessionTimeoutMinutes = sessionTimeoutMinutes;
+    }
+
+    public UiasConfig getUias() { return uias; }
+    public void setUias(UiasConfig uias) { this.uias = uias; }
+
+    /**
+     * UIAS（行内统一认证）配置。
+     *
+     * <p>对应 yml：{@code axon-link.security.uias.*}
+     * <p>SDK 未接入时 enabled 保持 false；前端不显「统一认证登录」Tab。
+     * 真接入 SDK 时由运维配 {@code sdk-url} + {@code sso-target} 即生效。
+     */
+    public static class UiasConfig {
+        /** UIAS 总开关。默认 false（SDK 未接前关，前端不显该 Tab）。 */
+        private boolean enabled = false;
+        /** UIAS SDK 跳转地址（即 SDK getRedirectUrl()）。 */
+        private String sdkUrl = "";
+        /** UIAS SSO target 参数。 */
+        private String ssoTarget = "";
+        /** SDK 在 session 里塞「已认证工号」时使用的 key。默认 uiasEmpNo。 */
+        private String sessionEmpnoKey = "uiasEmpNo";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getSdkUrl() { return sdkUrl; }
+        public void setSdkUrl(String sdkUrl) { this.sdkUrl = sdkUrl; }
+        public String getSsoTarget() { return ssoTarget; }
+        public void setSsoTarget(String ssoTarget) { this.ssoTarget = ssoTarget; }
+        public String getSessionEmpnoKey() { return sessionEmpnoKey; }
+        public void setSessionEmpnoKey(String sessionEmpnoKey) { this.sessionEmpnoKey = sessionEmpnoKey; }
     }
 }

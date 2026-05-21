@@ -43,6 +43,15 @@ axon-link:
     group-search-filter: ${LDAP_GROUP_FILTER:(member={0})}
     session-timeout-minutes: ${AXON_SESSION_TIMEOUT_MIN:120}
 
+    # UIAS 统一认证配置（增强 v2）
+    # 默认 enabled=false：SDK 未接前关；前端不显「统一认证登录」Tab
+    # 真接入 SDK 时由运维配 sdk-url + sso-target 即生效
+    uias:
+      enabled: ${AXON_UIAS_ENABLED:false}
+      sdk-url: ${AXON_UIAS_SDK_URL:}
+      sso-target: ${AXON_UIAS_SSO_TARGET:}
+      session-empno-key: ${AXON_UIAS_SESSION_EMPNO_KEY:uiasEmpNo}
+
 logging:
   level:
     com.axonlink: info

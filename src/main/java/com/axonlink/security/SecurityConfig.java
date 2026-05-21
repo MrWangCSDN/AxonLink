@@ -60,6 +60,11 @@ public class SecurityConfig {
     /** 放行清单：与设计文档保持一致；任何变动需同步设计。 */
     private static final String[] PUBLIC_PATHS = new String[]{
             "/api/auth/**",
+            // 增强 v2 双登录方式：UIAS 入口 + callback；虽已被上面 /api/auth/** 覆盖，
+            // 但显式列出以表达意图，便于后续阅读 / 改 ant pattern 时不漏放行。
+            "/api/auth/uias/**",
+            // 增强 v2 双登录方式：前端拉 Tab 显示策略；同上属冗余但显式。
+            "/api/auth/config",
             "/actuator/health",
             "/api/health",
             "/",
