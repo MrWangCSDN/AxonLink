@@ -15,9 +15,6 @@ import org.springframework.security.config.annotation.authentication.configurati
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
-import org.springframework.security.ldap.authentication.BindAuthenticator;
-import org.springframework.security.ldap.authentication.LdapAuthenticationProvider;
-import org.springframework.security.ldap.search.FilterBasedLdapUserSearch;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
@@ -119,17 +116,11 @@ public class SecurityConfig {
      * {@code DefaultLdapAuthoritiesPopulator(ctx, sp.getGroupSearchBase())} 即可。
      */
     @Bean
-    public LdapAuthenticationProvider ldapAuthenticationProvider(LdapContextSource ctx) {
-        // 用户搜索器：base + filter，filter 中 {0} 会被 UsernamePasswordAuthenticationToken.principal 替换
-        FilterBasedLdapUserSearch userSearch = new FilterBasedLdapUserSearch(
-                sp.getUserSearchBase(),
-                sp.getUserSearchFilter(),
-                ctx);
-        // BindAuthenticator：执行第三步"用用户 DN + 用户密码 bind 验证"
-        BindAuthenticator bindAuth = new BindAuthenticator(ctx);
-        bindAuth.setUserSearch(userSearch);
-        // 装配成 Spring Security 标准的 AuthenticationProvider
-        return new LdapAuthenticationProvider(bindAuth);
+    public SpdbLdapAuthenticationProvider ldapAuthenticationProvider(LdapContextSource ctx) {
+        // 内网定制：Spring Security 内置 LdapAuthenticationProvider + FilterBasedLdapUserSearch + BindAuthenticator
+        // 整套替换为浦发自研 SpdbLdapAuthenticationProvider（封装行内 LDAP/AD 特有协议细节，由行内安全团队维护）。
+        // ctx 仍作为参数注入保留 DI 顺序（Spring 先实例化 LdapContextSource bean），方便未来该 provider 内部按需读取。
+        return new SpdbLdapAuthenticationProvider();
     }
 
     /**
@@ -158,7 +149,7 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
-                                                   LdapAuthenticationProvider ldapProvider,
+                                                   SpdbLdapAuthenticationProvider ldapProvider,
                                                    DiiTokenBypassFilter diiFilter) throws Exception {
         http
                 // ① CSRF 禁用：内部应用 + 同源 + SameSite=Lax + JSON POST，无传统 CSRF 风险
