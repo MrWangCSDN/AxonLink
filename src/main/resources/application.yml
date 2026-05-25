@@ -43,6 +43,15 @@ axon-link:
     group-search-filter: ${LDAP_GROUP_FILTER:(member={0})}
     session-timeout-minutes: ${AXON_SESSION_TIMEOUT_MIN:120}
 
+    # AD（Active Directory）标准认证配置（增强 v3）
+    # 用 Spring 标准 ActiveDirectoryLdapAuthenticationProvider；默认值=原自研 Spdb 硬编码值，
+    # 默认部署零行为变化，但现在可经 ENV 覆盖（改地址不用重新打包）。
+    # 注：本节生效后 spring.ldap.* 与 axon-link.security.user-search-*/group-search-* 均不再被消费。
+    ad:
+      domain: ${AXON_AD_DOMAIN:hdq.spdb.com}
+      url: ${AXON_AD_URL:ldap://10.200.63.55:3268}
+      search-filter: ${AXON_AD_SEARCH_FILTER:(&(objectClass=user)(userPrincipalName={0}))}
+
     # UIAS 统一认证配置（增强 v2）
     # 默认 enabled=false：SDK 未接前关；前端不显「统一认证登录」Tab
     # 真接入 SDK 时由运维配 sdk-url + sso-target 即生效

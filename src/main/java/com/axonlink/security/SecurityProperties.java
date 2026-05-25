@@ -47,6 +47,9 @@ public class SecurityProperties {
     /** UIAS（行内统一认证）配置（增强 v2）。 */
     private UiasConfig uias = new UiasConfig();
 
+    /** AD（Active Directory）标准认证配置（增强 v3）。 */
+    private AdConfig ad = new AdConfig();
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
@@ -69,6 +72,33 @@ public class SecurityProperties {
 
     public UiasConfig getUias() { return uias; }
     public void setUias(UiasConfig uias) { this.uias = uias; }
+
+    public AdConfig getAd() { return ad; }
+    public void setAd(AdConfig ad) { this.ad = ad; }
+
+    /**
+     * AD（Active Directory）标准认证配置（增强 v3）。
+     *
+     * <p>对应 yml：{@code axon-link.security.ad.*}
+     * <p>用 Spring 标准 {@code ActiveDirectoryLdapAuthenticationProvider} 替换原自研
+     * SpdbLdapAuthenticationProvider；默认值与原硬编码一致（domain=hdq.spdb.com /
+     * url=ldap://10.200.63.55:3268 / 标准 AD UPN searchFilter），可经 ENV 覆盖。
+     */
+    public static class AdConfig {
+        /** AD 域，例 hdq.spdb.com；登录时 username 不带 @域 会自动补。 */
+        private String domain = "hdq.spdb.com";
+        /** AD LDAP URL，例 ldap://10.200.63.55:3268（3268=全局编录 GC 端口）。 */
+        private String url = "ldap://10.200.63.55:3268";
+        /** 用户搜索 filter，{0} 替换为完整 UPN（user@domain）。默认走 AD userPrincipalName。 */
+        private String searchFilter = "(&(objectClass=user)(userPrincipalName={0}))";
+
+        public String getDomain() { return domain; }
+        public void setDomain(String domain) { this.domain = domain; }
+        public String getUrl() { return url; }
+        public void setUrl(String url) { this.url = url; }
+        public String getSearchFilter() { return searchFilter; }
+        public void setSearchFilter(String searchFilter) { this.searchFilter = searchFilter; }
+    }
 
     /**
      * UIAS（行内统一认证）配置。

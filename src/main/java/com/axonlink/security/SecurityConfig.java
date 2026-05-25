@@ -8,9 +8,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.env.Environment;
-import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.ldap.authentication.ad.ActiveDirectoryLdapAuthenticationProvider;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -47,8 +47,6 @@ public class SecurityConfig {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
 
-    /** Spring 环境，用于读取 {@code spring.ldap.*} 配置。 */
-    private final Environment env;
     /** axon-link.security.* 自定义配置。 */
     private final SecurityProperties sp;
     /** DII 模块配置（DiiTokenBypassFilter 透传）。 */
@@ -72,55 +70,45 @@ public class SecurityConfig {
             "/spd-bank-logo.png",
     };
 
-    public SecurityConfig(Environment env, SecurityProperties sp, DaoIndexAnalysisProperties diiProps) {
-        // 构造注入：Spring 自动按类型装配三个依赖
-        this.env = env;
+    public SecurityConfig(SecurityProperties sp, DaoIndexAnalysisProperties diiProps) {
+        // 构造注入：Spring 自动按类型装配两个依赖
         this.sp = sp;
         this.diiProps = diiProps;
     }
 
     /**
-     * LDAP 上下文：bind 服务账号建立到 LDAP 服务器的连接池。
+     * LDAP 认证提供器：Spring 标准 {@link ActiveDirectoryLdapAuthenticationProvider}（增强 v3）。
      *
-     * <p>从 {@code spring.ldap.*} 取配置；服务账号 DN/密码留空时，仍可对匿名可读的 LDAP 工作
-     * （仅作运行时容错，不建议生产部署）。
+     * <p>原自研 SpdbLdapAuthenticationProvider（手写 JNDI bind）已删，换用 Spring 专为 AD 打造的
+     * 标准 provider，一次解决：① 硬编码 → config 驱动（{@code axon-link.security.ad.*}）；
+     * ② 密码错误正确抛 {@link org.springframework.security.authentication.BadCredentialsException}
+     * → AuthController 落 401（不再是 503）；③ 用上框架成熟的 AD 错误码解析。
+     *
+     * <p>关键配置：
+     * <ul>
+     *   <li>{@code (domain, url)}：UPN bind，用户输 {@code user} 或 {@code user@domain} 都行（内部补 domain）</li>
+     *   <li>{@code setConvertSubErrorCodesToExceptions(true)}：把 AD 子错误码（52e 密码错 / 525 用户不存在 /
+     *       530/531 登录时限 / 532 密码过期 / 533 账号禁用 / 701 账号过期 / 773 须改密）映射成
+     *       对应 {@code BadCredentialsException}/{@code AccountStatusException}</li>
+     *   <li>{@code setSearchFilter}：默认 {@code (&(objectClass=user)(userPrincipalName={0}))}，与原自研一致</li>
+     * </ul>
+     *
+     * <p>B 档不读 LDAP 组：不设 {@code GrantedAuthoritiesMapper}，登录成功用户已认证但空权限（全员同权）。
+     * 未来 C 档加 RBAC 时在此挂 authoritiesMapper 即可。
      */
     @Bean
-    public LdapContextSource ldapContextSource() {
-        // 直接读 Environment，避免重复定义一份 LdapProperties
-        LdapContextSource ctx = new LdapContextSource();
-        ctx.setUrl(env.getProperty("spring.ldap.urls", "ldap://localhost:389"));
-        ctx.setBase(env.getProperty("spring.ldap.base", ""));
-        ctx.setUserDn(env.getProperty("spring.ldap.username", ""));
-        ctx.setPassword(env.getProperty("spring.ldap.password", ""));
-        // afterPropertiesSet 触发内部 LdapTemplate 初始化（连接池等）
-        ctx.afterPropertiesSet();
-        log.info("[security] LdapContextSource 初始化完成 url={} base={}",
-                ctx.getUrls() == null ? "?" : String.join(",", ctx.getUrls()),
-                env.getProperty("spring.ldap.base"));
-        return ctx;
-    }
-
-    /**
-     * LDAP 认证提供器（search-then-bind 模式）。
-     *
-     * <p>流程：
-     * <ol>
-     *   <li>用服务账号 bind LDAP（{@link LdapContextSource}）</li>
-     *   <li>按 {@code userSearchFilter} 在 {@code userSearchBase} 下查找登录用户的 DN</li>
-     *   <li>用查到的 DN + 用户提交的密码再次 bind（验证密码）</li>
-     * </ol>
-     *
-     * <p>B 档不读 LDAP 组（不调 setAuthoritiesPopulator），登录成功用户拥有默认的
-     * 已认证身份但不携带任何业务角色。未来 C 档加 RBAC 时在此挂
-     * {@code DefaultLdapAuthoritiesPopulator(ctx, sp.getGroupSearchBase())} 即可。
-     */
-    @Bean
-    public SpdbLdapAuthenticationProvider ldapAuthenticationProvider(LdapContextSource ctx) {
-        // 内网定制：Spring Security 内置 LdapAuthenticationProvider + FilterBasedLdapUserSearch + BindAuthenticator
-        // 整套替换为浦发自研 SpdbLdapAuthenticationProvider（封装行内 LDAP/AD 特有协议细节，由行内安全团队维护）。
-        // ctx 仍作为参数注入保留 DI 顺序（Spring 先实例化 LdapContextSource bean），方便未来该 provider 内部按需读取。
-        return new SpdbLdapAuthenticationProvider();
+    public AuthenticationProvider ldapAuthenticationProvider() {
+        SecurityProperties.AdConfig ad = sp.getAd();
+        ActiveDirectoryLdapAuthenticationProvider provider =
+                new ActiveDirectoryLdapAuthenticationProvider(ad.getDomain(), ad.getUrl());
+        // AD 子错误码 → 标准异常（密码错 52e → BadCredentialsException，AuthController 据此落 401）
+        provider.setConvertSubErrorCodesToExceptions(true);
+        // 用登录请求里的凭据做后续搜索（标准 AD bind-then-search）
+        provider.setUseAuthenticationRequestCredentials(true);
+        provider.setSearchFilter(ad.getSearchFilter());
+        log.info("[security] ActiveDirectoryLdapAuthenticationProvider 初始化 domain={} url={}",
+                ad.getDomain(), ad.getUrl());
+        return provider;
     }
 
     /**
@@ -149,7 +137,7 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
-                                                   SpdbLdapAuthenticationProvider ldapProvider,
+                                                   AuthenticationProvider ldapProvider,
                                                    DiiTokenBypassFilter diiFilter) throws Exception {
         http
                 // ① CSRF 禁用：内部应用 + 同源 + SameSite=Lax + JSON POST，无传统 CSRF 风险
