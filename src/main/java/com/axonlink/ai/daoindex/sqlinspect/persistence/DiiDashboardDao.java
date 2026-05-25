@@ -46,9 +46,15 @@ public class DiiDashboardDao {
      */
     public List<Map<String, Object>> aggregateByDomain(Long taskId) {
         if (taskId == null) return Collections.emptyList();
+        // total 口径：与 aggregateRatingByDomain 的"优/良/差/报错"四档完全对齐，
+        // 即 total ≡ 报错 + 优 + 良 + 差。排除 overall_rating='NOT_APPLICABLE'（不适用，
+        // 如 INSERT VALUES 无需索引评级）和 overall_rating IS NULL（未评级/LLM 未跑）。
+        // 这样概览仪表盘"巡检 SQL 总数"与"评级分布"两图恒等闭合，不再出现总数对不上。
         String sql = ""
                 + "SELECT " + DOMAIN_CASE + " AS domain, "
-                + "       COUNT(*) AS total, "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' THEN 1 "
+                + "                WHEN overall_rating IN ('EXCELLENT','GOOD','POOR') THEN 1 "
+                + "                ELSE 0 END) AS total, "
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
                 // 整改口径：以 LLM 整改判定 NEED_FIX 为准（与第二块"整改分布"统一）
@@ -94,35 +100,46 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 最近 7 个 DONE 任务的评级趋势。
-     * 用于第三块 7 天趋势折线/分组柱状图。
+     * 最近 7 个 DONE 任务的<b>整改趋势</b>，按领域明细。
+     * 用于第三块 7 天趋势图（前端折线 + 领域多选）。
+     *
+     * <p>口径与 {@link #aggregateRatingByDomain}（整改分布）<b>完全一致</b>，
+     * 保证"整改分布"快照图与其时间趋势图同口径：
+     * <ul>
+     *   <li>{@code error_count} —— EXPLAIN 报错（explain_error 非空）</li>
+     *   <li>{@code need_fix}    —— 待整改：非报错 + overall_rating='POOR'（有 Seq Scan）
+     *       + llm_fix_verdict='NEED_FIX'（AI 判定需整改）</li>
+     * </ul>
+     * AI 判无需整改 / EXCELLENT / GOOD / 未分析(verdict NULL) 天然不计入。
+     * 注：need_fix 依赖 refactor 分支的 llm_fix_verdict 列（V10），同整改分布的跨分支耦合。
+     *
+     * <p>"汇总"由前端对同一 task 跨 domain 求和得出，后端只返回领域明细行。
      *
      * @param env 环境过滤（必填）
-     * @return 每行含 task_id / day / excellent / good / poor / error_count，按时间正序
+     * @return 每行含 task_id / day / domain / error_count / need_fix，
+     *         按 task 时间正序、领域名次序；最多 N 任务 × 5 领域
      */
     public List<Map<String, Object>> trendRecentTasks(String env, int limit) {
         int eff = Math.min(Math.max(limit, 1), 30);
-        // MySQL 用 INNER 子查询限定最近 N 个任务，再 JOIN 明细聚合
+        // MySQL 用 INNER 子查询限定最近 N 个任务，再 JOIN 明细按 (任务,领域) 聚合
         // ORDER BY t.id ASC 让前端从左到右按时间正序铺图
         String sql = ""
                 + "SELECT t.id AS task_id, "
                 + "       DATE(t.created_at) AS day, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='EXCELLENT' THEN 1 ELSE 0 END) AS excellent, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='GOOD' THEN 1 ELSE 0 END) AS good, "
-                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='POOR' THEN 1 ELSE 0 END) AS poor, "
+                + "       " + domainCase("i.project_name") + " AS domain, "
                 + "       SUM(CASE WHEN i.explain_error IS NOT NULL AND i.explain_error <> '' "
-                + "                THEN 1 ELSE 0 END) AS error_count "
+                + "                THEN 1 ELSE 0 END) AS error_count, "
+                + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
+                + "                 AND i.overall_rating='POOR' "
+                + "                 AND i.llm_fix_verdict='NEED_FIX' THEN 1 ELSE 0 END) AS need_fix "
                 + "  FROM ( "
                 + "    SELECT id, created_at FROM dii_analysis_task "
                 + "     WHERE env = ? AND status='DONE' "
                 + "     ORDER BY id DESC LIMIT ? "
                 + "  ) t "
                 + "  LEFT JOIN dii_analysis_item i ON i.task_id = t.id "
-                + " GROUP BY t.id, day "
-                + " ORDER BY t.id ASC";
+                + " GROUP BY t.id, day, domain "
+                + " ORDER BY t.id ASC, domain";
         return jdbc.queryForList(sql, env, eff);
     }
 
@@ -166,15 +183,25 @@ public class DiiDashboardDao {
     }
 
     /**
-     * 复用的 project_name → 领域 SQL CASE 子句。
+     * project_name → 领域 SQL CASE 子句生成器。
+     *
+     * <p>带 JOIN 的查询里 dii_analysis_item 有表别名（如 {@code i}），
+     * 需用 {@code domainCase("i.project_name")}；无别名查询用默认 {@link #DOMAIN_CASE}。
      * 与 DaoIndexController#mapDomainLabel 一致，避免前后端口径漂移。
+     *
+     * @param col project_name 的列引用（可带表别名前缀）
      */
-    private static final String DOMAIN_CASE = ""
-            + "CASE "
-            + "  WHEN LOWER(project_name) LIKE '%dept-bcc%' THEN '存款' "
-            + "  WHEN LOWER(project_name) LIKE '%loan-bcc%' THEN '贷款' "
-            + "  WHEN LOWER(project_name) LIKE '%comm-bcc%' THEN '公共' "
-            + "  WHEN LOWER(project_name) LIKE '%sett-bcc%' THEN '结算' "
-            + "  ELSE '其他' "
-            + "END";
+    private static String domainCase(String col) {
+        return ""
+                + "CASE "
+                + "  WHEN LOWER(" + col + ") LIKE '%dept-bcc%' THEN '存款' "
+                + "  WHEN LOWER(" + col + ") LIKE '%loan-bcc%' THEN '贷款' "
+                + "  WHEN LOWER(" + col + ") LIKE '%comm-bcc%' THEN '公共' "
+                + "  WHEN LOWER(" + col + ") LIKE '%sett-bcc%' THEN '结算' "
+                + "  ELSE '其他' "
+                + "END";
+    }
+
+    /** 无表别名场景（FROM dii_analysis_item 直查）的领域 CASE 子句。 */
+    private static final String DOMAIN_CASE = domainCase("project_name");
 }
