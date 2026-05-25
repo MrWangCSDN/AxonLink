@@ -171,9 +171,9 @@ public class SqlLlmAnalyzeService {
             }
             try {
                 SqlInspectionResult reinspectResult = inspectionService.reinspect(itemId, overrideSql);
-                log.info("[dii-llm][itemId={}] ⓪ 重跑规则引擎+EXPLAIN 完成 rating={} runtimeRating={}",
+                log.info("[dii-llm][itemId={}] ⓪ 重跑 EXPLAIN 完成 rating={} hasSeqScan={}",
                         itemId, reinspectResult.getOverallRatingLabel(),
-                        reinspectResult.getRuntimeRating() == null ? null : reinspectResult.getRuntimeRating().name());
+                        reinspectResult.getExplainHasSeqScan());
             } catch (Throwable t) {
                 log.error("[dii-llm][itemId={}] ✖ 重跑规则引擎/EXPLAIN 失败: {}", itemId, t.getMessage(), t);
                 result.setError("重跑规则引擎/EXPLAIN 失败：" + t.getMessage());
@@ -199,13 +199,15 @@ public class SqlLlmAnalyzeService {
                 ctx.inspectionResult == null ? null : ctx.inspectionResult.getSqlHash(),
                 tableCount, patternCount);
 
-        // ── 兜底：runtime_rating 必须是 POOR 或 GOOD 才跑 LLM ──
-        com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating rr =
-                ctx.inspectionResult == null ? null : ctx.inspectionResult.getRuntimeRating();
-        boolean allowLlm = (rr == com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating.POOR
-                         || rr == com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating.GOOD);
-        if (!allowLlm) {
-            String reason = "runtime_rating=" + rr + "（非 POOR/GOOD），跳过 LLM";
+        // ── 兜底：仅"需整改候选"(overall_rating=POOR) 才跑 LLM ──
+        //    v3 口径：与 SqlInspectionService 标 llm_pending、DAO findPendingLlmIds 字面一致。
+        //    overall_rating 由 reconstructResult 从 DB 列 overall_rating 经 IndexRating.valueOf
+        //    回填（见 reconstructResult），故这里能可靠拿到；命中索引但估算行数≥1000 时
+        //    hasSeqScan=false 但 rating=POOR，必须按 rating 判，不能再用 hasSeqScan。
+        boolean needFix = ctx.inspectionResult != null
+                && ctx.inspectionResult.getOverallRating() == IndexRating.POOR;
+        if (!needFix) {
+            String reason = "overall_rating != POOR（非需整改候选），跳过 LLM";
             log.info("[dii-llm][itemId={}] ✖ {}", itemId, reason);
             result.setError(reason);
             itemDao.updateLlmStatusOnly(itemId, "SKIPPED", reason);
@@ -597,6 +599,7 @@ public class SqlLlmAnalyzeService {
                     findingsJson,
                     suggestionsJson,
                     r.getConfidence(),
+                    r.getFixVerdict(),
                     r.getModel(),
                     r.getPromptVersion(),
                     r.getElapsedMs() == null ? 0L : r.getElapsedMs(),

@@ -1,4 +1,7 @@
-target/
+# 仅忽略仓库根级 Maven 构建产物：前导 / 把模式锚定到 .gitignore 所在目录（仓库根），
+# 只匹配 ./target/，不会误伤 src/main/java/com/axonlink/ai/daoindex/target 这类源码包目录。
+# ⚠️ 勿改回无斜杠的 target/：历史 bug——曾因此让 TargetDataSourceRegistry 长期未被 git 跟踪。
+/target/
 src/main/resources/static/
 src/main/resources/application-local.yml
 .node/

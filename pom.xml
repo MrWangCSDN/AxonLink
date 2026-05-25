@@ -89,10 +89,39 @@
             <version>33.0.0-jre</version>
         </dependency>
 
+        <!-- ── 安全与认证：LDAP 接入（灰度开关 axon-link.security.enabled，默认关） ── -->
+        <!-- Spring Security 核心：FilterChain / SecurityContext / AuthenticationManager -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <!-- Spring Security 的 LDAP 集成：LdapAuthenticationProvider / BindAuthenticator -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-ldap</artifactId>
+        </dependency>
+        <!-- Spring LDAP 核心：LdapContextSource / FilterBasedLdapUserSearch -->
+        <dependency>
+            <groupId>org.springframework.ldap</groupId>
+            <artifactId>spring-ldap-core</artifactId>
+        </dependency>
+
         <!-- 测试 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Spring Security 测试支持（SecurityMockMvcRequestPostProcessors / @WithMockUser 等） -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- UnboundID LDAP SDK：测试内嵌 InMemoryDirectoryServer，不依赖外部 LDAP -->
+        <dependency>
+            <groupId>com.unboundid</groupId>
+            <artifactId>unboundid-ldapsdk</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -1,5 +1,6 @@
 package com.axonlink.ai.daoindex.sqlinspect.explain;
 
+import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.sqlinspect.dto.ExplainResult;
 import com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
@@ -7,127 +8,89 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.Locale;
 import java.util.Map;
 
 /**
- * 基于 EXPLAIN 真实计划派生运行时评级（{@code runtime_rating}），
- * 并对比规则评级，输出 {@code disagreement} 信号。
+ * 由 EXPLAIN 真实执行计划派生 {@code overall_rating}（「EXPLAIN 优先」管线唯一评级来源）。
  *
- * <h3>派生规则</h3>
+ * <h3>语义变更（v3）：取消「优良差」三档评级，只判「是否需整改」</h3>
+ * <h3>增强 v6：细化 Seq Scan 判定，便宜小表全扫不再送 LLM</h3>
  * <pre>
- * 1. EXPLAIN 失败                                            → UNKNOWN（不参与 disagreement 计算）
- * 2. 涉及任何"大表"上的 Seq Scan（>= 1万 行）                 → POOR
- * 3. 仅"小表"上的 Seq Scan（< 1万 行）                        → GOOD（小表 Seq Scan 是合理的）
- * 4. 全部 Index Scan/Index Only Scan + 顶层 cost < 100         → EXCELLENT
- * 5. 其他                                                      → GOOD
+ * 1. EXPLAIN 失败 / 未跑                                          → null
+ *      （看板靠 explain_error 归"报错"档；不送 LLM）
+ * 2. 顶层 One-Time Filter:false（参数被当 NULL 短路）              → null
+ *      （计划不代表真实执行，GaussDB 5 不支持 GENERIC_PLAN 的已知限制；保留含日志）
+ * 3. EXPLAIN 估算 topPlanRows ≥ 1000（大扫描，不论 seq/index）     → POOR（需整改候选）
+ *      （回表/扫描量大，仍需 LLM 解读；此规则优先于 Seq Scan 判定）
+ * 4. hasSeqScan 且 topCost ≥ 可配阈值（默认 50.0）                 → POOR（需整改候选）
+ *      （确实有代价的全表扫描才送 LLM 解读，且应在看板里显著）
+ * 5. 其余（含便宜小表全扫：topCost &lt; 阈值且 rows &lt; 1000）       → EXCELLENT（无需整改）
  * </pre>
  *
- * <h3>disagreement 判定</h3>
- * <p>当 {@code runtime != UNKNOWN} 且 与 {@code rule} 不一致时为 true。
- * 输出原因便于审计："规则评 优，但 EXPLAIN 显示 大表 Seq Scan，建议人工 review"。
+ * <p><b>增强 v6</b>：便宜小表全扫（{@code topCost < 阈值} 且 {@code rows < 1000}）由优化器
+ * 最优选择、非问题，不再送 LLM——此前任意 Seq Scan 无条件判 POOR 会让小数据量表的全表扫描
+ * 白跑一次 LLM 才得出"无需整改"。成本阈值见
+ * {@link DaoIndexAnalysisProperties.Rating#getSeqScanCostMin()}（yml 可配，默认 50.0）。
+ *
+ * <p><b>判定结果仅两类</b>：{@code POOR}=需整改候选（送 LLM）/ {@code EXCELLENT}=无需整改
+ * （不送 LLM）。不再产出 {@code GOOD}（旧"良"档随本次语义变更弃用）。
+ *
+ * <p>"扫描行数"取 {@link ExplainResult#getTopPlanRows()}——EXPLAIN 优化器估算值，
+ * 不带 ANALYZE（不实际执行 SQL）。
  */
 @Component
 public class RuntimeRatingDeriver {
 
     private static final Logger log = LoggerFactory.getLogger(RuntimeRatingDeriver.class);
 
-    /** 表行数 ≥ 这个阈值时，Seq Scan 视为严重问题。 */
-    private static final long LARGE_TABLE_ROWS = 10_000L;
-    /** 顶层 cost 低于此值才认为是"低成本计划"。 */
-    private static final double LOW_COST_THRESHOLD = 100d;
+    /**
+     * 「大扫描」阈值：无 Seq Scan 但 EXPLAIN 估算扫描行数 ≥ 此值即判需整改候选。
+     * 此处的行数是 EXPLAIN 优化器估算行数（{@link ExplainResult#getTopPlanRows()}），
+     * 不带 ANALYZE、不实际执行 SQL。
+     */
+    private static final long LARGE_SCAN_ROWS = 1000L;
+
+    private final DaoIndexAnalysisProperties props;
+
+    public RuntimeRatingDeriver(DaoIndexAnalysisProperties props) {
+        this.props = props;
+    }
 
     /**
-     * 派生 runtime_rating。
+     * 由 EXPLAIN 结果派生 overall_rating（是否需整改判定）。
      *
-     * @param explain         EXPLAIN 执行结果
-     * @param tableMetadataMap 涉及表的元数据 map（key 是 lower-case 表名）
+     * @param explain          EXPLAIN 执行结果
+     * @param tableMetadataMap 涉及表的元数据 map（key 是 lower-case 表名）；
+     *                         新口径下不再用它（保留入参仅为兼容调用方签名）
+     * @return POOR=需整改候选 / EXCELLENT=无需整改；EXPLAIN 失败或短路时返回 {@code null}
      */
     public IndexRating derive(ExplainResult explain, Map<String, TableMetadata> tableMetadataMap) {
         if (explain == null || !explain.isSuccess()) {
-            // EXPLAIN 失败/未跑：不评 runtime，由调用方决定怎么写库
+            // EXPLAIN 失败/未跑：不评级，由调用方写 null（看板靠 explain_error 归档）
             return null;
         }
-        // 顶层 One-Time Filter: false 意味着 SQL 被优化器视为恒假（通常是参数替换为 NULL 导致），
-        // 里层的 Seq Scan / Index Scan 不代表真实执行。不派生 runtime_rating，避免系统性误判。
+        // 顶层 One-Time Filter: false：优化器认为整条 SQL 恒假（参数替换成 NULL 导致），
+        // 里层 Seq Scan / Index Scan 不代表真实执行。不派生评级，避免系统性误判。
         if (explain.isOneTimeFilterFalse()) {
-            log.debug("[dii-runtime] 顶层 One-Time Filter=false，跳过派生（参数替换导致的恒假条件）");
+            log.debug("[dii-rating] 顶层 One-Time Filter=false，跳过派生（参数替换导致的恒假条件）");
             return null;
         }
 
-        boolean hasLargeTableSeqScan = false;
+        // 大扫描（不论 Seq Scan 还是命中索引但回表/扫描量大）→ 需整改候选
+        if (explain.getTopPlanRows() >= LARGE_SCAN_ROWS) {
+            return IndexRating.POOR;
+        }
+        // Seq Scan：仅当确实有代价（EXPLAIN 估算 topCost ≥ 阈值）才判需整改候选送 LLM；
+        // 便宜小表全扫（topCost 很小，优化器选 seq 即最优、非问题）落到下面 EXCELLENT，不送 LLM。
         if (explain.isHasSeqScan()) {
-            for (String table : explain.getScannedTables()) {
-                TableMetadata md = tableMetadataMap == null ? null
-                        : tableMetadataMap.get(table.toLowerCase(Locale.ROOT));
-                long tuples = md != null && md.getLiveTuples() != null ? md.getLiveTuples() : Long.MAX_VALUE;
-                // 没拿到行数时保守认为是"大表"，避免漏判
-                if (tuples >= LARGE_TABLE_ROWS) {
-                    hasLargeTableSeqScan = true;
-                    break;
-                }
+            double costMin = props.getRating().getSeqScanCostMin();
+            if (explain.getTopCost() >= costMin) {
+                return IndexRating.POOR;
             }
-            if (hasLargeTableSeqScan) return IndexRating.POOR;
+            log.debug("[dii-rating] 便宜小表全表扫描 topCost={} < {}（rows={} < {}），判无需整改不送 LLM",
+                    explain.getTopCost(), costMin, explain.getTopPlanRows(), LARGE_SCAN_ROWS);
         }
-
-        // 全部走索引 + 成本低 → 优
-        boolean allIndexed = explain.isHasIndexScan() && !explain.isHasSeqScan();
-        if (allIndexed && explain.getTopCost() < LOW_COST_THRESHOLD) {
-            return IndexRating.EXCELLENT;
-        }
-        // Seq Scan 但都是小表 / 或其他正常情况 → 良
-        return IndexRating.GOOD;
-    }
-
-    /**
-     * 比对规则评级与 runtime 评级，得出分歧信号。
-     *
-     * @return 长度 2 数组：{@code [disagreementBoolean, reasonString]}（reason 可能为 null）
-     */
-    public Disagreement compare(IndexRating ruleRating, IndexRating runtimeRating, ExplainResult explain) {
-        if (runtimeRating == null) {
-            // EXPLAIN 失败：算不上分歧
-            return new Disagreement(false, null);
-        }
-        if (ruleRating == runtimeRating) {
-            return new Disagreement(false, null);
-        }
-        // 不一致，给"人话理由"
-        String reason = buildReason(ruleRating, runtimeRating, explain);
-        log.debug("[dii-runtime] disagreement rule={} runtime={} reason={}", ruleRating, runtimeRating, reason);
-        return new Disagreement(true, reason);
-    }
-
-    private String buildReason(IndexRating rule, IndexRating runtime, ExplainResult explain) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("规则评").append(label(rule)).append("，EXPLAIN 派生").append(label(runtime)).append("：");
-        if (runtime == IndexRating.POOR) {
-            if (explain.isHasSeqScan()) {
-                sb.append("出现 Seq Scan on ").append(explain.getScannedTables());
-            }
-            sb.append("（顶层 cost=").append(String.format("%.1f", explain.getTopCost())).append("）");
-            sb.append("。建议人工复核优化器选择，可能是统计信息过期或隐式类型转换。");
-        } else if (runtime == IndexRating.EXCELLENT && rule != IndexRating.EXCELLENT) {
-            sb.append("优化器自动选择了较优的索引组合，比规则推断更好。");
-        } else {
-            sb.append("评级落差较小，可参考 EXPLAIN 计划。");
-        }
-        return sb.toString();
-    }
-
-    private static String label(IndexRating r) {
-        if (r == null) return "未知";
-        return r.getLabel();
-    }
-
-    /** 比对结果：是否分歧 + 人话理由。 */
-    public static class Disagreement {
-        public final boolean disagree;
-        public final String reason;
-
-        public Disagreement(boolean disagree, String reason) {
-            this.disagree = disagree;
-            this.reason = reason;
-        }
+        // 命中索引且小扫描 / 便宜小表全扫 → 无需整改
+        return IndexRating.EXCELLENT;
     }
 }

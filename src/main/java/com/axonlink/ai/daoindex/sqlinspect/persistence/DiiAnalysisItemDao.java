@@ -96,13 +96,9 @@ public class DiiAnalysisItemDao {
      * @return 新 itemId
      */
     public long insertFromResult(SqlInspectionResult result, SqlSource source) {
-        String involvedTables = result.getTableRatings() == null ? null
-                : result.getTableRatings().stream()
-                        .map(tr -> tr.getTable())
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .collect(Collectors.joining(","));
+        String involvedTables = resolveInvolvedTables(result);
 
+        // 规则引擎下线后 tableRatings 恒为空 → toJson 得到 "[]"（不破坏列，保持非 null 字符串）
         String tableRatingsJson = toJson(result.getTableRatings());
         String warningsJson     = toJson(result.getWarnings());
 
@@ -223,8 +219,8 @@ public class DiiAnalysisItemDao {
 
     /**
      * 标记 item 为"待 LLM 分析"。
-     * 触发条件（由上层 SqlInspectionService 判断）：
-     * rating ≤ GOOD / disagreement=true / schema drift / llm 建议作用 scope=TABLE 的高优先级场景。
+     * 触发条件（由上层 {@code SqlInspectionService} 判断）：{@code overall_rating='POOR'}
+     * （需整改候选：全表扫描 或 命中索引但 EXPLAIN 估算扫描行数≥1000）。
      */
     public int markLlmPending(long itemId) {
         return jdbc.update(
@@ -243,6 +239,7 @@ public class DiiAnalysisItemDao {
                 "UPDATE dii_analysis_item SET llm_pending=1, llm_status='PENDING', " +
                 "       llm_error=NULL, llm_summary=NULL, llm_findings_json=NULL, " +
                 "       llm_suggestions_json=NULL, llm_confidence=NULL, " +
+                "       llm_fix_verdict=NULL, " +
                 "       llm_called_at=NOW() WHERE id=?",
                 itemId);
     }
@@ -252,12 +249,7 @@ public class DiiAnalysisItemDao {
      * 同步把 LLM 字段清空，让上层接着重跑 LLM。
      */
     public int updateInspectionFields(long itemId, SqlInspectionResult r) {
-        String involvedTables = r.getTableRatings() == null ? null
-                : r.getTableRatings().stream()
-                        .map(tr -> tr.getTable())
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .collect(Collectors.joining(","));
+        String involvedTables = resolveInvolvedTables(r);
         String tableRatingsJson = toJson(r.getTableRatings());
         String warningsJson     = toJson(r.getWarnings());
 
@@ -273,7 +265,8 @@ public class DiiAnalysisItemDao {
                 // 重置 LLM 字段，让后续重跑覆盖
                 "  llm_pending = 1, llm_status = NULL, llm_summary = NULL, " +
                 "  llm_findings_json = NULL, llm_suggestions_json = NULL, " +
-                "  llm_confidence = NULL, llm_model = NULL, llm_prompt_version = NULL, " +
+                "  llm_confidence = NULL, llm_fix_verdict = NULL, " +
+                "  llm_model = NULL, llm_prompt_version = NULL, " +
                 "  llm_elapsed_ms = NULL, llm_error = NULL, llm_called_at = NULL " +
                 "WHERE id = ?",
                 r.getSqlHash(), r.getSql(),
@@ -305,17 +298,18 @@ public class DiiAnalysisItemDao {
     /** LLM 分析成功：一次性写入所有 LLM 字段。 */
     public int updateLlmFull(long itemId, String status,
                              String summary, String findingsJson, String suggestionsJson,
-                             String confidence, String model, String promptVersion,
+                             String confidence, String fixVerdict,
+                             String model, String promptVersion,
                              long elapsedMs, String error) {
         return jdbc.update(
                 "UPDATE dii_analysis_item SET " +
                 " llm_pending=0, llm_status=?, " +
                 " llm_summary=?, llm_findings_json=?, llm_suggestions_json=?, " +
-                " llm_confidence=?, llm_model=?, llm_prompt_version=?, " +
+                " llm_confidence=?, llm_fix_verdict=?, llm_model=?, llm_prompt_version=?, " +
                 " llm_elapsed_ms=?, llm_error=?, llm_called_at=NOW() " +
                 "WHERE id=?",
                 status, truncate(summary, 500), findingsJson, suggestionsJson,
-                confidence, model, promptVersion,
+                confidence, fixVerdict, model, promptVersion,
                 (int) Math.min(elapsedMs, Integer.MAX_VALUE),
                 truncate(error, 1000),
                 itemId);
@@ -324,9 +318,10 @@ public class DiiAnalysisItemDao {
     /**
      * 查"待 LLM 分析"列表。
      *
-     * <p><b>硬过滤</b>：只捡 {@code runtime_rating IN ('POOR','GOOD')} 的 item。
-     * 即使历史数据把 llm_pending=1 错标到了 EXCELLENT / NULL 行上，这里也兜底不捡，
-     * 防止把时间浪费在不需要 LLM 解读的行上。
+     * <p><b>硬过滤</b>：只捡 {@code overall_rating = 'POOR'}（需整改候选：全表扫描，或
+     * 命中索引但 EXPLAIN 估算扫描行数≥1000）的 item。即使历史数据把 llm_pending=1 错标到
+     * 非需整改候选 / EXPLAIN 失败的行上，这里也兜底不捡，与 {@code SqlInspectionService}
+     * 标 llm_pending、{@code SqlLlmAnalyzeService} 兜底守卫三处口径字面一致。
      *
      * @param env       过滤环境，可 null
      * @param taskId    过滤任务，可 null
@@ -342,8 +337,8 @@ public class DiiAnalysisItemDao {
         } else {
             sb.append(" AND llm_pending=1 AND (llm_status IS NULL OR llm_status='PENDING') ");
         }
-        // 最后一公里防护：只有 runtime_rating 是 POOR 或 GOOD 才跑 LLM
-        sb.append(" AND runtime_rating IN ('POOR','GOOD') ");
+        // 最后一公里防护：只有 overall_rating='POOR'（需整改候选）才跑 LLM
+        sb.append(" AND overall_rating = 'POOR' ");
         if (env != null && !env.isBlank()) {
             sb.append(" AND env=? "); args.add(env);
         }
@@ -413,6 +408,23 @@ public class DiiAnalysisItemDao {
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() <= max ? s : s.substring(0, max - 3) + "...";
+    }
+
+    /**
+     * 物理删除某任务下的全部 item（「一天一次·覆盖式」用，<b>真删非软删</b>）。
+     *
+     * <p>新建当天巡检任务时，若当天已有 DONE/FAILED 的旧任务，先用本方法清掉旧
+     * 任务的全部分析明细，再删旧 task 行，最后建新 task——保证每 env 每天恰好
+     * 1 份 dii_analysis_item 数据，不残留历史明细。
+     *
+     * <p><b>性能说明</b>：按 {@code task_id} 等值删除；该列若有索引（如
+     * {@code idx_item_task}）则很快，否则单 env 单天的量级也可接受，本任务不加 DDL。
+     *
+     * @param taskId 旧任务 id
+     * @return 删除的明细条数
+     */
+    public int deleteByTaskId(long taskId) {
+        return jdbc.update("DELETE FROM dii_analysis_item WHERE task_id = ?", taskId);
     }
 
     /** 查与 {@link #search} 同过滤条件下的总行数，便于分页展示。 */
@@ -584,6 +596,31 @@ public class DiiAnalysisItemDao {
           .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
+    }
+
+    /**
+     * 解析 involved_tables：优先用新管线的 {@link SqlInspectionResult#getInvolvedTables()}
+     * （轻量表名抽取结果），为空时回退到旧的 tableRatings（兼容历史 / 重跑路径）。
+     * 规则引擎下线后 tableRatings 恒为空，正常走 involvedTables 分支。
+     */
+    private static String resolveInvolvedTables(SqlInspectionResult result) {
+        if (result == null) return null;
+        List<String> tables = result.getInvolvedTables();
+        if (tables != null && !tables.isEmpty()) {
+            return tables.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .distinct()
+                    .collect(Collectors.joining(","));
+        }
+        // 回退：旧逻辑从 tableRatings 取（规则引擎下线后通常为空）
+        if (result.getTableRatings() == null) return null;
+        return result.getTableRatings().stream()
+                .map(tr -> tr.getTable())
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.joining(","));
     }
 
     private String toJson(Object obj) {

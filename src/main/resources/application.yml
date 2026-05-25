@@ -18,6 +18,49 @@ spring:
       cache:
         period: 3600
 
+  # ── LDAP 连接（仅当 axon-link.security.enabled=true 时被使用）────────────────
+  # 全部走 ENV 注入；yml 占位空字符串，避免服务账号密码入仓。
+  # AD 与 OpenLDAP 通用：差异在 axon-link.security.user-search-filter（见下方块）。
+  ldap:
+    urls: ${LDAP_URL:ldap://localhost:389}
+    base: ${LDAP_BASE:DC=corp,DC=bank,DC=com}
+    username: ${LDAP_BIND_DN:}
+    password: ${LDAP_BIND_PWD:}
+
+# ── 安全与认证（LDAP B 档：仅登录保护，不分角色）──────────────────────────────
+# 灰度开关：axon-link.security.enabled=false 时整个 Security 配置不装配，
+# 等价于"从未引入"，所有 /api/** 仍开放（兼容现有 dev/CI 流程）。
+# prod 启用：AXON_SECURITY_ENABLED=true。
+# X-DII-Trigger-Token 双轨保留：脚本/curl 不受影响（见 DiiTokenBypassFilter）。
+axon-link:
+  security:
+    enabled: ${AXON_SECURITY_ENABLED:false}
+    user-search-base: ${LDAP_USER_BASE:OU=Users}
+    # AD 使用 sAMAccountName；OpenLDAP 使用 uid。{0} 会被替换为登录用户名。
+    user-search-filter: ${LDAP_USER_FILTER:(sAMAccountName={0})}
+    # 组搜索：B 档不读组，仅预留给未来 C 档（接口级 RBAC）零成本铺路。
+    group-search-base: ${LDAP_GROUP_BASE:OU=Groups}
+    group-search-filter: ${LDAP_GROUP_FILTER:(member={0})}
+    session-timeout-minutes: ${AXON_SESSION_TIMEOUT_MIN:120}
+
+    # AD（Active Directory）标准认证配置（增强 v3）
+    # 用 Spring 标准 ActiveDirectoryLdapAuthenticationProvider；默认值=原自研 Spdb 硬编码值，
+    # 默认部署零行为变化，但现在可经 ENV 覆盖（改地址不用重新打包）。
+    # 注：本节生效后 spring.ldap.* 与 axon-link.security.user-search-*/group-search-* 均不再被消费。
+    ad:
+      domain: ${AXON_AD_DOMAIN:hdq.spdb.com}
+      url: ${AXON_AD_URL:ldap://10.200.63.55:3268}
+      search-filter: ${AXON_AD_SEARCH_FILTER:(&(objectClass=user)(userPrincipalName={0}))}
+
+    # UIAS 统一认证配置（增强 v2）
+    # 默认 enabled=false：SDK 未接前关；前端不显「统一认证登录」Tab
+    # 真接入 SDK 时由运维配 sdk-url + sso-target 即生效
+    uias:
+      enabled: ${AXON_UIAS_ENABLED:false}
+      sdk-url: ${AXON_UIAS_SDK_URL:}
+      sso-target: ${AXON_UIAS_SSO_TARGET:}
+      session-empno-key: ${AXON_UIAS_SESSION_EMPNO_KEY:uiasEmpNo}
+
 logging:
   level:
     com.axonlink: info
@@ -222,6 +265,16 @@ dao-index-analysis:
   # 并发复用窗口（分钟）：同 sql_hash + env 在该窗口内有 DONE 记录，直接复用不重新分析
   # 用于保护"多任务/并发压测"下的重复计算。设为 0 可关闭。
   concurrent-reuse-minutes: ${DII_CONCURRENT_REUSE_MINUTES:5}
+
+  # 批量巡检 EXPLAIN 跑完是否自动链式触发 LLM 回填（增强 v5）。
+  # true=一步到位（推荐）；false=回退老两步，需手动/定时跑 llm-enrich。
+  batch:
+    auto-llm-after-batch: ${DII_AUTO_LLM_AFTER_BATCH:true}
+
+  # Seq Scan 判需整改的最小 EXPLAIN 估算成本阈值（增强 v6）。
+  # 低于此值=便宜小表全扫（优化器最优选择、非问题），判无需整改不送 LLM；可不重新打包直接调。
+  rating:
+    seq-scan-cost-min: ${DII_SEQ_SCAN_COST_MIN:50.0}
 
   # 定时任务
   schedule:

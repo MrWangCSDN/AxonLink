@@ -27,7 +27,7 @@ public class BatchAsyncConfig {
     /**
      * 批量巡检专用线程池。
      *
-     * <p>当前 {@code BatchInspectionService.runAsync} 里对 SQL 列表是**串行循环**，
+     * <p>当前 {@code BatchInspectionRunner.runAsync} 里对 SQL 列表是**串行循环**，
      * 所以此池只要有 2~3 个线程就够（并发多个 batch 任务时有冗余）。
      * 后续如果要做 SQL 级并发，应该另建一个更大的池。
      */

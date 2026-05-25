@@ -1,10 +1,10 @@
 package com.axonlink.ai.daoindex.sqlinspect.service;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
+import com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlKindDetector;
 import com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer;
 import com.axonlink.ai.daoindex.sqlinspect.dto.ColumnInfo;
 import com.axonlink.ai.daoindex.sqlinspect.dto.ExplainResult;
-import com.axonlink.ai.daoindex.sqlinspect.dto.IndexMeta;
 import com.axonlink.ai.daoindex.sqlinspect.dto.IndexRating;
 import com.axonlink.ai.daoindex.sqlinspect.dto.PredicateExtract;
 import com.axonlink.ai.daoindex.sqlinspect.dto.SqlInspectionRequest;
@@ -13,10 +13,8 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableRating;
 import com.axonlink.ai.daoindex.sqlinspect.explain.ExplainExecutor;
 import com.axonlink.ai.daoindex.sqlinspect.explain.RuntimeRatingDeriver;
-import com.axonlink.ai.daoindex.sqlinspect.meta.IndexMetaService;
 import com.axonlink.ai.daoindex.sqlinspect.metadata.TableMetadataService;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
-import com.axonlink.ai.daoindex.sqlinspect.rule.IndexHitRuleEngine;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,22 +23,32 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
- * 单条 SQL 的索引命中分析门面（Phase 2a.1）。
+ * 单条 SQL 巡检门面（DII，「EXPLAIN 优先」管线）。
  *
- * <p>编排顺序：
+ * <h3>新管线编排</h3>
  * <pre>
- *   1. SqlPredicateAnalyzer → 按表抽取 equality 谓词
- *   2. IndexMetaService     → 查每张表的现有索引（缓存）
- *   3. IndexHitRuleEngine   → 按最左匹配规则为每张表评级
- *   4. 聚合 overallRating（多表取最差档）
+ *   1. 5min 幂等窗口命中 → 复用旧结果（不变）
+ *   2. SqlKindDetector 首关键字判类型（不依赖 Druid 解析成功）
+ *        ├─ INSERT(VALUES / SELECT) → overall_rating=NOT_APPLICABLE，落库返回
+ *        │                            （不 EXPLAIN、不 LLM）
+ *        └─ 其它（SELECT/UPDATE/DELETE/WITH/UNKNOWN…）→ 无条件跑 EXPLAIN
+ *              ├─ EXPLAIN 失败 → explain_error；overall_rating = null（看板靠
+ *              │                  explain_error 归"报错"档）；不 LLM
+ *              └─ EXPLAIN 成功 → 由执行计划派生 overall_rating（是否需整改）：
+ *                    - 全表扫描 / 命中索引但估算扫描行数≥1000 → POOR（需整改候选）
+ *                      → 标 llm_pending（送 LLM）
+ *                    - 命中索引且估算扫描行数&lt;1000 → EXCELLENT（无需整改）→ 不 LLM
  * </pre>
  *
- * <p>Phase 2a.1 不接入 LLM、不落库、不执行 EXPLAIN。
+ * <p><b>LLM 触发判据（v3）</b>：{@code overall_rating = POOR}（需整改候选：全表扫描
+ * 或命中索引但估算扫描行数≥1000 才送 LLM 解读），不再用 {@code explain_has_seq_scan=1}
+ * （命中索引≥1000 行没有 Seq Scan 也要送）。
+ *
+ * <p>规则引擎（最左匹配评级）已整体下线；表名抽取仍复用
+ * {@link SqlPredicateAnalyzer}（仅取表名，不取谓词）供表元数据采集 / EXPLAIN 用。
  */
 @Service
 public class SqlInspectionService {
@@ -48,8 +56,6 @@ public class SqlInspectionService {
     private static final Logger log = LoggerFactory.getLogger(SqlInspectionService.class);
 
     private final SqlPredicateAnalyzer analyzer;
-    private final IndexMetaService indexMetaService;
-    private final IndexHitRuleEngine ruleEngine;
     private final DiiAnalysisItemDao itemDao;
     private final DaoIndexAnalysisProperties props;
     private final ExplainExecutor explainExecutor;
@@ -58,8 +64,6 @@ public class SqlInspectionService {
     private final ObjectMapper objectMapper;
 
     public SqlInspectionService(SqlPredicateAnalyzer analyzer,
-                                IndexMetaService indexMetaService,
-                                IndexHitRuleEngine ruleEngine,
                                 DiiAnalysisItemDao itemDao,
                                 DaoIndexAnalysisProperties props,
                                 ExplainExecutor explainExecutor,
@@ -67,8 +71,6 @@ public class SqlInspectionService {
                                 RuntimeRatingDeriver runtimeRatingDeriver,
                                 ObjectMapper objectMapper) {
         this.analyzer = analyzer;
-        this.indexMetaService = indexMetaService;
-        this.ruleEngine = ruleEngine;
         this.itemDao = itemDao;
         this.props = props;
         this.explainExecutor = explainExecutor;
@@ -128,7 +130,7 @@ public class SqlInspectionService {
                 if (cached != null) {
                     log.info("[dii-sqlinspect] 命中 {} 分钟幂等窗口，复用 itemId={} env={} sqlHash={}",
                             reuseMinutes, reusedId, result.getEnv(), result.getSqlHash());
-                    result.setOverallRating(parseRating((String) cached.get("overall_rating")));
+                    result.setOverallRating(parseRatingNullable((String) cached.get("overall_rating")));
                     result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
                     result.getWarnings().add("命中 " + reuseMinutes + " 分钟幂等窗口，复用 itemId=" + reusedId);
                     // 把关键字段复用出来给调用方看
@@ -138,73 +140,45 @@ public class SqlInspectionService {
             }
         }
 
-        // 1. 解析 SQL（含 SQL 类型 + 按表的谓词）
-        com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer.Result parsed =
-                analyzer.analyze(normalizedSql);
-        Map<String, PredicateExtract> predMap = parsed.predicatesByTable;
+        // ── 1. 用首关键字正则判 SQL 类型（不再依赖 Druid 解析成功） ──
+        SqlPredicateAnalyzer.SqlKind kind = SqlKindDetector.detect(normalizedSql);
 
-        if (parsed.kind == com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer.SqlKind.UNKNOWN) {
-            result.setOverallRating(IndexRating.POOR);
-            result.getWarnings().add("SQL 解析失败或不支持该 SQL 类型");
-            result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
-            // 落库让审计链完整：解析失败的记录也要留痕
-            if (persist) persistResult(result, parsed);
-            return result;
-        }
-
-        // INSERT VALUES 不需要索引评级：不是"差"，是"不适用"；
-        // 但仍然要落库留痕，保证 total_sqls 和 item 表行数对得上。
-        if (parsed.kind == com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer.SqlKind.INSERT_VALUES) {
+        // ── 2. INSERT（VALUES 或 SELECT）→ 不适用索引评级，落库留痕后返回 ──
+        //       不跑 EXPLAIN、不送 LLM；overall_rating = NOT_APPLICABLE
+        if (kind == SqlPredicateAnalyzer.SqlKind.INSERT_VALUES
+                || kind == SqlPredicateAnalyzer.SqlKind.INSERT_SELECT) {
             result.setOverallRating(IndexRating.NOT_APPLICABLE);
-            result.getWarnings().add("INSERT VALUES 语句无 WHERE 条件，不参与索引评级");
-            for (PredicateExtract pe : predMap.values()) {
-                TableRating tr = new TableRating();
-                tr.setTable(pe.getTableName());
-                tr.setRating(IndexRating.NOT_APPLICABLE);
-                tr.setReason("INSERT VALUES 不需要索引评级");
-                tr.setPredicates(pe);
-                result.getTableRatings().add(tr);
-            }
+            result.getWarnings().add("INSERT 语句不参与索引评级（不执行 EXPLAIN / LLM）");
             result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
-            log.info("[dii-sqlinspect] INSERT VALUES 落库 env={} sqlHash={}",
-                    request.getEnv(), result.getSqlHash());
-            if (persist) persistResult(result, parsed);
+            log.info("[dii-sqlinspect] INSERT({}) 落库 env={} sqlHash={}",
+                    kind, request.getEnv(), result.getSqlHash());
+            if (persist) persistResult(result, kind);
             return result;
         }
 
-        // SELECT / UPDATE / DELETE / INSERT_SELECT 都走同一套规则引擎
-        IndexRating overall = null;
-        for (PredicateExtract pe : predMap.values()) {
-            List<IndexMeta> indexes = indexMetaService.getIndexes(request.getEnv(), pe.getTableName());
-            TableRating tr = ruleEngine.rateTable(pe, indexes);
-            result.getTableRatings().add(tr);
-            overall = (overall == null) ? tr.getRating() : IndexRating.worstOf(overall, tr.getRating());
-        }
-
-        result.setOverallRating(overall == null ? IndexRating.POOR : overall);
+        // ── 3. 其余一律进 EXPLAIN 主流程（含原 UNKNOWN：尽力 EXPLAIN，失败就记 explain_error） ──
         result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
-
-        // ── EXPLAIN + 表元数据 + runtime_rating 派生 ──
-        // 全过程包在 try-catch，任何失败都不影响规则结果落库
         try {
-            enrichWithExplainAndMetadata(result, normalizedSql, request.getEnv(), predMap);
+            enrichWithExplainAndMetadata(result, normalizedSql, request.getEnv());
         } catch (Throwable t) {
             log.warn("[dii-sqlinspect] EXPLAIN/metadata 收集失败 sqlHash={}: {}",
                     result.getSqlHash(), t.getMessage());
             result.setExplainError("收集失败：" + t.getMessage());
+            // 收集异常视同 EXPLAIN 失败：overall_rating 置 null，看板靠 explain_error 归"报错"档
+            result.setOverallRating(null);
         }
 
-        if (persist) persistResult(result, parsed);
+        if (persist) persistResult(result, kind);
 
-        log.info("[dii-sqlinspect] 分析完成 env={} kind={} rating={} tables={} elapsed={}ms itemId={} sqlHash={}",
-                request.getEnv(), parsed.kind, result.getOverallRatingLabel(),
-                result.getTableRatings().size(), result.getRuleEngineElapsedMs(),
+        log.info("[dii-sqlinspect] 分析完成 env={} kind={} rating={} hasSeqScan={} elapsed={}ms itemId={} sqlHash={}",
+                request.getEnv(), kind, result.getOverallRatingLabel(),
+                result.getExplainHasSeqScan(), result.getRuleEngineElapsedMs(),
                 result.getItemId(), result.getSqlHash());
         return result;
     }
 
     /**
-     * 重跑入口：用新 SQL 重新执行规则引擎 + EXPLAIN，UPDATE 已有 itemId 行。
+     * 重跑入口：用新 SQL 重新执行 EXPLAIN，UPDATE 已有 itemId 行。
      * 不走幂等缓存，不新建行；同时把 LLM 字段清空让上层重跑 LLM。
      *
      * @return 跑完的 inspection 结果（itemId 仍为传入的 id）
@@ -222,49 +196,51 @@ public class SqlInspectionService {
         SqlInspectionResult result = inspect(req, false);
         itemDao.updateInspectionFields(itemId, result);
         result.setItemId(itemId);
-        log.info("[dii-sqlinspect] 重跑 itemId={} env={} 新 sqlHash={} rating={} runtimeRating={}",
+        log.info("[dii-sqlinspect] 重跑 itemId={} env={} 新 sqlHash={} rating={} hasSeqScan={}",
                 itemId, env, result.getSqlHash(),
-                result.getOverallRatingLabel(),
-                result.getRuntimeRating() == null ? null : result.getRuntimeRating().name());
+                result.getOverallRatingLabel(), result.getExplainHasSeqScan());
         return result;
     }
 
     /**
-     * 统一的落库入口：不论是 SELECT / UPDATE / DELETE / INSERT VALUES / UNKNOWN，
-     * 只要走到规则引擎就应该在 {@code dii_analysis_item} 表留一条记录，
-     * 确保 {@code total_sqls} 和表行数能对得上。
+     * 统一落库入口：不论 SELECT / UPDATE / DELETE / INSERT / UNKNOWN，都在
+     * {@code dii_analysis_item} 留一条记录，确保 {@code total_sqls} 和表行数对得上。
      *
-     * <p><b>LLM 触发条件（极简版）</b>：只看 {@code runtime_rating} ∈ {POOR, GOOD}。
+     * <p><b>LLM 触发条件（v3 口径）</b>：{@code overall_rating = POOR}（需整改候选：
+     * 全表扫描 或 命中索引但 EXPLAIN 估算扫描行数≥1000）才送 LLM。
      * <ul>
-     *   <li>runtime_rating = POOR / GOOD → 标 llm_pending=1，后续异步跑 LLM 解读</li>
-     *   <li>runtime_rating = EXCELLENT → 不跑 LLM（执行计划已经够好，无需解读）</li>
-     *   <li>runtime_rating = NULL（EXPLAIN 失败 / NOT_APPLICABLE 等）→ 不跑 LLM（没有执行计划，LLM 瞎编没价值）</li>
+     *   <li>需整改候选（overall_rating=POOR）→ 标 llm_pending=1，后续异步跑 LLM 解读；</li>
+     *   <li>无需整改（EXCELLENT）→ 不跑 LLM（执行计划没有显著问题）；</li>
+     *   <li>EXPLAIN 失败（overall_rating=null）/ NOT_APPLICABLE → 不跑 LLM。</li>
      * </ul>
-     * 不再看 overall_rating、disagreement、explain_error —— 规则简化到单一判据。
+     * 与 {@link DiiAnalysisItemDao#findPendingLlmIds} 的 {@code overall_rating='POOR'}
+     * 过滤口径、{@code SqlLlmAnalyzeService} 兜底守卫口径三处字面保持一致。
      */
     private void persistResult(SqlInspectionResult result,
-                               com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer.Result parsed) {
+                               SqlPredicateAnalyzer.SqlKind kind) {
         try {
             DiiAnalysisItemDao.SqlSource source = DiiAnalysisItemDao.SqlSource.ofKind(
-                    parsed == null || parsed.kind == null ? "UNKNOWN" : parsed.kind.name());
+                    kind == null ? "UNKNOWN" : kind.name());
             long newId = itemDao.insertFromResult(result, source);
             result.setItemId(newId);
 
-            // ── LLM 触发：runtime_rating 是 GOOD 或 POOR ──
-            IndexRating rr = result.getRuntimeRating();
-            boolean needsLlm = (rr == IndexRating.POOR || rr == IndexRating.GOOD);
-
-            if (newId > 0 && needsLlm) {
+            // ── LLM 触发：仅"需整改候选"(overall_rating=POOR) 才送 ──
+            //    与 DAO findPendingLlmIds 的 overall_rating='POOR' 过滤、
+            //    SqlLlmAnalyzeService 兜底守卫三处字面一致。
+            //    注意：命中索引但估算扫描行数≥1000 时 hasSeqScan=false 但 rating=POOR，
+            //    必须按 rating 判，不能再用 hasSeqScan（否则会漏送）。
+            boolean needFix = result.getOverallRating() == IndexRating.POOR;
+            if (newId > 0 && needFix) {
                 try {
                     itemDao.markLlmPending(newId);
-                    log.info("[dii-sqlinspect] 标记 llm_pending itemId={} runtimeRating={}",
-                            newId, rr);
+                    log.info("[dii-sqlinspect] 标记 llm_pending itemId={} overall_rating=POOR hasSeqScan={}",
+                            newId, result.getExplainHasSeqScan());
                 } catch (Exception e) {
                     log.warn("[dii-sqlinspect] 标记 llm_pending 失败 itemId={}: {}", newId, e.getMessage());
                 }
             } else if (newId > 0) {
-                log.debug("[dii-sqlinspect] 跳过 LLM itemId={} runtimeRating={}（非 GOOD/POOR）",
-                        newId, rr);
+                log.debug("[dii-sqlinspect] 跳过 LLM itemId={} rating={}（非需整改候选）hasSeqScan={}",
+                        newId, result.getOverallRatingLabel(), result.getExplainHasSeqScan());
             }
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 落库失败 env={} sqlHash={}: {}",
@@ -274,23 +250,29 @@ public class SqlInspectionService {
     }
 
     /**
-     * 跑 EXPLAIN + 收集涉及表的元数据 + 派生 runtime_rating + 算 disagreement，
-     * 把所有结果填到 {@link SqlInspectionResult}，由 persistResult 统一落库。
+     * 跑 EXPLAIN + 收集涉及表的元数据，并由执行计划派生 {@code overall_rating}。
      *
-     * <p>三件事都允许部分失败：EXPLAIN 失败仍可填表元数据，反之亦然。
+     * <p>表元数据 / EXPLAIN 各自允许失败：EXPLAIN 失败仍可填表元数据，反之亦然。
+     * 但 {@code overall_rating} 完全由 EXPLAIN 结果决定：
+     * EXPLAIN 失败 → null（看板靠 explain_error 归"报错"档）；
+     * 成功 → 全表扫描 / 命中索引但估算扫描行数≥1000 = POOR（需整改候选），
+     * 否则 = EXCELLENT（无需整改）。
      */
     private void enrichWithExplainAndMetadata(SqlInspectionResult result,
                                               String normalizedSql,
-                                              String env,
-                                              Map<String, PredicateExtract> predMap) {
-        // 1. 先拿表元数据，顺便拿到 schema，给 EXPLAIN 用
-        //    元数据查询失败（表不存在、pg_stats 没数据等）同样不抛异常，仅影响 schemaHint 和 LLM 语料。
+                                              String env) {
+        // 1. 尽力抽涉及表名（仅表名，不抽谓词），供表元数据采集 + EXPLAIN schemaHint
+        Map<String, PredicateExtract> tableMap = analyzer.analyze(normalizedSql).predicatesByTable;
+        // involved_tables 列仍需要：LLM 上下文 / 问题列表过滤 / 同表访问模式都依赖它
+        result.setInvolvedTables(new java.util.ArrayList<>(tableMap.keySet()));
+
+        // 2. 表元数据（失败不抛，仅影响 schemaHint 和 LLM 语料）
         Map<String, TableMetadata> tableMetadataMap = tableMetadataService.getAll(env,
-                new java.util.ArrayList<>(predMap.keySet()));
+                new java.util.ArrayList<>(tableMap.keySet()));
 
         // 找出 SQL 引用但数据库里不存在的表（业务侧漂移的典型信号）
         java.util.List<String> missingTables = new java.util.ArrayList<>();
-        for (String t : predMap.keySet()) {
+        for (String t : tableMap.keySet()) {
             if (!tableMetadataMap.containsKey(t.toLowerCase(java.util.Locale.ROOT))) {
                 missingTables.add(t);
             }
@@ -307,21 +289,13 @@ public class SqlInspectionService {
                 .findFirst()
                 .orElse(null);
 
-        // 2. EXPLAIN（带 schema 提示，避开 GaussDB 分布式下 search_path 问题）
-        //    ⚠️ 失败不抛异常，也不阻塞后续流程（表元数据、规则结果照常落库）：
-        //      - 代码里 SQL 字段不存在 → EXPLAIN 报 "column does not exist"
-        //      - 表被删除 / 尚未部署 → EXPLAIN 报 "relation does not exist"
-        //      - DB 连接异常 → EXPLAIN 报 timeout 等
-        //    上述错误全部记到 explain_error + warnings，DBA 可筛可查，但本条 SQL 的其他分析不丢。
-        //
-        //    重要：EXPLAIN 只认 JDBC 标准占位符 ?，原始 SQL 里的 #xxx# / ${xxx} / :xxx
-        //    要先规范化，否则 GaussDB 会把 #d# 解析成列名 "d#" 并报错。
-        String sqlForExplain = com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlPredicateAnalyzer
-                .normalizePlaceholders(normalizedSql);
-        // 把表元数据传给 EXPLAIN，用于按字段类型生成真实字面量替换 ?
-        // （绕开 GaussDB 5 不支持 GENERIC_PLAN 的限制）
+        // 3. EXPLAIN（带 schema 提示，避开 GaussDB 分布式下 search_path 问题）
+        //    ⚠️ 失败不抛异常：错误记到 explain_error + warnings，DBA 可筛可查。
+        //    占位符必须先规范化成 ?（否则 GaussDB 会把 #d# 当列名报错）。
+        String sqlForExplain = SqlPredicateAnalyzer.normalizePlaceholders(normalizedSql);
         ExplainResult explain = explainExecutor.explain(env, sqlForExplain, schemaHint, tableMetadataMap);
         result.setExplainElapsedMs(explain.getElapsedMs());
+
         if (explain.isSuccess()) {
             result.setExplainTopCost(explain.getTopCost());
             result.setExplainEstRows(explain.getTopPlanRows());
@@ -343,34 +317,28 @@ public class SqlInspectionService {
                 log.error("[dii-sqlinspect] SCHEMA 漂移 sqlHash={} env={} error={}",
                         result.getSqlHash(), env, errMsg);
             } else {
-                // 普通 EXPLAIN 失败
-                result.getWarnings().add("EXPLAIN 未成功（规则评级不受影响）：" + errMsg);
-                log.info("[dii-sqlinspect] EXPLAIN 失败但继续流程 sqlHash={} env={} reason={}",
+                result.getWarnings().add("EXPLAIN 未成功：" + errMsg);
+                log.info("[dii-sqlinspect] EXPLAIN 失败 sqlHash={} env={} reason={}",
                         result.getSqlHash(), env, errMsg);
             }
         }
 
-        // 3. 表元数据转 JSON 落库（喂 LLM 用）
+        // 4. 表元数据转 JSON 落库（喂 LLM 用）
         if (!tableMetadataMap.isEmpty()) {
             result.setTableStatsJson(buildTableStatsJson(tableMetadataMap));
             result.setColumnStatsJson(buildColumnStatsJson(tableMetadataMap));
             result.setTableDdlJson(buildTableDdlJson(tableMetadataMap));
         }
 
-        // 4. runtime_rating 派生 + disagreement 比对
-        IndexRating runtime = runtimeRatingDeriver.derive(explain, tableMetadataMap);
-        if (runtime != null) {
-            result.setRuntimeRating(runtime);
-            RuntimeRatingDeriver.Disagreement d = runtimeRatingDeriver.compare(
-                    result.getOverallRating(), runtime, explain);
-            result.setDisagreement(d.disagree);
-            result.setDisagreementReason(d.reason);
-        } else if (explain.isSuccess() && explain.isOneTimeFilterFalse()) {
-            // EXPLAIN 成功但优化器把 WHERE 判为恒假短路（参数值被当作 NULL 导致）。
-            // GaussDB 5 不支持 GENERIC_PLAN EXPLAIN 选项，无法让优化器忽略具体参数值，
-            // 这是 GaussDB 版本限制，不是我们代码缺陷。
+        // 5. 由执行计划派生 overall_rating（v3：全表扫描 / 命中索引但估算行数≥1000 → POOR）
+        //    EXPLAIN 失败 → derive 返回 null → overall_rating=null，看板靠 explain_error 归档
+        IndexRating rating = runtimeRatingDeriver.derive(explain, tableMetadataMap);
+        result.setOverallRating(rating);
+        if (rating == null && explain.isSuccess() && explain.isOneTimeFilterFalse()) {
+            // EXPLAIN 成功但优化器把 WHERE 判为恒假短路（参数被当作 NULL）。
+            // GaussDB 5 不支持 GENERIC_PLAN，无法忽略具体参数值——版本限制，非代码缺陷。
             result.getWarnings().add("EXPLAIN 计划被优化器按 NULL 参数短路（GaussDB 5 不支持 GENERIC_PLAN），" +
-                    "runtime_rating 无法派生，以规则评级为准。");
+                    "overall_rating 无法派生。");
         }
     }
 
@@ -435,13 +403,17 @@ public class SqlInspectionService {
         catch (Exception e) { return null; }
     }
 
-    /** 把数据库里存的枚举字符串还原成 IndexRating。 */
-    private IndexRating parseRating(String name) {
-        if (name == null) return IndexRating.POOR;
+    /**
+     * 把数据库里存的 overall_rating 字符串还原成 {@link IndexRating}。
+     * 新管线里 overall_rating 可能为 null（EXPLAIN 失败），故还原失败/为空时返回 null，
+     * 不再像旧逻辑那样兜底成 POOR（会污染看板报错档）。
+     */
+    private IndexRating parseRatingNullable(String name) {
+        if (name == null || name.isBlank()) return null;
         try {
             return IndexRating.valueOf(name);
         } catch (IllegalArgumentException e) {
-            return IndexRating.POOR;
+            return null;
         }
     }
 

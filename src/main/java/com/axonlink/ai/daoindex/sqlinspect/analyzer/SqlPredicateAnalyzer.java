@@ -2,10 +2,8 @@ package com.axonlink.ai.daoindex.sqlinspect.analyzer;
 
 import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLStatement;
-import com.alibaba.druid.sql.ast.statement.SQLDeleteStatement;
-import com.alibaba.druid.sql.ast.statement.SQLInsertStatement;
-import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
-import com.alibaba.druid.sql.ast.statement.SQLUpdateStatement;
+import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
+import com.alibaba.druid.sql.visitor.SchemaStatVisitor;
 import com.alibaba.druid.stat.TableStat;
 import com.alibaba.druid.util.JdbcConstants;
 import com.axonlink.ai.daoindex.sqlinspect.dto.PredicateExtract;
@@ -13,7 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -21,35 +18,41 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * 基于 Druid SchemaStatVisitor 的 SQL 谓词抽取器。
+ * SQL 语句类型 + 涉及表名 抽取器。
  *
- * <p>2a.1 版本：仅抽取等值谓词（{@code =}、{@code IN}）。
- * 范围、LIKE、函数失效识别等在 2a.2 追加。
+ * <p><b>「EXPLAIN 优先」管线重构后职责收窄</b>：
+ * <ul>
+ *   <li>语句类型判定全部交给 {@link SqlKindDetector}（首关键字正则，不依赖 Druid 解析成功）；</li>
+ *   <li>本类只负责「尽力抽取 SQL 涉及的表名」，喂给表元数据采集 / EXPLAIN / involved_tables；</li>
+ *   <li>不再做最左匹配规则引擎需要的谓词（等值 / ORDER BY / GROUP BY）抽取——规则引擎已下线。</li>
+ * </ul>
  *
- * <p>输出按表聚合（一条 SQL 可能涉及多张表，如 JOIN / 子查询）。
+ * <p>{@link #normalizePlaceholders} 仍保留：EXPLAIN 路径（{@code SqlInspectionService}）
+ * 也复用它把银行 DAO 模板占位符规范化成 JDBC {@code ?}。
  */
 @Service
 public class SqlPredicateAnalyzer {
 
     private static final Logger log = LoggerFactory.getLogger(SqlPredicateAnalyzer.class);
 
-    /** SQL 语句类型，决定是否进入规则引擎评级。 */
+    /** SQL 语句类型。复用给 {@link SqlKindDetector} 作为返回枚举，避免另造类型。 */
     public enum SqlKind {
         SELECT,
-        /** UPDATE / DELETE — 走 WHERE 条件做索引评级，和 SELECT 同路径。 */
+        /** UPDATE / DELETE — 有 WHERE，走 EXPLAIN。 */
         UPDATE,
         DELETE,
-        /** INSERT VALUES — 没 WHERE，不参与评级（规则引擎出 NOT_APPLICABLE）。 */
+        /** INSERT VALUES — 不参与索引评级（overall_rating=NOT_APPLICABLE，不 EXPLAIN）。 */
         INSERT_VALUES,
-        /** INSERT ... SELECT — 分析内部 SELECT 的 WHERE。 */
+        /** INSERT ... SELECT — 新管线同样按 INSERT 处理（NOT_APPLICABLE，不 EXPLAIN）。 */
         INSERT_SELECT,
-        /** 无法识别或 Druid 解析失败。 */
+        /** 无法识别。新管线对 UNKNOWN 仍尝试 EXPLAIN。 */
         UNKNOWN
     }
 
-    /** 谓词抽取结果 + SQL 类型。 */
+    /** 抽取结果：SQL 类型 + 按表聚合的占位对象（仅含表名，谓词字段恒为空）。 */
     public static class Result {
         public final SqlKind kind;
+        /** key = 小写表名；value 是只填了 tableName 的 {@link PredicateExtract}（谓词集合留空）。 */
         public final Map<String, PredicateExtract> predicatesByTable;
         public Result(SqlKind kind, Map<String, PredicateExtract> predicatesByTable) {
             this.kind = kind;
@@ -57,15 +60,6 @@ public class SqlPredicateAnalyzer {
         }
     }
 
-    /** Druid 条件类型常量。等值为主，其余在 2a.2 扩展。 */
-    private static final String OP_EQ = "=";
-    private static final String OP_IN = "in";
-
-    /**
-     * 银行内部 DAO 模板占位符预处理规则。
-     * sunline / iBatis / MyBatis 等会写成 {@code #xxx#}、{@code ${xxx}}、{@code :xxx}，
-     * 这些不是标准 SQL，Druid 解析会失败。统一替换成 {@code ?}。
-     */
     /**
      * sunline / iBatis 风格 {@code #xxx#} 占位符。
      *
@@ -76,8 +70,7 @@ public class SqlPredicateAnalyzer {
      *   <li>{@code #FUNC(a, b)#} — 多参函数</li>
      *   <li>{@code #col + 1#} — 算术表达式</li>
      * </ul>
-     * 否则这类占位符不会被替换成 {@code ?}，残留进 Druid 会直接解析失败、把 sql_kind
-     * 误判成 UNKNOWN。
+     * 否则这类占位符不会被替换成 {@code ?}，残留进 Druid 会直接解析失败。
      *
      * <p>使用 reluctant {@code [^#\n]*?} 而非 {@code .*?} 避免跨行 / 跨多个占位符吞匹配。
      */
@@ -91,146 +84,90 @@ public class SqlPredicateAnalyzer {
             Pattern.compile("(?<![:\\w]):([A-Za-z_][A-Za-z0-9_]*)(?![\\w:])");
 
     /**
-     * 解析 SQL，按表聚合谓词。
-     *
-     * @param sql 原始 SQL
-     * @return 以 "小写表名" 为 key 的 {@link PredicateExtract}；解析失败返回空 map
-     */
-    /**
-     * 兼容老签名：只返回谓词 Map，调用方不关心 SQL 类型时使用。
+     * 兼容老签名：只返回「表名 → 空 PredicateExtract」Map，调用方只关心涉及哪些表时使用。
      */
     public Map<String, PredicateExtract> extract(String sql) {
         return analyze(sql).predicatesByTable;
     }
 
     /**
-     * 完整分析：返回 SQL 类型 + 谓词 Map。
-     * 支持 SELECT / UPDATE / DELETE / INSERT(VALUES 或 SELECT)。
+     * 分析 SQL：类型用 {@link SqlKindDetector} 判，表名用 Druid 尽力抽。
+     *
+     * <p>Druid 解析失败不影响结果（type 已由正则判出），仅表名 Map 为空——
+     * 上层（表元数据 / EXPLAIN）对空表名 Map 有完整兜底，不会因此中断。
+     *
+     * @param sql 原始 SQL
+     * @return {@link Result}：{@code kind} 来自 {@link SqlKindDetector}，
+     *         {@code predicatesByTable} 的 key 是抽到的小写表名
      */
     public Result analyze(String sql) {
+        // 类型判定：不依赖 Druid，直接用首关键字正则
+        SqlKind kind = SqlKindDetector.detect(sql);
+
+        Map<String, PredicateExtract> tables = new LinkedHashMap<>();
         if (sql == null || sql.isBlank()) {
-            return new Result(SqlKind.UNKNOWN, new LinkedHashMap<>());
+            return new Result(kind, tables);
         }
-        // 银行 DAO 模板占位符预处理：#xxx# / ${xxx} / :xxx → ?
+
+        // 银行 DAO 模板占位符预处理：#xxx# / ${xxx} / :xxx → ?，便于 Druid 解析
         String normalizedSql = normalizePlaceholders(sql);
 
-        List<SQLStatement> statements;
         try {
             // GaussDB / openGauss 兼容 PG 语法
-            statements = SQLUtils.parseStatements(normalizedSql, JdbcConstants.POSTGRESQL);
-        } catch (Exception e) {
-            log.warn("[dii-sqlinspect] Druid 解析 SQL 失败：{}；原 SQL：{}", e.getMessage(), truncate(sql, 200));
-            return new Result(SqlKind.UNKNOWN, new LinkedHashMap<>());
-        }
-        if (statements == null || statements.isEmpty()) {
-            return new Result(SqlKind.UNKNOWN, new LinkedHashMap<>());
-        }
+            List<SQLStatement> statements = SQLUtils.parseStatements(normalizedSql, JdbcConstants.POSTGRESQL);
+            if (statements == null || statements.isEmpty()) {
+                return new Result(kind, tables);
+            }
+            SQLStatement stmt = statements.get(0);
 
-        SQLStatement stmt = statements.get(0);
-        SqlKind kind = classify(stmt);
-
-        // INSERT VALUES 无 WHERE，不需要索引评级，直接返回表名即可
-        if (kind == SqlKind.INSERT_VALUES) {
-            Map<String, PredicateExtract> result = new LinkedHashMap<>();
-            collectTableNames(stmt, result);
-            return new Result(kind, result);
-        }
-
-        com.alibaba.druid.sql.dialect.postgresql.visitor.PGSchemaStatVisitor visitor =
-                new com.alibaba.druid.sql.dialect.postgresql.visitor.PGSchemaStatVisitor();
-        try {
+            // 用通用 SchemaStatVisitor 只取 getTables()，不再读 conditions/orderBy/groupBy
+            SchemaStatVisitor visitor = new SchemaStatVisitor();
             stmt.accept(visitor);
+            for (TableStat.Name tableName : visitor.getTables().keySet()) {
+                if (tableName == null || tableName.getName() == null) continue;
+                String t = stripSchema(tableName.getName()).toLowerCase(Locale.ROOT);
+                if (!t.isEmpty()) {
+                    tables.computeIfAbsent(t, PredicateExtract::new);
+                }
+            }
+
+            // 兜底：visitor 偶尔抓不全（部分方言 / INSERT 目标表），再从语句 AST 兜一层
+            collectTableNamesFallback(stmt, tables);
         } catch (Exception e) {
-            log.warn("[dii-sqlinspect] Druid visitor 执行失败：{}", e.getMessage());
-            return new Result(kind, new LinkedHashMap<>());
+            // 解析失败不致命：类型已判出，表名缺失由上层兜底
+            log.warn("[dii-sqlinspect] Druid 抽表名失败（不影响类型判定 kind={}）：{}", kind, e.getMessage());
         }
-
-        Map<String, PredicateExtract> result = new LinkedHashMap<>();
-        // 用 visitor.getConditions() 直接拿到 "column 操作符 value" 三元组，最适合我们场景
-        for (TableStat.Condition cond : visitor.getConditions()) {
-            TableStat.Column col = cond.getColumn();
-            if (col == null) continue;
-            String tableRaw = col.getTable();
-            String colRaw = col.getName();
-            if (tableRaw == null || colRaw == null || tableRaw.isBlank() || colRaw.isBlank()) {
-                continue;
-            }
-            String table = stripSchema(tableRaw).toLowerCase(Locale.ROOT);
-            String column = colRaw.toLowerCase(Locale.ROOT);
-            String op = cond.getOperator();
-            if (op == null) continue;
-            String opNorm = op.trim().toLowerCase(Locale.ROOT);
-
-            PredicateExtract pe = result.computeIfAbsent(table, PredicateExtract::new);
-            if (OP_EQ.equals(opNorm) || OP_IN.equals(opNorm)) {
-                pe.getEqualityColumns().add(column);
-            }
-            // 其他操作符（>、<、LIKE...）2a.1 暂忽略
-        }
-
-        // 即使没有任何谓词，也要把 SQL 涉及的表登记进来（方便规则引擎知道"这张表一个谓词都没有"）
-        for (TableStat.Name tableName : visitor.getTables().keySet()) {
-            if (tableName == null || tableName.getName() == null) continue;
-            String t = stripSchema(tableName.getName()).toLowerCase(Locale.ROOT);
-            result.computeIfAbsent(t, PredicateExtract::new);
-        }
-
-        // ORDER BY
-        try {
-            for (TableStat.Column col : visitor.getOrderByColumns()) {
-                if (col == null || col.getName() == null || col.getTable() == null) continue;
-                String t = stripSchema(col.getTable()).toLowerCase(Locale.ROOT);
-                String c = col.getName().toLowerCase(Locale.ROOT);
-                PredicateExtract pe = result.computeIfAbsent(t, PredicateExtract::new);
-                if (!pe.getOrderByColumns().contains(c)) {
-                    pe.getOrderByColumns().add(c);
-                }
-            }
-        } catch (Throwable ignore) { /* 某些 SQL 可能没有 ORDER BY visitor 方法异常，吞掉 */ }
-
-        // GROUP BY
-        try {
-            for (TableStat.Column col : visitor.getGroupByColumns()) {
-                if (col == null || col.getName() == null || col.getTable() == null) continue;
-                String t = stripSchema(col.getTable()).toLowerCase(Locale.ROOT);
-                String c = col.getName().toLowerCase(Locale.ROOT);
-                PredicateExtract pe = result.computeIfAbsent(t, PredicateExtract::new);
-                if (!pe.getGroupByColumns().contains(c)) {
-                    pe.getGroupByColumns().add(c);
-                }
-            }
-        } catch (Throwable ignore) { /* 类似 */ }
-
-        return new Result(kind, result);
+        return new Result(kind, tables);
     }
 
-    /** 判定 SQL 类型。 */
-    private SqlKind classify(SQLStatement stmt) {
-        if (stmt instanceof SQLSelectStatement) return SqlKind.SELECT;
-        if (stmt instanceof SQLUpdateStatement) return SqlKind.UPDATE;
-        if (stmt instanceof SQLDeleteStatement) return SqlKind.DELETE;
-        if (stmt instanceof SQLInsertStatement) {
-            SQLInsertStatement ins = (SQLInsertStatement) stmt;
-            // INSERT ... SELECT 走 SELECT 分析分支
-            if (ins.getQuery() != null) return SqlKind.INSERT_SELECT;
-            return SqlKind.INSERT_VALUES;
+    /**
+     * 兜底表名抽取：直接遍历语句 AST 里的表源。
+     * 仅在 visitor.getTables() 没抓到任何表时补一层，避免 involved_tables 整列为空。
+     */
+    private void collectTableNamesFallback(SQLStatement stmt, Map<String, PredicateExtract> out) {
+        if (!out.isEmpty()) {
+            return;
         }
-        return SqlKind.UNKNOWN;
-    }
-
-    /** INSERT VALUES 专用：只提取目标表名，构造空 predicates。 */
-    private void collectTableNames(SQLStatement stmt, Map<String, PredicateExtract> out) {
-        if (stmt instanceof SQLInsertStatement) {
-            SQLInsertStatement ins = (SQLInsertStatement) stmt;
-            if (ins.getTableName() != null) {
-                String t = stripSchema(ins.getTableName().getSimpleName()).toLowerCase(Locale.ROOT);
-                out.computeIfAbsent(t, PredicateExtract::new);
-            }
+        try {
+            stmt.accept(new com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter() {
+                @Override
+                public boolean visit(SQLExprTableSource x) {
+                    if (x != null && x.getName() != null) {
+                        String t = stripSchema(x.getName().getSimpleName()).toLowerCase(Locale.ROOT);
+                        if (!t.isEmpty()) {
+                            out.computeIfAbsent(t, PredicateExtract::new);
+                        }
+                    }
+                    return true;
+                }
+            });
+        } catch (Exception ignore) {
+            /* 兜底失败就算了，表名缺失上层有处理 */
         }
     }
 
     /**
-     * 把银行 DAO 常见的模板占位符统一替换成 JDBC 标准 {@code ?}，便于 Druid 解析。
+     * 把银行 DAO 常见的模板占位符统一替换成 JDBC 标准 {@code ?}，便于 Druid 解析 / EXPLAIN。
      * <ul>
      *   <li>{@code #xxxYyy#} — sunline / iBatis 等</li>
      *   <li>{@code ${xxxYyy}} — MyBatis 等</li>
@@ -251,26 +188,5 @@ public class SqlPredicateAnalyzer {
         if (name == null) return "";
         int dot = name.lastIndexOf('.');
         return dot < 0 ? name : name.substring(dot + 1);
-    }
-
-    private static String truncate(String s, int max) {
-        if (s == null) return "";
-        return s.length() <= max ? s : s.substring(0, max) + "...";
-    }
-
-    /** 提供给测试代码：列表形态的全部条件，便于断言。 */
-    public List<String> debugExtractOperators(String sql) {
-        List<String> ops = new ArrayList<>();
-        try {
-            List<SQLStatement> statements = SQLUtils.parseStatements(sql, JdbcConstants.POSTGRESQL);
-            if (statements == null || statements.isEmpty()) return ops;
-            com.alibaba.druid.sql.dialect.postgresql.visitor.PGSchemaStatVisitor v =
-                    new com.alibaba.druid.sql.dialect.postgresql.visitor.PGSchemaStatVisitor();
-            statements.get(0).accept(v);
-            for (TableStat.Condition c : v.getConditions()) {
-                ops.add(c.toString());
-            }
-        } catch (Exception ignored) { /* 测试辅助，吞错 */ }
-        return ops;
     }
 }
