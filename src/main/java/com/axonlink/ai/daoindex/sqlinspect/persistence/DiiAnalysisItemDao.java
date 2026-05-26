@@ -427,6 +427,24 @@ public class DiiAnalysisItemDao {
         return jdbc.update("DELETE FROM dii_analysis_item WHERE task_id = ?", taskId);
     }
 
+    /**
+     * 切换某条 item 的白名单标记（V15 引入字段 {@code is_whitelist}）。
+     *
+     * <p>DBA 标记"故意不命中索引但可接受"的 SQL；看板/聚合可按此过滤掉。
+     * <p>与 {@link DiiSqlPoolDao#setWhitelist} 同语义；两表分别独立维护，
+     * 不做关联同步。
+     *
+     * @param itemId item 行 id
+     * @param value  1=白名单；0=取消
+     * @return 实际更新的行数（0=id 不存在）
+     */
+    public int setWhitelist(long itemId, int value) {
+        int v = value == 0 ? 0 : 1;
+        return jdbc.update(
+                "UPDATE dii_analysis_item SET is_whitelist = ? WHERE id = ?",
+                v, itemId);
+    }
+
     /** 查与 {@link #search} 同过滤条件下的总行数，便于分页展示。 */
     public long count(String env, String rating, String tableName, Long taskId) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
