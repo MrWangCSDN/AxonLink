@@ -79,9 +79,13 @@ public class CodeDashboardController {
         }
     }
 
-    /** 大屏首屏：行员/厂商总览(含占比) + 作者 Top + 交易 Top，一次返回。 */
+    /**
+     * 大屏首屏：行员/厂商总览(含占比) + 作者 Top + 交易 Top，一次返回。
+     *
+     * <p>{@code repoId=0}（或不传）→ <b>ALL 汇总模式</b>：跨所有 enabled 仓库聚合。
+     */
     @GetMapping("/overview")
-    public R<Map<String, Object>> overview(@RequestParam Long repoId) {
+    public R<Map<String, Object>> overview(@RequestParam(required = false, defaultValue = "0") Long repoId) {
         try {
             return R.ok(dashboardService.overview(repoId));
         } catch (Exception e) {
