@@ -215,7 +215,9 @@ public class DiiAnalysisTaskDao {
                 "       COALESCE(s.explain_err, 0) AS explain_err, " +
                 "       COALESCE(s.llm_done,    0) AS llm_done, " +
                 "       COALESCE(s.llm_failed,  0) AS llm_failed, " +
-                "       COALESCE(s.llm_running, 0) AS llm_running " +
+                "       COALESCE(s.llm_running, 0) AS llm_running, " +
+                // V14 SQL 池：按 env 聚合的池行数（池不挂任务，按同 env 计入"巡检总数"）
+                "       COALESCE(p.pool_count,  0) AS pool_count " +
                 "  FROM dii_analysis_task t " +
                 "  LEFT JOIN ( " +
                 "    SELECT task_id, " +
@@ -231,6 +233,12 @@ public class DiiAnalysisTaskDao {
                 "      FROM dii_analysis_item " +
                 "     GROUP BY task_id " +
                 "  ) s ON s.task_id = t.id " +
+                "  LEFT JOIN ( " +
+                "    SELECT env AS p_env, COUNT(*) AS pool_count " +
+                "      FROM dii_sql_pool " +
+                "     WHERE env IS NOT NULL AND env <> '' " +
+                "     GROUP BY env " +
+                "  ) p ON p.p_env = t.env " +
                 " WHERE 1=1");
         List<Object> args = new java.util.ArrayList<>();
         if (env != null && !env.isBlank()) {

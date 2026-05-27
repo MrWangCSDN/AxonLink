@@ -216,6 +216,17 @@ dao-index-analysis:
   batch-trigger:
     token: ${DII_BATCH_TRIGGER_TOKEN:sunline300348}
 
+  # V16：SQL 白名单审批工作流（申请 → L1 → L2 二审）
+  # 简化策略：审批人名单走 yml 配置，不挂 LDAP 角色；前端拉名单填下拉，后端信任前端传 username
+  whitelist:
+    enabled: ${DII_WHITELIST_ENABLED:true}
+    l1-approvers:
+      - { username: zhang_san, display: "张三（一审 · 存款组组长）" }
+      - { username: li_si,     display: "李四（一审 · 贷款组组长）" }
+    l2-approvers:
+      - { username: wang_wu,   display: "王五（二审 · DBA）" }
+      - { username: zhao_liu,  display: "赵六（二审 · DBA）" }
+
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:
     project-roots: ${DII_PROJECT_ROOTS:}        # 逗号分隔的多个工程根目录

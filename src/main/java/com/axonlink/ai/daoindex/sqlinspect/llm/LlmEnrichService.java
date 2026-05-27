@@ -2,6 +2,8 @@ package com.axonlink.ai.daoindex.sqlinspect.llm;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao;
+import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -57,15 +59,19 @@ public class LlmEnrichService {
     /** LLM 并发线程池，注入名字必须匹配 {@code BatchAsyncConfig#diiLlmExecutor} bean 名。 */
     private final Executor llmExecutor;
     private final DaoIndexAnalysisProperties props;
+    /** V16+：池 LLM 回填用，ObjectProvider 避免与池模块的潜在初始化顺序问题 */
+    private final ObjectProvider<DiiSqlPoolDao> poolDaoProvider;
 
     public LlmEnrichService(DiiAnalysisItemDao itemDao,
                             SqlLlmAnalyzeService llmAnalyzer,
                             @Qualifier("diiLlmExecutor") Executor llmExecutor,
-                            DaoIndexAnalysisProperties props) {
+                            DaoIndexAnalysisProperties props,
+                            ObjectProvider<DiiSqlPoolDao> poolDaoProvider) {
         this.itemDao = itemDao;
         this.llmAnalyzer = llmAnalyzer;
         this.llmExecutor = llmExecutor;
         this.props = props;
+        this.poolDaoProvider = poolDaoProvider;
     }
 
     /**
@@ -162,6 +168,61 @@ public class LlmEnrichService {
     @Async("diiBatchExecutor")
     public void enrichAsync(String env, Long taskId, boolean onlyFailed, int maxItems) {
         enrich(env, taskId, onlyFailed, maxItems);
+    }
+
+    /**
+     * V16+：池行 LLM 回填——遍历 {@code dii_sql_pool WHERE llm_status='PENDING'}，
+     * 并发跑 {@link SqlLlmAnalyzeService#analyzePoolRow}。与 {@link #enrich} 同套并发模型。
+     */
+    public EnrichSummary enrichPool(String env, int maxItems) {
+        long batchStart = System.currentTimeMillis();
+        DiiSqlPoolDao poolDao = poolDaoProvider.getIfAvailable();
+        EnrichSummary summary = new EnrichSummary();
+        if (poolDao == null) {
+            log.warn("[dii-llm-enrich-pool] DiiSqlPoolDao 未装配，跳过");
+            return summary;
+        }
+        int effMax = Math.min(Math.max(maxItems, 1), MAX_BATCH_SIZE);
+        List<Long> ids = poolDao.findPendingLlmIds(env, effMax);
+        int total = ids.size();
+        summary.totalCandidates = total;
+        if (total == 0) {
+            log.info("[dii-llm-enrich-pool] 无待处理池行 env={}", env);
+            return summary;
+        }
+        int parallel = Math.max(1, props.getConcurrency().getLlmParallel());
+        log.info("[dii-llm-enrich-pool] ══ 启动池行 LLM 回填 env={} 候选={} 并发={} ══",
+                env, total, parallel);
+
+        AtomicInteger done = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        List<CompletableFuture<Void>> futures = new ArrayList<>(total);
+        for (Long id : ids) {
+            CompletableFuture<Void> f = CompletableFuture.runAsync(() -> {
+                MDC.put("diiLlmPoolId", String.valueOf(id));
+                try {
+                    SqlLlmResult result = llmAnalyzer.analyzePoolRow(id, BATCH_DEFAULT_MODEL);
+                    if (result != null && result.getError() == null) done.incrementAndGet();
+                    else failed.incrementAndGet();
+                } catch (Throwable t) {
+                    failed.incrementAndGet();
+                    log.error("[dii-llm-enrich-pool] 未预期异常 poolId={}: {}", id, t.getMessage(), t);
+                } finally {
+                    MDC.remove("diiLlmPoolId");
+                }
+            }, llmExecutor);
+            futures.add(f);
+        }
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } catch (Throwable ignore) {}
+
+        summary.done = done.get();
+        summary.failed = failed.get();
+        long totalMs = System.currentTimeMillis() - batchStart;
+        log.info("[dii-llm-enrich-pool] ══ 完成 done={} failed={} 总={} 耗时={}s ══",
+                summary.done, summary.failed, total, totalMs / 1000);
+        return summary;
     }
 
     /** 对外的简单计数汇总。 */

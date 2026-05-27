@@ -62,6 +62,9 @@ public class SqlInspectionService {
     private final TableMetadataService tableMetadataService;
     private final RuntimeRatingDeriver runtimeRatingDeriver;
     private final ObjectMapper objectMapper;
+    // V16：白名单工作流——insert 后反查匹配 sql_hash 的 application 继承 wl 状态
+    // 用 ObjectProvider 防循环依赖（Service 直接互相 @Autowired 在某些 Spring 启动阶段可能死锁）
+    private final org.springframework.beans.factory.ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
 
     public SqlInspectionService(SqlPredicateAnalyzer analyzer,
                                 DiiAnalysisItemDao itemDao,
@@ -69,7 +72,8 @@ public class SqlInspectionService {
                                 ExplainExecutor explainExecutor,
                                 TableMetadataService tableMetadataService,
                                 RuntimeRatingDeriver runtimeRatingDeriver,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                org.springframework.beans.factory.ObjectProvider<WhitelistApplicationService> whitelistServiceProvider) {
         this.analyzer = analyzer;
         this.itemDao = itemDao;
         this.props = props;
@@ -77,6 +81,7 @@ public class SqlInspectionService {
         this.tableMetadataService = tableMetadataService;
         this.runtimeRatingDeriver = runtimeRatingDeriver;
         this.objectMapper = objectMapper;
+        this.whitelistServiceProvider = whitelistServiceProvider;
     }
 
     /**
@@ -108,8 +113,10 @@ public class SqlInspectionService {
     /**
      * 内部入口：{@code persist=false} 时只跑分析，不查幂等缓存、不写库；调用方自行决定如何持久化。
      * 用于 {@link #reinspect(long, String)} 这种"用同一 itemId UPDATE"的重跑场景。
+     * <p>V16+ 起转为 public——{@link com.axonlink.ai.daoindex.sqlinspect.batch.PoolBatchInspector}
+     * 也用此入口拿 EXPLAIN 结果但不写 item 表（pool 路径自行写回池表）。
      */
-    SqlInspectionResult inspect(SqlInspectionRequest request, boolean persist) {
+    public SqlInspectionResult inspect(SqlInspectionRequest request, boolean persist) {
         if (request == null || request.getSql() == null || request.getSql().isBlank()) {
             throw new IllegalArgumentException("SQL 不能为空");
         }
@@ -142,6 +149,29 @@ public class SqlInspectionService {
 
         // ── 1. 用首关键字正则判 SQL 类型（不再依赖 Druid 解析成功） ──
         SqlPredicateAnalyzer.SqlKind kind = SqlKindDetector.detect(normalizedSql);
+
+        // ── V16+：白名单短路——APPROVED 终态的 SQL 直接跳过 EXPLAIN + LLM ──
+        // 在 INSERT 短路之前判：INSERT + 白名单仍然走白名单短路（语义优先级：白名单 > INSERT 不适用）
+        // 不查询 application 表会更便宜（V15 列已冗余）但本路径单条入库无 V15 列可读
+        // → 直接查 application（DB 索引 idx_sql_hash 已覆盖，单查询毫秒级）
+        try {
+            WhitelistApplicationService wlService = whitelistServiceProvider.getIfAvailable();
+            if (wlService != null && wlService.isHashApproved(result.getSqlHash())) {
+                // 标记为 EXCELLENT「无需整改」语义——白名单意味着 DBA 已确认可接受
+                result.setOverallRating(IndexRating.EXCELLENT);
+                result.setOverallRatingLabel("无需整改");
+                result.getWarnings().add("白名单 SQL：跳过 EXPLAIN + LLM");
+                result.setRuleEngineElapsedMs(System.currentTimeMillis() - start);
+                log.info("[dii-sqlinspect] 白名单短路 env={} sqlHash={} kind={}",
+                        request.getEnv(), result.getSqlHash(), kind);
+                if (persist) persistResult(result, kind);
+                return result;
+            }
+        } catch (Exception e) {
+            // 白名单查询失败不应阻断主流程——继续按常规走 EXPLAIN
+            log.warn("[dii-sqlinspect] 白名单短路查询失败 sqlHash={}: {}",
+                    result.getSqlHash(), e.getMessage());
+        }
 
         // ── 2. INSERT（VALUES 或 SELECT）→ 不适用索引评级，落库留痕后返回 ──
         //       不跑 EXPLAIN、不送 LLM；overall_rating = NOT_APPLICABLE
@@ -223,6 +253,18 @@ public class SqlInspectionService {
                     kind == null ? "UNKNOWN" : kind.name());
             long newId = itemDao.insertFromResult(result, source);
             result.setItemId(newId);
+
+            // V16：刚入库即反查匹配 sql_hash 的白名单 application，继承 wl 字段
+            // 失败不阻断主流程——审批工作流是辅助能力，挂掉只是按钮少了状态显示
+            try {
+                WhitelistApplicationService whitelistService = whitelistServiceProvider.getIfAvailable();
+                if (whitelistService != null && newId > 0) {
+                    whitelistService.inheritOnItemInsert(newId, result.getSqlHash());
+                }
+            } catch (Exception e) {
+                log.warn("[dii-sqlinspect] 继承白名单失败 itemId={} hash={}: {}",
+                        newId, result.getSqlHash(), e.getMessage());
+            }
 
             // ── LLM 触发：仅"需整改候选"(overall_rating=POOR) 才送 ──
             //    与 DAO findPendingLlmIds 的 overall_rating='POOR' 过滤、

@@ -51,7 +51,15 @@ class SqlPoolImportServiceTest {
         mapping.put("Kapp_code_rule", "comm-bcc");  // 即便能匹配，Entity 行也应被丢
         nsqlIndex.replaceForTesting(mapping);
 
-        service = new SqlPoolImportService(null, nsqlIndex);
+        // ObjectProvider 用 Spring Mocks 简化：测试不走 whitelist 路径，传一个空 provider
+        org.springframework.beans.factory.ObjectProvider<WhitelistApplicationService> emptyProvider =
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override public WhitelistApplicationService getObject() { return null; }
+                    @Override public WhitelistApplicationService getObject(Object... args) { return null; }
+                    @Override public WhitelistApplicationService getIfAvailable() { return null; }
+                    @Override public WhitelistApplicationService getIfUnique() { return null; }
+                };
+        service = new SqlPoolImportService(null, nsqlIndex, emptyProvider);
     }
 
     /** 用 POI 在内存里构造 xlsx，第 C 列放传入的日志文本。 */
@@ -203,5 +211,102 @@ class SqlPoolImportServiceTest {
         String b = SqlPoolImportService.sha256Hex("select 1 from t");
         assertEquals(a, b);
         assertEquals(64, a.length());
+    }
+
+    // ──────────────────────────── CSV 解析（v3 新增） ────────────────────────────
+
+    /** 构造 CSV 内存文件：每行作为一条 record；用 MockMultipartFile 的 originalFilename 决定扩展名分派 */
+    private MockMultipartFile buildCsv(String content) {
+        return new MockMultipartFile(
+                "file", "test.csv",
+                "text/csv",
+                content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
+    @DisplayName("CSV：标准三列样本 → 抽到与 xlsx 一致的字段")
+    void csvStandardSample() throws IOException {
+        // 第 3 列（C 列）= 日志原文；前两列任意（这里放序号/时间戳冗余）
+        // SQL 内的逗号被双引号包住——这是 commons-csv 的常规处理
+        String csv = "idx,t,raw\n" +
+                "1,xxx,\"[2026-05-23 11:23:13.836][cc-6][...][...][...][IndexWarnLog][WARN]" +
+                "->[DpCbQryAcctCount.sel_x] [select '00000001' as a, b from kdpb_cb_acct_count_temp] failed to hit the index\"\n";
+        MockMultipartFile file = buildCsv(csv);
+        SqlPoolImportService.ParsedBatch batch = service.parse(file);
+
+        assertEquals(1, batch.rows.size());
+        assertEquals("DpCbQryAcctCount.sel_x", batch.rows.get(0).namedSql);
+        assertTrue(batch.rows.get(0).sqlText.contains("kdpb_cb_acct_count_temp"));
+        assertNotNull(batch.rows.get(0).logTs);
+        assertEquals(23, batch.rows.get(0).logTs.getDayOfMonth());
+    }
+
+    @Test
+    @DisplayName("CSV：含 BOM + Entity 行被丢 + 时间戳排序")
+    void csvBomAndEntitySkip() throws IOException {
+        // WPS 导出 CSV 常带 UTF-8 BOM（﻿）；服务应自动跳过
+        String csv = "﻿idx,t,raw\n" +
+                "1,a,\"[2026-05-22]->[Kapp_code_rule.kapp_code_rule.Entity.selectAll] [select 1 from t] failed\"\n" +
+                "2,b,\"[2026-05-23]->[Foo.bar] [select 2 from u] failed\"\n";
+        MockMultipartFile file = buildCsv(csv);
+        SqlPoolImportService.ParsedBatch batch = service.parse(file);
+
+        assertEquals(1, batch.rows.size(), "Entity 行被跳过，只剩 1 条");
+        assertEquals("Foo.bar", batch.rows.get(0).namedSql);
+        assertEquals(1, batch.skippedEntity);
+    }
+
+    @Test
+    @DisplayName("CSV：SQL 含多行（POI 风格的 \\n 在 CSV 里通过双引号包裹）")
+    void csvMultilineSql() throws IOException {
+        // CSV 标准：双引号内允许真实换行字符
+        String csv = "idx,t,raw\n" +
+                "1,a,\"[2026-05-23 09:00:00]->[Multi.sql] [select *\n  from t\n where x=1] failed to hit the index\"\n";
+        MockMultipartFile file = buildCsv(csv);
+        SqlPoolImportService.ParsedBatch batch = service.parse(file);
+
+        assertEquals(1, batch.rows.size());
+        assertTrue(batch.rows.get(0).sqlText.contains("\n"),
+                "CSV 单元格的真实换行应保留进 sql_text");
+    }
+
+    @Test
+    @DisplayName("CSV：列错位时回退按 \"含 ->[\" 找列")
+    void csvColumnFallback() throws IOException {
+        // 假设用户导出 CSV 时只有 2 列，日志在 B（index=1）而非 C（index=2）
+        // service 的 readCsvRaw 应回退找 含 "->[" 的列
+        String csv = "idx,raw\n" +
+                "1,\"[2026-05-23]->[Foo.bar] [select 1 from t] failed\"\n";
+        MockMultipartFile file = buildCsv(csv);
+        SqlPoolImportService.ParsedBatch batch = service.parse(file);
+
+        assertEquals(1, batch.rows.size(), "列错位时应回退识别");
+        assertEquals("Foo.bar", batch.rows.get(0).namedSql);
+    }
+
+    @Test
+    @DisplayName("CSV：批内同 (named_sql, sql_text) 重复 → 仅保留 1 条 + 计数")
+    void csvDedupInBatch() throws IOException {
+        String row = "1,a,\"[2026-05-23]->[A.b] [select 1 from t] failed\"\n";
+        String csv = "idx,t,raw\n" + row + row + row;
+        MockMultipartFile file = buildCsv(csv);
+        SqlPoolImportService.ParsedBatch batch = service.parse(file);
+
+        assertEquals(1, batch.rows.size());
+        assertEquals(2, batch.duplicatedInBatch);
+    }
+
+    @Test
+    @DisplayName("文件分派：扩展名 .csv → CSV 解析；.xlsx → Excel 解析")
+    void dispatchByExtension() throws IOException {
+        // 验证两条解析路径都被路由到——单元测试通过同一 service 跑两次
+        MockMultipartFile csvFile = buildCsv("idx,t,raw\n1,a,\"[2026-05-23]->[A.b] [select 1] failed\"\n");
+        MockMultipartFile xlsxFile = buildExcel("[2026-05-23]->[X.y] [select 2] failed");
+
+        SqlPoolImportService.ParsedBatch csvBatch = service.parse(csvFile);
+        SqlPoolImportService.ParsedBatch xlsxBatch = service.parse(xlsxFile);
+
+        assertEquals("A.b", csvBatch.rows.get(0).namedSql);
+        assertEquals("X.y", xlsxBatch.rows.get(0).namedSql);
     }
 }

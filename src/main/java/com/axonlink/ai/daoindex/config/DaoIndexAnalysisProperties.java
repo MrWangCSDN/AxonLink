@@ -43,6 +43,7 @@ public class DaoIndexAnalysisProperties {
     private BatchTrigger batchTrigger = new BatchTrigger();
     private Batch batch = new Batch();
     private Rating rating = new Rating();
+    private Whitelist whitelist = new Whitelist();
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -83,6 +84,9 @@ public class DaoIndexAnalysisProperties {
 
     public Rating getRating() { return rating; }
     public void setRating(Rating rating) { this.rating = rating; }
+
+    public Whitelist getWhitelist() { return whitelist; }
+    public void setWhitelist(Whitelist whitelist) { this.whitelist = whitelist; }
 
     /**
      * 定时任务配置。
@@ -151,8 +155,50 @@ public class DaoIndexAnalysisProperties {
         /** 批量巡检 EXPLAIN 跑完后，是否自动链式触发 LLM 回填（默认 true=一步到位；
          *  false=回退老两步行为，需手动 POST /llm-enrich 或等 02:00 定时）。 */
         private boolean autoLlmAfterBatch = true;
+        /** V16+：item 巡检完后是否继续跑池行巡检（PoolBatchInspector）。默认 true。 */
+        private boolean poolInspectionEnabled = true;
+        /** 单次池巡检上限——防爆，运维可调。 */
+        private int poolInspectionMaxItems = 2000;
+
         public boolean isAutoLlmAfterBatch() { return autoLlmAfterBatch; }
         public void setAutoLlmAfterBatch(boolean v) { this.autoLlmAfterBatch = v; }
+        public boolean isPoolInspectionEnabled() { return poolInspectionEnabled; }
+        public void setPoolInspectionEnabled(boolean v) { this.poolInspectionEnabled = v; }
+        public int getPoolInspectionMaxItems() { return poolInspectionMaxItems; }
+        public void setPoolInspectionMaxItems(int n) { this.poolInspectionMaxItems = n; }
+    }
+
+    /**
+     * SQL 白名单审批工作流配置（V16）。
+     *
+     * <p>对应 yml：{@code dao-index-analysis.whitelist.*}
+     * <p>v1 简化策略：审批人靠 yml 配置，不做 LDAP 角色校验——接口层信任前端传 username。
+     */
+    public static class Whitelist {
+        /** 总开关；false 时所有审批接口返回 404。 */
+        private boolean enabled = true;
+        /** 一级审批人候选名单。 */
+        private List<Approver> l1Approvers = new ArrayList<>();
+        /** 二级审批人候选名单。 */
+        private List<Approver> l2Approvers = new ArrayList<>();
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public List<Approver> getL1Approvers() { return l1Approvers; }
+        public void setL1Approvers(List<Approver> v) { this.l1Approvers = v; }
+        public List<Approver> getL2Approvers() { return l2Approvers; }
+        public void setL2Approvers(List<Approver> v) { this.l2Approvers = v; }
+    }
+
+    /** 审批人条目：{@code {username, display}}。 */
+    public static class Approver {
+        private String username;
+        private String display;
+
+        public String getUsername() { return username; }
+        public void setUsername(String username) { this.username = username; }
+        public String getDisplay() { return display; }
+        public void setDisplay(String display) { this.display = display; }
     }
 
     /**

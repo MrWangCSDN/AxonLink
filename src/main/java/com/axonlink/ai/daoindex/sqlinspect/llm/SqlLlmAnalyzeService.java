@@ -83,6 +83,10 @@ public class SqlLlmAnalyzeService {
     /** 重跑场景下用，懒加载避免与 SqlInspectionService 循环依赖 */
     @Autowired
     private org.springframework.beans.factory.ObjectProvider<SqlInspectionService> inspectionServiceProvider;
+    /** V16+：池 LLM 分析所需，懒加载避免循环依赖 */
+    @Autowired
+    private org.springframework.beans.factory.ObjectProvider<
+            com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao> poolDaoProvider;
 
     public SqlLlmAnalyzeService(DiiAnalysisItemDao itemDao,
                                 TableMetadataService tableMetadataService,
@@ -615,6 +619,179 @@ public class SqlLlmAnalyzeService {
 
     private static String str(Object v) {
         return v == null ? null : v.toString();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // V16+：池行 LLM 分析（与 analyzeItem 同套 prompt 与 LLM 客户端，仅读写表不同）
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 池行 LLM 分析。读 dii_sql_pool 行、构造 Context、调 LLM、写回池表。
+     *
+     * <p>与 {@link #analyzeItem(long, String, String)} 同套 prompt 模板 + LLM 客户端 +
+     * JSON 解析逻辑；只是读 / 写换成 {@link com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao}。
+     *
+     * <p><b>不支持 overrideSql 重跑</b>（v1 简化；池行编辑场景由 DBA 通过 SQL 池页直接改）。
+     */
+    public SqlLlmResult analyzePoolRow(long poolId, String modelKey) {
+        long entryMs = System.currentTimeMillis();
+        log.info("[dii-llm][poolId={}] ── 开始池行 LLM 分析 model={} ──", poolId, modelKey);
+        SqlLlmResult result = new SqlLlmResult();
+        com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao poolDao =
+                poolDaoProvider.getIfAvailable();
+        if (poolDao == null) {
+            result.setError("DiiSqlPoolDao 未装配");
+            return result;
+        }
+
+        // ① 加载上下文
+        SqlLlmPromptBuilder.Context ctx = loadContextFromPool(poolId, poolDao);
+        if (ctx == null) {
+            log.warn("[dii-llm][poolId={}] ✖ 池行不存在", poolId);
+            result.setError("池行不存在：poolId=" + poolId);
+            poolDao.updateLlmStatusOnly(poolId, "FAILED", result.getError());
+            return result;
+        }
+
+        // 兜底：仅 overall_rating=POOR 才跑（与 item 同口径）
+        boolean needFix = ctx.inspectionResult != null
+                && ctx.inspectionResult.getOverallRating() == IndexRating.POOR;
+        if (!needFix) {
+            String reason = "overall_rating != POOR（非需整改候选），跳过 LLM";
+            log.info("[dii-llm][poolId={}] ✖ {}", poolId, reason);
+            result.setError(reason);
+            poolDao.updateLlmStatusOnly(poolId, "SKIPPED", reason);
+            return result;
+        }
+
+        // ② Prompt
+        AnalysisPrompt prompt = promptBuilder.build(ctx);
+        result.setPromptVersion(prompt.getPromptVersion());
+
+        // ③/④/⑤ LLM 调用 + 重试 + JSON 解析（流程与 analyzeItem 一致）
+        LlmClient llm = llmRouter.route(modelKey);
+        if (llm == null) {
+            result.setError("LlmClient 未装配");
+            poolDao.updateLlmStatusOnly(poolId, "FAILED", result.getError());
+            return result;
+        }
+        int maxAttempts = Math.max(1, 1 + llmRetryAttempts);
+        long llmTotalElapsed = 0;
+        SqlLlmResult parsedOk = null;
+        String lastErr = null;
+        String lastModel = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            long llmStart = System.currentTimeMillis();
+            LlmResult raw;
+            try {
+                raw = llm.analyze(prompt, AnalysisMode.FULL, null);
+            } catch (Throwable t) {
+                long elapsed = System.currentTimeMillis() - llmStart;
+                llmTotalElapsed += elapsed;
+                lastErr = "LLM 调用异常：" + t.getClass().getSimpleName() + ": " + t.getMessage();
+                boolean overloaded = isGatewayOverload(t);
+                log.warn("[dii-llm][poolId={}] ✖ 调用异常 attempt={}: {}", poolId, attempt, t.getMessage());
+                if (attempt < maxAttempts) { sleepBackoff(attempt, overloaded); continue; }
+                break;
+            }
+            long llmElapsed = System.currentTimeMillis() - llmStart;
+            llmTotalElapsed += llmElapsed;
+            lastModel = raw == null ? null : raw.getModel();
+            if (raw == null || raw.getRawText() == null || raw.getRawText().isBlank()) {
+                lastErr = "LLM 返回为空";
+                if (attempt < maxAttempts) { sleepBackoff(attempt, false); continue; }
+                break;
+            }
+            try {
+                parsedOk = parseLlmJson(raw.getRawText());
+                break;
+            } catch (Exception e) {
+                lastErr = "JSON 解析失败：" + e.getMessage();
+                if (attempt < maxAttempts) { sleepBackoff(attempt, false); continue; }
+            }
+        }
+
+        result.setElapsedMs(llmTotalElapsed);
+        result.setModel(lastModel);
+        if (parsedOk == null) {
+            result.setError(lastErr);
+            poolDao.updateLlmStatusOnly(poolId, "FAILED", lastErr);
+            return result;
+        }
+        parsedOk.setElapsedMs(result.getElapsedMs());
+        parsedOk.setModel(result.getModel());
+        parsedOk.setPromptVersion(result.getPromptVersion());
+        result = parsedOk;
+        applyKeyLengthGuard(result, ctx.tableMetadataMap);
+
+        // ⑦ 落库（pool）
+        try {
+            String findingsJson = objectMapper.writeValueAsString(
+                    result.getFindings() == null ? Collections.emptyList() : result.getFindings());
+            String suggestionsJson = objectMapper.writeValueAsString(
+                    result.getSuggestions() == null ? Collections.emptyList() : result.getSuggestions());
+            poolDao.updateLlmFull(poolId, "DONE",
+                    result.getSummary(), findingsJson, suggestionsJson,
+                    result.getConfidence(), result.getFixVerdict(),
+                    result.getModel(), result.getPromptVersion(),
+                    result.getElapsedMs() == null ? 0L : result.getElapsedMs(),
+                    null);
+        } catch (Exception e) {
+            log.error("[dii-llm][poolId={}] saveDone 失败: {}", poolId, e.getMessage(), e);
+            try {
+                poolDao.updateLlmStatusOnly(poolId, "FAILED", "落库序列化失败：" + e.getMessage());
+            } catch (Exception ignore) {}
+        }
+        long totalMs = System.currentTimeMillis() - entryMs;
+        log.info("[dii-llm][poolId={}] ✔ 完成 elapsed={}ms", poolId, totalMs);
+        return result;
+    }
+
+    /** 池行加载上下文：构造与 item 同 shape 的 Context。 */
+    private SqlLlmPromptBuilder.Context loadContextFromPool(
+            long poolId,
+            com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao poolDao) {
+        Map<String, Object> row = poolDao.loadInspectionContext(poolId);
+        if (row == null) return null;
+
+        SqlInspectionResult ir = new SqlInspectionResult();
+        Object idVal = row.get("id");
+        if (idVal instanceof Number) ir.setItemId(((Number) idVal).longValue());
+        ir.setSql(str(row.get("sql_text")));
+        ir.setEnv(str(row.get("env")));
+        ir.setSqlHash(str(row.get("sql_hash")));
+        String rating = str(row.get("overall_rating"));
+        if (rating != null) {
+            try { ir.setOverallRating(IndexRating.valueOf(rating)); } catch (Exception ignore) {}
+        }
+        ir.setExplainError(str(row.get("explain_error")));
+        ir.setExplainPlanJson(str(row.get("explain_plan")));
+        Object cost = row.get("explain_top_cost");
+        if (cost instanceof Number) ir.setExplainTopCost(((Number) cost).doubleValue());
+        Object rows = row.get("explain_est_rows");
+        if (rows instanceof Number) ir.setExplainEstRows(((Number) rows).longValue());
+        Object sq = row.get("explain_has_seq_scan");
+        if (sq instanceof Number) ir.setExplainHasSeqScan(((Number) sq).intValue() == 1);
+
+        List<String> tables = new ArrayList<>();
+        String csv = str(row.get("involved_tables"));
+        if (csv != null && !csv.isBlank()) {
+            for (String s : csv.split(",")) {
+                String t = s.trim();
+                if (!t.isEmpty()) tables.add(t);
+            }
+        }
+        Map<String, TableMetadata> tableMetadataMap = tableMetadataService.getAll(ir.getEnv(), tables);
+        // 同表访问模式：池行没挂 task，且 collector 接口要 itemId——传 poolId 也行，
+        // 仅用于排除自身。本期不依赖该信号，传空 map 即可（promptBuilder 已条件化）。
+        Map<String, com.axonlink.ai.daoindex.sqlinspect.llm.SameTableAccessPattern> patterns =
+                new LinkedHashMap<>();
+
+        SqlLlmPromptBuilder.Context ctx = new SqlLlmPromptBuilder.Context();
+        ctx.inspectionResult = ir;
+        ctx.tableMetadataMap = tableMetadataMap;
+        ctx.sameTablePatterns = patterns;
+        return ctx;
     }
 
     private static String truncate(String s, int max) {

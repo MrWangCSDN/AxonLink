@@ -96,16 +96,21 @@ public class SqlPoolImportService {
 
     private final DiiSqlPoolDao dao;
     private final NsqlIdProjectIndex nsqlIndex;
+    // V16：池 upsert 后反查匹配 sql_hash / named_sql 的白名单 application 继承 wl 状态
+    private final org.springframework.beans.factory.ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
 
-    public SqlPoolImportService(DiiSqlPoolDao dao, NsqlIdProjectIndex nsqlIndex) {
+    public SqlPoolImportService(DiiSqlPoolDao dao,
+                                NsqlIdProjectIndex nsqlIndex,
+                                org.springframework.beans.factory.ObjectProvider<WhitelistApplicationService> whitelistServiceProvider) {
         this.dao = dao;
         this.nsqlIndex = nsqlIndex;
+        this.whitelistServiceProvider = whitelistServiceProvider;
     }
 
     /**
-     * 入口：解析 Excel → 排序去重 → 批量 upsert。
+     * 入口：解析文件 → 排序去重 → 批量 upsert。支持 xlsx 与 csv 两种格式（按扩展名分派）。
      *
-     * @param file 前端上传的 xlsx 文件
+     * @param file 前端上传文件，扩展名 {@code .xlsx} 或 {@code .csv}
      * @param env  环境标记（可空）
      * @return 计数明细：inserted / updated / unchanged / skippedEntity / skippedMalformed / ...
      */
@@ -126,6 +131,17 @@ public class SqlPoolImportService {
                 case INSERTED -> inserted++;
                 case UPDATED  -> updated++;
                 case UNCHANGED -> unchanged++;
+            }
+            // V16：继承白名单——按 sql_hash 或 named_sql 找匹配应用并刷 wl 字段
+            // 失败不阻断主流程
+            try {
+                WhitelistApplicationService whitelistService = whitelistServiceProvider.getIfAvailable();
+                if (whitelistService != null) {
+                    whitelistService.inheritOnPoolUpsert(row.sqlHash, row.namedSql);
+                }
+            } catch (Exception e) {
+                log.warn("[sql-pool-import] 继承白名单失败 named={} hash={}: {}",
+                        row.namedSql, row.sqlHash, e.getMessage());
             }
         }
 
@@ -157,57 +173,135 @@ public class SqlPoolImportService {
     }
 
     /**
-     * 纯解析阶段：扫 Excel → 抽 (logTs, named_sql, sql_text) → 批内排序+去重。
+     * 纯解析阶段：按扩展名分派 xlsx / csv → 抽 (logTs, named_sql, sql_text) → 批内排序+去重。
      * <p>包私有，便于单测不依赖 DB / nsqlIndex 实例验证。
      */
     ParsedBatch parse(MultipartFile file) throws IOException {
         ParsedBatch batch = new ParsedBatch();
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        if (name.endsWith(".csv")) {
+            parseCsv(file, batch);
+        } else {
+            // 默认按 xlsx 解析（兼容上传时 content-type 未携带扩展名的情况）
+            parseXlsx(file, batch);
+        }
+        finalizeBatch(batch);
+        return batch;
+    }
+
+    /** Excel (xlsx) 单 sheet 解析：取每行 C 列原文，喂 {@link #processRawLine}。 */
+    private void parseXlsx(MultipartFile file, ParsedBatch batch) throws IOException {
         try (InputStream is = file.getInputStream();
              Workbook wb = new XSSFWorkbook(is)) {
-            if (wb.getNumberOfSheets() == 0) return batch;
+            if (wb.getNumberOfSheets() == 0) return;
             Sheet sheet = wb.getSheetAt(0);
             for (Row row : sheet) {
                 String rawText = readRawText(row);
-                if (rawText == null || rawText.isBlank()) continue;
-                batch.totalRowsScanned++;
-
-                Matcher m = LINE_PATTERN.matcher(rawText);
-                if (!m.find()) {
-                    batch.skippedMalformed++;
-                    continue;
-                }
-                String tsRaw = m.group(1).trim();
-                String namedSql = m.group(2).trim();
-                String sqlText = m.group(3).trim();
-
-                if (namedSql.contains(ENTITY_MARKER)) {
-                    batch.skippedEntity++;
-                    continue;
-                }
-                if (namedSql.length() > NAMED_SQL_MAX_LENGTH) {
-                    batch.skippedMalformed++;
-                    continue;
-                }
-                if (sqlText.length() > SQL_TEXT_MAX_LENGTH) {
-                    batch.skippedOversize++;
-                    continue;
-                }
-                if (namedSql.isEmpty() || sqlText.isEmpty()) {
-                    batch.skippedMalformed++;
-                    continue;
-                }
-
-                LocalDateTime logTs = parseLogTimestamp(tsRaw);
-                String sqlHash = sha256Hex(sqlText);
-                batch.candidates.add(new ParsedRow(namedSql, sqlText, sqlHash, logTs));
+                processRawLine(rawText, batch);
             }
         }
+    }
 
+    /**
+     * CSV 解析：用 Apache Commons CSV，兼容 SQL 内逗号 / 多行 / 引号转义。
+     * <p>三档兜底取原文文本：
+     * <ol>
+     *   <li>第 3 列（index=2，对应 Excel C 列）— 与 xlsx 一致</li>
+     *   <li>第 3 列为空 → 找首个含 {@code "->"} 的列</li>
+     *   <li>仍未找到 → 整行非空列拼起来</li>
+     * </ol>
+     */
+    private void parseCsv(MultipartFile file, ParsedBatch batch) throws IOException {
+        // 用 UTF-8 + BOM 容忍；WPS 导出 CSV 时常带 BOM
+        try (java.io.Reader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(file.getInputStream(),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+            // 跳过 UTF-8 BOM（U+FEFF）以免污染首列
+            reader.mark(1);
+            int first = reader.read();
+            if (first != 0xFEFF && first != -1) {
+                reader.reset();
+            }
+
+            org.apache.commons.csv.CSVFormat fmt = org.apache.commons.csv.CSVFormat.DEFAULT
+                    .builder()
+                    .setIgnoreEmptyLines(true)
+                    .setIgnoreSurroundingSpaces(true)
+                    .setAllowMissingColumnNames(true)
+                    .build();
+            try (org.apache.commons.csv.CSVParser parser = new org.apache.commons.csv.CSVParser(reader, fmt)) {
+                for (org.apache.commons.csv.CSVRecord record : parser) {
+                    String rawText = readCsvRaw(record);
+                    processRawLine(rawText, batch);
+                }
+            }
+        }
+    }
+
+    /** CSV 行的「原文」抽取，规则同 readRawText 但适配 CSVRecord 接口。 */
+    private String readCsvRaw(org.apache.commons.csv.CSVRecord rec) {
+        // 第一优先 index=2（C 列）
+        if (rec.size() > RAW_TEXT_COLUMN_INDEX) {
+            String v = rec.get(RAW_TEXT_COLUMN_INDEX);
+            if (v != null && !v.isBlank()) return v;
+        }
+        // 找首个含 "->" 的列（防止用户导出 CSV 时丢列）
+        for (int i = 0; i < rec.size(); i++) {
+            String v = rec.get(i);
+            if (v != null && v.contains("->[")) return v;
+        }
+        // 兜底拼整行非空
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < rec.size(); i++) {
+            String v = rec.get(i);
+            if (v != null && !v.isBlank()) {
+                if (sb.length() > 0) sb.append(' ');
+                sb.append(v);
+            }
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    /** 单行处理：正则抽 (ts, named_sql, sql_text)，做过滤 / 长度校验 / 入候选。 */
+    private void processRawLine(String rawText, ParsedBatch batch) {
+        if (rawText == null || rawText.isBlank()) return;
+        batch.totalRowsScanned++;
+
+        Matcher m = LINE_PATTERN.matcher(rawText);
+        if (!m.find()) {
+            batch.skippedMalformed++;
+            return;
+        }
+        String tsRaw = m.group(1).trim();
+        String namedSql = m.group(2).trim();
+        String sqlText = m.group(3).trim();
+
+        if (namedSql.contains(ENTITY_MARKER)) {
+            batch.skippedEntity++;
+            return;
+        }
+        if (namedSql.length() > NAMED_SQL_MAX_LENGTH) {
+            batch.skippedMalformed++;
+            return;
+        }
+        if (sqlText.length() > SQL_TEXT_MAX_LENGTH) {
+            batch.skippedOversize++;
+            return;
+        }
+        if (namedSql.isEmpty() || sqlText.isEmpty()) {
+            batch.skippedMalformed++;
+            return;
+        }
+        LocalDateTime logTs = parseLogTimestamp(tsRaw);
+        String sqlHash = sha256Hex(sqlText);
+        batch.candidates.add(new ParsedRow(namedSql, sqlText, sqlHash, logTs));
+    }
+
+    /** 排序 + 批内去重（xlsx / csv 共用收尾逻辑）。 */
+    private void finalizeBatch(ParsedBatch batch) {
         batch.candidates.sort(
                 Comparator.comparing((ParsedRow r) -> r.namedSql)
                         .thenComparing(r -> r.sqlText));
-
-        // 批内去重：key = (namedSql, sqlHash)；保留出现时间戳最大的（更"新"）作为代表
         Map<String, ParsedRow> dedup = new LinkedHashMap<>();
         for (ParsedRow r : batch.candidates) {
             String key = r.namedSql + "|" + r.sqlHash;
@@ -216,14 +310,12 @@ public class SqlPoolImportService {
                 dedup.put(key, r);
             } else {
                 batch.duplicatedInBatch++;
-                // 保留时间更晚的，让 updated_at 落最新
                 if (r.logTs != null && (prev.logTs == null || r.logTs.isAfter(prev.logTs))) {
                     dedup.put(key, r);
                 }
             }
         }
         batch.rows.addAll(dedup.values());
-        return batch;
     }
 
     /**

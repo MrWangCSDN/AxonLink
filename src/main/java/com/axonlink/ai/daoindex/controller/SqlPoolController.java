@@ -60,16 +60,22 @@ public class SqlPoolController {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * 导入「IndexWarnLog」WARN 行式日志 Excel 到 SQL 池。
+     * 导入「IndexWarnLog」WARN 行式日志到 SQL 池。**支持 .xlsx 与 .csv 两种格式**。
      *
      * <p>v2 改动：去掉 {@code projectName} 入参——project_name 由后端按命名 SQL 前缀
      * 反查 {@code NsqlIdProjectIndex} 自动确定（dept-bcc/loan-bcc/sett-bcc/comm-bcc/other）。
+     * <p>v3 改动：解析按扩展名分派 xlsx / csv，{@code SqlPoolImportService.parse(file)} 内部处理。
      *
      * <p>示例：
      * <pre>{@code
      * curl -X POST 'http://host/api/ai/dao-index/sql-pool/import' \
      *      -H 'X-DII-Trigger-Token: sunline300348' \
      *      -F 'file=@warnlog.xlsx' \
+     *      -F 'env=uat'
+     * # 或 csv：
+     * curl -X POST 'http://host/api/ai/dao-index/sql-pool/import' \
+     *      -H 'X-DII-Trigger-Token: sunline300348' \
+     *      -F 'file=@warnlog.csv' \
      *      -F 'env=uat'
      * }</pre>
      */
@@ -86,6 +92,11 @@ public class SqlPoolController {
 
         if (file == null || file.isEmpty()) {
             return ResponseEntity.badRequest().body(R.fail("文件为空"));
+        }
+        // 简单扩展名白名单——前端 accept 已限定，但后端兜底防止误传
+        String fname = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        if (!fname.endsWith(".xlsx") && !fname.endsWith(".csv")) {
+            return ResponseEntity.badRequest().body(R.fail("仅支持 .xlsx / .csv 文件"));
         }
 
         try {
