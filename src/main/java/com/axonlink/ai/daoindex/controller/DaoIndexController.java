@@ -17,6 +17,7 @@ import com.axonlink.ai.daoindex.sqlinspect.dto.SqlCandidate;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisTaskDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiDashboardDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao;
 import com.axonlink.ai.daoindex.sqlinspect.scan.SqlSourceScanner;
 import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
 import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
@@ -91,6 +92,8 @@ public class DaoIndexController {
     private final BatchInspectionService batchInspectionService;
     private final DiiAnalysisTaskDao taskDao;
     private final DiiDashboardDao dashboardDao;
+    // V14 SQL 池：SQL 分析页 + 看板需要把池数据并入展示
+    private final DiiSqlPoolDao poolDao;
     private final SqlSourceScanner scanner;
     private final ObjectProvider<ColumnSampleService> columnSampleServiceProvider;
     private final ObjectProvider<TableMetadataService> tableMetadataServiceProvider;
@@ -114,7 +117,8 @@ public class DaoIndexController {
                               ObjectProvider<SqlLlmAnalyzeService> llmAnalyzeServiceProvider,
                               ObjectProvider<LlmEnrichService> llmEnrichServiceProvider,
                               DaoIndexAnalysisProperties props,
-                              DiiDashboardDao dashboardDao) {
+                              DiiDashboardDao dashboardDao,
+                              DiiSqlPoolDao poolDao) {
         this.healthIndicator = healthIndicator;
         this.llmClientProvider = llmClientProvider;
         this.aiConfigProvider = aiConfigProvider;
@@ -131,6 +135,7 @@ public class DaoIndexController {
         this.llmEnrichServiceProvider = llmEnrichServiceProvider;
         this.props = props;
         this.dashboardDao = dashboardDao;
+        this.poolDao = poolDao;
     }
 
     /**
@@ -163,14 +168,59 @@ public class DaoIndexController {
                 dashboardDao.elapsedRecentTasks(effEnv, 7));
         java.util.Collections.reverse(elapsed);
 
+        // V14：item 表（task 维度）+ pool 表（env 维度）按 domain 合并后再返回
+        // 合并语义：同 domain 各字段直接相加；pool 没有 task 约束，全部按 env 进入"最新任务"看板
+        List<Map<String, Object>> byDomain = mergeByDomain(
+                dashboardDao.aggregateByDomain(latestId),
+                poolDao.aggregateByDomain(effEnv),
+                "total", "explain_err", "llm_fix");
+        List<Map<String, Object>> ratingByDomain = mergeByDomain(
+                dashboardDao.aggregateRatingByDomain(latestId),
+                poolDao.aggregateRatingByDomain(effEnv),
+                "error_count", "need_fix");
+
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("env", effEnv);
         payload.put("latestTask", latest);
-        payload.put("byDomain", dashboardDao.aggregateByDomain(latestId));
-        payload.put("ratingByDomain", dashboardDao.aggregateRatingByDomain(latestId));
+        payload.put("byDomain", byDomain);
+        payload.put("ratingByDomain", ratingByDomain);
         payload.put("trend7d", dashboardDao.trendRecentTasks(effEnv, 7));
         payload.put("elapsed7d", elapsed);
         return R.ok(payload);
+    }
+
+    /**
+     * 把两份 {@code [{domain, ...counts}]} 列表按 domain 合并相加。
+     *
+     * <p>用于看板：item（task 维度）+ pool（env 维度）两路聚合按业务领域合并，
+     * 同 domain 的指定 count 字段直接相加。结果按字段排序保留稳定性。
+     *
+     * @param countCols 需要相加的字段名（如 "total", "explain_err"）
+     */
+    private static List<Map<String, Object>> mergeByDomain(
+            List<Map<String, Object>> a,
+            List<Map<String, Object>> b,
+            String... countCols) {
+        Map<String, Map<String, Object>> merged = new LinkedHashMap<>();
+        for (List<Map<String, Object>> src : List.of(a == null ? List.<Map<String, Object>>of() : a,
+                                                     b == null ? List.<Map<String, Object>>of() : b)) {
+            for (Map<String, Object> row : src) {
+                String domain = String.valueOf(row.get("domain"));
+                Map<String, Object> agg = merged.computeIfAbsent(domain, k -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("domain", k);
+                    for (String c : countCols) m.put(c, 0L);
+                    return m;
+                });
+                for (String c : countCols) {
+                    long prev = ((Number) agg.getOrDefault(c, 0L)).longValue();
+                    Object v = row.get(c);
+                    long add = v instanceof Number n ? n.longValue() : 0L;
+                    agg.put(c, prev + add);
+                }
+            }
+        }
+        return new ArrayList<>(merged.values());
     }
 
     @GetMapping("/health")
@@ -923,14 +973,45 @@ public class DaoIndexController {
             @RequestParam(required = false, defaultValue = "50") int limit,
             @RequestParam(required = false, defaultValue = "0") int offset) {
         try {
-            long total = itemDao.countIssuesOnly(env, taskId);
-            java.util.List<Map<String, Object>> items =
-                    itemDao.searchIssuesOnly(env, taskId, limit, offset);
+            // V14：合并展示
+            //   - item（来源 'odb'）：按 task 过滤；保持既有行为
+            //   - pool（来源 'nsql'）：按 env 过滤（池不挂任务），首页拉取时一并返回
+            // 分页策略：item 行优先，pool 行追加在后；total = 两者之和。
+            // 前端 SQL 分析页本就分批拉到全量再合并展示，分页"按 id DESC + 各自源排序"够用。
+            long itemTotal = itemDao.countIssuesOnly(env, taskId);
+            long poolTotal = poolDao.countAsIssues(env);
+            long total = itemTotal + poolTotal;
+
+            java.util.List<Map<String, Object>> merged = new java.util.ArrayList<>();
+            int itemTake = Math.min(limit, (int) Math.max(0, itemTotal - offset));
+            if (offset < itemTotal && itemTake > 0) {
+                java.util.List<Map<String, Object>> items =
+                        itemDao.searchIssuesOnly(env, taskId, itemTake, offset);
+                for (Map<String, Object> row : items) {
+                    row.put("source", "odb");
+                }
+                merged.addAll(items);
+            }
+            // 剩余配额由池补足
+            int remain = limit - merged.size();
+            if (remain > 0) {
+                int poolOffset = (int) Math.max(0, offset - itemTotal);
+                java.util.List<Map<String, Object>> poolRows =
+                        poolDao.searchAsIssues(env, remain, poolOffset);
+                // searchAsIssues 已经把 source='nsql' 写进 SELECT 列；防御性兜底
+                for (Map<String, Object> row : poolRows) {
+                    row.putIfAbsent("source", "nsql");
+                }
+                merged.addAll(poolRows);
+            }
+
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("total", total);
+            payload.put("itemTotal", itemTotal);
+            payload.put("poolTotal", poolTotal);
             payload.put("limit", limit);
             payload.put("offset", offset);
-            payload.put("items", items);
+            payload.put("items", merged);
             return R.ok(payload);
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 查问题列表失败 env={} taskId={}", env, taskId, e);
@@ -949,7 +1030,18 @@ public class DaoIndexController {
     public R<Map<String, Long>> getIssuesStats(@RequestParam(required = false) String env,
                                                @RequestParam(required = false) Long taskId) {
         try {
-            return R.ok(itemDao.getIssuesStats(env, taskId));
+            // V14：item 与 pool 各自 KPI 直接相加（同语义字段：total / explainError / llmFindings / llmPending / llmError）
+            Map<String, Long> itemStats = itemDao.getIssuesStats(env, taskId);
+            Map<String, Long> poolStats = poolDao.getIssuesStats(env);
+            Map<String, Long> merged = new LinkedHashMap<>();
+            for (String k : new String[]{"total", "explainError", "llmFindings", "llmPending", "llmError"}) {
+                long sum = itemStats.getOrDefault(k, 0L) + poolStats.getOrDefault(k, 0L);
+                merged.put(k, sum);
+            }
+            // 便于前端展示 "33 ( odb 22 + nsql 11 )" 这类细拆，再附带源拆分字段
+            merged.put("itemTotal", itemStats.getOrDefault("total", 0L));
+            merged.put("poolTotal", poolStats.getOrDefault("total", 0L));
+            return R.ok(merged);
         } catch (Exception e) {
             log.error("[dii-sqlinspect] 查 issues stats 失败 env={} taskId={}", env, taskId, e);
             return R.fail("查询失败：" + buildErrorChain(e));

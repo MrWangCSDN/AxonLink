@@ -55,6 +55,14 @@
             <version>5.2.5</version>
         </dependency>
 
+        <!-- Apache Commons CSV：SQL 池 CSV 导入解析（处理引号转义 / 多行单元格 / SQL 内逗号）
+             —— 不上 opencsv 是因为 commons-csv 与 poi 已传递依赖的 commons 链兼容 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.10.0</version>
+        </dependency>
+
         <!-- ── DAO 索引巡检模块所需依赖（dao-index-analysis） ── -->
         <!-- Spring JDBC：JdbcTemplate + HikariCP -->
         <dependency>

@@ -18,6 +18,13 @@ spring:
       cache:
         period: 3600
 
+  # Excel 导入用 multipart 上限——SQL 池导入接口默认 50MB 单文件
+  # 内网 IndexWarnLog WARN 7天日志典型尺寸数 MB，给充足余量
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
   # ── LDAP 连接（仅当 axon-link.security.enabled=true 时被使用）────────────────
   # 全部走 ENV 注入；yml 占位空字符串，避免服务账号密码入仓。
   # AD 与 OpenLDAP 通用：差异在 axon-link.security.user-search-filter（见下方块）。
@@ -208,6 +215,17 @@ dao-index-analysis:
   # 前端调用时通过请求头 X-DII-Trigger-Token 透传，后端单点校验。
   batch-trigger:
     token: ${DII_BATCH_TRIGGER_TOKEN:sunline300348}
+
+  # V16：SQL 白名单审批工作流（申请 → L1 → L2 二审）
+  # 简化策略：审批人名单走 yml 配置，不挂 LDAP 角色；前端拉名单填下拉，后端信任前端传 username
+  whitelist:
+    enabled: ${DII_WHITELIST_ENABLED:true}
+    l1-approvers:
+      - { username: zhang_san, display: "张三（一审 · 存款组组长）" }
+      - { username: li_si,     display: "李四（一审 · 贷款组组长）" }
+    l2-approvers:
+      - { username: wang_wu,   display: "王五（二审 · DBA）" }
+      - { username: zhao_liu,  display: "赵六（二审 · DBA）" }
 
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:

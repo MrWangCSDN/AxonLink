@@ -65,19 +65,23 @@ public class BatchInspectionRunner {
     private final SqlInspectionService inspectionService;
     private final ObjectProvider<LlmEnrichService> llmEnrichServiceProvider;
     private final DaoIndexAnalysisProperties props;
+    // V16+：池行巡检（item 完后调）
+    private final ObjectProvider<PoolBatchInspector> poolBatchInspectorProvider;
 
     public BatchInspectionRunner(SqlSourceScanner scanner,
                                  DiiAnalysisTaskDao taskDao,
                                  DiiAnalysisItemDao itemDao,
                                  SqlInspectionService inspectionService,
                                  ObjectProvider<LlmEnrichService> llmEnrichServiceProvider,
-                                 DaoIndexAnalysisProperties props) {
+                                 DaoIndexAnalysisProperties props,
+                                 ObjectProvider<PoolBatchInspector> poolBatchInspectorProvider) {
         this.scanner = scanner;
         this.taskDao = taskDao;
         this.itemDao = itemDao;
         this.inspectionService = inspectionService;
         this.llmEnrichServiceProvider = llmEnrichServiceProvider;
         this.props = props;
+        this.poolBatchInspectorProvider = poolBatchInspectorProvider;
     }
 
     /**
@@ -142,6 +146,41 @@ public class BatchInspectionRunner {
                     }
                 } else {
                     log.info("[dii-batch] 任务 id={} auto-llm-after-batch=false，跳过链式 LLM（保持两步管线）", taskId);
+                }
+
+                // V16+：item 阶段（含链式 LLM）跑完后，串接池行巡检
+                //   - 白名单池行：跳过
+                //   - 非白名单 + 非 SeqScan：物理 DELETE
+                //   - 非白名单 + SeqScan：保留 + 标 LLM PENDING（下面再 enrichPool）
+                if (props.getBatch().isPoolInspectionEnabled()) {
+                    PoolBatchInspector poolInspector = poolBatchInspectorProvider.getIfAvailable();
+                    if (poolInspector != null) {
+                        try {
+                            int maxItems = props.getBatch().getPoolInspectionMaxItems();
+                            log.info("[dii-batch] 任务 id={} 开始池行巡检 maxItems={}", taskId, maxItems);
+                            poolInspector.run(env, maxItems);
+                        } catch (Throwable t) {
+                            log.error("[dii-batch] 任务 id={} 池行巡检异常（不影响巡检任务终态）：{}",
+                                    taskId, t.getMessage(), t);
+                        }
+                    } else {
+                        log.warn("[dii-batch] 任务 id={} PoolBatchInspector 未装配，跳过池行巡检", taskId);
+                    }
+
+                    // 池行 LLM 跟进（与 item 同套异步线程池，复用 LlmEnrichService.enrichPool）
+                    if (props.getBatch().isAutoLlmAfterBatch()) {
+                        LlmEnrichService svc = llmEnrichServiceProvider.getIfAvailable();
+                        if (svc != null) {
+                            try {
+                                int maxItems = props.getSchedule().getDailyLlmMaxItems();
+                                log.info("[dii-batch] 任务 id={} 池行 LLM 回填 maxItems={}", taskId, maxItems);
+                                svc.enrichPool(env, maxItems);
+                            } catch (Throwable t) {
+                                log.error("[dii-batch] 任务 id={} 池行 LLM 回填异常：{}",
+                                        taskId, t.getMessage(), t);
+                            }
+                        }
+                    }
                 }
             } finally {
                 // 任务态在 EXPLAIN+LLM 全程保持 RUNNING，到这里才 markDone（=真全完）。

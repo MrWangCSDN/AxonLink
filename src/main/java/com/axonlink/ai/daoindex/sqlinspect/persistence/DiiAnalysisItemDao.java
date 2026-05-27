@@ -427,6 +427,65 @@ public class DiiAnalysisItemDao {
         return jdbc.update("DELETE FROM dii_analysis_item WHERE task_id = ?", taskId);
     }
 
+    /**
+     * 切换某条 item 的白名单标记（V15 引入字段 {@code is_whitelist}）。
+     *
+     * <p>DBA 标记"故意不命中索引但可接受"的 SQL；看板/聚合可按此过滤掉。
+     * <p>与 {@link DiiSqlPoolDao#setWhitelist} 同语义；两表分别独立维护，
+     * 不做关联同步。
+     *
+     * @param itemId item 行 id
+     * @param value  1=白名单；0=取消
+     * @return 实际更新的行数（0=id 不存在）
+     */
+    public int setWhitelist(long itemId, int value) {
+        int v = value == 0 ? 0 : 1;
+        return jdbc.update(
+                "UPDATE dii_analysis_item SET is_whitelist = ? WHERE id = ?",
+                v, itemId);
+    }
+
+    /**
+     * 白名单审批工作流（V16）：把匹配 sql_hash 的所有 item 写上 (app_id, status)，
+     * APPROVED 终态同时把 is_whitelist=1。
+     */
+    public int syncWhitelistByHash(String sqlHash, Long appId, String status, boolean approved) {
+        if (sqlHash == null) return 0;
+        return jdbc.update(
+                "UPDATE dii_analysis_item " +
+                "   SET whitelist_app_id = ?, whitelist_status = ?, " +
+                "       is_whitelist = CASE WHEN ? THEN 1 ELSE is_whitelist END " +
+                " WHERE sql_hash = ?",
+                appId, status, approved, sqlHash);
+    }
+
+    /**
+     * 清掉某 app 对应的 item wl 字段（CANCELLED 时调用，不动 is_whitelist）。
+     */
+    public int clearWhitelistByAppId(long appId) {
+        return jdbc.update(
+                "UPDATE dii_analysis_item " +
+                "   SET whitelist_app_id = NULL, whitelist_status = NULL " +
+                " WHERE whitelist_app_id = ?",
+                appId);
+    }
+
+    /**
+     * Item 入库后调用：反查匹配 sql_hash 的活跃 application，继承 wl 字段。
+     * <p>返回是否命中（命中 = 至少有一条匹配的 application）。
+     */
+    public boolean inheritWhitelistOnInsert(long itemId, String sqlHash, Long appId, String status) {
+        if (sqlHash == null || appId == null) return false;
+        boolean approved = "APPROVED".equals(status);
+        jdbc.update(
+                "UPDATE dii_analysis_item " +
+                "   SET whitelist_app_id = ?, whitelist_status = ?, " +
+                "       is_whitelist = CASE WHEN ? THEN 1 ELSE is_whitelist END " +
+                " WHERE id = ?",
+                appId, status, approved, itemId);
+        return true;
+    }
+
     /** 查与 {@link #search} 同过滤条件下的总行数，便于分页展示。 */
     public long count(String env, String rating, String tableName, Long taskId) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
@@ -462,26 +521,34 @@ public class DiiAnalysisItemDao {
                                                       int limit,
                                                       int offset) {
         StringBuilder sb = new StringBuilder(
-                "SELECT id, sql_hash, sql_kind, env, task_id, project_name, class_fqn, method_name, " +
-                "       overall_rating, rating_label, involved_tables, rule_engine_elapsed_ms, " +
-                "       status, created_at, sql_text, explain_error, " +
-                "       llm_status, llm_error, llm_summary, " +
-                "       llm_findings_json, llm_suggestions_json, " +
-                "       llm_model, llm_prompt_version, llm_elapsed_ms, llm_called_at, llm_confidence " +
-                "  FROM dii_analysis_item WHERE 1=1");
+                "SELECT i.id, i.sql_hash, i.sql_kind, i.env, i.task_id, " +
+                "       i.project_name, i.class_fqn, i.method_name, " +
+                "       i.overall_rating, i.rating_label, i.involved_tables, i.rule_engine_elapsed_ms, " +
+                "       i.status, i.created_at, i.sql_text, i.explain_error, " +
+                "       i.llm_status, i.llm_error, i.llm_summary, " +
+                "       i.llm_findings_json, i.llm_suggestions_json, " +
+                "       i.llm_model, i.llm_prompt_version, i.llm_elapsed_ms, i.llm_called_at, i.llm_confidence, " +
+                // V15 白名单 + V14 source
+                "       i.is_whitelist, i.whitelist_app_id, i.whitelist_status, " +
+                // V16+：从 application 表带回 target_type，让前端区分"单条 HASH"vs"同名 NAMED_SQL"
+                "       wa.target_type AS whitelist_target_type, " +
+                "       'odb' AS source " +
+                "  FROM dii_analysis_item i " +
+                "  LEFT JOIN dii_whitelist_application wa ON wa.id = i.whitelist_app_id " +
+                " WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?"); args.add(env.trim());
+            sb.append(" AND i.env = ?"); args.add(env.trim());
         }
         if (taskId != null) {
-            sb.append(" AND task_id = ?"); args.add(taskId);
+            sb.append(" AND i.task_id = ?"); args.add(taskId);
         }
         // OR 组合：EXPLAIN 报错 或 LLM 有终态
-        sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
+          .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
         int eff = Math.min(Math.max(limit, 1), 500);
         int off = Math.max(offset, 0);
-        sb.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
+        sb.append(" ORDER BY i.id DESC LIMIT ? OFFSET ?");
         args.add(eff);
         args.add(off);
         return jdbc.queryForList(sb.toString(), args.toArray());
@@ -505,27 +572,33 @@ public class DiiAnalysisItemDao {
                                                            Long afterId,
                                                            int limit) {
         StringBuilder sb = new StringBuilder(
-                "SELECT id, sql_hash, sql_kind, env, task_id, project_name, class_fqn, method_name, " +
-                "       overall_rating, rating_label, involved_tables, rule_engine_elapsed_ms, " +
-                "       status, created_at, sql_text, explain_error, " +
-                "       llm_status, llm_error, llm_summary, " +
-                "       llm_findings_json, llm_suggestions_json, " +
-                "       llm_model, llm_prompt_version, llm_elapsed_ms, llm_called_at, llm_confidence " +
-                "  FROM dii_analysis_item WHERE 1=1");
+                "SELECT i.id, i.sql_hash, i.sql_kind, i.env, i.task_id, " +
+                "       i.project_name, i.class_fqn, i.method_name, " +
+                "       i.overall_rating, i.rating_label, i.involved_tables, i.rule_engine_elapsed_ms, " +
+                "       i.status, i.created_at, i.sql_text, i.explain_error, " +
+                "       i.llm_status, i.llm_error, i.llm_summary, " +
+                "       i.llm_findings_json, i.llm_suggestions_json, " +
+                "       i.llm_model, i.llm_prompt_version, i.llm_elapsed_ms, i.llm_called_at, i.llm_confidence, " +
+                "       i.is_whitelist, i.whitelist_app_id, i.whitelist_status, " +
+                "       wa.target_type AS whitelist_target_type, " +
+                "       'odb' AS source " +
+                "  FROM dii_analysis_item i " +
+                "  LEFT JOIN dii_whitelist_application wa ON wa.id = i.whitelist_app_id " +
+                " WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?"); args.add(env.trim());
+            sb.append(" AND i.env = ?"); args.add(env.trim());
         }
         if (taskId != null) {
-            sb.append(" AND task_id = ?"); args.add(taskId);
+            sb.append(" AND i.task_id = ?"); args.add(taskId);
         }
-        sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
+          .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
         if (afterId != null) {
-            sb.append(" AND id < ?"); args.add(afterId);
+            sb.append(" AND i.id < ?"); args.add(afterId);
         }
         int eff = Math.min(Math.max(limit, 1), 500);
-        sb.append(" ORDER BY id DESC LIMIT ?");
+        sb.append(" ORDER BY i.id DESC LIMIT ?");
         args.add(eff);
         return jdbc.queryForList(sb.toString(), args.toArray());
     }
