@@ -292,42 +292,87 @@ public class CodeDashboardDao {
      * 人员维度统计：每人总行数 + 归属交易码列表（逗号分隔）。
      * 来源：code_repo_author_stat LEFT JOIN code_person_tx_stat。
      * tx_ids 为空时表示该人未参与任何 flowtrans XML。
+     *
+     * <p><b>DB 兼容修复</b>（原 SQL 用 MySQL 的 {@code GROUP_CONCAT(...SEPARATOR ',')}，
+     * 在 PostgreSQL / openGauss 上属 "bad SQL grammar" 报错）：
+     * 改为 Java 侧聚合——SQL 只 LEFT JOIN 取明细行，再在内存里按 author_email 分组拼
+     * tx_ids 字符串。两种 DB 都通过；trade-off 是返回行数=作者×交易笔数（典型几百~几千，可接受）。
      */
     public List<Map<String, Object>> personStats(long repoId, int limit) {
-        return jdbc.queryForList(
+        return aggregatePersonStats(
                 "SELECT r.author_email, r.person_name, r.person_type, " +
-                "       r.owned_lines, r.file_count, " +
-                "       GROUP_CONCAT(DISTINCT p.tx_id ORDER BY p.tx_id SEPARATOR ',') AS tx_ids, " +
-                "       COUNT(DISTINCT p.tx_id) AS tx_count, " +
+                "       r.owned_lines, r.file_count, p.tx_id, " +
                 "       r.snapshot_time " +
                 "  FROM code_repo_author_stat r " +
                 "  LEFT JOIN code_person_tx_stat p " +
                 "    ON p.repo_id = r.repo_id AND p.author_email = r.author_email " +
                 " WHERE r.repo_id = ? " +
-                " GROUP BY r.author_email, r.person_name, r.person_type, " +
-                "          r.owned_lines, r.file_count, r.snapshot_time " +
-                " ORDER BY r.owned_lines DESC " +
-                " LIMIT ?",
-                repoId, clamp(limit));
+                " ORDER BY r.owned_lines DESC, r.author_email ASC",
+                new Object[]{repoId},
+                clamp(limit));
     }
 
     /** 指定 person_type 的人员统计（行员/厂商分榜）。 */
     public List<Map<String, Object>> personStatsByType(long repoId, String personType, int limit) {
-        return jdbc.queryForList(
+        return aggregatePersonStats(
                 "SELECT r.author_email, r.person_name, r.person_type, " +
-                "       r.owned_lines, r.file_count, " +
-                "       GROUP_CONCAT(DISTINCT p.tx_id ORDER BY p.tx_id SEPARATOR ',') AS tx_ids, " +
-                "       COUNT(DISTINCT p.tx_id) AS tx_count, " +
+                "       r.owned_lines, r.file_count, p.tx_id, " +
                 "       r.snapshot_time " +
                 "  FROM code_repo_author_stat r " +
                 "  LEFT JOIN code_person_tx_stat p " +
                 "    ON p.repo_id = r.repo_id AND p.author_email = r.author_email " +
                 " WHERE r.repo_id = ? AND r.person_type = ? " +
-                " GROUP BY r.author_email, r.person_name, r.person_type, " +
-                "          r.owned_lines, r.file_count, r.snapshot_time " +
-                " ORDER BY r.owned_lines DESC " +
-                " LIMIT ?",
-                repoId, personType, clamp(limit));
+                " ORDER BY r.owned_lines DESC, r.author_email ASC",
+                new Object[]{repoId, personType},
+                clamp(limit));
+    }
+
+    /**
+     * 共享 LEFT JOIN 明细 + Java 侧聚合：按 author_email 累 tx_id 到 Set，最后输出
+     * {@code tx_ids}（逗号分隔，按 tx_id 字典序）与 {@code tx_count}。
+     *
+     * <p>因 LEFT JOIN 一个 author 会出现 N 条 tx_id 行，Java 侧基于 LinkedHashMap
+     * 保留 SQL 已排好的「owned_lines DESC」顺序，限流 limit 在分组之后取 Top。
+     */
+    private List<Map<String, Object>> aggregatePersonStats(String sql, Object[] args, int limit) {
+        List<Map<String, Object>> rows = jdbc.queryForList(sql, args);
+        // LinkedHashMap 保插入顺序（=SQL 已排序顺序）；key=author_email
+        java.util.LinkedHashMap<String, Map<String, Object>> grouped = new java.util.LinkedHashMap<>();
+        java.util.HashMap<String, java.util.TreeSet<String>> txMap = new java.util.HashMap<>();
+
+        for (Map<String, Object> row : rows) {
+            String email = String.valueOf(row.get("author_email"));
+            Map<String, Object> agg = grouped.get(email);
+            if (agg == null) {
+                agg = new java.util.LinkedHashMap<>();
+                agg.put("author_email", row.get("author_email"));
+                agg.put("person_name",  row.get("person_name"));
+                agg.put("person_type",  row.get("person_type"));
+                agg.put("owned_lines",  row.get("owned_lines"));
+                agg.put("file_count",   row.get("file_count"));
+                agg.put("snapshot_time",row.get("snapshot_time"));
+                grouped.put(email, agg);
+                txMap.put(email, new java.util.TreeSet<>());
+            }
+            Object tx = row.get("tx_id");
+            if (tx != null) {
+                String s = String.valueOf(tx).trim();
+                if (!s.isEmpty()) txMap.get(email).add(s);
+            }
+        }
+
+        // 把 tx_ids 字符串与 tx_count 填回；超出 limit 截断
+        List<Map<String, Object>> out = new java.util.ArrayList<>(grouped.size());
+        int n = 0;
+        for (Map.Entry<String, Map<String, Object>> e : grouped.entrySet()) {
+            if (n++ >= limit) break;
+            java.util.TreeSet<String> txs = txMap.get(e.getKey());
+            Map<String, Object> row = e.getValue();
+            row.put("tx_ids", txs.isEmpty() ? null : String.join(",", txs));
+            row.put("tx_count", (long) txs.size());
+            out.add(row);
+        }
+        return out;
     }
 
     private int clamp(int limit) {

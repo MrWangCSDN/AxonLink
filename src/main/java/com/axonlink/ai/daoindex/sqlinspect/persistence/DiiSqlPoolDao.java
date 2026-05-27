@@ -338,7 +338,27 @@ public class DiiSqlPoolDao {
         sb.append(" ORDER BY p.id DESC LIMIT ? OFFSET ?");
         args.add(eff);
         args.add(off);
-        return jdbc.queryForList(sb.toString(), args.toArray());
+        List<Map<String, Object>> rows = jdbc.queryForList(sb.toString(), args.toArray());
+
+        // V16+ 修复：池表没存 sql_kind 列（ISSUE_PROJECTION_COLS 硬编码 'UNKNOWN'），
+        // 这里用 SqlKindDetector 按 sql_text 实时识别覆盖，让前端 nsql 行也能显示 SELECT/UPDATE 等
+        // 类型徽章——与 odb 行视觉一致。SqlKindDetector 是首关键字正则，开销 < 0.01ms/行。
+        for (Map<String, Object> row : rows) {
+            Object txt = row.get("sql_text");
+            if (txt != null) {
+                String sqlText = String.valueOf(txt);
+                if (!sqlText.isBlank()) {
+                    try {
+                        row.put("sql_kind",
+                                com.axonlink.ai.daoindex.sqlinspect.analyzer.SqlKindDetector
+                                        .detect(sqlText).name());
+                    } catch (Exception ignore) {
+                        // 解析失败保持默认 'UNKNOWN'
+                    }
+                }
+            }
+        }
+        return rows;
     }
 
     /**

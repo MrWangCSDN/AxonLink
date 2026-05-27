@@ -94,9 +94,10 @@ public class SqlPoolController {
             return ResponseEntity.badRequest().body(R.fail("文件为空"));
         }
         // 简单扩展名白名单——前端 accept 已限定，但后端兜底防止误传
+        // v4：加 .xls 兼容（POI WorkbookFactory 自动嗅探 HSSF）
         String fname = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
-        if (!fname.endsWith(".xlsx") && !fname.endsWith(".csv")) {
-            return ResponseEntity.badRequest().body(R.fail("仅支持 .xlsx / .csv 文件"));
+        if (!fname.endsWith(".xlsx") && !fname.endsWith(".xls") && !fname.endsWith(".csv")) {
+            return ResponseEntity.badRequest().body(R.fail("仅支持 .xlsx / .xls / .csv 文件"));
         }
 
         try {

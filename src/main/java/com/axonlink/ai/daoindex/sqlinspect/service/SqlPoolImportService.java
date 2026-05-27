@@ -182,17 +182,29 @@ public class SqlPoolImportService {
         if (name.endsWith(".csv")) {
             parseCsv(file, batch);
         } else {
-            // 默认按 xlsx 解析（兼容上传时 content-type 未携带扩展名的情况）
+            // .xlsx / .xls / 未带扩展名：统一走 WorkbookFactory 自动嗅探（v4 修复）
             parseXlsx(file, batch);
         }
         finalizeBatch(batch);
         return batch;
     }
 
-    /** Excel (xlsx) 单 sheet 解析：取每行 C 列原文，喂 {@link #processRawLine}。 */
+    /**
+     * Excel 单 sheet 解析：取每行 C 列原文，喂 {@link #processRawLine}。
+     *
+     * <p><b>v4 修复</b>：原 hard-code {@code new XSSFWorkbook(is)} 只认 .xlsx (OOXML/zip)，
+     * 遇到 .xls (HSSF 二进制) 或被 WPS 另存为非标准 xlsx 时报
+     * "No valid entries or contents found, this is not a valid OOXML"。
+     * 改用 {@link org.apache.poi.ss.usermodel.WorkbookFactory#create(InputStream)} 自动嗅探：
+     * .xlsx → XSSFWorkbook；.xls → HSSFWorkbook。两者共享 Sheet/Row/Cell 接口，下游无需改。
+     *
+     * <p>用 BufferedInputStream 包一层让 POI 能 mark/reset 嗅探魔数（不包会报
+     * InputStream of class ... is not implementing PushbackInputStream）。
+     */
     private void parseXlsx(MultipartFile file, ParsedBatch batch) throws IOException {
-        try (InputStream is = file.getInputStream();
-             Workbook wb = new XSSFWorkbook(is)) {
+        try (InputStream raw = file.getInputStream();
+             java.io.BufferedInputStream is = new java.io.BufferedInputStream(raw);
+             Workbook wb = org.apache.poi.ss.usermodel.WorkbookFactory.create(is)) {
             if (wb.getNumberOfSheets() == 0) return;
             Sheet sheet = wb.getSheetAt(0);
             for (Row row : sheet) {
