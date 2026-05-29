@@ -1157,6 +1157,22 @@ public class DaoIndexController {
                 break;
             }
         }
+
+        // V2：导出要与页面展示口径一致——页面是 item + pool 合并展示，导出也要带上 pool（nsql）行。
+        // 池行 searchAsIssues 已投影成与 item 同字段集（含 source='nsql' / named_sql），直接追加。
+        // 池不挂任务，按 env 拉（与列表合并接口同口径）；offset 分页（池量小，足够）。
+        try {
+            int poolOffset = 0;
+            while (all.size() < 100_000) {
+                List<Map<String, Object>> poolBatch = poolDao.searchAsIssues(env, batchSize, poolOffset);
+                if (poolBatch == null || poolBatch.isEmpty()) break;
+                all.addAll(poolBatch);
+                if (poolBatch.size() < batchSize) break;
+                poolOffset += batchSize;
+            }
+        } catch (Exception e) {
+            log.warn("[dii-sqlinspect] 导出追加池行失败（不影响 item 导出）env={}: {}", env, e.getMessage());
+        }
         return all;
     }
 
@@ -1247,18 +1263,18 @@ public class DaoIndexController {
             wrapStyle.setWrapText(true);
             wrapStyle.setVerticalAlignment(VerticalAlignment.TOP);
 
-            // ── 列定义 ──
+            // ── 列定义（V2：加「来源」odb/nsql + 「命名SQL」列，与页面展示对齐）──
             String[] headers = {
-                    "序号", "任务编号", "创建时间", "领域", "工程",
-                    "表名", "SQL 类型", "SQL 全文", "评级",
+                    "序号", "来源", "任务编号", "创建时间", "领域", "工程",
+                    "命名SQL", "表名", "SQL 类型", "SQL 全文", "评级",
                     "EXPLAIN 错误", "AI 状态", "AI 摘要",
                     "AI 错误", "AI 发现的问题", "AI 修改建议",
                     "AI 模型", "AI 提示词版本", "AI 耗时(ms)", "AI 执行时间"
             };
             // POI 单位 = 1/256 字符宽
             int[] widths = {
-                    6, 30, 20, 8, 18,
-                    28, 10, 60, 8,
+                    6, 8, 30, 20, 8, 18,
+                    32, 28, 10, 60, 8,
                     50, 12, 50,
                     35, 60, 60,
                     22, 16, 12, 22
@@ -1283,10 +1299,15 @@ public class DaoIndexController {
                 int col = 0;
 
                 setNum(er, col++, i + 1);
-                setText(er, col++, taskNo);
+                // V2：来源 odb/nsql（池行 task_no 用池自身标记，不套当前 taskNo）
+                String src = asString(row.get("source"), "odb");
+                setText(er, col++, src);
+                setText(er, col++, "nsql".equals(src) ? "（SQL 池导入）" : taskNo);
                 setText(er, col++, asString(row.get("created_at"), ""));
                 setText(er, col++, mapDomainLabel(asString(row.get("project_name"), "")));
                 setText(er, col++, asString(row.get("project_name"), ""));
+                // V2：命名SQL（nsql 行有值；odb 行该列为空）——池 DAO 把 named_sql 映到 class_fqn
+                setText(er, col++, "nsql".equals(src) ? asString(row.get("class_fqn"), "") : "");
                 setText(er, col++, asString(row.get("involved_tables"), ""));
                 setText(er, col++, asString(row.get("sql_kind"), ""));
                 setWrap(er, col++, asString(row.get("sql_text"), ""), wrapStyle);
