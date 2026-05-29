@@ -436,7 +436,9 @@ public class DiiSqlPoolDao {
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sql += " AND env = ? ";
+            // V2 修复：池是全局候选库，导入时 env 常留空——dashboard 汇总要把
+            // 「当前 env 的」+「未标 env 的」都算进去，否则总数对不上（看板 SQL 总数漏池）。
+            sql += " AND (env = ? OR env IS NULL OR env = '') ";
             args.add(env.trim());
         }
         sql += " GROUP BY domain ORDER BY total DESC";
@@ -460,7 +462,8 @@ public class DiiSqlPoolDao {
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sql += " AND env = ? ";
+            // 同 aggregateByDomain：当前 env + 未标 env 的池行都计入
+            sql += " AND (env = ? OR env IS NULL OR env = '') ";
             args.add(env.trim());
         }
         sql += " GROUP BY domain ORDER BY need_fix DESC";
