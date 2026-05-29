@@ -510,6 +510,37 @@ public class DaoIndexController {
         return R.ok(data);
     }
 
+    /**
+     * V16+：池行重新分析 LLM 异步接口（前端"重新分析"按钮在 nsql 行的入口）。
+     *
+     * <p>与 {@link #llmAnalyzeOneAsync} 同款异步语义，只是读写池表而非 item 表。
+     * 前端 it.source==='nsql' 时调本接口；'odb' 时调上面那个。
+     */
+    @PostMapping("/debug/llm-analyze-pool/{poolId}/async")
+    public R<Map<String, Object>> llmAnalyzePoolRowAsync(
+            @PathVariable long poolId,
+            @RequestBody(required = false) LlmAnalyzeRequest body) {
+        String modelKey = body == null ? null : body.model;
+        log.info("[dii-llm-api] POST /debug/llm-analyze-pool/{}/async 异步触发 model={}", poolId, modelKey);
+        SqlLlmAnalyzeService svc = llmAnalyzeServiceProvider.getIfAvailable();
+        if (svc == null) {
+            return R.fail("SqlLlmAnalyzeService 未装配（确认 ai.analysis.enabled=true 且 LlmClient 可用）");
+        }
+        // 1. 同步打 PENDING 让前端首次轮询即蒙版稳定（同时清旧 llm_* 字段）
+        int updated = poolDao.forceMarkLlmPending(poolId);
+        if (updated == 0) {
+            return R.fail("池行不存在 id=" + poolId);
+        }
+        // 2. 异步调 LLM；analyzePoolRow 会自动忽略 overrideSql（池行不支持改 SQL 重跑）
+        svc.analyzePoolRowAsync(poolId, modelKey);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("accepted", true);
+        data.put("poolId", poolId);
+        data.put("status", "PENDING");
+        data.put("hint", "请轮询 GET /sql-pool/" + poolId + " 查看 llm_status");
+        return R.ok(data);
+    }
+
     @PostMapping("/debug/llm-analyze/{itemId}")
     public R<SqlLlmResult> llmAnalyzeOne(
             @PathVariable long itemId,

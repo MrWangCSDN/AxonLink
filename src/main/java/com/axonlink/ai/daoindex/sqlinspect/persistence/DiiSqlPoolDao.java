@@ -559,6 +559,21 @@ public class DiiSqlPoolDao {
                 id);
     }
 
+    /**
+     * 强制置 PENDING（重新分析按钮用）：不挑现状态，并清掉旧 llm_* 结果。
+     * <p>与 {@link DiiAnalysisItemDao#forceMarkLlmPending} 同语义；前端首次轮询即可看到稳定蒙版。
+     * @return affectedRows（0 = 池行不存在，调用方应返 404/400）
+     */
+    public int forceMarkLlmPending(long id) {
+        return jdbc.update(
+                "UPDATE dii_sql_pool SET llm_status='PENDING', " +
+                "       llm_summary=NULL, llm_findings_json=NULL, llm_suggestions_json=NULL, " +
+                "       llm_confidence=NULL, llm_fix_verdict=NULL, " +
+                "       llm_error=NULL, llm_called_at=NOW() " +
+                "WHERE id = ?",
+                id);
+    }
+
     /** 拣 LLM 待跑池行 id。 */
     public List<Long> findPendingLlmIds(String env, int limit) {
         int eff = Math.min(Math.max(limit, 1), 10_000);
