@@ -121,70 +121,75 @@ public class BatchInspectionRunner {
                     taskId, env, candidates.size());
 
             // ═════ 4. 逐条巡检（所有异常都被捕获，单条失败绝不中断整个任务）═════
+            //
+            // V2 重排：把「两阶段 EXPLAIN」提到前面集中跑完，再统一登记 inspect_done_at（耗时口径），
+            //   之后才跑「两阶段 LLM 回填」。这样「耗时」= 纯 EXPLAIN 巡检时长，不含动辄几十分钟
+            //   的 LLM；任务态全程仍保持 RUNNING（v4/v5 的并发触发保护不变），markDone 仍在 finally。
+            //
+            // 顺序：
+            //   ① item EXPLAIN (runLoop)
+            //   ② pool EXPLAIN (PoolBatchInspector.run)
+            //   ③ markInspectDone  ← 耗时定格点
+            //   ④ item LLM enrich
+            //   ⑤ pool LLM enrich
+            //   ⑥ markDone (finally)
             int[] c = {0, 0, 0};
             try {
+                // ① item EXPLAIN
                 c = runLoop(taskId, env, candidates);
 
-                // 增强 v5：批量 EXPLAIN 跑完，按开关同步链式触发 LLM 回填。
-                // 本线程已是 diiBatchExecutor 异步线程（非 HTTP 线程），直接调同步 enrich()；
-                // per-item 仍在 diiLlmExecutor 并发。LLM 整体失败只 log，不影响巡检任务终态。
-                if (props.getBatch().isAutoLlmAfterBatch()) {
-                    LlmEnrichService svc = llmEnrichServiceProvider.getIfAvailable();
-                    if (svc != null) {
-                        int maxItems = props.getSchedule().getDailyLlmMaxItems();
-                        try {
-                            log.info("[dii-batch] 任务 id={} EXPLAIN 完成，链式触发 LLM 回填 taskId 限定 maxItems={}",
-                                    taskId, maxItems);
-                            svc.enrich(env, taskId, false, maxItems);
-                        } catch (Throwable t) {
-                            log.error("[dii-batch] 任务 id={} 链式 LLM 回填异常（不影响巡检任务终态）：{}",
-                                    taskId, t.getMessage(), t);
-                        }
-                    } else {
-                        log.warn("[dii-batch] 任务 id={} LlmEnrichService 未装配，跳过链式 LLM（检查 ai.analysis 配置）",
-                                taskId);
-                    }
-                } else {
-                    log.info("[dii-batch] 任务 id={} auto-llm-after-batch=false，跳过链式 LLM（保持两步管线）", taskId);
-                }
-
-                // V16+：item 阶段（含链式 LLM）跑完后，串接池行巡检
-                //   - 白名单池行：跳过
-                //   - 非白名单 + 非 SeqScan：物理 DELETE
-                //   - 非白名单 + SeqScan：保留 + 标 LLM PENDING（下面再 enrichPool）
+                // ② pool EXPLAIN（白名单跳过 / 非 SeqScan 物理删 / SeqScan 标 LLM PENDING）
                 if (props.getBatch().isPoolInspectionEnabled()) {
                     PoolBatchInspector poolInspector = poolBatchInspectorProvider.getIfAvailable();
                     if (poolInspector != null) {
                         try {
                             int maxItems = props.getBatch().getPoolInspectionMaxItems();
-                            log.info("[dii-batch] 任务 id={} 开始池行巡检 maxItems={}", taskId, maxItems);
+                            log.info("[dii-batch] 任务 id={} 开始池行巡检(EXPLAIN) maxItems={}", taskId, maxItems);
                             poolInspector.run(env, maxItems);
                         } catch (Throwable t) {
-                            log.error("[dii-batch] 任务 id={} 池行巡检异常（不影响巡检任务终态）：{}",
-                                    taskId, t.getMessage(), t);
+                            log.error("[dii-batch] 任务 id={} 池行巡检异常（不影响终态）：{}", taskId, t.getMessage(), t);
                         }
                     } else {
                         log.warn("[dii-batch] 任务 id={} PoolBatchInspector 未装配，跳过池行巡检", taskId);
                     }
+                }
 
-                    // 池行 LLM 跟进（与 item 同套异步线程池，复用 LlmEnrichService.enrichPool）
-                    if (props.getBatch().isAutoLlmAfterBatch()) {
-                        LlmEnrichService svc = llmEnrichServiceProvider.getIfAvailable();
-                        if (svc != null) {
-                            try {
-                                int maxItems = props.getSchedule().getDailyLlmMaxItems();
-                                log.info("[dii-batch] 任务 id={} 池行 LLM 回填 maxItems={}", taskId, maxItems);
-                                svc.enrichPool(env, maxItems);
-                            } catch (Throwable t) {
-                                log.error("[dii-batch] 任务 id={} 池行 LLM 回填异常：{}",
-                                        taskId, t.getMessage(), t);
-                            }
+                // ③ 登记 EXPLAIN 巡检完成时间——「耗时」到此定格，后续 LLM 不计入
+                taskDao.markInspectDone(taskId);
+
+                // ④ item LLM 回填
+                if (props.getBatch().isAutoLlmAfterBatch()) {
+                    LlmEnrichService svc = llmEnrichServiceProvider.getIfAvailable();
+                    if (svc != null) {
+                        int maxItems = props.getSchedule().getDailyLlmMaxItems();
+                        try {
+                            log.info("[dii-batch] 任务 id={} 链式触发 item LLM 回填 maxItems={}", taskId, maxItems);
+                            svc.enrich(env, taskId, false, maxItems);
+                        } catch (Throwable t) {
+                            log.error("[dii-batch] 任务 id={} item LLM 回填异常（不影响终态）：{}",
+                                    taskId, t.getMessage(), t);
+                        }
+                    } else {
+                        log.warn("[dii-batch] 任务 id={} LlmEnrichService 未装配，跳过 LLM（检查 ai.analysis 配置）", taskId);
+                    }
+
+                    // ⑤ pool LLM 回填
+                    if (props.getBatch().isPoolInspectionEnabled() && svc != null) {
+                        try {
+                            int maxItems = props.getSchedule().getDailyLlmMaxItems();
+                            log.info("[dii-batch] 任务 id={} 池行 LLM 回填 maxItems={}", taskId, maxItems);
+                            svc.enrichPool(env, maxItems);
+                        } catch (Throwable t) {
+                            log.error("[dii-batch] 任务 id={} 池行 LLM 回填异常：{}", taskId, t.getMessage(), t);
                         }
                     }
+                } else {
+                    log.info("[dii-batch] 任务 id={} auto-llm-after-batch=false，跳过 LLM（保持两步管线）", taskId);
                 }
             } finally {
-                // 任务态在 EXPLAIN+LLM 全程保持 RUNNING，到这里才 markDone（=真全完）。
-                // 放 finally 保证「任务绝不卡 RUNNING」：runLoop 或 enrich 抛异常也会 markDone。
+                // ⑥ 任务态在 EXPLAIN+LLM 全程保持 RUNNING，到这里才 markDone（=真全完）。
+                // 放 finally 保证「任务绝不卡 RUNNING」：任一阶段抛异常也会 markDone。
+                // 注：耗时已由 ③ markInspectDone 定格，markDone 的 updated_at 只标终态。
                 taskDao.markDone(taskId, c[0], c[1], c[2]);
                 log.info("[dii-batch] 任务 id={} 完成 analyzed={} failed={} skipped={}",
                         taskId, c[0], c[1], c[2]);

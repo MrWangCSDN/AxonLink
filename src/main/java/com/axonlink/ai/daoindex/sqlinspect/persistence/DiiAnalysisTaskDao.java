@@ -145,6 +145,20 @@ public class DiiAnalysisTaskDao {
         }
     }
 
+    /**
+     * 登记 EXPLAIN 巡检阶段完成时间（V18）。
+     * <p>由 {@code BatchInspectionRunner} 在 item+pool 两阶段 EXPLAIN 跑完、LLM 之前调用。
+     * 任务此时仍保持 RUNNING（不改 status），只盖一个时间戳供「耗时」口径用。
+     */
+    public void markInspectDone(long taskId) {
+        try {
+            jdbc.update("UPDATE dii_analysis_task SET inspect_done_at = NOW() WHERE id = ?", taskId);
+            log.info("[dii-task] 巡检(EXPLAIN)阶段完成 id={}，开始 LLM 回填（耗时已定格）", taskId);
+        } catch (Exception e) {
+            log.warn("[dii-task] 登记 inspect_done_at 失败 taskId={}: {}", taskId, e.getMessage());
+        }
+    }
+
     /** 标记任务完成（即便过程中有失败也算 DONE，只是 failedSqls 计数 > 0）。 */
     public void markDone(long taskId, int analyzed, int failed, int skipped) {
         try {
@@ -211,12 +225,13 @@ public class DiiAnalysisTaskDao {
         StringBuilder sb = new StringBuilder(
                 "SELECT t.id, t.task_no, t.env, t.status, t.total_sqls, t.analyzed_sqls, " +
                 "       t.failed_sqls, t.skipped_sqls, t.trigger_type, t.owner, " +
-                "       t.error_msg, t.created_at, t.updated_at, " +
-                "       COALESCE(s.explain_err, 0) AS explain_err, " +
-                "       COALESCE(s.llm_done,    0) AS llm_done, " +
-                "       COALESCE(s.llm_failed,  0) AS llm_failed, " +
-                "       COALESCE(s.llm_running, 0) AS llm_running, " +
-                // V14 SQL 池：按 env 聚合的池行数（池不挂任务，按同 env 计入"巡检总数"）
+                "       t.error_msg, t.created_at, t.updated_at, t.inspect_done_at, " +
+                // V2 修复：4 个统计列都 = item 聚合 + 池聚合（之前只有 pool_count 合并了）
+                "       (COALESCE(s.explain_err, 0) + COALESCE(p.pool_explain_err, 0)) AS explain_err, " +
+                "       (COALESCE(s.llm_done,    0) + COALESCE(p.pool_llm_done,    0)) AS llm_done, " +
+                "       (COALESCE(s.llm_failed,  0) + COALESCE(p.pool_llm_failed,  0)) AS llm_failed, " +
+                "       (COALESCE(s.llm_running, 0) + COALESCE(p.pool_llm_running, 0)) AS llm_running, " +
+                // 巡检总数中并入池总数（前端 mergedTotal = total_sqls + pool_count）
                 "       COALESCE(p.pool_count,  0) AS pool_count " +
                 "  FROM dii_analysis_task t " +
                 "  LEFT JOIN ( " +
@@ -233,8 +248,18 @@ public class DiiAnalysisTaskDao {
                 "      FROM dii_analysis_item " +
                 "     GROUP BY task_id " +
                 "  ) s ON s.task_id = t.id " +
+                // V2：池聚合补齐 explain_err / llm_done / llm_failed / llm_running 四档
+                // （含未标 env 的池行——env IS NULL/'' 视为对所有 env 可见，与看板口径一致）
                 "  LEFT JOIN ( " +
-                "    SELECT env AS p_env, COUNT(*) AS pool_count " +
+                "    SELECT env AS p_env, COUNT(*) AS pool_count, " +
+                "           SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' " +
+                "                    THEN 1 ELSE 0 END) AS pool_explain_err, " +
+                "           SUM(CASE WHEN llm_status='DONE' " +
+                "                     AND llm_suggestions_json IS NOT NULL " +
+                "                     AND llm_suggestions_json NOT IN ('','[]') " +
+                "                    THEN 1 ELSE 0 END) AS pool_llm_done, " +
+                "           SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS pool_llm_failed, " +
+                "           SUM(CASE WHEN llm_status='PENDING' THEN 1 ELSE 0 END) AS pool_llm_running " +
                 "      FROM dii_sql_pool " +
                 "     WHERE env IS NOT NULL AND env <> '' " +
                 "     GROUP BY env " +
