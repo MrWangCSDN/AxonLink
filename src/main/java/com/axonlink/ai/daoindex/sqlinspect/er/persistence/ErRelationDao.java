@@ -121,10 +121,12 @@ public class ErRelationDao {
      * 列出有关系的表（from ∪ to 去重），支持关键字模糊。给画布选中心表用。
      */
     public List<String> listTables(String env, String keyword) {
+        // UNION ALL 让每条关系两端各计一次 → GROUP BY 后 COUNT(*) = 该表的关系度（连了多少条边）
+        // 按度降序，让"最有料"的表排最前（前端自动选中心表时挑第一个）。IGNORED 不计。
         StringBuilder sb = new StringBuilder(
                 "SELECT t FROM ( " +
-                "  SELECT from_table AS t FROM dii_er_relation WHERE env=? " +
-                "  UNION SELECT to_table AS t FROM dii_er_relation WHERE env=? " +
+                "  SELECT from_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' " +
+                "  UNION ALL SELECT to_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' " +
                 ") u WHERE 1=1");
         List<Object> args = new ArrayList<>();
         args.add(env); args.add(env);
@@ -132,7 +134,7 @@ public class ErRelationDao {
             sb.append(" AND t LIKE ?");
             args.add("%" + keyword.trim().toLowerCase() + "%");
         }
-        sb.append(" ORDER BY t LIMIT 500");
+        sb.append(" GROUP BY t ORDER BY COUNT(*) DESC, t LIMIT 500");
         return jdbc.queryForList(sb.toString(), String.class, args.toArray());
     }
 
