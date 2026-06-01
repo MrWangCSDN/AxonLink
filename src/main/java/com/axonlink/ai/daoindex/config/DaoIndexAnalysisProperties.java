@@ -44,6 +44,7 @@ public class DaoIndexAnalysisProperties {
     private Batch batch = new Batch();
     private Rating rating = new Rating();
     private Whitelist whitelist = new Whitelist();
+    private Er er = new Er();
 
     public Scan getScan() { return scan; }
     public void setScan(Scan scan) { this.scan = scan; }
@@ -87,6 +88,9 @@ public class DaoIndexAnalysisProperties {
 
     public Whitelist getWhitelist() { return whitelist; }
     public void setWhitelist(Whitelist whitelist) { this.whitelist = whitelist; }
+
+    public Er getEr() { return er; }
+    public void setEr(Er er) { this.er = er; }
 
     /**
      * 定时任务配置。
@@ -188,6 +192,30 @@ public class DaoIndexAnalysisProperties {
         public void setL1Approvers(List<Approver> v) { this.l1Approvers = v; }
         public List<Approver> getL2Approvers() { return l2Approvers; }
         public void setL2Approvers(List<Approver> v) { this.l2Approvers = v; }
+    }
+
+    /**
+     * 表关系 ER 推断配置（V19）。
+     * <p>对应 yml：{@code dao-index-analysis.er.*}
+     */
+    public static class Er {
+        /** 总开关；false 时 ER 接口返回禁用。 */
+        private boolean enabled = true;
+        /** 单列键「独特性」阈值：列出现表数 ≤ 此值才算独特 → MEDIUM，否则 LOW。默认 5。 */
+        private int distinctColumnMaxTables = 5;
+        /** 通用列黑名单：在此名单的单列键强制 LOW。<b>默认空列表</b>（预留，DBA 按需填）。 */
+        private List<String> commonColumns = new ArrayList<>();
+        /** 聚焦画布默认跳数（中心表 + N 跳邻居）。默认 1。 */
+        private int defaultHops = 1;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getDistinctColumnMaxTables() { return distinctColumnMaxTables; }
+        public void setDistinctColumnMaxTables(int v) { this.distinctColumnMaxTables = v; }
+        public List<String> getCommonColumns() { return commonColumns; }
+        public void setCommonColumns(List<String> v) { this.commonColumns = v; }
+        public int getDefaultHops() { return defaultHops; }
+        public void setDefaultHops(int v) { this.defaultHops = v; }
     }
 
     /** 审批人条目：{@code {username, display}}。 */

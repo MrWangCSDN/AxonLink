@@ -227,6 +227,13 @@ dao-index-analysis:
       - { username: wang_wu,   display: "王五（二审 · DBA）" }
       - { username: zhao_liu,  display: "赵六（二审 · DBA）" }
 
+  # V19：表关系 ER 推断（按「键包含」启发式推断隐式外键）
+  er:
+    enabled: ${DII_ER_ENABLED:true}
+    distinct-column-max-tables: ${DII_ER_DISTINCT_MAX:5}   # 单列键独特性阈值：≤此值→MEDIUM 否则 LOW
+    default-hops: ${DII_ER_DEFAULT_HOPS:1}                  # 聚焦画布默认跳数
+    common-columns: []                                     # 通用列黑名单（预留，默认空；强制 LOW）
+
   # 源码扫描：抽取 @Statement 注解里的 SQL
   scan:
     project-roots: ${DII_PROJECT_ROOTS:}        # 逗号分隔的多个工程根目录
