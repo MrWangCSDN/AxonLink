@@ -149,6 +149,30 @@ public class SqlLlmAnalyzeService {
     }
 
     /**
+     * 异步触发池行单条 LLM 分析（前端"重新分析"按钮 nsql 路径）。
+     * <p>与 {@link #analyzeItemAsync} 同款语义，只是读写池表而非 item 表。
+     * <p>⚠️ 必须由其它 bean 调用，不能 this. 自调用（@Async AOP 失效）。
+     */
+    @Async("diiBatchExecutor")
+    public void analyzePoolRowAsync(long poolId, String modelKey) {
+        try {
+            log.info("[dii-llm][poolId={}] ── 异步池行 LLM 分析任务启动 ──", poolId);
+            analyzePoolRow(poolId, modelKey);
+        } catch (Throwable t) {
+            log.error("[dii-llm][poolId={}] ✖ 异步任务未捕获异常：{}",
+                    poolId, t.getMessage(), t);
+            try {
+                com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao poolDao =
+                        poolDaoProvider.getIfAvailable();
+                if (poolDao != null) {
+                    poolDao.updateLlmStatusOnly(poolId, "FAILED",
+                            "异步任务未捕获异常：" + t.getClass().getSimpleName() + ": " + t.getMessage());
+                }
+            } catch (Exception ignore) {}
+        }
+    }
+
+    /**
      * 真正调 LLM 分析单条 item。
      * 失败不抛：失败信息记入 {@link SqlLlmResult#getError} 并落库 FAILED，可手动重跑。
      *

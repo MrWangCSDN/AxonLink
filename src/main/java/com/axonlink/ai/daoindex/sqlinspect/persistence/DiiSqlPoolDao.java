@@ -436,7 +436,9 @@ public class DiiSqlPoolDao {
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sql += " AND env = ? ";
+            // V2 修复：池是全局候选库，导入时 env 常留空——dashboard 汇总要把
+            // 「当前 env 的」+「未标 env 的」都算进去，否则总数对不上（看板 SQL 总数漏池）。
+            sql += " AND (env = ? OR env IS NULL OR env = '') ";
             args.add(env.trim());
         }
         sql += " GROUP BY domain ORDER BY total DESC";
@@ -460,7 +462,8 @@ public class DiiSqlPoolDao {
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sql += " AND env = ? ";
+            // 同 aggregateByDomain：当前 env + 未标 env 的池行都计入
+            sql += " AND (env = ? OR env IS NULL OR env = '') ";
             args.add(env.trim());
         }
         sql += " GROUP BY domain ORDER BY need_fix DESC";
@@ -556,6 +559,21 @@ public class DiiSqlPoolDao {
         return jdbc.update(
                 "UPDATE dii_sql_pool SET llm_status = 'PENDING' " +
                 "WHERE id = ? AND (llm_status IS NULL OR llm_status = 'SKIPPED' OR llm_status = 'FAILED')",
+                id);
+    }
+
+    /**
+     * 强制置 PENDING（重新分析按钮用）：不挑现状态，并清掉旧 llm_* 结果。
+     * <p>与 {@link DiiAnalysisItemDao#forceMarkLlmPending} 同语义；前端首次轮询即可看到稳定蒙版。
+     * @return affectedRows（0 = 池行不存在，调用方应返 404/400）
+     */
+    public int forceMarkLlmPending(long id) {
+        return jdbc.update(
+                "UPDATE dii_sql_pool SET llm_status='PENDING', " +
+                "       llm_summary=NULL, llm_findings_json=NULL, llm_suggestions_json=NULL, " +
+                "       llm_confidence=NULL, llm_fix_verdict=NULL, " +
+                "       llm_error=NULL, llm_called_at=NOW() " +
+                "WHERE id = ?",
                 id);
     }
 
