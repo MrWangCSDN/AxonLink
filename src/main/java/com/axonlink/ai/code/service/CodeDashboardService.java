@@ -18,6 +18,10 @@ public class CodeDashboardService {
     @Autowired
     private CodeDashboardDao dao;
 
+    // 7 天趋势走独立的每日快照 DAO（queryTrend 在此）
+    @Autowired
+    private com.axonlink.ai.code.persistence.CodeRepoDailyStatDao dailyStatDao;
+
     public List<Map<String, Object>> repos() {
         return dao.listRepos();
     }
@@ -49,7 +53,7 @@ public class CodeDashboardService {
     }
 
     public List<Map<String, Object>> trend(long repoId, int days) {
-        return dashboardDao.queryTrend(repoId, days);
+        return dailyStatDao.queryTrend(repoId, days);
     }
 
     public List<Map<String, Object>> domainAuthors(long repoId, String domainKey, int limit) {
