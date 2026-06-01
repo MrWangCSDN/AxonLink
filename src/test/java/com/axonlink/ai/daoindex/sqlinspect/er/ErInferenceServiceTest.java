@@ -90,18 +90,23 @@ class ErInferenceServiceTest {
     }
 
     @Test
-    @DisplayName("S 恰是 B 的 PK/UK → 同实体，不产出关系")
-    void sameEntity_skipped() {
+    @DisplayName("v2：S 恰是 B 的 PK/UK → 不再排除，保留为合法 1:1 关系（双向）")
+    void sharedKey_nowKept() {
         Map<String, List<ErKeySet>> keySets = new HashMap<>();
-        keySets.put("a", List.of(new ErKeySet("PK", cols("k"))));
-        keySets.put("b", List.of(new ErKeySet("PK", cols("k"))));  // b 的 PK 也是 k
+        // a、b 都用联合键 (m,n)（独特，命中 HIGH）；互为共享主键的拆分表
+        keySets.put("a", List.of(new ErKeySet("PK", cols("m", "n"))));
+        keySets.put("b", List.of(new ErKeySet("PK", cols("m", "n"))));
         Map<String, Set<String>> tableCols = new HashMap<>();
-        tableCols.put("a", set("k", "x"));
-        tableCols.put("b", set("k", "y"));
-        Map<String, Integer> colCount = Map.of("k", 2);
+        tableCols.put("a", set("m", "n", "x"));
+        tableCols.put("b", set("m", "n", "y"));
+        Map<String, Integer> colCount = Map.of("m", 2, "n", 2);
 
         List<ErRelation> rels = svc.infer(keySets, tableCols, colCount, 5, Set.of());
-        assertTrue(rels.isEmpty(), "k 是 b 自己的主键 → 同实体，应 skip");
+        // 不再排除 → a←b 与 b←a 双向都保留（共享主键 1:1）
+        assertEquals(2, rels.size(), "共享主键的拆分表应保留双向关系，不再当同实体排除");
+        assertTrue(rels.stream().allMatch(r -> "HIGH".equals(r.getConfidence())));
+        assertTrue(rels.stream().anyMatch(r -> r.getFromTable().equals("a") && r.getToTable().equals("b")));
+        assertTrue(rels.stream().anyMatch(r -> r.getFromTable().equals("b") && r.getToTable().equals("a")));
     }
 
     @Test

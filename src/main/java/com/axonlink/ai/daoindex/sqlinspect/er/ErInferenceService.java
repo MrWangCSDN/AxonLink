@@ -13,8 +13,11 @@ import java.util.Set;
 /**
  * 表关系推断纯算法（无 DB / 无 Spring 依赖，可独立单测）。
  *
- * <p>规则（用户定义）：表 A 的某个键集合 S（PK 或 UK，单列或联合）的<b>全部列</b>
- * 出现在表 B 中，且 S 不等于 B 自身的任一 PK/UK → 推断 A←(1:N) B（B 通过 S 引用 A）。
+ * <p>规则（用户定义，v2 优化）：表 A 的某个键集合 S（PK 或 UK，单列或联合）的<b>全部列</b>
+ * 出现在表 B 中即推断 A←B 关系（B 通过 S 引用 A）。
+ * <p><b>v2 变更</b>：不再排除「S 也是 B 自身 PK/UK」的情形——这其实是合法的 1:1 关系
+ * （如拆分表/扩展表共享主键），之前被当「同实体」误排除。现在一并保留。
+ * 单列通用键造成的 PK-PK 组合噪声由置信度护栏兜底（落 LOW，前端默认隐藏）。
  *
  * <p>置信度护栏（防单列通用键爆假阳性）：
  * <ul>
@@ -57,8 +60,8 @@ public class ErInferenceService {
                     String tableB = eB.getKey();
                     if (tableB.equals(tableA)) continue;
                     Set<String> bCols = eB.getValue();
-                    if (bCols == null || !bCols.containsAll(scol)) continue;   // 规则①：B 含 S 全部列
-                    if (isSameAsAnyKey(scol, keySets.get(tableB))) continue;   // 规则②：排除同实体（S 是 B 的键）
+                    if (bCols == null || !bCols.containsAll(scol)) continue;   // 规则：B 含 S 全部列即成立
+                    // v2：不再排除「S 也是 B 的 PK/UK」——那是合法 1:1（共享主键的拆分/扩展表），保留。
 
                     String conf = confidence(s, colCount, distinctMax, bl);
                     out.add(new ErRelation(tableA, tableB, s.getColumns(),
@@ -67,16 +70,6 @@ public class ErInferenceService {
             }
         }
         return out;
-    }
-
-    /** S 列集合是否等于 B 的任一 PK/UK 列集合（同实体判定）。 */
-    private boolean isSameAsAnyKey(Set<String> scol, List<ErKeySet> bKeys) {
-        if (bKeys == null) return false;
-        for (ErKeySet k : bKeys) {
-            if (k.getColumns() == null) continue;
-            if (scol.equals(new HashSet<>(k.getColumns()))) return true;
-        }
-        return false;
     }
 
     /** 置信度判定。 */
