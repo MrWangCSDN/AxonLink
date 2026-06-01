@@ -27,7 +27,12 @@ public class CodeDashboardService {
     }
 
     public List<Map<String, Object>> tx(long repoId, int limit) {
-        return dao.txByPersonType(repoId, limit);
+        return dao.txByPersonType(repoId, "STAFF", limit);
+    }
+
+    /** 指定 person_type 的交易排行。 */
+    public List<Map<String, Object>> txByPersonType(long repoId, String personType, int limit) {
+        return dao.txByPersonType(repoId, personType, limit);
     }
 
     /**
@@ -41,6 +46,10 @@ public class CodeDashboardService {
     /** 指定 person_type 的人员统计（行员/厂商分榜）。 */
     public List<Map<String, Object>> personStatsByType(long repoId, String personType, int limit) {
         return dao.personStatsByType(repoId, personType, limit);
+    }
+
+    public List<Map<String, Object>> trend(long repoId, int days) {
+        return dashboardDao.queryTrend(repoId, days);
     }
 
     public List<Map<String, Object>> domainAuthors(long repoId, String domainKey, int limit) {
@@ -127,10 +136,10 @@ public class CodeDashboardService {
         out.put("repoId", repoId);
         out.put("totalOwnedLines", totalOwned);
         out.put("byType", byType);
-        // V2 修复：「行员代码归属交易」面板只展示行员；vendor 不进表
+        out.put("topAuthors", dao.authorRankingByType(repoId, "STAFF", 10));
         out.put("topPersons", dao.personStatsByType(repoId, "STAFF", 20));
         out.put("byDomain", domains(repoId));
-        out.put("topTx", dao.txByPersonType(repoId, 20));     // 交易维度：各交易行员/厂商占比
+        out.put("topTx", dao.txByPersonType(repoId, "STAFF", 20));
         out.put("snapshotTime", snapshotTime);
         return out;
     }
@@ -272,9 +281,10 @@ public class CodeDashboardService {
         }
 
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("repoId", 0L);   // 0 = ALL 哨兵
+        out.put("repoId", 0L);
         out.put("totalOwnedLines", totalOwned);
         out.put("byType", byType);
+        out.put("topAuthors", topAuthorsFromAll());
         out.put("topPersons", topPersons);
         out.put("byDomain", byDomain);
         out.put("topTx", topTx);
@@ -298,5 +308,29 @@ public class CodeDashboardService {
         } catch (NumberFormatException e) {
             return 0L;
         }
+    }
+
+    private List<Map<String, Object>> topAuthorsFromAll() {
+        List<Map<String, Object>> repos = dao.listRepos();
+        Map<String, Map<String, Object>> authorAcc = new LinkedHashMap<>();
+        for (Map<String, Object> repo : repos) {
+            long rid = lng(repo.get("id"));
+            if (rid <= 0) continue;
+            List<Map<String, Object>> authors = dao.authorRankingByType(rid, "STAFF", 10);
+            for (Map<String, Object> row : authors) {
+                String email = String.valueOf(row.get("author_email"));
+                Map<String, Object> acc = authorAcc.get(email);
+                if (acc == null) {
+                    acc = new LinkedHashMap<>(row);
+                    acc.put("owned_lines", lng(row.get("owned_lines")));
+                    authorAcc.put(email, acc);
+                } else {
+                    acc.put("owned_lines", lng(acc.get("owned_lines")) + lng(row.get("owned_lines")));
+                }
+            }
+        }
+        List<Map<String, Object>> sorted = new java.util.ArrayList<>(authorAcc.values());
+        sorted.sort((a, b) -> Long.compare(lng(b.get("owned_lines")), lng(a.get("owned_lines"))));
+        return sorted.subList(0, Math.min(sorted.size(), 10));
     }
 }
