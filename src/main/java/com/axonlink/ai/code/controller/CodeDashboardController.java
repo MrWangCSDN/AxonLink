@@ -1,11 +1,13 @@
 package com.axonlink.ai.code.controller;
 
+import com.axonlink.ai.code.persistence.CodeRepoConfigDao;
 import com.axonlink.ai.code.service.CodeAnalysisService;
 import com.axonlink.ai.code.service.CodeDashboardService;
 import com.axonlink.common.R;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,6 +29,9 @@ public class CodeDashboardController {
 
     @Autowired
     private CodeDashboardService dashboardService;
+
+    @Autowired
+    private CodeRepoConfigDao repoDao;
 
     @Autowired
     private CodeAnalysisService codeAnalysisService;
@@ -66,6 +71,21 @@ public class CodeDashboardController {
 
     private static String str(Object o) {
         return o == null ? null : String.valueOf(o);
+    }
+
+    /**
+     * 删除指定仓库配置（物理删除，含关联事实数据）。
+     * 通常用于清理废弃仓库。
+     */
+    @DeleteMapping("/repo")
+    public R<Void> deleteRepo(@RequestParam long id) {
+        try {
+            repoDao.deleteById(id);
+            return R.ok(null);
+        } catch (Exception e) {
+            log.error("删除仓库配置失败 id={}", id, e);
+            return R.fail("删除仓库配置失败：" + e.getMessage());
+        }
     }
 
     /** 仓库选择器：已配置的代码仓库及其最近同步状态。 */
@@ -162,6 +182,21 @@ public class CodeDashboardController {
         } catch (Exception e) {
             log.error("查询人员维度失败 repoId={}", repoId, e);
             return R.fail("查询人员维度失败：" + e.getMessage());
+        }
+    }
+
+    /**
+     * 工程代码行数 7 天趋势折线图数据。
+     */
+    @GetMapping("/trend")
+    public R<List<Map<String, Object>>> trend(
+            @RequestParam Long repoId,
+            @RequestParam(required = false, defaultValue = "7") int days) {
+        try {
+            return R.ok(dashboardService.trend(repoId, days));
+        } catch (Exception e) {
+            log.error("查询趋势失败 repoId={}", repoId, e);
+            return R.fail("查询趋势失败：" + e.getMessage());
         }
     }
 }

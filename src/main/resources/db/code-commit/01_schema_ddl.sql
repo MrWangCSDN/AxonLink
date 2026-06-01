@@ -178,3 +178,20 @@ CREATE TABLE IF NOT EXISTS code_domain_author_stat (
     PRIMARY KEY (id),
     KEY idx_cdas_repo_domain (repo_id, domain_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='领域内作者明细';
+
+-- 仓库每日代码行数快照（折线图数据源）
+CREATE TABLE IF NOT EXISTS code_repo_daily_stat (
+    id               BIGINT       NOT NULL AUTO_INCREMENT,
+    repo_id          BIGINT       NOT NULL            COMMENT 'code_repo_config.id',
+    stat_date        DATE         NOT NULL            COMMENT '统计日期',
+    total_owned_lines BIGINT      NOT NULL DEFAULT 0  COMMENT '当日总存活行数',
+    staff_owned_lines BIGINT      NOT NULL DEFAULT 0  COMMENT '行员存活行数',
+    vendor_owned_lines BIGINT      NOT NULL DEFAULT 0  COMMENT '厂商存活行数',
+    author_count     INT          NOT NULL DEFAULT 0  COMMENT '当日作者数',
+    file_count       INT          NOT NULL DEFAULT 0  COMMENT '当日跟踪文件数',
+    snapshot_commit  VARCHAR(64)                      COMMENT '快照所基于的 HEAD',
+    snapshot_time    DATETIME                         COMMENT '快照生成时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_code_rds_repo_date (repo_id, stat_date),
+    KEY idx_code_rds_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库每日代码行数快照';

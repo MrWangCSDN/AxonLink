@@ -12,33 +12,28 @@ import java.util.Map;
  *   <li>工程名无法识别时，再根据 {@code package_path} 兜底</li>
  * </ul>
  *
- * <p>兜底规则：若工程名和 {@code package_path} 都无法识别，统一返回 {@code "public"}。
+ * <p>兜底规则：若工程名和 {@code package_path} 都无法识别，统一返回 {@code "platform"}。
  */
 public final class DomainKeyResolver {
 
     /** package_path 关键字 → AxonLink domain_key */
     private static final Map<String, String> DOMAIN_MAP = Map.ofEntries(
-        Map.entry("ap", "platform"),
-        Map.entry("dept", "deposit"),
-        Map.entry("loan", "loan"),
-        Map.entry("lntran", "loan"),
-        Map.entry("sett", "settlement"),
         Map.entry("comm", "public"),
-        Map.entry("unvr", "unvr"),
-        Map.entry("aggr", "aggr"),
-        Map.entry("inbu", "inbu"),
-        Map.entry("medu", "medu"),
-        Map.entry("stmt", "stmt")
+        Map.entry("loan", "loan"),
+        Map.entry("dept", "deposit"),
+        Map.entry("sett", "settlement"),
+        Map.entry("dict", "dict")
     );
 
     private DomainKeyResolver() {}
 
     /**
      * 根据工程名优先、包路径兜底地解析领域。
+     * 业务工程（loan/deposit/settlement/dict）以工程名为准，不再被 comm 包路径覆盖。
      */
     public static String resolveByProjectOrPackage(String projectName, String packagePath) {
         String fromProject = resolveProject(projectName);
-        if (fromProject != null) {
+        if (fromProject != null && !"platform".equals(fromProject)) {
             return fromProject;
         }
         return resolve(packagePath);
@@ -57,32 +52,21 @@ public final class DomainKeyResolver {
         if (matchesProject(normalized, "dept")) return "deposit";
         if (matchesProject(normalized, "comm")) return "public";
         if (matchesProject(normalized, "sett")) return "settlement";
-        if (matchesProject(normalized, "unvr")) return "unvr";
-        if (matchesProject(normalized, "aggr")) return "aggr";
-        if (matchesProject(normalized, "inbu")) return "inbu";
-        if (matchesProject(normalized, "medu")) return "medu";
-        if (matchesProject(normalized, "stmt")) return "stmt";
-        if (normalized.equals("ap-parent")
-            || normalized.equals("ccbs-ap")
-            || normalized.startsWith("ccbs-ap-")
-            || normalized.equals("ap")
-            || normalized.startsWith("ap-")) {
-            return "platform";
-        }
-        return null;
+        if (matchesProject(normalized, "dict")) return "dict";
+        return "platform";
     }
 
     /**
      * 从 package_path 推断领域标识。
      *
      * @param packagePath serviceType/flowtran 的包路径，如 {@code com.spdb.ccbs.dept.pbf.trans.qryMnt}
-     * @return AxonLink domain_key，如 {@code deposit}；无法识别时返回 {@code "public"}
+     * @return AxonLink domain_key，如 {@code deposit}；无法识别时返回 {@code "platform"}
      */
     public static String resolve(String packagePath) {
-        if (packagePath == null || packagePath.isBlank()) return "public";
+        if (packagePath == null || packagePath.isBlank()) return "platform";
         String[] parts = packagePath.split("\\.");
-        if (parts.length < 4) return "public";
-        return DOMAIN_MAP.getOrDefault(parts[3], "public");
+        if (parts.length < 4) return "platform";
+        return DOMAIN_MAP.getOrDefault(parts[3], "platform");
     }
 
     private static boolean matchesProject(String normalizedProjectName, String token) {

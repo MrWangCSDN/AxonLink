@@ -131,12 +131,12 @@ public class CodeDashboardDao {
     }
 
     /** 交易维度排行（Phase② 后有数据；每行一个 tx×person_type）。 */
-    public List<Map<String, Object>> txByPersonType(long repoId, int limit) {
+    public List<Map<String, Object>> txByPersonType(long repoId, String personType, int limit) {
         return jdbc.queryForList(
                 "SELECT tx_id, person_type, owned_lines, file_count, snapshot_time " +
-                "  FROM code_tx_person_stat WHERE repo_id = ? " +
+                "  FROM code_tx_person_stat WHERE repo_id = ? AND person_type = ? " +
                 " ORDER BY owned_lines DESC LIMIT ?",
-                repoId, clamp(limit));
+                repoId, personType, clamp(limit));
     }
 
     // ---- 领域维度（路径纯函数推导，无 Neo4j；file_path 即事实表自身键，天然对齐） ----
@@ -188,7 +188,7 @@ public class CodeDashboardDao {
                 "  FROM code_file_author_stat s " +
                 "  JOIN code_file_domain d ON d.repo_id = s.repo_id AND d.file_path = s.file_path " +
                 "  LEFT JOIN code_author_alias a ON a.email = s.author_email AND a.enabled = 1 " +
-                " WHERE s.repo_id = ? " +
+                " WHERE s.repo_id = ? AND d.domain_key <> 'public' " +
                 " GROUP BY s.repo_id, d.domain_key, " + PERSON_TYPE_EXPR,
                 repoId);
     }

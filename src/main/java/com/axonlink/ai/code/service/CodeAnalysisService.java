@@ -3,6 +3,8 @@ package com.axonlink.ai.code.service;
 import com.axonlink.ai.code.entity.CodeRepoConfig;
 import com.axonlink.ai.code.persistence.CodeFileAuthorStatDao;
 import com.axonlink.ai.code.persistence.CodeRepoConfigDao;
+import com.axonlink.ai.code.persistence.CodeRepoDailyStatDao;
+import com.axonlink.ai.code.persistence.CodeDashboardDao;
 import com.axonlink.ai.code.service.GitBlameCollector.CollectResult;
 import com.axonlink.ai.code.service.GitBlameCollector.Mode;
 import org.slf4j.Logger;
@@ -13,6 +15,8 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +46,12 @@ public class CodeAnalysisService {
 
     @Autowired
     private CodeDashboardAggregator aggregator;
+
+    @Autowired
+    private CodeRepoDailyStatDao dailyStatDao;
+
+    @Autowired
+    private CodeDashboardDao dashboardDao;
 
     @Value("${code-analysis.enabled:false}")
     private boolean globalEnabled;
@@ -171,6 +181,10 @@ public class CodeAnalysisService {
                     shortSha(res.headSha));
             // 采集成功 -> 扫描 flowtrans XML + 重建大屏 summary（聚合失败不影响采集结果）
             aggregator.rebuild(repo.getId(), res.localDir, res.allTrackedFiles, res.headSha);
+
+            // 写入每日快照（用于折线图）
+            writeDailyStat(repo.getId(), res);
+
             return res;
         } catch (Exception e) {
             updateRepoState(repo, repo.getLastSyncCommit(), "FAILED");
@@ -258,5 +272,47 @@ public class CodeAnalysisService {
 
     private String shortSha(String sha) {
         return sha == null ? "?" : (sha.length() > 8 ? sha.substring(0, 8) : sha);
+    }
+
+    private void writeDailyStat(long repoId, CollectResult res) {
+        try {
+            long totalOwned = 0, staffOwned = 0, vendorOwned = 0;
+            int authorCount = 0;
+            int fileCount = res.stats.stream()
+                    .map(s -> s.getFilePath())
+                    .distinct()
+                    .mapToInt(x -> 1)
+                    .sum();
+
+            // 按 person_type 聚合行数
+            for (var stat : res.stats) {
+                totalOwned += stat.getOwnedLines();
+            }
+
+            // 从 summary 表查行员/厂商拆分（rebuild 后数据已就绪）
+            List<Map<String, Object>> byType = dashboardDao.sumByPersonType(repoId);
+            for (Map<String, Object> row : byType) {
+                String pt = String.valueOf(row.get("person_type"));
+                long owned = ((Number) row.get("owned_lines")).longValue();
+                if ("VENDOR".equals(pt)) {
+                    vendorOwned = owned;
+                } else {
+                    staffOwned = owned;
+                }
+            }
+
+            // 如果 summary 还没聚合完成，用 0 值写入（容错）
+            if (totalOwned == 0 && !res.stats.isEmpty()) {
+                totalOwned = res.stats.stream().mapToLong(com.axonlink.ai.code.entity.CodeFileAuthorStat::getOwnedLines).sum();
+            }
+
+            String today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE);
+            dailyStatDao.upsert(repoId, today, totalOwned, staffOwned, vendorOwned,
+                    res.authorCount, res.fileCount, res.headSha);
+            log.info("仓库[id={}] 每日快照写入完成：total={} staff={} vendor={}",
+                    repoId, totalOwned, staffOwned, vendorOwned);
+        } catch (Exception e) {
+            log.error("仓库[id={}] 每日快照写入失败（不影响采集结果）", repoId, e);
+        }
     }
 }

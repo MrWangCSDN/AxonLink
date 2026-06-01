@@ -119,4 +119,9 @@ public class CodeRepoConfigDao {
                 repo.getLastSyncCommit(), repo.getLastSyncTime(),
                 repo.getLastSyncStatus(), repo.getId());
     }
+
+    /** 按 id 删除仓库配置（物理删除）。 */
+    public int deleteById(long id) {
+        return jdbc.update("DELETE FROM code_repo_config WHERE id = ?", id);
+    }
 }
