@@ -123,10 +123,12 @@ public class ErRelationDao {
     public List<String> listTables(String env, String keyword) {
         // UNION ALL 让每条关系两端各计一次 → GROUP BY 后 COUNT(*) = 该表的关系度（连了多少条边）
         // 按度降序，让"最有料"的表排最前（前端自动选中心表时挑第一个）。IGNORED 不计。
+        // v3：页面只展示 HIGH（联合主键全覆盖），列表只数 HIGH 关系，
+        // 保证前端自动选的中心表在 HIGH 下一定有图。
         StringBuilder sb = new StringBuilder(
                 "SELECT t FROM ( " +
-                "  SELECT from_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' " +
-                "  UNION ALL SELECT to_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' " +
+                "  SELECT from_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' AND confidence='HIGH' " +
+                "  UNION ALL SELECT to_table AS t FROM dii_er_relation WHERE env=? AND status<>'IGNORED' AND confidence='HIGH' " +
                 ") u WHERE 1=1");
         List<Object> args = new ArrayList<>();
         args.add(env); args.add(env);

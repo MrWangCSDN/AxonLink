@@ -129,6 +129,8 @@ public class ErSchemaScanService {
             while (rs.next()) {
                 String table = lower(rs.getString("table_name"));
                 boolean primary = rs.getBoolean("is_primary");
+                // v3：只认主键，丢弃唯一索引（用户明确：唯一索引不考虑了）
+                if (!primary) continue;
                 long oid = rs.getLong("table_oid");
                 String indkey = rs.getString("indkey_text");
                 Map<Integer, String> attrMap = oidAttrName.get(oid);
@@ -146,8 +148,9 @@ public class ErSchemaScanService {
                 }
                 if (!valid || cols.isEmpty()) continue;
 
+                // 只剩主键（上面已 continue 掉非主键），keyType 恒 PK
                 result.keySets.computeIfAbsent(table, k -> new ArrayList<>())
-                        .add(new ErKeySet(primary ? "PK" : "UNIQUE", cols));
+                        .add(new ErKeySet("PK", cols));
             }
         } catch (Exception e) {
             log.error("[er-scan] SQL-1 全库索引扫描失败 env={}: {}", effEnv, e.getMessage(), e);
