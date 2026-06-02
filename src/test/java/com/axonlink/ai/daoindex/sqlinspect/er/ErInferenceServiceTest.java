@@ -12,9 +12,9 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * {@link ErInferenceService} 纯算法单测——不依赖 DB / Spring。
  *
- * <p>覆盖 spec 算法节全部判定分支 + 置信度护栏：
- * 联合键 HIGH / 单列独特 MEDIUM / 单列通用 LOW / 黑名单强制 LOW /
- * 同实体 skip / 部分列命中 skip。
+ * <p>覆盖 spec 算法节全部判定分支（v4 口径）：
+ * 主键全覆盖一律 HIGH（不分列数）/ 黑名单单列强制 LOW（降噪逃生阀）/
+ * 共享主键双向保留 / 部分列命中 skip。
  */
 @DisplayName("ErInferenceService —— 关系推断 + 置信度护栏")
 class ErInferenceServiceTest {
@@ -45,33 +45,34 @@ class ErInferenceServiceTest {
     }
 
     @Test
-    @DisplayName("单列键 + 列名独特(出现表数 ≤ 阈值) → MEDIUM")
-    void singleDistinctColumn_returnsMedium() {
+    @DisplayName("v4：单列主键全覆盖 → HIGH（不再按列数降级）")
+    void singleColumnKey_fullCover_returnsHigh() {
         Map<String, List<ErKeySet>> keySets = new HashMap<>();
         keySets.put("acct", List.of(new ErKeySet("PK", cols("acct_no"))));
         Map<String, Set<String>> tableCols = new HashMap<>();
         tableCols.put("acct", set("acct_no", "bal"));
         tableCols.put("txn", set("txn_id", "acct_no", "amt"));   // 含 acct_no（非 txn 键）
-        Map<String, Integer> colCount = Map.of("acct_no", 3);     // 仅 3 张表 ≤ 5
+        Map<String, Integer> colCount = Map.of("acct_no", 3);
 
+        // 用户口径：只看主键全覆盖，不管几列 → HIGH
         List<ErRelation> rels = svc.infer(keySets, tableCols, colCount, 5, Set.of());
         assertEquals(1, rels.size());
-        assertEquals("MEDIUM", rels.get(0).getConfidence());
+        assertEquals("HIGH", rels.get(0).getConfidence());
     }
 
     @Test
-    @DisplayName("单列键 + 列名通用(出现表数 > 阈值) → LOW")
-    void singleCommonColumn_returnsLow() {
+    @DisplayName("v4：单列主键即便出现在很多表 → 仍 HIGH（列数/普遍度不再降级）")
+    void singleColumnKey_commonColumn_stillHigh() {
         Map<String, List<ErKeySet>> keySets = new HashMap<>();
         keySets.put("dict", List.of(new ErKeySet("PK", cols("id"))));
         Map<String, Set<String>> tableCols = new HashMap<>();
         tableCols.put("dict", set("id", "label"));
         tableCols.put("other", set("pk2", "id", "x"));
-        Map<String, Integer> colCount = Map.of("id", 50);          // 50 张表 > 5
+        Map<String, Integer> colCount = Map.of("id", 50);          // 50 张表也不降级
 
         List<ErRelation> rels = svc.infer(keySets, tableCols, colCount, 5, Set.of());
         assertEquals(1, rels.size());
-        assertEquals("LOW", rels.get(0).getConfidence());
+        assertEquals("HIGH", rels.get(0).getConfidence());
     }
 
     @Test

@@ -19,12 +19,8 @@ import java.util.Set;
  * （如拆分表/扩展表共享主键），之前被当「同实体」误排除。现在一并保留。
  * 单列通用键造成的 PK-PK 组合噪声由置信度护栏兜底（落 LOW，前端默认隐藏）。
  *
- * <p>置信度护栏（防单列通用键爆假阳性）：
- * <ul>
- *   <li>联合键（≥2 列）全命中 → HIGH</li>
- *   <li>单列键 + 列名独特（出现表数 ≤ distinctMax）且不在黑名单 → MEDIUM</li>
- *   <li>单列键 + 列名通用（出现表数 &gt; distinctMax）或 在黑名单 → LOW</li>
- * </ul>
+ * <p>置信度（v4）：主键全覆盖即关系，<b>不分列数</b>，一律 HIGH。
+ * 仅当单列主键命中 yml 黑名单（默认空）才降 LOW 隐藏——给运维的降噪逃生阀。
  */
 @Service
 public class ErInferenceService {
@@ -72,15 +68,18 @@ public class ErInferenceService {
         return out;
     }
 
-    /** 置信度判定。 */
+    /**
+     * 置信度判定（v4 简化）。
+     * <p>用户口径：只看主键，<b>不管几列</b>，只要主键全部列在对方表全包含 → 就是关系，
+     * 一律 HIGH 展示（不再按列数分 HIGH/MEDIUM/LOW）。
+     * <p>唯一保留的降噪：单列主键且该列在 yml 黑名单（{@code er.common-columns}，默认空）
+     * → 降 LOW 隐藏。这是给运维的逃生阀，默认不生效。
+     */
     private String confidence(ErKeySet s, Map<String, Integer> colCount,
                               int distinctMax, Set<String> blacklist) {
-        if (s.getColumns().size() >= 2) {
-            return "HIGH";                       // 联合键全命中
+        if (s.getColumns().size() == 1 && blacklist.contains(s.getColumns().get(0))) {
+            return "LOW";   // 显式标为噪声列 → 隐藏
         }
-        String col = s.getColumns().get(0);
-        boolean distinct = colCount.getOrDefault(col, 0) <= distinctMax;
-        boolean black = blacklist.contains(col);
-        return (distinct && !black) ? "MEDIUM" : "LOW";
+        return "HIGH";      // 主键全覆盖即关系，全部展示
     }
 }
