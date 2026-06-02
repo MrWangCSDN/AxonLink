@@ -78,7 +78,7 @@ public class ErController {
             @RequestParam(required = false) String table,
             @RequestParam(required = false, defaultValue = "0") int hops,
             @RequestParam(required = false, defaultValue = "false") boolean full,
-            @RequestParam(required = false, defaultValue = "MEDIUM") String minConfidence) {
+            @RequestParam(required = false, defaultValue = "HIGH") String minConfidence) {
         String e = effEnv(env);
         int effHops = hops > 0 ? hops : props.getEr().getDefaultHops();
 
@@ -113,14 +113,33 @@ public class ErController {
     }
 
     // ── 导出关系清单 Excel ──
+    // v4：导出与页面画布完全一致——传 table 时只导该中心表的 N 跳（默认 1 跳）子图，
+    // 同 minConfidence（默认 HIGH）、同样排除 IGNORED，保证「所见即所导」。
+    // 不传 table 时退化为全量（仅 API 直连用；前端导出按钮恒带 table）。
     @GetMapping("/export")
     public ResponseEntity<byte[]> export(@RequestParam(required = false) String env,
-                                         @RequestParam(required = false, defaultValue = "LOW") String minConfidence) {
+                                         @RequestParam(required = false) String table,
+                                         @RequestParam(required = false, defaultValue = "0") int hops,
+                                         @RequestParam(required = false, defaultValue = "HIGH") String minConfidence) {
         String e = effEnv(env);
         try {
-            List<Map<String, Object>> rows = dao.listForExport(e, minConfidence);
+            List<Map<String, Object>> rows;
+            String scope;
+            if (table != null && !table.isBlank()) {
+                int effHops = hops > 0 ? hops : props.getEr().getDefaultHops();
+                // 与 /graph 同一查询：当前中心表的子图边（已排除 IGNORED、已按 minConfidence 过滤）
+                rows = new ArrayList<>(dao.subgraph(e, table.trim(), effHops, minConfidence));
+                // Excel 内排序：主表→从表，便于阅读（画布无序，导出排好看）
+                rows.sort(Comparator
+                        .comparing((Map<String, Object> m) -> str(m.get("from_table")))
+                        .thenComparing(m -> str(m.get("to_table"))));
+                scope = table.trim().toLowerCase();
+            } else {
+                rows = dao.listForExport(e, minConfidence);
+                scope = "all";
+            }
             byte[] bytes = buildWorkbook(rows);
-            String fname = "er-relations-" + (e.isEmpty() ? "default" : e) + ".xlsx";
+            String fname = "er-relations-" + (e.isEmpty() ? "default" : e) + "-" + scope + ".xlsx";
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));

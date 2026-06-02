@@ -161,7 +161,7 @@ public class ErRelationDao {
             for (String tbl : frontier) {
                 List<Map<String, Object>> rows = jdbc.queryForList(
                         "SELECT id, from_table, to_table, join_columns, key_type, key_col_count, " +
-                        "       confidence, status FROM dii_er_relation " +
+                        "       confidence, status, created_at, updated_at FROM dii_er_relation " +
                         " WHERE env=? AND status <> 'IGNORED' " +
                         "   AND (from_table=? OR to_table=?) " +
                         "   AND " + CONF_RANK_CASE + " >= ?",
@@ -203,13 +203,17 @@ public class ErRelationDao {
         }
     }
 
-    /** 导出查询：按 minConfidence 过滤的全部关系（含 IGNORED，导出要全留痕）。 */
+    /**
+     * 导出查询（全量分支）：按 minConfidence 过滤的全部关系。
+     * <p>v4：与页面口径对齐——排除 IGNORED（页面也排除）。导出不再「全留痕」，
+     * 保证「页面看不到的关系不会出现在 Excel 里」。
+     */
     public List<Map<String, Object>> listForExport(String env, String minConfidence) {
         int minRank = confRank(minConfidence);
         return jdbc.queryForList(
                 "SELECT from_table, to_table, join_columns, key_type, key_col_count, confidence, status, " +
                 "       created_at, updated_at FROM dii_er_relation " +
-                " WHERE env=? AND " + CONF_RANK_CASE + " >= ? " +
+                " WHERE env=? AND status <> 'IGNORED' AND " + CONF_RANK_CASE + " >= ? " +
                 " ORDER BY " + CONF_RANK_CASE + " DESC, from_table, to_table",
                 env, minRank);
     }
