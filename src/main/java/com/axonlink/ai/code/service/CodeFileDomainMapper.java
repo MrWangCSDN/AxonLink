@@ -34,15 +34,40 @@ public class CodeFileDomainMapper {
     /** 重建单仓库 file→domain 映射。 */
     public void rebuild(long repoId) {
         List<String> paths = dao.distinctFilePaths(repoId);
+        // 从 repo_config 获取工程名，而不是从 file_path 提取
+        String repoName = dao.getRepoName(repoId);
         List<Object[]> rows = new ArrayList<>(paths.size());
         for (String path : paths) {
-            String[] pp = splitProjectAndPackage(path);
-            String domainKey = DomainKeyResolver.resolveByProjectOrPackage(pp[0], pp[1]);
+            // 只提取包路径，工程名从 repo_config 获取
+            String[] pp = splitPackageOnly(path);
+            String domainKey = DomainKeyResolver.resolveByProjectOrPackage(repoName, pp[1]);
             rows.add(new Object[]{path, domainKey});
         }
         String snapshot = dao.latestSnapshotCommit(repoId);
         dao.replaceFileDomain(repoId, rows, snapshot);
-        log.info("仓库[id={}] file→domain 映射重建：{} 文件", repoId, rows.size());
+        log.info("仓库[id={}, repo={}] file→domain 映射重建：{} 文件", repoId, repoName, rows.size());
+    }
+
+    /**
+     * 从仓库相对路径只提取 packagePath（工程名已从 repo_config 获取）。
+     */
+    static String[] splitPackageOnly(String repoRelPath) {
+        if (repoRelPath == null || repoRelPath.isBlank()) {
+            return new String[]{null, ""};
+        }
+        String norm = "/" + repoRelPath.replace('\\', '/').replaceFirst("^/+", "");
+        for (String marker : SRC_MARKERS) {
+            int idx = norm.indexOf(marker);
+            if (idx < 0) {
+                continue;
+            }
+            String after = norm.substring(idx + marker.length());
+            int fileSlash = after.lastIndexOf('/');
+            String pkgDir = fileSlash >= 0 ? after.substring(0, fileSlash) : "";
+            String packagePath = pkgDir.replace('/', '.');
+            return new String[]{null, packagePath};
+        }
+        return new String[]{null, ""};
     }
 
     /**

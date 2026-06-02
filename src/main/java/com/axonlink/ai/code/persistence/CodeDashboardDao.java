@@ -155,6 +155,13 @@ public class CodeDashboardDao {
                 String.class, repoId);
     }
 
+    /** 获取仓库名称。 */
+    public String getRepoName(long repoId) {
+        return jdbc.queryForObject(
+                "SELECT repo_name FROM code_repo_config WHERE id = ?",
+                String.class, repoId);
+    }
+
     /** 全量替换该仓库 file→domain 映射。rows 每项 = [file_path, domain_key]。 */
     public void replaceFileDomain(long repoId, List<Object[]> rows, String snapshotCommit) {
         jdbc.update("DELETE FROM code_file_domain WHERE repo_id = ?", repoId);
