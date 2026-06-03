@@ -2,6 +2,7 @@ package com.axonlink.ai.daoindex.sqlinspect.service;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiWhitelistApplicationDao;
 import org.slf4j.Logger;
@@ -40,13 +41,13 @@ public class WhitelistApplicationService {
     private final DiiWhitelistApplicationDao dao;
     private final DiiAnalysisItemDao itemDao;
     private final DiiSqlPoolDao poolDao;
-    private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao slowSqlDao;
+    private final DiiSlowSqlDao slowSqlDao;
     private final DaoIndexAnalysisProperties props;
 
     public WhitelistApplicationService(DiiWhitelistApplicationDao dao,
                                        DiiAnalysisItemDao itemDao,
                                        DiiSqlPoolDao poolDao,
-                                       com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao slowSqlDao,
+                                       DiiSlowSqlDao slowSqlDao,
                                        DaoIndexAnalysisProperties props) {
         this.dao = dao;
         this.itemDao = itemDao;
@@ -192,7 +193,7 @@ public class WhitelistApplicationService {
     }
 
     /**
-     * 中央同步：跃迁成功后把 item / pool 的 wl 冗余字段刷成最新状态。
+     * 中央同步：跃迁成功后把 item / pool / slow_sql 的 wl 冗余字段刷成最新状态。
      */
     private void syncByTargetType(long appId, String status, boolean approved,
                                   String targetType, String sqlHash, String namedSql) {
@@ -356,7 +357,7 @@ public class WhitelistApplicationService {
         public String applicant;
         public String applyReason;
         public String l1Approver;
-        public String sourceTable;       // item / sql_pool
+        public String sourceTable;       // item / sql_pool / slow_sql
         public long sourceId;
     }
 }

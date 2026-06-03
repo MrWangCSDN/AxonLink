@@ -141,13 +141,14 @@ public class DiiSlowSqlDao {
 
     // ── 白名单同步（被 WhitelistApplicationService 调）──
 
-    /** 把某抽象SQL的所有行置成申请的当前状态；approved→is_whitelist=1。 */
+    /** 把某抽象SQL的所有行置成申请的当前状态；approved→is_whitelist 置 1；非通过不回收（与池/项一致）。 */
     public int syncWhitelistByHash(String abstractHash, long appId, String status, boolean approved) {
         if (abstractHash == null || abstractHash.isEmpty()) return 0;
         return jdbc.update(
-                "UPDATE dii_slow_sql SET whitelist_app_id = ?, whitelist_status = ?, is_whitelist = ? " +
+                "UPDATE dii_slow_sql SET whitelist_app_id = ?, whitelist_status = ?, " +
+                "       is_whitelist = CASE WHEN ? THEN 1 ELSE is_whitelist END " +
                 " WHERE abstract_hash = ?",
-                appId, status, approved ? 1 : 0, abstractHash);
+                appId, status, approved, abstractHash);
     }
 
     /** 取消申请：清冗余字段(不动 is_whitelist，与池一致)。 */
