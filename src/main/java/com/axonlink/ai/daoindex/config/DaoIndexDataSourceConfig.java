@@ -40,7 +40,10 @@ public class DaoIndexDataSourceConfig {
         if (!isBlank(cfg.getDriverClassName())) {
             hc.setDriverClassName(cfg.getDriverClassName());
         }
-        hc.setJdbcUrl(cfg.getUrl());
+        // 结果库 MySQL：强制补批量写优化参数（缺则补），让 batchUpdate 重写成多值 INSERT。
+        // 放在代码里而非仅靠 yml 默认值——prod 用 env 变量覆盖 URL 时也能生效。
+        String effectiveUrl = withMysqlBatchParams(cfg.getUrl());
+        hc.setJdbcUrl(effectiveUrl);
         hc.setUsername(cfg.getUsername());
         hc.setPassword(cfg.getPassword());
         hc.setMaximumPoolSize(cfg.getMaximumPoolSize());
@@ -50,8 +53,28 @@ public class DaoIndexDataSourceConfig {
             hc.setConnectionTestQuery(cfg.getConnectionTestQuery());
         }
         hc.setPoolName("dii-result-pool");
-        log.info("[dii] 结果库 HikariDataSource 初始化：url={} pool={}", cfg.getUrl(), hc.getMaximumPoolSize());
+        log.info("[dii] 结果库 HikariDataSource 初始化：url={} pool={}", effectiveUrl, hc.getMaximumPoolSize());
         return new HikariDataSource(hc);
+    }
+
+    /**
+     * 给 MySQL 结果库 URL 补批量写优化参数（幂等，仅 jdbc:mysql 生效）：
+     * <ul>
+     *   <li>{@code rewriteBatchedStatements=true}：batchUpdate 重写成 {@code INSERT ... VALUES (...),(...)} 多值语句，
+     *       大批量插入 10-100x 提速（慢SQL 单次导入数十万行的关键）</li>
+     *   <li>{@code cachePrepStmts=true}：缓存预编译语句</li>
+     * </ul>
+     */
+    static String withMysqlBatchParams(String url) {
+        if (url == null || !url.startsWith("jdbc:mysql")) return url;
+        String u = appendParamIfAbsent(url, "rewriteBatchedStatements", "true");
+        u = appendParamIfAbsent(u, "cachePrepStmts", "true");
+        return u;
+    }
+
+    private static String appendParamIfAbsent(String url, String key, String val) {
+        if (url.contains(key + "=")) return url;
+        return url + (url.contains("?") ? "&" : "?") + key + "=" + val;
     }
 
     @Bean(name = "diiResultJdbcTemplate")

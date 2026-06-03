@@ -154,6 +154,18 @@ public class DiiWhitelistApplicationDao {
         }
     }
 
+    /**
+     * 取某 target_type 下全部「活跃」申请（status &lt;&gt; CANCELLED），按 id 升序。
+     * <p>用于大批量导入时一次性拉全部 SLOW_SQL 申请到内存（数量有限，人工创建），
+     * 避免逐 hash 反查的 N+1。按 id 升序便于调用方用 map put 覆盖取「最新（最高 id）」。
+     */
+    public List<Map<String, Object>> listActiveByTargetType(String targetType) {
+        return jdbc.queryForList(
+                "SELECT id, sql_hash, status FROM dii_whitelist_application " +
+                " WHERE target_type = ? AND status <> 'CANCELLED' ORDER BY id ASC",
+                targetType);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 状态机跃迁：每条 update SQL 都带 WHERE status = 期望初态，防并发
     // ─────────────────────────────────────────────────────────────────────────

@@ -18,12 +18,12 @@ spring:
       cache:
         period: 3600
 
-  # Excel 导入用 multipart 上限——SQL 池导入接口默认 50MB 单文件
-  # 内网 IndexWarnLog WARN 7天日志典型尺寸数 MB，给充足余量
+  # Excel/CSV 导入用 multipart 上限。
+  # 慢SQL 单次可导入数十万行 CSV（百 MB 级），故放到 300MB；SQL 池日志仍是小文件。
   servlet:
     multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
+      max-file-size: 300MB
+      max-request-size: 300MB
 
   # ── LDAP 连接（仅当 axon-link.security.enabled=true 时被使用）────────────────
   # 全部走 ENV 注入；yml 占位空字符串，避免服务账号密码入仓。

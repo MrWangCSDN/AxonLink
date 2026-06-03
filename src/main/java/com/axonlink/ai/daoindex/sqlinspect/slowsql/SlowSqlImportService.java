@@ -40,6 +40,8 @@ public class SlowSqlImportService {
     private static final int COL_ABSTRACT = 2;
     private static final int COL_PARAMS = 3;
     private static final int ABSTRACT_SQL_MAX = 60_000;
+    /** 分块入库大小：边解析边按块 batchInsert，内存恒定，且配合 rewriteBatchedStatements 规避 max_allowed_packet。 */
+    private static final int CHUNK_SIZE = 2000;
 
     private final DiiSlowSqlDao dao;
     private final ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
@@ -50,53 +52,73 @@ public class SlowSqlImportService {
         this.whitelistServiceProvider = whitelistServiceProvider;
     }
 
-    /** 入口：解析→轮次→入库→继承。返回 {round, rowsImported, distinctAbstractSql, skipped}。 */
+    /**
+     * 入口：流式解析→分块入库→批量继承。返回 {round, rowsImported, distinctAbstractSql, skipped}。
+     * <p>大批量（数十万行）友好：边解析边按 {@link #CHUNK_SIZE} 落库（内存恒定），
+     * 入库后只跑一次批量白名单继承（避免 N+1）。
+     */
     public Map<String, Object> importFile(MultipartFile file, String env) throws IOException {
-        List<ParsedSlowSqlRow> rows = new ArrayList<>();
+        // 轮次只依赖已有轮次，可先算；即使本次无有效行，未落库则不占用（下次按实际行重算）
+        String round = SlowSqlParser.nextRound(LocalDate.now(), dao.listAllRounds());
+        ChunkSink sink = new ChunkSink(round, LocalDateTime.now());
         int[] skipped = {0};
         String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
         if (name.endsWith(".csv")) {
-            parseCsv(file, rows, skipped);
+            parseCsv(file, sink, skipped);
         } else {
-            parseXlsx(file, rows, skipped);
+            parseXlsx(file, sink, skipped);
         }
+        sink.flush();   // 落最后不足一块的尾巴
 
-        Map<String, Object> result = new LinkedHashMap<>();
-        if (rows.isEmpty()) {
-            result.put("round", null);
-            result.put("rowsImported", 0);
-            result.put("distinctAbstractSql", 0);
-            result.put("skipped", skipped[0]);
-            log.info("[slow-sql-import] env={} 无有效行 skipped={}", env, skipped[0]);
-            return result;
-        }
-
-        String round = SlowSqlParser.nextRound(LocalDate.now(), dao.listAllRounds());
-        dao.batchInsert(rows, round, LocalDateTime.now());
-
-        // 继承白名单：按本批 distinct abstract_hash
-        Set<String> hashes = new LinkedHashSet<>();
-        for (ParsedSlowSqlRow r : rows) hashes.add(r.abstractHash);
-        WhitelistApplicationService wl = whitelistServiceProvider.getIfAvailable();
-        if (wl != null) {
-            for (String h : hashes) {
+        // 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断
+        if (sink.imported > 0) {
+            WhitelistApplicationService wl = whitelistServiceProvider.getIfAvailable();
+            if (wl != null) {
                 try {
-                    wl.inheritOnSlowSqlImport(h);
+                    wl.inheritOnSlowSqlImportBatch(sink.hashes);
                 } catch (Exception e) {
-                    log.warn("[slow-sql-import] 继承白名单失败 hash={}: {}", h, e.getMessage());
+                    log.warn("[slow-sql-import] 批量继承白名单失败: {}", e.getMessage());
                 }
             }
         }
 
-        result.put("round", round);
-        result.put("rowsImported", rows.size());
-        result.put("distinctAbstractSql", hashes.size());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("round", sink.imported > 0 ? round : null);
+        result.put("rowsImported", sink.imported);
+        result.put("distinctAbstractSql", sink.hashes.size());
         result.put("skipped", skipped[0]);
         log.info("[slow-sql-import] env={} 结果={}", env, result);
         return result;
     }
 
-    private void parseXlsx(MultipartFile file, List<ParsedSlowSqlRow> out, int[] skipped) throws IOException {
+    /** 分块缓冲落库：攒满 {@link #CHUNK_SIZE} 即 batchInsert，内存恒定；distinct hash 累积供批量继承。 */
+    private final class ChunkSink {
+        private final String round;
+        private final LocalDateTime importedAt;
+        private final List<ParsedSlowSqlRow> buffer = new ArrayList<>(CHUNK_SIZE);
+        private final Set<String> hashes = new LinkedHashSet<>();
+        private int imported = 0;
+
+        ChunkSink(String round, LocalDateTime importedAt) {
+            this.round = round;
+            this.importedAt = importedAt;
+        }
+
+        void add(ParsedSlowSqlRow r) {
+            buffer.add(r);
+            hashes.add(r.abstractHash);
+            if (buffer.size() >= CHUNK_SIZE) flush();
+        }
+
+        void flush() {
+            if (buffer.isEmpty()) return;
+            dao.batchInsert(buffer, round, importedAt);
+            imported += buffer.size();
+            buffer.clear();
+        }
+    }
+
+    private void parseXlsx(MultipartFile file, ChunkSink sink, int[] skipped) throws IOException {
         try (InputStream raw = file.getInputStream();
              BufferedInputStream is = new BufferedInputStream(raw);
              Workbook wb = WorkbookFactory.create(is)) {
@@ -109,12 +131,12 @@ public class SlowSqlImportService {
                 String cost = cell(row, COL_COST);
                 String abs = cell(row, COL_ABSTRACT);
                 String params = cell(row, COL_PARAMS);
-                addRow(out, skipped, domain, cost, abs, params);
+                addRow(sink, skipped, domain, cost, abs, params);
             }
         }
     }
 
-    private void parseCsv(MultipartFile file, List<ParsedSlowSqlRow> out, int[] skipped) throws IOException {
+    private void parseCsv(MultipartFile file, ChunkSink sink, int[] skipped) throws IOException {
         try (java.io.Reader reader = new java.io.BufferedReader(
                 new java.io.InputStreamReader(file.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
             reader.mark(1);
@@ -131,14 +153,14 @@ public class SlowSqlImportService {
                     String cost = rec.size() > COL_COST ? rec.get(COL_COST) : "";
                     String abs = rec.size() > COL_ABSTRACT ? rec.get(COL_ABSTRACT) : "";
                     String params = rec.size() > COL_PARAMS ? rec.get(COL_PARAMS) : "";
-                    addRow(out, skipped, domain, cost, abs, params);
+                    addRow(sink, skipped, domain, cost, abs, params);
                 }
             }
         }
     }
 
-    /** 组装一行；第0列 serviceName 派生 领域+类型；abstract_sql 空或超长 → 跳过计数。 */
-    private void addRow(List<ParsedSlowSqlRow> out, int[] skipped,
+    /** 组装一行喂给分块缓冲；第0列 serviceName 派生 领域+类型；abstract_sql 空或超长 → 跳过计数。 */
+    private void addRow(ChunkSink sink, int[] skipped,
                         String serviceName, String cost, String abs, String params) {
         String abstractSql = abs == null ? "" : abs.trim();
         if (abstractSql.isEmpty() || abstractSql.length() > ABSTRACT_SQL_MAX) {
@@ -148,7 +170,7 @@ public class SlowSqlImportService {
         String svc = serviceName == null ? "" : serviceName.trim();
         long ms = SlowSqlParser.parseCostMs(cost);
         String hash = SlowSqlParser.sha256Hex(abstractSql);
-        out.add(new ParsedSlowSqlRow(
+        sink.add(new ParsedSlowSqlRow(
                 svc, SlowSqlParser.domainOf(svc), SlowSqlParser.bizTypeOf(svc),
                 ms, cost == null ? null : cost.trim(),
                 abstractSql, hash, params == null ? null : params.trim()));

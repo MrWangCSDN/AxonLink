@@ -9,8 +9,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static com.axonlink.ai.daoindex.sqlinspect.persistence.DiiWhitelistApplicationDao.*;
 
@@ -260,6 +264,32 @@ public class WhitelistApplicationService {
         String status = String.valueOf(app.get("status"));
         boolean approved = STATUS_APPROVED.equals(status);
         slowSqlDao.syncWhitelistByHash(abstractHash, appId, status, approved);
+    }
+
+    /**
+     * 慢SQL **批量**导入后的白名单继承（避免 N+1）：
+     * 一次取全部活跃 SLOW_SQL 申请到内存（数量有限）→ 仅对「本批 distinct hash ∩ 申请」的少数命中项做同步。
+     * 把「逐 hash 一次 SELECT」压成「1 次 SELECT + 命中数次 UPDATE」。
+     * 与逐条 {@link #inheritOnSlowSqlImport} 等价：每个 hash 取最高 id 的活跃申请。
+     */
+    public void inheritOnSlowSqlImportBatch(Collection<String> abstractHashes) {
+        if (abstractHashes == null || abstractHashes.isEmpty()) return;
+        List<Map<String, Object>> apps = dao.listActiveByTargetType(TARGET_SLOW_SQL);
+        if (apps == null || apps.isEmpty()) return;
+        Set<String> batch = (abstractHashes instanceof Set)
+                ? (Set<String>) abstractHashes : new HashSet<>(abstractHashes);
+        // apps 已按 id 升序 → 命中 hash 用 map put 覆盖，最终留下最高 id（=最新活跃）那条
+        Map<String, Map<String, Object>> matched = new HashMap<>();
+        for (Map<String, Object> a : apps) {
+            String h = (String) a.get("sql_hash");
+            if (h != null && batch.contains(h)) matched.put(h, a);
+        }
+        for (Map<String, Object> a : matched.values()) {
+            String h = (String) a.get("sql_hash");
+            long appId = ((Number) a.get("id")).longValue();
+            String status = String.valueOf(a.get("status"));
+            slowSqlDao.syncWhitelistByHash(h, appId, status, STATUS_APPROVED.equals(status));
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
