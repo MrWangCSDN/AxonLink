@@ -137,18 +137,19 @@ public class SlowSqlImportService {
         }
     }
 
-    /** 组装一行；abstract_sql 空或超长 → 跳过计数。 */
+    /** 组装一行；第0列 serviceName 派生 领域+类型；abstract_sql 空或超长 → 跳过计数。 */
     private void addRow(List<ParsedSlowSqlRow> out, int[] skipped,
-                        String domain, String cost, String abs, String params) {
+                        String serviceName, String cost, String abs, String params) {
         String abstractSql = abs == null ? "" : abs.trim();
         if (abstractSql.isEmpty() || abstractSql.length() > ABSTRACT_SQL_MAX) {
             skipped[0]++;
             return;
         }
+        String svc = serviceName == null ? "" : serviceName.trim();
         long ms = SlowSqlParser.parseCostMs(cost);
         String hash = SlowSqlParser.sha256Hex(abstractSql);
         out.add(new ParsedSlowSqlRow(
-                domain == null ? "" : domain.trim(),
+                svc, SlowSqlParser.domainOf(svc), SlowSqlParser.bizTypeOf(svc),
                 ms, cost == null ? null : cost.trim(),
                 abstractSql, hash, params == null ? null : params.trim()));
     }

@@ -34,6 +34,31 @@ class SlowSqlParserTest {
     }
 
     @Test
+    @DisplayName("serviceName 派生领域：dept/loan/comm/sett/public → 存款/贷款/公共/结算/全领域")
+    void domainOf_mapping() {
+        assertEquals("存款", SlowSqlParser.domainOf("ccbs-dept-online"));
+        assertEquals("存款", SlowSqlParser.domainOf("ccbs-dept-hotspot"));
+        assertEquals("贷款", SlowSqlParser.domainOf("ccbs-loan-online"));
+        assertEquals("公共", SlowSqlParser.domainOf("ccbs-comm-online"));
+        assertEquals("公共", SlowSqlParser.domainOf("ccbs-comm-hotspot"));
+        assertEquals("结算", SlowSqlParser.domainOf("ccbs-sett-online"));
+        assertEquals("全领域", SlowSqlParser.domainOf("ccbs-public-batch"));
+        assertEquals("其他", SlowSqlParser.domainOf("ccbs-unknown-x"));
+        assertEquals("其他", SlowSqlParser.domainOf(null));
+    }
+
+    @Test
+    @DisplayName("serviceName 派生类型：online/hotspot/batch → 联机/热点账户/批量")
+    void bizTypeOf_mapping() {
+        assertEquals("联机", SlowSqlParser.bizTypeOf("ccbs-dept-online"));
+        assertEquals("热点账户", SlowSqlParser.bizTypeOf("ccbs-comm-hotspot"));
+        assertEquals("热点账户", SlowSqlParser.bizTypeOf("ccbs-dept-hotspot"));
+        assertEquals("批量", SlowSqlParser.bizTypeOf("ccbs-public-batch"));
+        assertEquals("其他", SlowSqlParser.bizTypeOf("ccbs-dept-foo"));
+        assertEquals("其他", SlowSqlParser.bizTypeOf(null));
+    }
+
+    @Test
     @DisplayName("轮次：当日无→-1；已有-1,-2→-3；跨日重置")
     void nextRound_sequence() {
         LocalDate d = LocalDate.of(2025, 6, 1);

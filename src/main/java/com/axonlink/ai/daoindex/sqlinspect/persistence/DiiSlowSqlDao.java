@@ -28,8 +28,8 @@ public class DiiSlowSqlDao {
 
     private static final String INSERT_SQL =
             "INSERT INTO dii_slow_sql " +
-            " (domain, time_cost_ms, time_cost_raw, abstract_sql, abstract_hash, exec_params, round, imported_at) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+            " (service_name, domain, biz_type, time_cost_ms, time_cost_raw, abstract_sql, abstract_hash, exec_params, round, imported_at) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     /** 批量插入一批解析行（同一轮次、同一导入时刻）。 */
     public int[] batchInsert(List<ParsedSlowSqlRow> rows, String round, LocalDateTime importedAt) {
@@ -37,14 +37,16 @@ public class DiiSlowSqlDao {
         return jdbc.batchUpdate(INSERT_SQL, new BatchPreparedStatementSetter() {
             @Override public void setValues(PreparedStatement ps, int i) throws SQLException {
                 ParsedSlowSqlRow r = rows.get(i);
-                ps.setString(1, r.domain);
-                ps.setLong(2, r.timeCostMs);
-                ps.setString(3, r.timeCostRaw);
-                ps.setString(4, r.abstractSql);
-                ps.setString(5, r.abstractHash);
-                ps.setString(6, r.execParams);
-                ps.setString(7, round);
-                ps.setTimestamp(8, ts);
+                ps.setString(1, r.serviceName);
+                ps.setString(2, r.domain);
+                ps.setString(3, r.bizType);
+                ps.setLong(4, r.timeCostMs);
+                ps.setString(5, r.timeCostRaw);
+                ps.setString(6, r.abstractSql);
+                ps.setString(7, r.abstractHash);
+                ps.setString(8, r.execParams);
+                ps.setString(9, round);
+                ps.setTimestamp(10, ts);
             }
             @Override public int getBatchSize() { return rows.size(); }
         });
@@ -57,12 +59,14 @@ public class DiiSlowSqlDao {
 
     // ── 页面聚合：每个抽象SQL取全局最大耗时那条 ──
 
-    /** 过滤条件拼装（domain / keyword / whitelistStatus / round）。 */
+    /** 过滤条件拼装（domain / bizType / keyword / whitelistStatus / round）。 */
     private void appendFilters(StringBuilder sb, List<Object> args,
-                               String domain, String keyword, String whitelistStatus, String round) {
+                               String domain, String bizType, String keyword,
+                               String whitelistStatus, String round) {
         if (domain != null && !domain.isBlank()) { sb.append(" AND s.domain = ? "); args.add(domain.trim()); }
+        if (bizType != null && !bizType.isBlank()) { sb.append(" AND s.biz_type = ? "); args.add(bizType.trim()); }
         if (keyword != null && !keyword.isBlank()) {
-            sb.append(" AND (s.abstract_sql LIKE ? OR s.domain LIKE ?) ");
+            sb.append(" AND (s.abstract_sql LIKE ? OR s.service_name LIKE ?) ");
             String like = "%" + keyword.trim() + "%";
             args.add(like); args.add(like);
         }
@@ -77,16 +81,17 @@ public class DiiSlowSqlDao {
     }
 
     /** 聚合列表：每抽象SQL一行(代表行=全局最大耗时)，分页。 */
-    public List<Map<String, Object>> listAggregated(String domain, String keyword,
+    public List<Map<String, Object>> listAggregated(String domain, String bizType, String keyword,
                                                      String whitelistStatus, String round,
                                                      int limit, int offset) {
         StringBuilder inner = new StringBuilder(
-                "SELECT s.id, s.domain, s.time_cost_ms, s.time_cost_raw, s.abstract_sql, s.abstract_hash, " +
-                "       s.exec_params, s.round, s.whitelist_app_id, s.whitelist_status, s.is_whitelist, " +
+                "SELECT s.id, s.service_name, s.domain, s.biz_type, s.time_cost_ms, s.time_cost_raw, " +
+                "       s.abstract_sql, s.abstract_hash, s.exec_params, s.round, " +
+                "       s.whitelist_app_id, s.whitelist_status, s.is_whitelist, " +
                 "       ROW_NUMBER() OVER (PARTITION BY s.abstract_hash ORDER BY s.time_cost_ms DESC, s.id ASC) rn " +
                 "  FROM dii_slow_sql s WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(inner, args, domain, keyword, whitelistStatus, round);
+        appendFilters(inner, args, domain, bizType, keyword, whitelistStatus, round);
         String sql = "SELECT t.* FROM ( " + inner + " ) t WHERE t.rn = 1 " +
                      " ORDER BY t.time_cost_ms DESC LIMIT ? OFFSET ?";
         args.add(Math.min(Math.max(limit, 1), 500));
@@ -95,19 +100,26 @@ public class DiiSlowSqlDao {
     }
 
     /** 聚合总数 = distinct abstract_hash。 */
-    public long countAggregated(String domain, String keyword, String whitelistStatus, String round) {
+    public long countAggregated(String domain, String bizType, String keyword,
+                                String whitelistStatus, String round) {
         StringBuilder sb = new StringBuilder(
                 "SELECT COUNT(DISTINCT s.abstract_hash) FROM dii_slow_sql s WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(sb, args, domain, keyword, whitelistStatus, round);
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, round);
         Long n = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return n == null ? 0L : n;
     }
 
-    /** 去重 domain 下拉。 */
+    /** 去重 domain 下拉（中文领域）。 */
     public List<String> listDistinctDomains() {
         return jdbc.queryForList(
                 "SELECT DISTINCT domain FROM dii_slow_sql ORDER BY domain", String.class);
+    }
+
+    /** 去重 biz_type 下拉（中文类型）。 */
+    public List<String> listDistinctBizTypes() {
+        return jdbc.queryForList(
+                "SELECT DISTINCT biz_type FROM dii_slow_sql ORDER BY biz_type", String.class);
     }
 
     // ── 导出透视（全量，不过滤）──
@@ -129,11 +141,11 @@ public class DiiSlowSqlDao {
                 "SELECT abstract_hash, COUNT(*) AS cnt FROM dii_slow_sql GROUP BY abstract_hash");
     }
 
-    /** 每抽象SQL代表行(全局最大耗时)：domain/abstract_sql/exec_params/max_cost。 */
+    /** 每抽象SQL代表行(全局最大耗时)：service_name/domain/biz_type/abstract_sql/exec_params/max_cost。 */
     public List<Map<String, Object>> representativeRows() {
         return jdbc.queryForList(
-                "SELECT t.abstract_hash, t.domain, t.abstract_sql, t.exec_params, t.time_cost_ms FROM ( " +
-                "  SELECT s.abstract_hash, s.domain, s.abstract_sql, s.exec_params, s.time_cost_ms, " +
+                "SELECT t.abstract_hash, t.service_name, t.domain, t.biz_type, t.abstract_sql, t.exec_params, t.time_cost_ms FROM ( " +
+                "  SELECT s.abstract_hash, s.service_name, s.domain, s.biz_type, s.abstract_sql, s.exec_params, s.time_cost_ms, " +
                 "         ROW_NUMBER() OVER (PARTITION BY s.abstract_hash ORDER BY s.time_cost_ms DESC, s.id ASC) rn " +
                 "    FROM dii_slow_sql s " +
                 ") t WHERE t.rn = 1 ORDER BY t.time_cost_ms DESC");

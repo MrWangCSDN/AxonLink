@@ -5,7 +5,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -66,5 +68,45 @@ public final class SlowSqlParser {
             }
         }
         return prefix + "-" + (max + 1);
+    }
+
+    // ── serviceName 派生 领域 / 类型 ──────────────────────────────────────────
+    // serviceName 形如 ccbs-<领域码>-<类型码>，如 ccbs-dept-online / ccbs-public-batch。
+    // 用包含匹配（大小写无关），对前缀变体鲁棒。
+
+    public static final String OTHER = "其他";
+
+    /** 领域码 → 中文领域。 */
+    private static final Map<String, String> DOMAIN_MAP = new LinkedHashMap<>();
+    /** 类型码 → 中文类型。 */
+    private static final Map<String, String> BIZ_TYPE_MAP = new LinkedHashMap<>();
+    static {
+        DOMAIN_MAP.put("dept", "存款");
+        DOMAIN_MAP.put("loan", "贷款");
+        DOMAIN_MAP.put("comm", "公共");
+        DOMAIN_MAP.put("sett", "结算");
+        DOMAIN_MAP.put("public", "全领域");
+        BIZ_TYPE_MAP.put("hotspot", "热点账户");
+        BIZ_TYPE_MAP.put("batch", "批量");
+        BIZ_TYPE_MAP.put("online", "联机");
+    }
+
+    /** 从 serviceName 派生中文领域：dept/loan/comm/sett/public → 存款/贷款/公共/结算/全领域；无匹配→其他。 */
+    public static String domainOf(String serviceName) {
+        return mapByContains(serviceName, DOMAIN_MAP);
+    }
+
+    /** 从 serviceName 派生类型：online/hotspot/batch → 联机/热点账户/批量；无匹配→其他。 */
+    public static String bizTypeOf(String serviceName) {
+        return mapByContains(serviceName, BIZ_TYPE_MAP);
+    }
+
+    private static String mapByContains(String serviceName, Map<String, String> map) {
+        if (serviceName == null) return OTHER;
+        String s = serviceName.toLowerCase();
+        for (Map.Entry<String, String> e : map.entrySet()) {
+            if (s.contains(e.getKey())) return e.getValue();
+        }
+        return OTHER;
     }
 }

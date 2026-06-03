@@ -69,21 +69,28 @@ public class SlowSqlController {
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(defaultValue = "0") int offset,
             @RequestParam(required = false) String domain,
+            @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String whitelistStatus,
             @RequestParam(required = false) String round) {
-        List<Map<String, Object>> items = dao.listAggregated(domain, keyword, whitelistStatus, round, limit, offset);
-        long total = dao.countAggregated(domain, keyword, whitelistStatus, round);
+        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, round, limit, offset);
+        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, round);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("total", total);
         payload.put("items", items);
         return R.ok(payload);
     }
 
-    /** 去重 domain 下拉。 */
+    /** 去重 domain（中文领域）下拉。 */
     @GetMapping("/domains")
     public R<List<String>> domains() {
         return R.ok(dao.listDistinctDomains());
+    }
+
+    /** 去重 biz_type（中文类型）下拉。 */
+    @GetMapping("/biz-types")
+    public R<List<String>> bizTypes() {
+        return R.ok(dao.listDistinctBizTypes());
     }
 
     // ── 导出（全量透视，不联动筛选）──
@@ -131,7 +138,7 @@ public class SlowSqlController {
             hs.setFillForegroundColor(IndexedColors.GREY_50_PERCENT.getIndex());
             hs.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
-            List<String> headers = new ArrayList<>(List.of("领域", "抽象SQL", "执行参数", "最大执行耗时(ms)", "总出现次数"));
+            List<String> headers = new ArrayList<>(List.of("服务名", "领域", "类型", "抽象SQL", "执行参数", "最大执行耗时(ms)", "总出现次数"));
             for (String rd : rounds) headers.add(rd + " 出现次数");
             Row hr = sheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
@@ -146,7 +153,9 @@ public class SlowSqlController {
                 String h = String.valueOf(rep.get("abstract_hash"));
                 Row er = sheet.createRow(rowIdx++);
                 int col = 0;
+                er.createCell(col++).setCellValue(str(rep.get("service_name")));
                 er.createCell(col++).setCellValue(str(rep.get("domain")));
+                er.createCell(col++).setCellValue(str(rep.get("biz_type")));
                 er.createCell(col++).setCellValue(str(rep.get("abstract_sql")));
                 er.createCell(col++).setCellValue(str(rep.get("exec_params")));
                 er.createCell(col++).setCellValue(((Number) rep.get("time_cost_ms")).doubleValue());
