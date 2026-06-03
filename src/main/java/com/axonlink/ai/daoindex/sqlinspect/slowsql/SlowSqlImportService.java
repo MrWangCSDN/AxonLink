@@ -121,7 +121,8 @@ public class SlowSqlImportService {
             int first = reader.read();
             if (first != 0xFEFF && first != -1) reader.reset();   // 去 BOM
             org.apache.commons.csv.CSVFormat fmt = org.apache.commons.csv.CSVFormat.DEFAULT.builder()
-                    .setIgnoreEmptyLines(true).setAllowMissingColumnNames(true).build();
+                    .setIgnoreEmptyLines(true).setIgnoreSurroundingSpaces(true)
+                    .setAllowMissingColumnNames(true).build();
             try (org.apache.commons.csv.CSVParser parser = new org.apache.commons.csv.CSVParser(reader, fmt)) {
                 boolean header = true;
                 for (org.apache.commons.csv.CSVRecord rec : parser) {
