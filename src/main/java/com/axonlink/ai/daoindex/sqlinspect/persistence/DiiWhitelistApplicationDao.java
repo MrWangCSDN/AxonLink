@@ -46,6 +46,7 @@ public class DiiWhitelistApplicationDao {
 
     public static final String TARGET_HASH      = "HASH";
     public static final String TARGET_NAMED_SQL = "NAMED_SQL";
+    public static final String TARGET_SLOW_SQL  = "SLOW_SQL";   // 慢SQL：按 abstract_hash 匹配
 
     private static final String INSERT_SQL =
             "INSERT INTO dii_whitelist_application (" +
@@ -132,6 +133,22 @@ public class DiiWhitelistApplicationDao {
                     " WHERE target_type = 'NAMED_SQL' AND named_sql = ? AND status <> 'CANCELLED' " +
                     " ORDER BY id DESC LIMIT 1",
                     namedSql);
+        } catch (EmptyResultDataAccessException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 找匹配 abstract_hash 的「最新活跃」慢SQL申请，仅 {@code target_type='SLOW_SQL'}。
+     */
+    public Map<String, Object> findLatestActiveBySlowHash(String abstractHash) {
+        if (abstractHash == null || abstractHash.isEmpty()) return null;
+        try {
+            return jdbc.queryForMap(
+                    "SELECT * FROM dii_whitelist_application " +
+                    " WHERE target_type = 'SLOW_SQL' AND sql_hash = ? AND status <> 'CANCELLED' " +
+                    " ORDER BY id DESC LIMIT 1",
+                    abstractHash);
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
