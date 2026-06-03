@@ -40,15 +40,18 @@ public class WhitelistApplicationService {
     private final DiiWhitelistApplicationDao dao;
     private final DiiAnalysisItemDao itemDao;
     private final DiiSqlPoolDao poolDao;
+    private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao slowSqlDao;
     private final DaoIndexAnalysisProperties props;
 
     public WhitelistApplicationService(DiiWhitelistApplicationDao dao,
                                        DiiAnalysisItemDao itemDao,
                                        DiiSqlPoolDao poolDao,
+                                       com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao slowSqlDao,
                                        DaoIndexAnalysisProperties props) {
         this.dao = dao;
         this.itemDao = itemDao;
         this.poolDao = poolDao;
+        this.slowSqlDao = slowSqlDao;
         this.props = props;
     }
 
@@ -69,19 +72,31 @@ public class WhitelistApplicationService {
             throw new IllegalArgumentException("一级审批人不在配置名单内: " + req.l1Approver);
         }
 
-        String targetType = req.includeNamedSql ? TARGET_NAMED_SQL : TARGET_HASH;
-        // NAMED_SQL 模式需要有 named_sql；HASH 模式需要有 sql_hash——兜底校验
-        if (TARGET_NAMED_SQL.equals(targetType) && (req.namedSql == null || req.namedSql.isBlank())) {
-            throw new IllegalArgumentException("NAMED_SQL 模式必须提供 named_sql");
-        }
-        if (TARGET_HASH.equals(targetType) && (req.sqlHash == null || req.sqlHash.isBlank())) {
-            throw new IllegalArgumentException("HASH 模式必须提供 sql_hash");
+        String targetType;
+        if (req.slowSql) {
+            targetType = TARGET_SLOW_SQL;
+            if (req.sqlHash == null || req.sqlHash.isBlank()) {
+                throw new IllegalArgumentException("SLOW_SQL 模式必须提供 sql_hash(abstract_hash)");
+            }
+        } else {
+            targetType = req.includeNamedSql ? TARGET_NAMED_SQL : TARGET_HASH;
+            if (TARGET_NAMED_SQL.equals(targetType) && (req.namedSql == null || req.namedSql.isBlank())) {
+                throw new IllegalArgumentException("NAMED_SQL 模式必须提供 named_sql");
+            }
+            if (TARGET_HASH.equals(targetType) && (req.sqlHash == null || req.sqlHash.isBlank())) {
+                throw new IllegalArgumentException("HASH 模式必须提供 sql_hash");
+            }
         }
 
-        // 防重复：同 sql_hash / named_sql 已存在活跃申请（非 CANCELLED）则拒绝
-        Map<String, Object> existing = TARGET_HASH.equals(targetType)
-                ? dao.findLatestActiveBySqlHash(req.sqlHash)
-                : dao.findLatestActiveByNamedSql(req.namedSql);
+        // 防重复：同 hash / named_sql 已存在活跃申请（非 CANCELLED）则拒绝
+        Map<String, Object> existing;
+        if (TARGET_SLOW_SQL.equals(targetType)) {
+            existing = dao.findLatestActiveBySlowHash(req.sqlHash);
+        } else if (TARGET_HASH.equals(targetType)) {
+            existing = dao.findLatestActiveBySqlHash(req.sqlHash);
+        } else {
+            existing = dao.findLatestActiveByNamedSql(req.namedSql);
+        }
         if (existing != null && !STATUS_CANCELLED.equals(String.valueOf(existing.get("status")))) {
             throw new IllegalStateException(
                     "已存在活跃白名单申请 id=" + existing.get("id") + " status=" + existing.get("status"));
@@ -94,8 +109,8 @@ public class WhitelistApplicationService {
                 req.l1Approver,
                 req.sourceTable, req.sourceId);
 
-        // 同步 item / pool 的 wl 字段（PENDING_L1 状态，is_whitelist 不动）
-        syncToItemAndPool(id, STATUS_PENDING_L1, false, targetType, req.sqlHash, req.namedSql);
+        // 同步目标表的 wl 字段（PENDING_L1 状态，is_whitelist 不动）
+        syncByTargetType(id, STATUS_PENDING_L1, false, targetType, req.sqlHash, req.namedSql);
         return id;
     }
 
@@ -113,7 +128,7 @@ public class WhitelistApplicationService {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L1 且 L1 审批人匹配）");
         }
         Map<String, Object> app = dao.findById(id);
-        syncToItemAndPool(id, STATUS_PENDING_L2, false,
+        syncByTargetType(id, STATUS_PENDING_L2, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
@@ -127,7 +142,7 @@ public class WhitelistApplicationService {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L1 且 L1 审批人匹配）");
         }
         Map<String, Object> app = dao.findById(id);
-        syncToItemAndPool(id, STATUS_REJECTED_L1, false,
+        syncByTargetType(id, STATUS_REJECTED_L1, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
@@ -142,7 +157,7 @@ public class WhitelistApplicationService {
         }
         Map<String, Object> app = dao.findById(id);
         // 终态：approved=true → is_whitelist 写 1
-        syncToItemAndPool(id, STATUS_APPROVED, true,
+        syncByTargetType(id, STATUS_APPROVED, true,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
@@ -156,7 +171,7 @@ public class WhitelistApplicationService {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L2 且 L2 审批人匹配）");
         }
         Map<String, Object> app = dao.findById(id);
-        syncToItemAndPool(id, STATUS_PENDING_L1, false,
+        syncByTargetType(id, STATUS_PENDING_L1, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
@@ -173,17 +188,20 @@ public class WhitelistApplicationService {
         // 清掉 item / pool 的 wl 冗余字段（不动 is_whitelist——审计上看，取消≠回收已下发的白名单）
         itemDao.clearWhitelistByAppId(id);
         poolDao.clearWhitelistByAppId(id);
+        slowSqlDao.clearWhitelistByAppId(id);
     }
 
     /**
      * 中央同步：跃迁成功后把 item / pool 的 wl 冗余字段刷成最新状态。
      */
-    private void syncToItemAndPool(long appId, String status, boolean approved,
-                                   String targetType, String sqlHash, String namedSql) {
-        if (TARGET_NAMED_SQL.equals(targetType)) {
+    private void syncByTargetType(long appId, String status, boolean approved,
+                                  String targetType, String sqlHash, String namedSql) {
+        if (TARGET_SLOW_SQL.equals(targetType)) {
+            // 慢SQL：按 abstract_hash 同步 dii_slow_sql 全部同抽象SQL行
+            slowSqlDao.syncWhitelistByHash(sqlHash, appId, status, approved);
+        } else if (TARGET_NAMED_SQL.equals(targetType)) {
             // nsql 包含模式：所有同 named_sql 池行扩散
             poolDao.syncWhitelistByNamedSql(namedSql, appId, status, approved);
-            // 同 named_sql 在 item 表理论上不会出现（items 没有 named_sql），所以不扩 items
         } else {
             // HASH 模式：按 sql_hash 同步两张表
             itemDao.syncWhitelistByHash(sqlHash, appId, status, approved);
@@ -227,6 +245,20 @@ public class WhitelistApplicationService {
         } else {
             poolDao.syncWhitelistByHash(sqlHash, appId, status, approved);
         }
+    }
+
+    /**
+     * 慢SQL导入后调用：按 abstract_hash 反查 SLOW_SQL 类申请（任意活跃状态），
+     * 命中则把该抽象SQL全部行同步成申请当前状态；APPROVED→is_whitelist=1。
+     */
+    public void inheritOnSlowSqlImport(String abstractHash) {
+        if (abstractHash == null || abstractHash.isEmpty()) return;
+        Map<String, Object> app = dao.findLatestActiveBySlowHash(abstractHash);
+        if (app == null) return;
+        Long appId = ((Number) app.get("id")).longValue();
+        String status = String.valueOf(app.get("status"));
+        boolean approved = STATUS_APPROVED.equals(status);
+        slowSqlDao.syncWhitelistByHash(abstractHash, appId, status, approved);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -301,8 +333,9 @@ public class WhitelistApplicationService {
             throw new IllegalArgumentException("一级审批人 (l1Approver) 不能为空");
         }
         if (req.sourceTable == null
-                || !(req.sourceTable.equals("item") || req.sourceTable.equals("sql_pool"))) {
-            throw new IllegalArgumentException("source_table 必须是 'item' 或 'sql_pool'");
+                || !(req.sourceTable.equals("item") || req.sourceTable.equals("sql_pool")
+                     || req.sourceTable.equals("slow_sql"))) {
+            throw new IllegalArgumentException("source_table 必须是 'item' / 'sql_pool' / 'slow_sql'");
         }
     }
     private static String applicantRequired(String s) {
@@ -319,6 +352,7 @@ public class WhitelistApplicationService {
         public String env;
         public String kindSource;        // odb / nsql
         public boolean includeNamedSql;  // nsql 类型才有意义
+        public boolean slowSql;          // true=慢SQL申请(target_type=SLOW_SQL，按 sql_hash=abstract_hash 匹配)
         public String applicant;
         public String applyReason;
         public String l1Approver;
