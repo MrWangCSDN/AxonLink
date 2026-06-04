@@ -1,6 +1,7 @@
 package com.axonlink.ai.daoindex.controller;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
+import com.axonlink.ai.daoindex.sqlinspect.er.ErImportService;
 import com.axonlink.ai.daoindex.sqlinspect.er.ErRebuildService;
 import com.axonlink.ai.daoindex.sqlinspect.er.persistence.ErRelationDao;
 import com.axonlink.common.R;
@@ -15,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -35,13 +37,16 @@ public class ErController {
     private static final Logger log = LoggerFactory.getLogger(ErController.class);
 
     private final ErRebuildService rebuildService;
+    private final ErImportService importService;
     private final ErRelationDao dao;
     private final DaoIndexAnalysisProperties props;
 
     public ErController(ErRebuildService rebuildService,
+                        ErImportService importService,
                         ErRelationDao dao,
                         DaoIndexAnalysisProperties props) {
         this.rebuildService = rebuildService;
+        this.importService = importService;
         this.dao = dao;
         this.props = props;
     }
@@ -150,6 +155,55 @@ public class ErController {
             return ResponseEntity.internalServerError()
                     .body(("导出失败：" + ex.getMessage()).getBytes(StandardCharsets.UTF_8));
         }
+    }
+
+    // ── 导入关系清单 Excel（口令保护）：整库替换该 env，严格按导入内容绘制 ──
+    @PostMapping(value = "/import", consumes = "multipart/form-data")
+    public ResponseEntity<R<Map<String, Object>>> importExcel(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) String env,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        ResponseEntity<R<Map<String, Object>>> denied = checkToken(token, request);
+        if (denied != null) return denied;
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body(R.fail("文件为空"));
+        }
+        String fname = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        if (!fname.endsWith(".xlsx") && !fname.endsWith(".xls") && !fname.endsWith(".csv")) {
+            return ResponseEntity.badRequest().body(R.fail("仅支持 .xlsx / .xls / .csv"));
+        }
+        try {
+            return ResponseEntity.ok(R.ok(importService.importFile(file, env)));
+        } catch (Exception e) {
+            log.error("[er] 导入失败 file={}", file.getOriginalFilename(), e);
+            return ResponseEntity.internalServerError()
+                    .body(R.<Map<String, Object>>fail("导入失败：" + e.getMessage()));
+        }
+    }
+
+    // ── 绘制元信息：当前 ER 图来源（重算/导入）+ 时间 + 条数 ──
+    @GetMapping("/meta")
+    public R<Map<String, Object>> meta(@RequestParam(required = false) String env) {
+        Map<String, Object> m = dao.getMeta(effEnv(env));
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (m == null) {
+            out.put("source", null);
+            out.put("builtAt", null);
+            out.put("relationCount", 0);
+            return R.ok(out);
+        }
+        out.put("source", m.get("last_source"));
+        Object ts = m.get("last_built_at");
+        String builtAt = null;
+        if (ts instanceof java.sql.Timestamp t) {
+            builtAt = t.toLocalDateTime().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        } else if (ts != null) {
+            builtAt = String.valueOf(ts);
+        }
+        out.put("builtAt", builtAt);
+        out.put("relationCount", m.get("relation_count"));
+        return R.ok(out);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -3,9 +3,15 @@ package com.axonlink.ai.daoindex.sqlinspect.er.persistence;
 import com.axonlink.ai.daoindex.sqlinspect.er.dto.ErRelation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.EmptyResultDataAccessException;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -216,5 +222,58 @@ public class ErRelationDao {
                 " WHERE env=? AND status <> 'IGNORED' AND " + CONF_RANK_CASE + " >= ? " +
                 " ORDER BY " + CONF_RANK_CASE + " DESC, from_table, to_table",
                 env, minRank);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Excel 导入覆盖（v5）：整库替换 + 绘制元信息
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** 删除该 env 的全部关系（导入整库替换前调用）。 */
+    public int deleteByEnv(String env) {
+        return jdbc.update("DELETE FROM dii_er_relation WHERE env=?", env);
+    }
+
+    /**
+     * 批量插入导入行；status 固定 {@code 'AUTO'}（让后续「重算」可覆盖导入）。
+     * confidence 由调用方设定（导入统一 HIGH，保证仅-HIGH 展示把每条都画出来）。
+     */
+    public int[] batchInsertImported(String env, List<ErRelation> rels) {
+        return jdbc.batchUpdate(
+                "INSERT INTO dii_er_relation " +
+                " (env, from_table, to_table, join_columns, key_type, key_col_count, confidence, status) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'AUTO')",
+                new BatchPreparedStatementSetter() {
+                    @Override public void setValues(PreparedStatement ps, int i) throws SQLException {
+                        ErRelation r = rels.get(i);
+                        ps.setString(1, env);
+                        ps.setString(2, r.getFromTable());
+                        ps.setString(3, r.getToTable());
+                        ps.setString(4, r.joinColumnsCsv());
+                        ps.setString(5, r.getKeyType());
+                        ps.setInt(6, r.getKeyColCount());
+                        ps.setString(7, r.getConfidence());
+                    }
+                    @Override public int getBatchSize() { return rels.size(); }
+                });
+    }
+
+    /** 写「当前绘制」元信息（重算/导入完成时调）。env 为主键，upsert。 */
+    public void upsertMeta(String env, String source, LocalDateTime builtAt, int relationCount) {
+        jdbc.update(
+                "INSERT INTO dii_er_meta (env, last_source, last_built_at, relation_count) " +
+                "VALUES (?, ?, ?, ?) " +
+                "ON DUPLICATE KEY UPDATE last_source=VALUES(last_source), " +
+                "  last_built_at=VALUES(last_built_at), relation_count=VALUES(relation_count)",
+                env, source, Timestamp.valueOf(builtAt), relationCount);
+    }
+
+    /** 读「当前绘制」元信息；无则返回 null。 */
+    public Map<String, Object> getMeta(String env) {
+        try {
+            return jdbc.queryForMap(
+                    "SELECT env, last_source, last_built_at, relation_count FROM dii_er_meta WHERE env=?", env);
+        } catch (EmptyResultDataAccessException e) {
+            return null;
+        }
     }
 }

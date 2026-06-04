@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -81,6 +82,8 @@ public class ErRebuildService {
             // ④ 统计
             Map<String, Object> stat = dao.countByConfidence(effEnv);
             long high = lng(stat.get("high")), medium = lng(stat.get("medium")), low = lng(stat.get("low"));
+            // 记录「当前绘制」= 重算（与 Excel 导入互为替代，时间描述用）
+            dao.upsertMeta(effEnv, "REBUILD", LocalDateTime.now(), (int) (high + medium + low));
             long elapsed = System.currentTimeMillis() - start;
             log.info("[er-rebuild] env={} 表={} 推断={} HIGH={} MEDIUM={} LOW={} 清理失效AUTO={} 耗时={}ms",
                     effEnv, scan.tableCount, rels.size(), high, medium, low, deletedStale, elapsed);
