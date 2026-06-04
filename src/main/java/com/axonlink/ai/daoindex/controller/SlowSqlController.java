@@ -72,9 +72,10 @@ public class SlowSqlController {
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String whitelistStatus,
-            @RequestParam(required = false) String round) {
-        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, round, limit, offset);
-        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, round);
+            @RequestParam(required = false) String round,
+            @RequestParam(required = false) String approverUser) {
+        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, round, approverUser, limit, offset);
+        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, round, approverUser);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("total", total);
         payload.put("items", items);

@@ -53,13 +53,17 @@ public class WhitelistApplicationController {
         Map<String, Object> data = new LinkedHashMap<>();
         try {
             String user = resolveCurrentUser(request, currentUser);
-            long n = service.countMyPending(user);
+            Map<String, Object> c = service.countMyPendingByCategory(user);
             data.put("currentUser", user);
-            data.put("count", n);
+            data.put("count", num(c.get("total")));
+            data.put("slowSqlCount", num(c.get("slowSql")));
+            data.put("sqlInspectCount", num(c.get("sqlInspect")));
         } catch (Exception e) {
             // 未登录场景：返回 0 不报错
             data.put("currentUser", null);
             data.put("count", 0L);
+            data.put("slowSqlCount", 0L);
+            data.put("sqlInspectCount", 0L);
         }
         return R.ok(data);
     }
@@ -198,6 +202,11 @@ public class WhitelistApplicationController {
         // 3) 兜底：前端传入（开发期）
         if (fallback != null && !fallback.isBlank()) return fallback;
         throw new IllegalArgumentException("无法识别当前用户：请确认登录态或在请求体里提供 currentUser");
+    }
+
+    /** Object→long（COUNT 返回 Long，SUM(CASE) 可能返回 BigDecimal/null）。 */
+    private static long num(Object v) {
+        return v instanceof Number n ? n.longValue() : 0L;
     }
 
     private ResponseEntity<R<Map<String, Object>>> runAction(Runnable action) {

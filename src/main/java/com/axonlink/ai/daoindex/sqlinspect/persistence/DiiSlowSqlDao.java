@@ -59,10 +59,10 @@ public class DiiSlowSqlDao {
 
     // ── 页面聚合：每个抽象SQL取全局最大耗时那条 ──
 
-    /** 过滤条件拼装（domain / bizType / keyword / whitelistStatus / round）。 */
+    /** 过滤条件拼装（domain / bizType / keyword / whitelistStatus / round / approverUser）。 */
     private void appendFilters(StringBuilder sb, List<Object> args,
                                String domain, String bizType, String keyword,
-                               String whitelistStatus, String round) {
+                               String whitelistStatus, String round, String approverUser) {
         if (domain != null && !domain.isBlank()) { sb.append(" AND s.domain = ? "); args.add(domain.trim()); }
         if (bizType != null && !bizType.isBlank()) { sb.append(" AND s.biz_type = ? "); args.add(bizType.trim()); }
         if (keyword != null && !keyword.isBlank()) {
@@ -78,11 +78,18 @@ public class DiiSlowSqlDao {
             }
         }
         if (round != null && !round.isBlank()) { sb.append(" AND s.round = ? "); args.add(round.trim()); }
+        // 「该我审批」：行的白名单申请处于待审，且当前用户是对应级别审批人（铃铛慢SQL待办用）
+        if (approverUser != null && !approverUser.isBlank()) {
+            sb.append(" AND s.whitelist_status IN ('PENDING_L1','PENDING_L2') " +
+                      " AND s.whitelist_app_id IN (SELECT id FROM dii_whitelist_application " +
+                      "   WHERE (status='PENDING_L1' AND l1_approver=?) OR (status='PENDING_L2' AND l2_approver=?)) ");
+            args.add(approverUser.trim()); args.add(approverUser.trim());
+        }
     }
 
     /** 聚合列表：每抽象SQL一行(代表行=全局最大耗时)，分页。 */
     public List<Map<String, Object>> listAggregated(String domain, String bizType, String keyword,
-                                                     String whitelistStatus, String round,
+                                                     String whitelistStatus, String round, String approverUser,
                                                      int limit, int offset) {
         StringBuilder inner = new StringBuilder(
                 "SELECT s.id, s.service_name, s.domain, s.biz_type, s.time_cost_ms, s.time_cost_raw, " +
@@ -91,7 +98,7 @@ public class DiiSlowSqlDao {
                 "       ROW_NUMBER() OVER (PARTITION BY s.abstract_hash ORDER BY s.time_cost_ms DESC, s.id ASC) rn " +
                 "  FROM dii_slow_sql s WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(inner, args, domain, bizType, keyword, whitelistStatus, round);
+        appendFilters(inner, args, domain, bizType, keyword, whitelistStatus, round, approverUser);
         String sql = "SELECT t.* FROM ( " + inner + " ) t WHERE t.rn = 1 " +
                      " ORDER BY t.time_cost_ms DESC LIMIT ? OFFSET ?";
         args.add(Math.min(Math.max(limit, 1), 500));
@@ -101,11 +108,11 @@ public class DiiSlowSqlDao {
 
     /** 聚合总数 = distinct abstract_hash。 */
     public long countAggregated(String domain, String bizType, String keyword,
-                                String whitelistStatus, String round) {
+                                String whitelistStatus, String round, String approverUser) {
         StringBuilder sb = new StringBuilder(
                 "SELECT COUNT(DISTINCT s.abstract_hash) FROM dii_slow_sql s WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, round);
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, round, approverUser);
         Long n = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return n == null ? 0L : n;
     }

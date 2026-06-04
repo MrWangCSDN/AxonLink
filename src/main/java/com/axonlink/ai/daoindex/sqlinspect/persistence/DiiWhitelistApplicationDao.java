@@ -248,6 +248,24 @@ public class DiiWhitelistApplicationDao {
         return n == null ? 0L : n;
     }
 
+    /**
+     * 「该我审批」按类拆分：{@code total / slowSql / sqlInspect}（铃铛分流到对应页面用）。
+     * slowSql=target_type='SLOW_SQL'；sqlInspect=其余(HASH/NAMED_SQL)。
+     */
+    public Map<String, Object> countMyPendingByCategory(String username) {
+        if (username == null || username.isBlank()) {
+            return Map.of("total", 0L, "slowSql", 0L, "sqlInspect", 0L);
+        }
+        return jdbc.queryForMap(
+                "SELECT COUNT(*) AS total, " +
+                "  SUM(CASE WHEN target_type='SLOW_SQL' THEN 1 ELSE 0 END) AS slowSql, " +
+                "  SUM(CASE WHEN target_type<>'SLOW_SQL' THEN 1 ELSE 0 END) AS sqlInspect " +
+                " FROM dii_whitelist_application " +
+                " WHERE (l1_approver = ? AND status = 'PENDING_L1') " +
+                "    OR (l2_approver = ? AND status = 'PENDING_L2')",
+                username, username);
+    }
+
     public List<Map<String, Object>> listMyTodo(String username, String role,
                                                 String status, int limit, int offset) {
         StringBuilder sb = new StringBuilder(

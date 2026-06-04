@@ -308,6 +308,11 @@ public class WhitelistApplicationService {
         return dao.countMyPending(username);
     }
 
+    /** 「该我审批」按类拆分：{total, slowSql, sqlInspect}（铃铛分流用）。 */
+    public Map<String, Object> countMyPendingByCategory(String username) {
+        return dao.countMyPendingByCategory(username);
+    }
+
     /**
      * 巡检短路用：判断 sql_hash 是否已 APPROVED 终态。
      * <p>批量巡检每条 SQL 入口都要查一次——加缓存意义不大（sql_hash 多样），让 DB 索引（{@code idx_sql_hash}）顶住。
