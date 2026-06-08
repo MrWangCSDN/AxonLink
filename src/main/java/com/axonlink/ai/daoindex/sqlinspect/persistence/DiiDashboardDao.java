@@ -250,4 +250,15 @@ public class DiiDashboardDao {
             default:         return " AND " + wlActive(p);
         }
     }
+
+    /**
+     * 「该我审批」过滤片段（含前导 " AND "，带 2 个 {@code ?} 占位=approver,approver）：
+     * 行的白名单申请处于待审，且当前用户是对应级别审批人（铃铛跳白名单页"我的待审"用）。
+     * approver 为空返回空串（不过滤）。
+     */
+    public static String approverClause(String p, String approver) {
+        if (approver == null || approver.isBlank()) return "";
+        return " AND " + p + "whitelist_app_id IN (SELECT id FROM dii_whitelist_application "
+             + " WHERE (status='PENDING_L1' AND l1_approver=?) OR (status='PENDING_L2' AND l2_approver=?))";
+    }
 }

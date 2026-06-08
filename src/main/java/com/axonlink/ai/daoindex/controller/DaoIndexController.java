@@ -1004,6 +1004,7 @@ public class DaoIndexController {
             @RequestParam(required = false) Long taskId,
             @RequestParam(required = false, defaultValue = "plain") String whitelistScope,
             @RequestParam(required = false) String wlStatus,
+            @RequestParam(required = false) String approverUser,
             @RequestParam(required = false, defaultValue = "50") int limit,
             @RequestParam(required = false, defaultValue = "0") int offset) {
         try {
@@ -1012,15 +1013,15 @@ public class DaoIndexController {
             //   - pool（来源 'nsql'）：按 env 过滤（池不挂任务），首页拉取时一并返回
             // 分页策略：item 行优先，pool 行追加在后；total = 两者之和。
             // 前端 SQL 分析页本就分批拉到全量再合并展示，分页"按 id DESC + 各自源排序"够用。
-            long itemTotal = itemDao.countIssuesOnly(env, taskId, whitelistScope, wlStatus);
-            long poolTotal = poolDao.countAsIssues(env, whitelistScope, wlStatus);
+            long itemTotal = itemDao.countIssuesOnly(env, taskId, whitelistScope, wlStatus, approverUser);
+            long poolTotal = poolDao.countAsIssues(env, whitelistScope, wlStatus, approverUser);
             long total = itemTotal + poolTotal;
 
             java.util.List<Map<String, Object>> merged = new java.util.ArrayList<>();
             int itemTake = Math.min(limit, (int) Math.max(0, itemTotal - offset));
             if (offset < itemTotal && itemTake > 0) {
                 java.util.List<Map<String, Object>> items =
-                        itemDao.searchIssuesOnly(env, taskId, whitelistScope, wlStatus, itemTake, offset);
+                        itemDao.searchIssuesOnly(env, taskId, whitelistScope, wlStatus, approverUser, itemTake, offset);
                 for (Map<String, Object> row : items) {
                     row.put("source", "odb");
                 }
@@ -1031,7 +1032,7 @@ public class DaoIndexController {
             if (remain > 0) {
                 int poolOffset = (int) Math.max(0, offset - itemTotal);
                 java.util.List<Map<String, Object>> poolRows =
-                        poolDao.searchAsIssues(env, whitelistScope, wlStatus, remain, poolOffset);
+                        poolDao.searchAsIssues(env, whitelistScope, wlStatus, approverUser, remain, poolOffset);
                 // searchAsIssues 已经把 source='nsql' 写进 SELECT 列；防御性兜底
                 for (Map<String, Object> row : poolRows) {
                     row.putIfAbsent("source", "nsql");
@@ -1169,7 +1170,7 @@ public class DaoIndexController {
         try {
             int poolOffset = 0;
             while (all.size() < 100_000) {
-                List<Map<String, Object>> poolBatch = poolDao.searchAsIssues(env, "plain", null, batchSize, poolOffset);
+                List<Map<String, Object>> poolBatch = poolDao.searchAsIssues(env, "plain", null, null, batchSize, poolOffset);
                 if (poolBatch == null || poolBatch.isEmpty()) break;
                 all.addAll(poolBatch);
                 if (poolBatch.size() < batchSize) break;

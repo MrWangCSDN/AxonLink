@@ -520,6 +520,7 @@ public class DiiAnalysisItemDao {
                                                       Long taskId,
                                                       String whitelistScope,
                                                       String wlStatus,
+                                                      String approverUser,
                                                       int limit,
                                                       int offset) {
         StringBuilder sb = new StringBuilder(
@@ -550,6 +551,9 @@ public class DiiAnalysisItemDao {
           .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
         // v6：白名单范围（plain 剔除活跃白名单 / wl 只看活跃白名单）
         sb.append(DiiDashboardDao.whitelistScopeClause("i.", whitelistScope, wlStatus));
+        // v7：铃铛"我的待审"——只看该我审批且处于待审的白名单行
+        String apClause = DiiDashboardDao.approverClause("i.", approverUser);
+        if (!apClause.isEmpty()) { sb.append(apClause); args.add(approverUser.trim()); args.add(approverUser.trim()); }
         int eff = Math.min(Math.max(limit, 1), 500);
         int off = Math.max(offset, 0);
         sb.append(" ORDER BY i.id DESC LIMIT ? OFFSET ?");
@@ -668,7 +672,7 @@ public class DiiAnalysisItemDao {
     }
 
     /** 与 {@link #searchIssuesOnly} 同过滤条件下的总行数。 */
-    public long countIssuesOnly(String env, Long taskId, String whitelistScope, String wlStatus) {
+    public long countIssuesOnly(String env, Long taskId, String whitelistScope, String wlStatus, String approverUser) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) { sb.append(" AND env = ?"); args.add(env.trim()); }
@@ -676,6 +680,8 @@ public class DiiAnalysisItemDao {
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
         sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
+        String apClause = DiiDashboardDao.approverClause("", approverUser);
+        if (!apClause.isEmpty()) { sb.append(apClause); args.add(approverUser.trim()); args.add(approverUser.trim()); }
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
     }
