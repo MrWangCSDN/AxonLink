@@ -162,6 +162,9 @@ public class CodeAnalysisService {
             if (!res.changed) {
                 updateRepoState(repo, repo.getLastSyncCommit(), "NO_CHANGE");
                 log.info("仓库[{}] 无变更：HEAD 未变化 {}", repo.getRepoName(), shortSha(res.headSha));
+                // 即使 HEAD 未变，也重新跑一次 rebuild（应用领域映射等代码侧变更）
+                aggregator.rebuild(repo.getId(), res.localDir, res.allTrackedFiles, res.headSha);
+                writeDailyStat(repo.getId(), res);
                 return res;
             }
 
