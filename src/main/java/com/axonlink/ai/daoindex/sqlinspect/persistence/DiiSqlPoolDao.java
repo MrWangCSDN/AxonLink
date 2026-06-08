@@ -326,7 +326,8 @@ public class DiiSqlPoolDao {
                 .append(" WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND p.env = ?"); args.add(env.trim());
+            // 与大屏 aggregateByDomain 同口径：当前 env + 未标 env 的池行都算进来，保证大屏与列表数量对得上
+            sb.append(" AND (p.env = ? OR p.env IS NULL OR p.env = '')"); args.add(env.trim());
         }
         // 与 item 同样的"有料"过滤：explain 报错 或 LLM 终态
         sb.append(" AND ((p.explain_error IS NOT NULL AND p.explain_error <> '')")
@@ -372,7 +373,7 @@ public class DiiSqlPoolDao {
                 "SELECT COUNT(*) FROM dii_sql_pool WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?"); args.add(env.trim());
+            sb.append(" AND (env = ? OR env IS NULL OR env = '')"); args.add(env.trim());
         }
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED')")
@@ -396,7 +397,7 @@ public class DiiSqlPoolDao {
                 "  FROM dii_sql_pool WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?"); args.add(env.trim());
+            sb.append(" AND (env = ? OR env IS NULL OR env = '')"); args.add(env.trim());
         }
         // 池统计取全量（含未分析的候选行），与 searchAsIssues 的过滤一致
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error<>'')")
