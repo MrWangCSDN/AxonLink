@@ -50,16 +50,19 @@ public class DiiDashboardDao {
         // 即 total ≡ 报错 + 优 + 良 + 差。排除 overall_rating='NOT_APPLICABLE'（不适用，
         // 如 INSERT VALUES 无需索引评级）和 overall_rating IS NULL（未评级/LLM 未跑）。
         // 这样概览仪表盘"巡检 SQL 总数"与"评级分布"两图恒等闭合，不再出现总数对不上。
+        // v6：报错/需整改互斥剔除活跃白名单；新增 白名单申请中/已申请白名单 两列。
         String sql = ""
                 + "SELECT " + DOMAIN_CASE + " AS domain, "
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' THEN 1 "
                 + "                WHEN overall_rating IN ('EXCELLENT','GOOD','POOR') THEN 1 "
                 + "                ELSE 0 END) AS total, "
-                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
-                // 整改口径：以 LLM 整改判定 NEED_FIX 为准（与第二块"整改分布"统一）
-                + "       SUM(CASE WHEN llm_fix_verdict='NEED_FIX' "
-                + "                THEN 1 ELSE 0 END) AS llm_fix "
+                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
+                + "                 AND overall_rating='POOR' AND llm_fix_verdict='NEED_FIX' AND " + plain("") + " "
+                + "                THEN 1 ELSE 0 END) AS need_fix, "
+                + "       SUM(CASE WHEN " + wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
+                + "       SUM(CASE WHEN " + wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM dii_analysis_item "
                 + " WHERE task_id = ? "
                 + " GROUP BY domain "
@@ -84,14 +87,17 @@ public class DiiDashboardDao {
      */
     public List<Map<String, Object>> aggregateRatingByDomain(Long taskId) {
         if (taskId == null) return Collections.emptyList();
+        // v6：报错/需整改互斥剔除活跃白名单；新增 白名单申请中/已申请白名单 两列。
         String sql = ""
                 + "SELECT " + DOMAIN_CASE + " AS domain, "
-                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
                 + "                 AND overall_rating='POOR' "
-                + "                 AND llm_fix_verdict='NEED_FIX' "
-                + "                THEN 1 ELSE 0 END) AS need_fix "
+                + "                 AND llm_fix_verdict='NEED_FIX' AND " + plain("") + " "
+                + "                THEN 1 ELSE 0 END) AS need_fix, "
+                + "       SUM(CASE WHEN " + wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
+                + "       SUM(CASE WHEN " + wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM dii_analysis_item "
                 + " WHERE task_id = ? "
                 + " GROUP BY domain "
@@ -127,11 +133,13 @@ public class DiiDashboardDao {
                 + "SELECT t.id AS task_id, "
                 + "       DATE(t.created_at) AS day, "
                 + "       " + domainCase("i.project_name") + " AS domain, "
-                + "       SUM(CASE WHEN i.explain_error IS NOT NULL AND i.explain_error <> '' "
+                + "       SUM(CASE WHEN i.explain_error IS NOT NULL AND i.explain_error <> '' AND " + plain("i.") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
                 + "                 AND i.overall_rating='POOR' "
-                + "                 AND i.llm_fix_verdict='NEED_FIX' THEN 1 ELSE 0 END) AS need_fix "
+                + "                 AND i.llm_fix_verdict='NEED_FIX' AND " + plain("i.") + " THEN 1 ELSE 0 END) AS need_fix, "
+                + "       SUM(CASE WHEN " + wlApplying("i.") + " THEN 1 ELSE 0 END) AS wl_applying, "
+                + "       SUM(CASE WHEN " + wlApproved("i.") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM ( "
                 + "    SELECT id, created_at FROM dii_analysis_task "
                 + "     WHERE env = ? AND status='DONE' "
@@ -204,4 +212,42 @@ public class DiiDashboardDao {
 
     /** 无表别名场景（FROM dii_analysis_item 直查）的领域 CASE 子句。 */
     private static final String DOMAIN_CASE = domainCase("project_name");
+
+    // ── 白名单互斥分桶谓词（item/pool 同列名；p 为表别名前缀，如 "" 或 "i."）──
+    // 已申请白名单：is_whitelist=1 或 申请已通过
+    static String wlApproved(String p) {
+        return "(" + p + "is_whitelist=1 OR " + p + "whitelist_status='APPROVED')";
+    }
+    // 白名单申请中：未到已申请，且处于待审/退回流程中
+    static String wlApplying(String p) {
+        return "(NOT(" + p + "is_whitelist=1 OR " + p + "whitelist_status='APPROVED') AND "
+             + p + "whitelist_status IN ('PENDING_L1','PENDING_L2','REJECTED_L1'))";
+    }
+    // 普通（进维度分析/参与报错·需整改统计）：无活跃白名单
+    static String plain(String p) {
+        return "(" + p + "is_whitelist=0 AND (" + p + "whitelist_status IS NULL OR "
+             + p + "whitelist_status NOT IN ('PENDING_L1','PENDING_L2','REJECTED_L1','APPROVED')))";
+    }
+    // 活跃白名单（进白名单列表）：已申请 或 申请中
+    static String wlActive(String p) {
+        return "(" + wlApproved(p) + " OR " + wlApplying(p) + ")";
+    }
+
+    /**
+     * 问题列表/统计的白名单范围 WHERE 片段（含前导 " AND "）。
+     * @param scope    {@code wl}=只看活跃白名单（白名单列表）；其余(含 null)=plain，剔除活跃白名单（维度分析）
+     * @param wlStatus 仅 scope=wl 生效：applying(申请中)/approved(已通过)/rejected(已退回)/其余=all(全部活跃)
+     */
+    public static String whitelistScopeClause(String p, String scope, String wlStatus) {
+        if (!"wl".equalsIgnoreCase(scope)) {
+            return " AND " + plain(p);
+        }
+        String ws = wlStatus == null ? "all" : wlStatus.trim().toLowerCase();
+        switch (ws) {
+            case "applying": return " AND " + wlApplying(p);
+            case "approved": return " AND " + wlApproved(p);
+            case "rejected": return " AND " + p + "whitelist_status='REJECTED_L1'";
+            default:         return " AND " + wlActive(p);
+        }
+    }
 }

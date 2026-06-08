@@ -170,14 +170,15 @@ public class DaoIndexController {
 
         // V14：item 表（task 维度）+ pool 表（env 维度）按 domain 合并后再返回
         // 合并语义：同 domain 各字段直接相加；pool 没有 task 约束，全部按 env 进入"最新任务"看板
+        // v6：byDomain 用 need_fix(需整改)取代 llm_fix，并加 白名单申请中/已申请白名单 两列
         List<Map<String, Object>> byDomain = mergeByDomain(
                 dashboardDao.aggregateByDomain(latestId),
                 poolDao.aggregateByDomain(effEnv),
-                "total", "explain_err", "llm_fix");
+                "total", "explain_err", "need_fix", "wl_applying", "wl_approved");
         List<Map<String, Object>> ratingByDomain = mergeByDomain(
                 dashboardDao.aggregateRatingByDomain(latestId),
                 poolDao.aggregateRatingByDomain(effEnv),
-                "error_count", "need_fix");
+                "error_count", "need_fix", "wl_applying", "wl_approved");
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("env", effEnv);
@@ -1001,6 +1002,8 @@ public class DaoIndexController {
     public R<Map<String, Object>> listAnalysisItemIssues(
             @RequestParam(required = false) String env,
             @RequestParam(required = false) Long taskId,
+            @RequestParam(required = false, defaultValue = "plain") String whitelistScope,
+            @RequestParam(required = false) String wlStatus,
             @RequestParam(required = false, defaultValue = "50") int limit,
             @RequestParam(required = false, defaultValue = "0") int offset) {
         try {
@@ -1009,15 +1012,15 @@ public class DaoIndexController {
             //   - pool（来源 'nsql'）：按 env 过滤（池不挂任务），首页拉取时一并返回
             // 分页策略：item 行优先，pool 行追加在后；total = 两者之和。
             // 前端 SQL 分析页本就分批拉到全量再合并展示，分页"按 id DESC + 各自源排序"够用。
-            long itemTotal = itemDao.countIssuesOnly(env, taskId);
-            long poolTotal = poolDao.countAsIssues(env);
+            long itemTotal = itemDao.countIssuesOnly(env, taskId, whitelistScope, wlStatus);
+            long poolTotal = poolDao.countAsIssues(env, whitelistScope, wlStatus);
             long total = itemTotal + poolTotal;
 
             java.util.List<Map<String, Object>> merged = new java.util.ArrayList<>();
             int itemTake = Math.min(limit, (int) Math.max(0, itemTotal - offset));
             if (offset < itemTotal && itemTake > 0) {
                 java.util.List<Map<String, Object>> items =
-                        itemDao.searchIssuesOnly(env, taskId, itemTake, offset);
+                        itemDao.searchIssuesOnly(env, taskId, whitelistScope, wlStatus, itemTake, offset);
                 for (Map<String, Object> row : items) {
                     row.put("source", "odb");
                 }
@@ -1028,7 +1031,7 @@ public class DaoIndexController {
             if (remain > 0) {
                 int poolOffset = (int) Math.max(0, offset - itemTotal);
                 java.util.List<Map<String, Object>> poolRows =
-                        poolDao.searchAsIssues(env, remain, poolOffset);
+                        poolDao.searchAsIssues(env, whitelistScope, wlStatus, remain, poolOffset);
                 // searchAsIssues 已经把 source='nsql' 写进 SELECT 列；防御性兜底
                 for (Map<String, Object> row : poolRows) {
                     row.putIfAbsent("source", "nsql");
@@ -1059,11 +1062,13 @@ public class DaoIndexController {
      */
     @GetMapping("/debug/analysis-items-issues/stats")
     public R<Map<String, Long>> getIssuesStats(@RequestParam(required = false) String env,
-                                               @RequestParam(required = false) Long taskId) {
+                                               @RequestParam(required = false) Long taskId,
+                                               @RequestParam(required = false, defaultValue = "plain") String whitelistScope,
+                                               @RequestParam(required = false) String wlStatus) {
         try {
             // V14：item 与 pool 各自 KPI 直接相加（同语义字段：total / explainError / llmFindings / llmPending / llmError）
-            Map<String, Long> itemStats = itemDao.getIssuesStats(env, taskId);
-            Map<String, Long> poolStats = poolDao.getIssuesStats(env);
+            Map<String, Long> itemStats = itemDao.getIssuesStats(env, taskId, whitelistScope, wlStatus);
+            Map<String, Long> poolStats = poolDao.getIssuesStats(env, whitelistScope, wlStatus);
             Map<String, Long> merged = new LinkedHashMap<>();
             for (String k : new String[]{"total", "explainError", "llmFindings", "llmPending", "llmError"}) {
                 long sum = itemStats.getOrDefault(k, 0L) + poolStats.getOrDefault(k, 0L);
@@ -1144,7 +1149,7 @@ public class DaoIndexController {
         int batchSize = 500;
         Long afterId = null; // 首批不带游标；之后取上一批最后一行的 id（即最小 id）
         while (true) {
-            List<Map<String, Object>> batch = itemDao.searchIssuesOnlyAfter(env, taskId, afterId, batchSize);
+            List<Map<String, Object>> batch = itemDao.searchIssuesOnlyAfter(env, taskId, afterId, "plain", null, batchSize);
             if (batch == null || batch.isEmpty()) break;
             all.addAll(batch);
             if (batch.size() < batchSize) break;
@@ -1164,7 +1169,7 @@ public class DaoIndexController {
         try {
             int poolOffset = 0;
             while (all.size() < 100_000) {
-                List<Map<String, Object>> poolBatch = poolDao.searchAsIssues(env, batchSize, poolOffset);
+                List<Map<String, Object>> poolBatch = poolDao.searchAsIssues(env, "plain", null, batchSize, poolOffset);
                 if (poolBatch == null || poolBatch.isEmpty()) break;
                 all.addAll(poolBatch);
                 if (poolBatch.size() < batchSize) break;

@@ -518,6 +518,8 @@ public class DiiAnalysisItemDao {
      */
     public List<Map<String, Object>> searchIssuesOnly(String env,
                                                       Long taskId,
+                                                      String whitelistScope,
+                                                      String wlStatus,
                                                       int limit,
                                                       int offset) {
         StringBuilder sb = new StringBuilder(
@@ -546,6 +548,8 @@ public class DiiAnalysisItemDao {
         // OR 组合：EXPLAIN 报错 或 LLM 有终态
         sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
           .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
+        // v6：白名单范围（plain 剔除活跃白名单 / wl 只看活跃白名单）
+        sb.append(DiiDashboardDao.whitelistScopeClause("i.", whitelistScope, wlStatus));
         int eff = Math.min(Math.max(limit, 1), 500);
         int off = Math.max(offset, 0);
         sb.append(" ORDER BY i.id DESC LIMIT ? OFFSET ?");
@@ -570,6 +574,8 @@ public class DiiAnalysisItemDao {
     public List<Map<String, Object>> searchIssuesOnlyAfter(String env,
                                                            Long taskId,
                                                            Long afterId,
+                                                           String whitelistScope,
+                                                           String wlStatus,
                                                            int limit) {
         StringBuilder sb = new StringBuilder(
                 "SELECT i.id, i.sql_hash, i.sql_kind, i.env, i.task_id, " +
@@ -594,6 +600,7 @@ public class DiiAnalysisItemDao {
         }
         sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
           .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
+        sb.append(DiiDashboardDao.whitelistScopeClause("i.", whitelistScope, wlStatus));
         if (afterId != null) {
             sb.append(" AND i.id < ?"); args.add(afterId);
         }
@@ -617,7 +624,7 @@ public class DiiAnalysisItemDao {
      *   <li>{@code llmError}      AI 分析失败数（llm_status=FAILED 且 explain_error 为空）</li>
      * </ul>
      */
-    public Map<String, Long> getIssuesStats(String env, Long taskId) {
+    public Map<String, Long> getIssuesStats(String env, Long taskId, String whitelistScope, String wlStatus) {
         StringBuilder sb = new StringBuilder(
                 "SELECT " +
                 "  SUM(CASE WHEN explain_error IS NOT NULL AND explain_error<>'' THEN 1 ELSE 0 END) AS explain_error_cnt, " +
@@ -635,6 +642,7 @@ public class DiiAnalysisItemDao {
         }
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error<>'')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
 
         Map<String, Object> row;
         try {
@@ -660,13 +668,14 @@ public class DiiAnalysisItemDao {
     }
 
     /** 与 {@link #searchIssuesOnly} 同过滤条件下的总行数。 */
-    public long countIssuesOnly(String env, Long taskId) {
+    public long countIssuesOnly(String env, Long taskId, String whitelistScope, String wlStatus) {
         StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_item WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) { sb.append(" AND env = ?"); args.add(env.trim()); }
         if (taskId != null) { sb.append(" AND task_id = ?"); args.add(taskId); }
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
     }

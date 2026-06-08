@@ -317,7 +317,8 @@ public class DiiSqlPoolDao {
      *
      * <p>"问题"口径与 item 表对齐：explain_error 非空 或 llm_status 终态。
      */
-    public List<Map<String, Object>> searchAsIssues(String env, int limit, int offset) {
+    public List<Map<String, Object>> searchAsIssues(String env, String whitelistScope, String wlStatus,
+                                                    int limit, int offset) {
         StringBuilder sb = new StringBuilder("SELECT ").append(ISSUE_PROJECTION_COLS)
                 .append("  FROM dii_sql_pool p ")
                 // LEFT JOIN 取 target_type；池 wl_app_id 为 NULL 时不影响左侧记录
@@ -333,6 +334,8 @@ public class DiiSqlPoolDao {
           // 池里很多刚导入还没跑分析的行也要展示（没 explain_error 也没 llm_status）
           // ——这是与 item 的关键差别：池是"待巡检候选库"，前端要看得到
           .append(" OR (p.explain_error IS NULL AND p.llm_status IS NULL)) ");
+        // v6：白名单范围（plain 剔除活跃白名单 / wl 只看活跃白名单）
+        sb.append(DiiDashboardDao.whitelistScopeClause("p.", whitelistScope, wlStatus));
         int eff = Math.min(Math.max(limit, 1), 500);
         int off = Math.max(offset, 0);
         sb.append(" ORDER BY p.id DESC LIMIT ? OFFSET ?");
@@ -364,7 +367,7 @@ public class DiiSqlPoolDao {
     /**
      * 与 {@link #searchAsIssues} 同过滤条件下的总数。
      */
-    public long countAsIssues(String env) {
+    public long countAsIssues(String env, String whitelistScope, String wlStatus) {
         StringBuilder sb = new StringBuilder(
                 "SELECT COUNT(*) FROM dii_sql_pool WHERE 1=1");
         List<Object> args = new ArrayList<>();
@@ -374,6 +377,7 @@ public class DiiSqlPoolDao {
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED')")
           .append(" OR (explain_error IS NULL AND llm_status IS NULL))");
+        sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
         Long total = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return total == null ? 0L : total;
     }
@@ -381,7 +385,7 @@ public class DiiSqlPoolDao {
     /**
      * 4 个 KPI（与 item 同口径）：total / explainError / llmFindings / llmPending / llmError。
      */
-    public Map<String, Long> getIssuesStats(String env) {
+    public Map<String, Long> getIssuesStats(String env, String whitelistScope, String wlStatus) {
         StringBuilder sb = new StringBuilder(
                 "SELECT " +
                 "  SUM(CASE WHEN explain_error IS NOT NULL AND explain_error<>'' THEN 1 ELSE 0 END) AS explain_error_cnt, " +
@@ -398,6 +402,7 @@ public class DiiSqlPoolDao {
         sb.append(" AND ((explain_error IS NOT NULL AND explain_error<>'')")
           .append(" OR llm_status IN ('DONE','PENDING','FAILED')")
           .append(" OR (explain_error IS NULL AND llm_status IS NULL))");
+        sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
 
         Map<String, Object> row;
         try {
@@ -428,10 +433,13 @@ public class DiiSqlPoolDao {
                 // 池行刚导入未跑分析的也算 total（让前端"巡检 SQL 数"看得见）
                 + "                WHEN explain_error IS NULL AND llm_status IS NULL THEN 1 "
                 + "                ELSE 0 END) AS total, "
-                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
-                + "       SUM(CASE WHEN llm_fix_verdict='NEED_FIX' "
-                + "                THEN 1 ELSE 0 END) AS llm_fix "
+                + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
+                + "                 AND overall_rating='POOR' AND llm_fix_verdict='NEED_FIX' AND " + DiiDashboardDao.plain("") + " "
+                + "                THEN 1 ELSE 0 END) AS need_fix, "
+                + "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
+                + "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM dii_sql_pool "
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
@@ -452,12 +460,14 @@ public class DiiSqlPoolDao {
     public List<Map<String, Object>> aggregateRatingByDomain(String env) {
         String sql = ""
                 + "SELECT " + domainCase("project_name") + " AS domain, "
-                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' "
+                + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
                 + "                 AND overall_rating='POOR' "
-                + "                 AND llm_fix_verdict='NEED_FIX' "
-                + "                THEN 1 ELSE 0 END) AS need_fix "
+                + "                 AND llm_fix_verdict='NEED_FIX' AND " + DiiDashboardDao.plain("") + " "
+                + "                THEN 1 ELSE 0 END) AS need_fix, "
+                + "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
+                + "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM dii_sql_pool "
                 + " WHERE 1=1 ";
         List<Object> args = new ArrayList<>();
