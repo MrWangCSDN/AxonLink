@@ -93,7 +93,7 @@ public class CodeDashboardDao {
     public List<Map<String, Object>> listRepos() {
         return jdbc.queryForList(
                 "SELECT id, repo_name, last_sync_commit, last_sync_time, last_sync_status " +
-                "  FROM code_repo_config ORDER BY id");
+                "  FROM code_repo_config ORDER BY repo_name");
     }
 
     /** 工程维度按 person_type 汇总（行员/厂商总览 + KPI 源）。 */
@@ -194,10 +194,10 @@ public class CodeDashboardDao {
                 "       MAX(s.snapshot_commit), NOW() " +
                 "  FROM code_file_author_stat s " +
                 "  JOIN code_file_domain d ON d.repo_id = s.repo_id AND d.file_path = s.file_path " +
-                "  LEFT JOIN code_author_alias a ON a.email = s.author_email AND a.enabled = 1 " +
-                " WHERE s.repo_id = ? AND d.domain_key <> 'public' " +
-                " GROUP BY s.repo_id, d.domain_key, " + PERSON_TYPE_EXPR,
-                repoId);
+                 "  LEFT JOIN code_author_alias a ON a.email = s.author_email AND a.enabled = 1 " +
+                 " WHERE s.repo_id = ? " +
+                 " GROUP BY s.repo_id, d.domain_key, " + PERSON_TYPE_EXPR,
+                 repoId);
     }
 
     /** 重建领域内作者明细（下钻）。返回插入行数。 */

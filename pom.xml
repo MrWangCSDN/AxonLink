@@ -103,6 +103,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+
+        <!-- ── 邮件服务：JavaMailSender（通用邮件发送能力） ── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
         <!-- Spring Security 的 LDAP 集成：LdapAuthenticationProvider / BindAuthenticator -->
         <dependency>
             <groupId>org.springframework.security</groupId>

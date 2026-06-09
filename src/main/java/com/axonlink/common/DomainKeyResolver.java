@@ -18,10 +18,10 @@ public final class DomainKeyResolver {
 
     /** package_path 关键字 → AxonLink domain_key */
     private static final Map<String, String> DOMAIN_MAP = Map.ofEntries(
-        Map.entry("comm", "public"),
+        Map.entry("comm", "comm"),
         Map.entry("loan", "loan"),
-        Map.entry("dept", "deposit"),
-        Map.entry("sett", "settlement"),
+        Map.entry("dept", "dept"),
+        Map.entry("sett", "sett"),
         Map.entry("dict", "dict")
     );
 
@@ -49,9 +49,9 @@ public final class DomainKeyResolver {
 
         String normalized = projectName.trim().toLowerCase(Locale.ROOT);
         if (matchesProject(normalized, "loan")) return "loan";
-        if (matchesProject(normalized, "dept")) return "deposit";
-        if (matchesProject(normalized, "comm")) return "public";
-        if (matchesProject(normalized, "sett")) return "settlement";
+        if (matchesProject(normalized, "dept")) return "dept";
+        if (matchesProject(normalized, "comm")) return "comm";
+        if (matchesProject(normalized, "sett")) return "sett";
         if (matchesProject(normalized, "dict")) return "dict";
         return "platform";
     }

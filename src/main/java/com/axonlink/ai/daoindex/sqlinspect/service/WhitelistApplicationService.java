@@ -5,10 +5,15 @@ import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiAnalysisItemDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiWhitelistApplicationDao;
+import com.axonlink.ai.user.persistence.SysUserDao;
+import com.axonlink.notification.service.MailService;
+import com.axonlink.notification.service.WhitelistMailTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.text.SimpleDateFormat;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -47,6 +52,16 @@ public class WhitelistApplicationService {
     private final DiiSqlPoolDao poolDao;
     private final DiiSlowSqlDao slowSqlDao;
     private final DaoIndexAnalysisProperties props;
+
+    /** 邮件服务（白名单审批通知）—— 注入可能为空（无 starter-mail 依赖时）。 */
+    @Autowired(required = false)
+    private MailService mailService;
+
+    /** 用户 DAO（按 username 查 email）。 */
+    @Autowired
+    private SysUserDao sysUserDao;
+
+    private static final SimpleDateFormat TIME_FMT = new SimpleDateFormat("yyyy-MM-dd HH:mm");
 
     public WhitelistApplicationService(DiiWhitelistApplicationDao dao,
                                        DiiAnalysisItemDao itemDao,
@@ -116,6 +131,10 @@ public class WhitelistApplicationService {
 
         // 同步目标表的 wl 字段（PENDING_L1 状态，is_whitelist 不动）
         syncByTargetType(id, STATUS_PENDING_L1, false, targetType, req.sqlHash, req.namedSql);
+
+        // 邮件通知 L1 审批人
+        sendMailApplyPendingL1(id, targetType, req);
+
         return id;
     }
 
@@ -137,6 +156,9 @@ public class WhitelistApplicationService {
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
+
+        // 邮件通知 L2 审批人
+        sendMailL1PassedNotifyL2(id, opinion, l2Approver);
     }
 
     /** L1 退回：PENDING_L1 → REJECTED_L1。 */
@@ -151,6 +173,9 @@ public class WhitelistApplicationService {
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
+
+        // 邮件通知申请人
+        sendMailRejectedNotifyApplicant(id, opinion);
     }
 
     /** L2 通过：PENDING_L2 → APPROVED（终态，写 is_whitelist=1）。 */
@@ -166,6 +191,9 @@ public class WhitelistApplicationService {
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"));
+
+        // 邮件通知申请人
+        sendMailApprovedNotifyApplicant(id, opinion, currentUser);
     }
 
     /** L2 退回：PENDING_L2 → PENDING_L1（带 L2 意见回 L1 再审）。 */
@@ -394,5 +422,132 @@ public class WhitelistApplicationService {
         public String l1Approver;
         public String sourceTable;       // item / sql_pool / slow_sql
         public long sourceId;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 邮件通知（异步，失败不影响主流程）
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** 业务事件 1：申请提交 → 通知 L1 审批人 */
+    private void sendMailApplyPendingL1(long appId, String targetType, ApplyRequest req) {
+        if (mailService == null) return;
+        String l1Email = resolveUserEmail(req.l1Approver);
+        if (l1Email == null) return;
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("appId", appId);
+        vars.put("applicantName", req.applicant);
+        vars.put("l1ApproverName", req.l1Approver);
+        vars.put("env", req.env);
+        vars.put("projectName", req.projectName);
+        vars.put("targetType", targetType);
+        vars.put("sqlSnippet", truncate(req.sqlText, 200));
+        vars.put("applyReason", req.applyReason);
+        vars.put("applyTime", nowStr());
+        mailService.sendWhitelistMail(
+                java.util.Collections.singletonList(l1Email),
+                WhitelistMailTemplate.APPLY_PENDING_L1_SUBJECT,
+                WhitelistMailTemplate.APPLY_PENDING_L1_BODY,
+                vars);
+    }
+
+    /** 业务事件 2：L1 通过 → 通知 L2 审批人 */
+    private void sendMailL1PassedNotifyL2(long appId, String l1Opinion, String l2Approver) {
+        if (mailService == null) return;
+        String l2Email = resolveUserEmail(l2Approver);
+        if (l2Email == null) return;
+        Map<String, Object> app = dao.findById(appId);
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("appId", appId);
+        vars.put("applicantName", str(app, "applicant"));
+        vars.put("l1ApproverName", str(app, "l1_approver"));
+        vars.put("l1Opinion", l1Opinion);
+        vars.put("l2ApproverName", l2Approver);
+        vars.put("env", str(app, "env"));
+        vars.put("projectName", str(app, "project_name"));
+        vars.put("targetType", str(app, "target_type"));
+        vars.put("sqlSnippet", truncate(str(app, "sql_text"), 200));
+        vars.put("applyReason", str(app, "apply_reason"));
+        mailService.sendWhitelistMail(
+                java.util.Collections.singletonList(l2Email),
+                WhitelistMailTemplate.L1_PASSED_NOTIFY_L2_SUBJECT,
+                WhitelistMailTemplate.L1_PASSED_NOTIFY_L2_BODY,
+                vars);
+    }
+
+    /** 业务事件 3：终审通过 → 通知申请人 */
+    private void sendMailApprovedNotifyApplicant(long appId, String l2Opinion, String l2Approver) {
+        if (mailService == null) return;
+        Map<String, Object> app = dao.findById(appId);
+        String applicant = str(app, "applicant");
+        String email = resolveUserEmail(applicant);
+        if (email == null) return;
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("appId", appId);
+        vars.put("applicantName", applicant);
+        vars.put("env", str(app, "env"));
+        vars.put("projectName", str(app, "project_name"));
+        vars.put("targetType", str(app, "target_type"));
+        vars.put("sqlSnippet", truncate(str(app, "sql_text"), 200));
+        vars.put("l2ApproverName", l2Approver);
+        vars.put("l2Opinion", l2Opinion);
+        vars.put("approveTime", nowStr());
+        mailService.sendWhitelistMail(
+                java.util.Collections.singletonList(email),
+                WhitelistMailTemplate.APPROVED_NOTIFY_APPLICANT_SUBJECT,
+                WhitelistMailTemplate.APPROVED_NOTIFY_APPLICANT_BODY,
+                vars);
+    }
+
+    /** 业务事件 4：L1 退回 → 通知申请人 */
+    private void sendMailRejectedNotifyApplicant(long appId, String l1Opinion) {
+        if (mailService == null) return;
+        Map<String, Object> app = dao.findById(appId);
+        String applicant = str(app, "applicant");
+        String email = resolveUserEmail(applicant);
+        if (email == null) return;
+        Map<String, Object> vars = new HashMap<>();
+        vars.put("appId", appId);
+        vars.put("applicantName", applicant);
+        vars.put("env", str(app, "env"));
+        vars.put("projectName", str(app, "project_name"));
+        vars.put("targetType", str(app, "target_type"));
+        vars.put("sqlSnippet", truncate(str(app, "sql_text"), 200));
+        vars.put("applyReason", str(app, "apply_reason"));
+        vars.put("l1ApproverName", str(app, "l1_approver"));
+        vars.put("l1Opinion", l1Opinion);
+        mailService.sendWhitelistMail(
+                java.util.Collections.singletonList(email),
+                WhitelistMailTemplate.L1_REJECTED_NOTIFY_APPLICANT_SUBJECT,
+                WhitelistMailTemplate.L1_REJECTED_NOTIFY_APPLICANT_BODY,
+                vars);
+    }
+
+    /** 从 ccbs_ai_sys_user 查 email；空/null 时返回 null 让调用方跳过发送。 */
+    private String resolveUserEmail(String username) {
+        if (username == null || username.isBlank()) return null;
+        try {
+            var u = sysUserDao.findByUsername(username.trim());
+            if (u == null) return null;
+            String e = u.getEmail();
+            return (e == null || e.isBlank()) ? null : e.trim();
+        } catch (Exception ex) {
+            log.warn("[whitelist-mail] 查 email 失败 user={} : {}", username, ex.getMessage());
+            return null;
+        }
+    }
+
+    private static String str(Map<String, Object> m, String key) {
+        if (m == null) return "";
+        Object v = m.get(key);
+        return v == null ? "" : String.valueOf(v);
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    private static String nowStr() {
+        return TIME_FMT.format(new java.util.Date());
     }
 }
