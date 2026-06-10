@@ -76,7 +76,8 @@ public class WhitelistApplicationService {
     }
 
     /**
-     * 申请白名单（PENDING_L1 初态）。
+     * 申请白名单。常规初态 PENDING_L1；若<b>申请人本人即一级审批人</b>则自动通过一审、
+     * 直接 PENDING_L2（由申请人在弹窗里指定二级审批人）。
      *
      * @param applicant       申请人 username
      * @param includeNamedSql nsql 是否勾选"包含 nsql 原始语句"——true=NAMED_SQL 作用域；
@@ -87,8 +88,15 @@ public class WhitelistApplicationService {
         ensureEnabled();
         validate(req);
 
-        // 校验所选审批人确实在 yml 配置名单内（防止前端伪造任意 username）
-        if (!isL1Approver(req.l1Approver)) {
+        String applicant = applicantRequired(req.applicant);
+        // v8：申请人本人即一级审批人 → 自动通过一审、直接进入二审，此时必填二级审批人；
+        //     否则走常规一审流程，必填一级审批人。审批人都须在 yml 名单内（防前端伪造任意 username）。
+        boolean applicantIsL1 = isL1Approver(applicant);
+        if (applicantIsL1) {
+            if (!isL2Approver(req.l2Approver)) {
+                throw new IllegalArgumentException("二级审批人不在配置名单内: " + req.l2Approver);
+            }
+        } else if (!isL1Approver(req.l1Approver)) {
             throw new IllegalArgumentException("一级审批人不在配置名单内: " + req.l1Approver);
         }
 
@@ -122,10 +130,31 @@ public class WhitelistApplicationService {
                     "已存在活跃白名单申请 id=" + existing.get("id") + " status=" + existing.get("status"));
         }
 
+        // v8：申请人=一级审批人——先建 PENDING_L1（l1_approver=本人），立即自动通过一审 → PENDING_L2。
+        // 复用 l1Approve 跃迁，落库后记录与"被一审通过"的申请完全一致（l1_decision=APPROVE 等），审计可追溯。
+        if (applicantIsL1) {
+            String autoOpinion = "申请人本人为一级审批人，自动通过一审";
+            long id = dao.create(
+                    targetType, req.sqlHash, req.namedSql,
+                    req.kindSource, req.sqlText, req.projectName, req.env,
+                    applicant, req.applyReason,
+                    applicant,                      // l1_approver = 申请人本人
+                    req.sourceTable, req.sourceId);
+            int n = dao.l1Approve(id, applicant, autoOpinion, req.l2Approver);
+            if (n == 0) {
+                throw new IllegalStateException("申请人为一级审批人，自动通过一审失败 id=" + id);
+            }
+            // 同步目标表 wl 字段到 PENDING_L2
+            syncByTargetType(id, STATUS_PENDING_L2, false, targetType, req.sqlHash, req.namedSql);
+            // 邮件直接通知二级审批人
+            sendMailL1PassedNotifyL2(id, autoOpinion, req.l2Approver);
+            return id;
+        }
+
         long id = dao.create(
                 targetType, req.sqlHash, req.namedSql,
                 req.kindSource, req.sqlText, req.projectName, req.env,
-                applicantRequired(req.applicant), req.applyReason,
+                applicant, req.applyReason,
                 req.l1Approver,
                 req.sourceTable, req.sourceId);
 
@@ -393,9 +422,8 @@ public class WhitelistApplicationService {
         if (req.applicant == null || req.applicant.isBlank()) {
             throw new IllegalArgumentException("申请人 (applicant) 不能为空");
         }
-        if (req.l1Approver == null || req.l1Approver.isBlank()) {
-            throw new IllegalArgumentException("一级审批人 (l1Approver) 不能为空");
-        }
+        // v8：审批人必填校验移到 apply()——申请人本人是一级审批人时走"直接二审"分支，
+        // 此时必填的是 l2Approver 而非 l1Approver，故这里不再统一强校验 l1Approver。
         if (req.sourceTable == null
                 || !(req.sourceTable.equals("item") || req.sourceTable.equals("sql_pool")
                      || req.sourceTable.equals("slow_sql"))) {
@@ -420,6 +448,7 @@ public class WhitelistApplicationService {
         public String applicant;
         public String applyReason;
         public String l1Approver;
+        public String l2Approver;        // v8：申请人本人是一级审批人时，直接指定二级审批人（跳过一审）
         public String sourceTable;       // item / sql_pool / slow_sql
         public long sourceId;
     }
