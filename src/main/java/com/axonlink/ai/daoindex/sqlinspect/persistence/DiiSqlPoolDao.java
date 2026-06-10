@@ -330,11 +330,15 @@ public class DiiSqlPoolDao {
             sb.append(" AND (p.env = ? OR p.env IS NULL OR p.env = '')"); args.add(env.trim());
         }
         // 与 item 同样的"有料"过滤：explain 报错 或 LLM 终态
-        sb.append(" AND ((p.explain_error IS NOT NULL AND p.explain_error <> '')")
-          .append(" OR p.llm_status IN ('DONE','PENDING','FAILED')")
-          // 池里很多刚导入还没跑分析的行也要展示（没 explain_error 也没 llm_status）
-          // ——这是与 item 的关键差别：池是"待巡检候选库"，前端要看得到
-          .append(" OR (p.explain_error IS NULL AND p.llm_status IS NULL)) ");
+        // v7：wl 视图（白名单列表）不加此过滤，与 item 一致——白名单池行无论是否已分析都要显示，
+        // 保证白名单列表条数=大屏白名单数。
+        if (!"wl".equalsIgnoreCase(whitelistScope)) {
+            sb.append(" AND ((p.explain_error IS NOT NULL AND p.explain_error <> '')")
+              .append(" OR p.llm_status IN ('DONE','PENDING','FAILED')")
+              // 池里很多刚导入还没跑分析的行也要展示（没 explain_error 也没 llm_status）
+              // ——这是与 item 的关键差别：池是"待巡检候选库"，前端要看得到
+              .append(" OR (p.explain_error IS NULL AND p.llm_status IS NULL)) ");
+        }
         // v6：白名单范围（plain 剔除活跃白名单 / wl 只看活跃白名单）
         sb.append(DiiDashboardDao.whitelistScopeClause("p.", whitelistScope, wlStatus));
         // v7：铃铛"我的待审"——只看该我审批且处于待审的白名单池行
@@ -378,9 +382,12 @@ public class DiiSqlPoolDao {
         if (env != null && !env.isBlank()) {
             sb.append(" AND (env = ? OR env IS NULL OR env = '')"); args.add(env.trim());
         }
-        sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','PENDING','FAILED')")
-          .append(" OR (explain_error IS NULL AND llm_status IS NULL))");
+        // v7：wl 视图不加"有料"过滤（同 searchAsIssues），保证白名单列表条数=大屏白名单数
+        if (!"wl".equalsIgnoreCase(whitelistScope)) {
+            sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
+              .append(" OR llm_status IN ('DONE','PENDING','FAILED')")
+              .append(" OR (explain_error IS NULL AND llm_status IS NULL))");
+        }
         sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
         String apClause = DiiDashboardDao.approverClause("", approverUser);
         if (!apClause.isEmpty()) { sb.append(apClause); args.add(approverUser.trim()); args.add(approverUser.trim()); }
@@ -442,7 +449,8 @@ public class DiiSqlPoolDao {
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='POOR' AND llm_fix_verdict='NEED_FIX' AND " + DiiDashboardDao.plain("") + " "
+                // v7：去掉 llm_fix_verdict='NEED_FIX' 过滤，与 SQL维度分析口径一致
+                + "                 AND overall_rating='POOR' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS need_fix, "
                 + "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
                 + "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
@@ -469,8 +477,8 @@ public class DiiSqlPoolDao {
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='POOR' "
-                + "                 AND llm_fix_verdict='NEED_FIX' AND " + DiiDashboardDao.plain("") + " "
+                // v7：去掉 llm_fix_verdict='NEED_FIX' 过滤，与 SQL维度分析口径一致
+                + "                 AND overall_rating='POOR' AND " + DiiDashboardDao.plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS need_fix, "
                 + "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
                 + "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "

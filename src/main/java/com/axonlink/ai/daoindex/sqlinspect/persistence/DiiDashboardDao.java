@@ -59,7 +59,9 @@ public class DiiDashboardDao {
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS explain_err, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='POOR' AND llm_fix_verdict='NEED_FIX' AND " + plain("") + " "
+                // v7：去掉 llm_fix_verdict='NEED_FIX' 过滤，与 SQL维度分析口径一致
+                // （维度分析"问题总数"= 报错 + 所有已分析 POOR，不区分 AI 是否判定需整改）
+                + "                 AND overall_rating='POOR' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS need_fix, "
                 + "       SUM(CASE WHEN " + wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
                 + "       SUM(CASE WHEN " + wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
@@ -78,8 +80,9 @@ public class DiiDashboardDao {
      * 改为只关心"要不要 DBA 动手"两类：
      * <ul>
      *   <li>{@code error_count} —— EXPLAIN 报错（explain_error 非空），保留</li>
-     *   <li>{@code need_fix}    —— 待整改：非报错 + overall_rating='POOR'（有 Seq Scan）
-     *       + LLM 整改判定 llm_fix_verdict='NEED_FIX'</li>
+     *   <li>{@code need_fix}    —— 需整改：非报错 + overall_rating='POOR'（有 Seq Scan）。
+     *       v7 起<b>不再</b>要求 llm_fix_verdict='NEED_FIX'，与 SQL维度分析"问题总数"口径一致
+     *       （报错 + 所有已分析 POOR；维度分析不区分 AI 是否判定需整改）</li>
      * </ul>
      * 二者互斥：explain_error 非空只算 error_count，不进 need_fix。
      * <p><b>注意：返回字段已由 excellent/good/poor/error_count 变为 error_count/need_fix，
@@ -93,8 +96,8 @@ public class DiiDashboardDao {
                 + "       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (explain_error IS NULL OR explain_error='') "
-                + "                 AND overall_rating='POOR' "
-                + "                 AND llm_fix_verdict='NEED_FIX' AND " + plain("") + " "
+                // v7：去掉 llm_fix_verdict='NEED_FIX' 过滤，与 SQL维度分析口径一致
+                + "                 AND overall_rating='POOR' AND " + plain("") + " "
                 + "                THEN 1 ELSE 0 END) AS need_fix, "
                 + "       SUM(CASE WHEN " + wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, "
                 + "       SUM(CASE WHEN " + wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved "
@@ -113,8 +116,8 @@ public class DiiDashboardDao {
      * 保证"整改分布"快照图与其时间趋势图同口径：
      * <ul>
      *   <li>{@code error_count} —— EXPLAIN 报错（explain_error 非空）</li>
-     *   <li>{@code need_fix}    —— 待整改：非报错 + overall_rating='POOR'（有 Seq Scan）
-     *       + llm_fix_verdict='NEED_FIX'（AI 判定需整改）</li>
+     *   <li>{@code need_fix}    —— 需整改：非报错 + overall_rating='POOR'（有 Seq Scan）。
+     *       v7 起不再要求 llm_fix_verdict='NEED_FIX'，与 SQL维度分析口径一致</li>
      * </ul>
      * AI 判无需整改 / EXCELLENT / GOOD / 未分析(verdict NULL) 天然不计入。
      * 注：need_fix 依赖 refactor 分支的 llm_fix_verdict 列（V10），同整改分布的跨分支耦合。
@@ -136,8 +139,8 @@ public class DiiDashboardDao {
                 + "       SUM(CASE WHEN i.explain_error IS NOT NULL AND i.explain_error <> '' AND " + plain("i.") + " "
                 + "                THEN 1 ELSE 0 END) AS error_count, "
                 + "       SUM(CASE WHEN (i.explain_error IS NULL OR i.explain_error='') "
-                + "                 AND i.overall_rating='POOR' "
-                + "                 AND i.llm_fix_verdict='NEED_FIX' AND " + plain("i.") + " THEN 1 ELSE 0 END) AS need_fix, "
+                // v7：去掉 llm_fix_verdict='NEED_FIX' 过滤，与 SQL维度分析口径一致
+                + "                 AND i.overall_rating='POOR' AND " + plain("i.") + " THEN 1 ELSE 0 END) AS need_fix, "
                 + "       SUM(CASE WHEN " + wlApplying("i.") + " THEN 1 ELSE 0 END) AS wl_applying, "
                 + "       SUM(CASE WHEN " + wlApproved("i.") + " THEN 1 ELSE 0 END) AS wl_approved "
                 + "  FROM ( "

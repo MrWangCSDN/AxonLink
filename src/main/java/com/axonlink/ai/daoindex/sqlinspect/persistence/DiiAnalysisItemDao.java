@@ -547,8 +547,12 @@ public class DiiAnalysisItemDao {
             sb.append(" AND i.task_id = ?"); args.add(taskId);
         }
         // OR 组合：EXPLAIN 报错 或 LLM 有终态
-        sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
-          .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
+        // v7：wl 视图（白名单列表）不加"有料"过滤——APPROVED SQL 巡检时被跳过(无 explain/llm)，
+        // 加该过滤会漏掉它们，使白名单列表条数 < 大屏白名单数。白名单范围子句本身已是充分过滤。
+        if (!"wl".equalsIgnoreCase(whitelistScope)) {
+            sb.append(" AND ((i.explain_error IS NOT NULL AND i.explain_error <> '')")
+              .append(" OR i.llm_status IN ('DONE','PENDING','FAILED'))");
+        }
         // v6：白名单范围（plain 剔除活跃白名单 / wl 只看活跃白名单）
         sb.append(DiiDashboardDao.whitelistScopeClause("i.", whitelistScope, wlStatus));
         // v7：铃铛"我的待审"——只看该我审批且处于待审的白名单行
@@ -677,8 +681,11 @@ public class DiiAnalysisItemDao {
         List<Object> args = new ArrayList<>();
         if (env != null && !env.isBlank()) { sb.append(" AND env = ?"); args.add(env.trim()); }
         if (taskId != null) { sb.append(" AND task_id = ?"); args.add(taskId); }
-        sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
-          .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        // v7：wl 视图不加"有料"过滤（同 searchIssuesOnly），保证白名单列表条数=大屏白名单数
+        if (!"wl".equalsIgnoreCase(whitelistScope)) {
+            sb.append(" AND ((explain_error IS NOT NULL AND explain_error <> '')")
+              .append(" OR llm_status IN ('DONE','PENDING','FAILED'))");
+        }
         sb.append(DiiDashboardDao.whitelistScopeClause("", whitelistScope, wlStatus));
         String apClause = DiiDashboardDao.approverClause("", approverUser);
         if (!apClause.isEmpty()) { sb.append(apClause); args.add(approverUser.trim()); args.add(approverUser.trim()); }
