@@ -153,13 +153,15 @@ public class ErRelationDao {
      *
      * @param minConfidence HIGH/MEDIUM/LOW —— 只要 ≥ 此置信度的边；IGNORED 状态的边永远排除
      */
-    public List<Map<String, Object>> subgraph(String env, String centerTable, int hops, String minConfidence) {
+    public Subgraph subgraph(String env, String centerTable, int hops, String minConfidence, int maxNodes) {
         int minRank = confRank(minConfidence);
+        int cap = maxNodes > 0 ? maxNodes : Integer.MAX_VALUE;   // ≤0 = 不限制
         Set<String> frontier = new LinkedHashSet<>();
         frontier.add(centerTable.toLowerCase());
         Set<String> visited = new LinkedHashSet<>(frontier);
         // 关系去重：用 id
         Map<Object, Map<String, Object>> edges = new java.util.LinkedHashMap<>();
+        boolean truncated = false;
 
         int effHops = Math.max(1, Math.min(hops, 3));
         for (int h = 0; h < effHops && !frontier.isEmpty(); h++) {
@@ -176,13 +178,38 @@ public class ErRelationDao {
                     edges.putIfAbsent(r.get("id"), r);
                     String ft = String.valueOf(r.get("from_table"));
                     String tt = String.valueOf(r.get("to_table"));
-                    if (visited.add(ft)) nextFrontier.add(ft);
-                    if (visited.add(tt)) nextFrontier.add(tt);
+                    // 规模上限：累计节点数到顶即不再纳入新表，并标记 truncated
+                    for (String t : new String[]{ft, tt}) {
+                        if (!visited.contains(t)) {
+                            if (visited.size() >= cap) { truncated = true; }
+                            else { visited.add(t); nextFrontier.add(t); }
+                        }
+                    }
                 }
             }
             frontier = nextFrontier;
         }
-        return new ArrayList<>(edges.values());
+        // 截断后会留下「指向未纳入表」的悬挂边——过滤掉，保证画布没有断头连线
+        List<Map<String, Object>> kept = new ArrayList<>();
+        for (Map<String, Object> e : edges.values()) {
+            if (visited.contains(String.valueOf(e.get("from_table")))
+                    && visited.contains(String.valueOf(e.get("to_table")))) {
+                kept.add(e);
+            }
+        }
+        return new Subgraph(kept, visited.size(), truncated);
+    }
+
+    /** {@link #subgraph} 结果：保留的边行 + 节点(表)数 + 是否因规模上限被截断。 */
+    public static final class Subgraph {
+        public final List<Map<String, Object>> edges;
+        public final int nodeCount;
+        public final boolean truncated;
+        public Subgraph(List<Map<String, Object>> edges, int nodeCount, boolean truncated) {
+            this.edges = edges;
+            this.nodeCount = nodeCount;
+            this.truncated = truncated;
+        }
     }
 
     /** 全量（仅给「概览」，通常限 HIGH），带 minConfidence 过滤。 */

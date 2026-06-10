@@ -253,6 +253,7 @@ dao-index-analysis:
     enabled: ${DII_ER_ENABLED:true}
     distinct-column-max-tables: ${DII_ER_DISTINCT_MAX:5}   # 单列键独特性阈值：≤此值→MEDIUM 否则 LOW
     default-hops: ${DII_ER_DEFAULT_HOPS:1}                  # 聚焦画布默认跳数
+    max-subgraph-nodes: ${DII_ER_MAX_NODES:400}            # 子图规模上限(表数)；BFS 到顶即截断并提示，≤0 不限制
     common-columns: []                                     # 通用列黑名单（预留，默认空；强制 LOW）
 
   # 源码扫描：抽取 @Statement 注解里的 SQL

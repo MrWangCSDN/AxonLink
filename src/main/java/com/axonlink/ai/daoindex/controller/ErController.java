@@ -87,16 +87,19 @@ public class ErController {
         String e = effEnv(env);
         int effHops = hops > 0 ? hops : props.getEr().getDefaultHops();
 
-        List<Map<String, Object>> edgeRows;
         if (full) {
-            edgeRows = dao.listAll(e, minConfidence, 2000);
-        } else {
-            if (table == null || table.isBlank()) {
-                return R.ok(emptyGraph());
-            }
-            edgeRows = dao.subgraph(e, table, effHops, minConfidence);
+            return R.ok(buildGraph(dao.listAll(e, minConfidence, 2000)));
         }
-        return R.ok(buildGraph(edgeRows));
+        if (table == null || table.isBlank()) {
+            return R.ok(emptyGraph());
+        }
+        // 规模上限：BFS 累计到该节点数即停止扩展并标记 truncated（防 2 跳枢纽表炸库卡前端）
+        int maxNodes = props.getEr().getMaxSubgraphNodes();
+        ErRelationDao.Subgraph sg = dao.subgraph(e, table, effHops, minConfidence, maxNodes);
+        Map<String, Object> g = buildGraph(sg.edges);
+        g.put("truncated", sg.truncated);
+        g.put("maxNodes", maxNodes);
+        return R.ok(g);
     }
 
     // ── 人工修正 status（口令保护）──
@@ -132,8 +135,9 @@ public class ErController {
             String scope;
             if (table != null && !table.isBlank()) {
                 int effHops = hops > 0 ? hops : props.getEr().getDefaultHops();
-                // 与 /graph 同一查询：当前中心表的子图边（已排除 IGNORED、已按 minConfidence 过滤）
-                rows = new ArrayList<>(dao.subgraph(e, table.trim(), effHops, minConfidence));
+                // 与 /graph 同一查询 + 同一规模上限（所见即所导）：中心表子图边（排除 IGNORED、按 minConfidence 过滤）
+                rows = new ArrayList<>(dao.subgraph(e, table.trim(), effHops, minConfidence,
+                        props.getEr().getMaxSubgraphNodes()).edges);
                 // Excel 内排序：主表→从表，便于阅读（画布无序，导出排好看）
                 rows.sort(Comparator
                         .comparing((Map<String, Object> m) -> str(m.get("from_table")))

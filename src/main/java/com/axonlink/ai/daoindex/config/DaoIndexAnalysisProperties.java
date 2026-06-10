@@ -207,6 +207,9 @@ public class DaoIndexAnalysisProperties {
         private List<String> commonColumns = new ArrayList<>();
         /** 聚焦画布默认跳数（中心表 + N 跳邻居）。默认 1。 */
         private int defaultHops = 1;
+        /** 子图规模上限（节点/表数）。BFS 累计到该值即停止扩展并标记 truncated，
+         *  防止 2 跳枢纽表炸成整库导致前端 SVG 卡死。默认 400。≤0 表示不限制。 */
+        private int maxSubgraphNodes = 400;
 
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -216,6 +219,8 @@ public class DaoIndexAnalysisProperties {
         public void setCommonColumns(List<String> v) { this.commonColumns = v; }
         public int getDefaultHops() { return defaultHops; }
         public void setDefaultHops(int v) { this.defaultHops = v; }
+        public int getMaxSubgraphNodes() { return maxSubgraphNodes; }
+        public void setMaxSubgraphNodes(int v) { this.maxSubgraphNodes = v; }
     }
 
     /** 审批人条目：{@code {username, display}}。 */
