@@ -8,9 +8,12 @@ import java.util.Map;
 
 /**
  * 仓库每日代码行数快照 DAO。
+ * 表名：ccbs_ai_code_repo_daily_stat（ccbs-ai 模块新增，区别于项目存量表）。
  */
 @Repository
 public class CodeRepoDailyStatDao {
+
+    private static final String TBL = "ccbs_ai_code_repo_daily_stat";
 
     private final JdbcTemplate jdbc;
 
@@ -26,7 +29,7 @@ public class CodeRepoDailyStatDao {
                        long totalOwned, long staffOwned, long vendorOwned,
                        int authorCount, int fileCount, String snapshotCommit) {
         String sql = """
-            INSERT INTO code_repo_daily_stat
+            INSERT INTO %s
               (repo_id, stat_date, total_owned_lines, staff_owned_lines,
                vendor_owned_lines, author_count, file_count, snapshot_commit, snapshot_time)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
@@ -38,7 +41,7 @@ public class CodeRepoDailyStatDao {
               file_count = VALUES(file_count),
               snapshot_commit = VALUES(snapshot_commit),
               snapshot_time = NOW()
-            """;
+            """.formatted(TBL);
         jdbc.update(sql, repoId, statDate, totalOwned, staffOwned, vendorOwned,
                 authorCount, fileCount, snapshotCommit);
     }
@@ -47,13 +50,14 @@ public class CodeRepoDailyStatDao {
      * 查询某仓库最近 N 天的每日快照（折线图数据源）。
      */
     public List<Map<String, Object>> queryTrend(long repoId, int days) {
-        return jdbc.queryForList("""
+        String sql = """
             SELECT stat_date, total_owned_lines, staff_owned_lines,
                    vendor_owned_lines, author_count, file_count
-              FROM code_repo_daily_stat
+              FROM %s
              WHERE repo_id = ?
                AND stat_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
              ORDER BY stat_date ASC
-            """, repoId, days);
+            """.formatted(TBL);
+        return jdbc.queryForList(sql, repoId, days);
     }
 }

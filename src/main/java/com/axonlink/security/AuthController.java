@@ -1,11 +1,14 @@
 package com.axonlink.security;
 
+import com.axonlink.ai.user.entity.SysUser;
+import com.axonlink.ai.user.service.UserService;
 import com.axonlink.common.R;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -58,9 +61,20 @@ public class AuthController {
     /** 安全配置（UIAS 子节读 enabled / sdkUrl / ssoTarget / sessionEmpnoKey）。 */
     private final SecurityProperties sp;
 
-    public AuthController(AuthenticationManager authenticationManager, SecurityProperties sp) {
+    /** 统一用户解析（按 LDAP/UIAS 标记查 sys_user）。 */
+    private final UserPrincipalResolver principalResolver;
+
+    /** 用户管理服务（LDAP 首次登录自动同步）。 */
+    private final UserService userService;
+
+    public AuthController(AuthenticationManager authenticationManager,
+                          SecurityProperties sp,
+                          UserPrincipalResolver principalResolver,
+                          UserService userService) {
         this.authenticationManager = authenticationManager;
         this.sp = sp;
+        this.principalResolver = principalResolver;
+        this.userService = userService;
     }
 
     /**
@@ -109,6 +123,22 @@ public class AuthController {
             request.getSession(true).setAttribute(
                     HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY,
                     context);
+            // 标记登录方式：LDAP（账密）→ 业务侧按 username 查 sys_user
+            request.getSession(true).setAttribute(SessionKeys.AUTH_METHOD, "LDAP");
+            // LDAP 用户首次登录自动同步到 ccbs_ai_sys_user（仅 username + realName）
+            // UIAS 路径不走这里，所以 UIAS 用户只能通过用户管理页面手动维护
+            try {
+                String realName = extractRealNameFromAuth(auth);
+                String principalClass = auth.getPrincipal() == null ? "null"
+                        : auth.getPrincipal().getClass().getName();
+                log.info("[auth] LDAP principal class={}, getName()={}, extractedRealName={}",
+                        principalClass, auth.getName(), realName);
+                if (realName == null) realName = auth.getName();  // fallback：用 username 占位
+                userService.syncLdapUserIfFirstLogin(auth.getName(), realName);
+            } catch (Exception e) {
+                // 同步失败不影响登录主流程
+                log.warn("[auth] LDAP 用户同步失败 user={} : {}", auth.getName(), e.getMessage());
+            }
             log.info("[auth] 登录成功 user={}", auth.getName());
             // 成功响应：包装 username（不返回任何敏感信息）
             Map<String, Object> data = new LinkedHashMap<>();
@@ -145,17 +175,46 @@ public class AuthController {
     }
 
     /**
+     * 当前 session 中保存的关键常量。供其它模块引用，避免散落字符串。
+     */
+    public static final class SessionKeys {
+        /** session 中保存的登录方式：{@code "LDAP"} / {@code "UIAS"} */
+        public static final String AUTH_METHOD = "authMethod";
+        private SessionKeys() {}
+    }
+
+    /** 用于标识登录方式：LDAP | UIAS | UNKNOWN */
+    public static String resolveAuthMethod(HttpServletRequest request) {
+        HttpSession s = request.getSession(false);
+        if (s == null) return "UNKNOWN";
+        Object v = s.getAttribute(SessionKeys.AUTH_METHOD);
+        return v == null ? "UNKNOWN" : String.valueOf(v);
+    }
+
+    /**
      * GET /api/auth/me —— 返回当前用户。
      */
     @GetMapping("/me")
-    public ResponseEntity<R<Map<String, Object>>> me() {
+    public ResponseEntity<R<Map<String, Object>>> me(HttpServletRequest request) {
         // 从 SecurityContext 取 Authentication
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         // 已认证且非 anonymous（Spring Security 给未登录请求会塞一个 AnonymousAuthenticationToken）
         if (auth != null && auth.isAuthenticated()
                 && !"anonymousUser".equals(String.valueOf(auth.getPrincipal()))) {
+            // 用 principalResolver 把 username/empNo 解析到 sys_user，拿到真实姓名
+            UserPrincipalResolver.Resolved cu = principalResolver.resolve(request);
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("username", auth.getName());
+            // 登录方式：LDAP / UIAS
+            data.put("authMethod", cu.authMethod);
+            // 中文真实姓名（最核心字段，前端右上角用）
+            data.put("realName", cu.user != null ? cu.user.getRealName() : null);
+            // 附加：工号、邮箱、部门（按需取）
+            if (cu.user != null) {
+                data.put("empNo", cu.user.getEmpNo());
+                data.put("email", cu.user.getEmail());
+                data.put("department", cu.user.getDepartment());
+            }
             return ResponseEntity.ok(R.ok(data));
         }
         // 未登录：返回 401 + R.fail("未登录")，与 SecurityConfig 的 entrypoint 一致
@@ -239,6 +298,8 @@ public class AuthController {
             s.setAttribute(
                     org.springframework.security.web.context.HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY,
                     ctx);
+            // 标记登录方式：UIAS（单点）→ 业务侧按 emp_no 查 sys_user
+            s.setAttribute(SessionKeys.AUTH_METHOD, "UIAS");
             // SDK 中间态 key 用完清掉，避免后续误用
             s.removeAttribute(uias.getSessionEmpnoKey());
 
@@ -271,5 +332,35 @@ public class AuthController {
     /** 简单空字符串判断（避免引入 commons-lang）。 */
     private static boolean isBlank(String s) {
         return s == null || s.trim().isEmpty();
+    }
+
+    /**
+     * 从 LDAP 认证后的 Authentication 里提取中文真实姓名。
+     * 优先：principal.getDn() 中的 cn；fallback：principal 对象的 toString() 里匹配。
+     */
+    private static String extractRealNameFromAuth(Authentication auth) {
+        if (auth == null) return null;
+        Object principal = auth.getPrincipal();
+        if (principal == null) return null;
+        // 1) 尝试 Spring LDAP 的 LdapUserDetailsImpl.getDn() 反射取值（避免强依赖 Spring LDAP 类型）
+        String dn = invokeStringGetter(principal, "getDn");
+        if (dn == null) dn = invokeStringGetter(principal, "getDistinguishedName");
+        if (dn != null) {
+            String cn = LdapDnParser.extractCn(dn);
+            if (cn != null && !cn.isBlank()) return cn;
+        }
+        // 2) fallback：从 principal.toString() 里找 cn=... 段
+        String cn = LdapDnParser.extractCn(String.valueOf(principal));
+        return cn;
+    }
+
+    /** 反射调用无参 getXxx()，返回值是 String 才返回，否则 null。 */
+    private static String invokeStringGetter(Object target, String method) {
+        try {
+            Object v = target.getClass().getMethod(method).invoke(target);
+            return v == null ? null : String.valueOf(v);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

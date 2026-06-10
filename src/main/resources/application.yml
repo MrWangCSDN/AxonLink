@@ -34,6 +34,24 @@ spring:
     username: ${LDAP_BIND_DN:}
     password: ${LDAP_BIND_PWD:}
 
+  # ── 邮件 SMTP 配置（JavaMailSender）─────────────────────────────────────────
+  # 部署时按本企业 SMTP 填。密码走 ENV 注入；未配置时 send() 会被 MailService
+  # 捕获并 log.warn，不会破坏业务。
+  mail:
+    host: ${MAIL_HOST:smtp.example.com}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true         # 465 端口 SSL；如用 25 端口改 starttls.enable: true
+          starttls:
+            enable: false
+
 # ── 安全与认证（LDAP B 档：仅登录保护，不分角色）──────────────────────────────
 # 灰度开关：axon-link.security.enabled=false 时整个 Security 配置不装配，
 # 等价于"从未引入"，所有 /api/** 仍开放（兼容现有 dev/CI 流程）。
@@ -49,6 +67,9 @@ axon-link:
     group-search-base: ${LDAP_GROUP_BASE:OU=Groups}
     group-search-filter: ${LDAP_GROUP_FILTER:(member={0})}
     session-timeout-minutes: ${AXON_SESSION_TIMEOUT_MIN:120}
+  # 邮件自定义配置：发件人地址（缺省回退到 spring.mail.username）
+  mail:
+    from: ${MAIL_FROM:noreply@example.com}
 
     # AD（Active Directory）标准认证配置（增强 v3）
     # 用 Spring 标准 ActiveDirectoryLdapAuthenticationProvider；默认值=原自研 Spdb 硬编码值，

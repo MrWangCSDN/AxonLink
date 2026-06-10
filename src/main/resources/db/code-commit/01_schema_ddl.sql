@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS code_domain_author_stat (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='领域内作者明细';
 
 -- 仓库每日代码行数快照（折线图数据源）
-CREATE TABLE IF NOT EXISTS code_repo_daily_stat (
+CREATE TABLE IF NOT EXISTS ccbs_ai_code_repo_daily_stat (
     id               BIGINT       NOT NULL AUTO_INCREMENT,
     repo_id          BIGINT       NOT NULL            COMMENT 'code_repo_config.id',
     stat_date        DATE         NOT NULL            COMMENT '统计日期',
@@ -192,6 +192,6 @@ CREATE TABLE IF NOT EXISTS code_repo_daily_stat (
     snapshot_commit  VARCHAR(64)                      COMMENT '快照所基于的 HEAD',
     snapshot_time    DATETIME                         COMMENT '快照生成时间',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_code_rds_repo_date (repo_id, stat_date),
-    KEY idx_code_rds_date (stat_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库每日代码行数快照';
+    UNIQUE KEY uk_ccbs_ai_code_rds_repo_date (repo_id, stat_date),
+    KEY idx_ccbs_ai_code_rds_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仓库每日代码行数快照（ccbs-ai 模块）';
