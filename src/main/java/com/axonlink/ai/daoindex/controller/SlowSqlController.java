@@ -42,6 +42,7 @@ public class SlowSqlController {
     @PostMapping(value = "/import", consumes = "multipart/form-data")
     public ResponseEntity<R<Map<String, Object>>> importFile(
             @RequestPart("file") MultipartFile file,
+            @RequestParam(value = "round") String round,
             @RequestParam(value = "env", required = false) String env,
             @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
             HttpServletRequest request) {
@@ -55,8 +56,11 @@ public class SlowSqlController {
             return ResponseEntity.badRequest().body(R.fail("仅支持 .xlsx / .xls / .csv"));
         }
         try {
-            Map<String, Object> stats = importService.importFile(file, env);
+            // v2：轮次由前端输入（如 20260103-20260107），同轮先删后插=覆盖
+            Map<String, Object> stats = importService.importFile(file, env, round);
             return ResponseEntity.ok(R.ok(stats));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(R.fail(e.getMessage()));
         } catch (Exception e) {
             log.error("[slow-sql-import] 失败 file={}", file.getOriginalFilename(), e);
             return ResponseEntity.internalServerError().body(R.<Map<String, Object>>fail("导入失败：" + e.getMessage()));
@@ -92,6 +96,12 @@ public class SlowSqlController {
     @GetMapping("/biz-types")
     public R<List<String>> bizTypes() {
         return R.ok(dao.listDistinctBizTypes());
+    }
+
+    /** v2：全部轮次（升序）→ 页面轮次下拉（前端默认选最新=末位）。 */
+    @GetMapping("/rounds")
+    public R<List<String>> rounds() {
+        return R.ok(dao.distinctRoundsSorted());
     }
 
     // ── 导出（全量透视，不联动筛选）──
@@ -139,7 +149,7 @@ public class SlowSqlController {
             hs.setFillForegroundColor(IndexedColors.GREY_50_PERCENT.getIndex());
             hs.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
-            List<String> headers = new ArrayList<>(List.of("服务名", "领域", "类型", "抽象SQL", "执行参数", "最大执行耗时(ms)", "总出现次数"));
+            List<String> headers = new ArrayList<>(List.of("微服务", "领域", "类型", "抽象SQL", "执行参数", "来源文件", "最大执行耗时(ms)", "总出现次数"));
             for (String rd : rounds) headers.add(rd + " 出现次数");
             Row hr = sheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
@@ -159,7 +169,8 @@ public class SlowSqlController {
                 er.createCell(col++).setCellValue(str(rep.get("biz_type")));
                 er.createCell(col++).setCellValue(str(rep.get("abstract_sql")));
                 er.createCell(col++).setCellValue(str(rep.get("exec_params")));
-                er.createCell(col++).setCellValue(((Number) rep.get("time_cost_ms")).doubleValue());
+                er.createCell(col++).setCellValue(str(rep.get("source_location")));
+                er.createCell(col++).setCellValue(((Number) rep.get("max_time_cost_ms")).doubleValue());
                 er.createCell(col++).setCellValue(totals.getOrDefault(h, 0L));
                 Map<String, Long> rc = perRound.getOrDefault(h, Map.of());
                 for (String rd : rounds) {

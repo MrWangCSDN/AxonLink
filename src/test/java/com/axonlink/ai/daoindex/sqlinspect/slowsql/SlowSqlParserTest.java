@@ -69,4 +69,48 @@ class SlowSqlParserTest {
         // 乱序/脏数据容错
         assertEquals("20250601-6", SlowSqlParser.nextRound(d, List.of("20250601-5", "20250601-x", "20250601-2")));
     }
+
+    // ── v2：E 列来源分类 / sqlsId 提取 / 模块→领域 ──
+
+    @Test
+    @DisplayName("v2 E列分类：无冒号→平台；含Entity→odb；有冒号无Entity→nsql")
+    void locationKindOf_rules() {
+        // 平台：无 ":" / 空 / null
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf("BUF0101"));
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf(""));
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf(null));
+        // odb：含 ":" 且含 Entity
+        assertEquals(SlowSqlParser.LocationKind.ODB, SlowSqlParser.locationKindOf(
+                "S010010048.CorpDmdOpnccnt:Kapp_serl_num.kapp_serl_num.Entity.selectByIndexWithLock_odb1"));
+        // nsql：含 ":" 不含 Entity
+        assertEquals(SlowSqlParser.LocationKind.NSQL, SlowSqlParser.locationKindOf(
+                "BLP7001:DpcbUD55Qry.sel_kdpb_cb_async_task_register_qry"));
+        assertEquals(SlowSqlParser.LocationKind.NSQL, SlowSqlParser.locationKindOf(
+                "S010030002.AcctNoCorpHvQry:LnAcctBusi.sel_klnl_loan_txt_opnac_dt_txnamt"));
+    }
+
+    @Test
+    @DisplayName("v2 nsqlId：取冒号后段首段；无冒号→空串")
+    void nsqlIdOf_extract() {
+        assertEquals("DpcbUD55Qry", SlowSqlParser.nsqlIdOf(
+                "BLP7001:DpcbUD55Qry.sel_kdpb_cb_async_task_register_qry"));
+        assertEquals("LnAcctBusi", SlowSqlParser.nsqlIdOf(
+                "S010030002.AcctNoCorpHvQry:LnAcctBusi.sel_klnl_loan_txt_opnac_dt_txnamt"));
+        // 冒号后无 "."：整段即 sqlsId
+        assertEquals("OnlyId", SlowSqlParser.nsqlIdOf("TX0001:OnlyId"));
+        assertEquals("", SlowSqlParser.nsqlIdOf("BUF0101"));
+        assertEquals("", SlowSqlParser.nsqlIdOf(null));
+    }
+
+    @Test
+    @DisplayName("v2 模块→领域：dept/loan/comm/sett/public 命中；null/other→其他")
+    void domainOfModule_map() {
+        assertEquals("存款", SlowSqlParser.domainOfModule("dept-bcc"));
+        assertEquals("贷款", SlowSqlParser.domainOfModule("loan-bcc"));
+        assertEquals("公共", SlowSqlParser.domainOfModule("comm-bcc"));
+        assertEquals("结算", SlowSqlParser.domainOfModule("sett-bcc"));
+        assertEquals("全领域", SlowSqlParser.domainOfModule("public-bcc"));
+        assertEquals("其他", SlowSqlParser.domainOfModule("other"));
+        assertEquals("其他", SlowSqlParser.domainOfModule(null));
+    }
 }

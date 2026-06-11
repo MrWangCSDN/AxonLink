@@ -1,6 +1,7 @@
 package com.axonlink.ai.daoindex.sqlinspect.slowsql;
 
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
+import com.axonlink.ai.daoindex.sqlinspect.service.NsqlIdProjectIndex;
 import com.axonlink.ai.daoindex.sqlinspect.service.WhitelistApplicationService;
 import com.axonlink.ai.daoindex.sqlinspect.slowsql.dto.ParsedSlowSqlRow;
 import org.apache.poi.ss.usermodel.Cell;
@@ -17,7 +18,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -25,100 +25,154 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * 慢SQL明细导入：解析 xlsx/csv(列序 0领域 1耗时 2抽象SQL 3执行参数)→
- * 跳表头→逐行(不去重)→生成轮次→批量入库→按抽象SQL继承白名单。
+ * 慢SQL导入 v2：5 列 (serviceName / 抽象SQL / 参数 / 耗时 / 来源文件)，
+ * 解析时按 <b>(serviceName, 抽象SQL哈希)</b> 内存聚合（最大耗时代表行 + 出现次数），
+ * 轮次由调用方输入（同轮先删后插=覆盖），落库前回填 E 列领域与「重复出现轮次」。
  */
 @Service
 public class SlowSqlImportService {
 
     private static final Logger log = LoggerFactory.getLogger(SlowSqlImportService.class);
 
-    private static final int COL_DOMAIN = 0;
-    private static final int COL_COST = 1;
-    private static final int COL_ABSTRACT = 2;
-    private static final int COL_PARAMS = 3;
+    // v2 列序：A服务名 B抽象SQL C参数 D耗时 E来源文件
+    private static final int COL_SERVICE = 0;
+    private static final int COL_ABSTRACT = 1;
+    private static final int COL_PARAMS = 2;
+    private static final int COL_COST = 3;
+    private static final int COL_LOCATION = 4;
     private static final int ABSTRACT_SQL_MAX = 60_000;
-    /** 分块入库大小：边解析边按块 batchInsert，内存恒定，且配合 rewriteBatchedStatements 规避 max_allowed_packet。 */
+    private static final int LOCATION_MAX = 512;
+    /** 分块入库大小：配合 rewriteBatchedStatements 规避 max_allowed_packet。 */
     private static final int CHUNK_SIZE = 2000;
 
     private final DiiSlowSqlDao dao;
+    private final NsqlIdProjectIndex nsqlIndex;
+    private final OdbLocationDomainResolver odbResolver;
     private final ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
 
     public SlowSqlImportService(DiiSlowSqlDao dao,
+                                NsqlIdProjectIndex nsqlIndex,
+                                OdbLocationDomainResolver odbResolver,
                                 ObjectProvider<WhitelistApplicationService> whitelistServiceProvider) {
         this.dao = dao;
+        this.nsqlIndex = nsqlIndex;
+        this.odbResolver = odbResolver;
         this.whitelistServiceProvider = whitelistServiceProvider;
     }
 
     /**
-     * 入口：流式解析→分块入库→批量继承。返回 {round, rowsImported, distinctAbstractSql, skipped}。
-     * <p>大批量（数十万行）友好：边解析边按 {@link #CHUNK_SIZE} 落库（内存恒定），
-     * 入库后只跑一次批量白名单继承（避免 N+1）。
+     * 入口：解析整文件→内存聚合→回填领域/重复轮次→同轮覆盖入库→批量继承白名单。
+     *
+     * @param round 用户输入轮次（如 20260103-20260107）；非空、≤20 字符、不含逗号
+     * @return {round, rawRows, aggregatedRows, repeatHit, skipped}
      */
-    public Map<String, Object> importFile(MultipartFile file, String env) throws IOException {
-        // 轮次只依赖已有轮次，可先算；即使本次无有效行，未落库则不占用（下次按实际行重算）
-        String round = SlowSqlParser.nextRound(LocalDate.now(), dao.listAllRounds());
-        ChunkSink sink = new ChunkSink(round, LocalDateTime.now());
+    public Map<String, Object> importFile(MultipartFile file, String env, String round) throws IOException {
+        String r = validateRound(round);
+
+        // ① 解析整文件 → (serviceName + "\n" + hash) → 聚合行。
+        //    30 万原始行聚合后通常只剩几千键，Map 内存可控（值只存代表行字段+计数）。
+        Map<String, ParsedSlowSqlRow> agg = new LinkedHashMap<>();
+        int[] rawRows = {0};
         int[] skipped = {0};
         String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
         if (name.endsWith(".csv")) {
-            parseCsv(file, sink, skipped);
+            parseCsv(file, agg, rawRows, skipped);
         } else {
-            parseXlsx(file, sink, skipped);
+            parseXlsx(file, agg, rawRows, skipped);
         }
-        sink.flush();   // 落最后不足一块的尾巴
 
-        // 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断
-        if (sink.imported > 0) {
+        // ② 回填领域（按代表行的 E 列）+ 重复出现轮次（与库中所有其他轮次比）
+        Map<String, TreeSet<String>> earlier = dao.roundsByKeyExcluding(r);
+        int repeatHit = 0;
+        for (Map.Entry<String, ParsedSlowSqlRow> e : agg.entrySet()) {
+            ParsedSlowSqlRow row = e.getValue();
+            row.domain = resolveDomain(row.sourceLocation);
+            TreeSet<String> rounds = earlier.get(e.getKey());
+            if (rounds != null && !rounds.isEmpty()) {
+                row.repeatRounds = String.join(",", rounds);
+                repeatHit++;
+            }
+        }
+
+        // ③ 同轮覆盖：先删后插（分块）
+        int deleted = dao.deleteByRound(r);
+        LocalDateTime now = LocalDateTime.now();
+        List<ParsedSlowSqlRow> buffer = new ArrayList<>(CHUNK_SIZE);
+        Set<String> hashes = new LinkedHashSet<>();
+        for (ParsedSlowSqlRow row : agg.values()) {
+            buffer.add(row);
+            hashes.add(row.abstractHash);
+            if (buffer.size() >= CHUNK_SIZE) {
+                dao.batchInsert(buffer, r, now);
+                buffer.clear();
+            }
+        }
+        if (!buffer.isEmpty()) dao.batchInsert(buffer, r, now);
+
+        // ④ 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断
+        if (!hashes.isEmpty()) {
             WhitelistApplicationService wl = whitelistServiceProvider.getIfAvailable();
             if (wl != null) {
                 try {
-                    wl.inheritOnSlowSqlImportBatch(sink.hashes);
-                } catch (Exception e) {
-                    log.warn("[slow-sql-import] 批量继承白名单失败: {}", e.getMessage());
+                    wl.inheritOnSlowSqlImportBatch(hashes);
+                } catch (Exception ex) {
+                    log.warn("[slow-sql-import] 批量继承白名单失败: {}", ex.getMessage());
                 }
             }
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("round", sink.imported > 0 ? round : null);
-        result.put("rowsImported", sink.imported);
-        result.put("distinctAbstractSql", sink.hashes.size());
+        result.put("round", r);
+        result.put("rawRows", rawRows[0]);
+        result.put("aggregatedRows", agg.size());
+        result.put("repeatHit", repeatHit);
         result.put("skipped", skipped[0]);
+        result.put("overwritten", deleted);
         log.info("[slow-sql-import] env={} 结果={}", env, result);
         return result;
     }
 
-    /** 分块缓冲落库：攒满 {@link #CHUNK_SIZE} 即 batchInsert，内存恒定；distinct hash 累积供批量继承。 */
-    private final class ChunkSink {
-        private final String round;
-        private final LocalDateTime importedAt;
-        private final List<ParsedSlowSqlRow> buffer = new ArrayList<>(CHUNK_SIZE);
-        private final Set<String> hashes = new LinkedHashSet<>();
-        private int imported = 0;
+    /** 轮次校验：非空、≤20 字符（列宽）、不含逗号（repeat_rounds 逗号分隔）。 */
+    static String validateRound(String round) {
+        String r = round == null ? "" : round.trim();
+        if (r.isEmpty()) throw new IllegalArgumentException("轮次不能为空（如 20260103-20260107）");
+        if (r.length() > 20) throw new IllegalArgumentException("轮次过长（≤20 字符）");
+        if (r.contains(",")) throw new IllegalArgumentException("轮次不能包含逗号");
+        return r;
+    }
 
-        ChunkSink(String round, LocalDateTime importedAt) {
-            this.round = round;
-            this.importedAt = importedAt;
-        }
-
-        void add(ParsedSlowSqlRow r) {
-            buffer.add(r);
-            hashes.add(r.abstractHash);
-            if (buffer.size() >= CHUNK_SIZE) flush();
-        }
-
-        void flush() {
-            if (buffer.isEmpty()) return;
-            dao.batchInsert(buffer, round, importedAt);
-            imported += buffer.size();
-            buffer.clear();
+    /**
+     * E 列 → 中文领域：
+     * 无":"→平台；含Entity→odb（{@link OdbLocationDomainResolver} 查模块）；
+     * 否则 nsql（sqlsId 走 {@link NsqlIdProjectIndex}）。模块名再映射 dept→存款 等。
+     */
+    private String resolveDomain(String location) {
+        SlowSqlParser.LocationKind kind = SlowSqlParser.locationKindOf(location);
+        switch (kind) {
+            case PLATFORM:
+                return SlowSqlParser.PLATFORM;
+            case ODB: {
+                String module = null;
+                try {
+                    module = odbResolver.resolveModule(SlowSqlParser.locationAfterColon(location));
+                } catch (Exception e) {
+                    log.debug("[slow-sql-import] odb 模块解析异常 loc={}: {}", location, e.getMessage());
+                }
+                return SlowSqlParser.domainOfModule(module);
+            }
+            case NSQL:
+            default: {
+                String module = nsqlIndex.lookupProject(SlowSqlParser.nsqlIdOf(location));
+                return SlowSqlParser.domainOfModule(module);
+            }
         }
     }
 
-    private void parseXlsx(MultipartFile file, ChunkSink sink, int[] skipped) throws IOException {
+    private void parseXlsx(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
+                           int[] rawRows, int[] skipped) throws IOException {
         try (InputStream raw = file.getInputStream();
              BufferedInputStream is = new BufferedInputStream(raw);
              Workbook wb = WorkbookFactory.create(is)) {
@@ -127,16 +181,15 @@ public class SlowSqlImportService {
             boolean header = true;
             for (Row row : sheet) {
                 if (header) { header = false; continue; }   // 跳首行表头
-                String domain = cell(row, COL_DOMAIN);
-                String cost = cell(row, COL_COST);
-                String abs = cell(row, COL_ABSTRACT);
-                String params = cell(row, COL_PARAMS);
-                addRow(sink, skipped, domain, cost, abs, params);
+                addRow(agg, rawRows, skipped,
+                        cell(row, COL_SERVICE), cell(row, COL_ABSTRACT),
+                        cell(row, COL_PARAMS), cell(row, COL_COST), cell(row, COL_LOCATION));
             }
         }
     }
 
-    private void parseCsv(MultipartFile file, ChunkSink sink, int[] skipped) throws IOException {
+    private void parseCsv(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
+                          int[] rawRows, int[] skipped) throws IOException {
         try (java.io.Reader reader = new java.io.BufferedReader(
                 new java.io.InputStreamReader(file.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
             reader.mark(1);
@@ -149,31 +202,43 @@ public class SlowSqlImportService {
                 boolean header = true;
                 for (org.apache.commons.csv.CSVRecord rec : parser) {
                     if (header) { header = false; continue; }   // 跳首行表头
-                    String domain = rec.size() > COL_DOMAIN ? rec.get(COL_DOMAIN) : "";
-                    String cost = rec.size() > COL_COST ? rec.get(COL_COST) : "";
-                    String abs = rec.size() > COL_ABSTRACT ? rec.get(COL_ABSTRACT) : "";
-                    String params = rec.size() > COL_PARAMS ? rec.get(COL_PARAMS) : "";
-                    addRow(sink, skipped, domain, cost, abs, params);
+                    addRow(agg, rawRows, skipped,
+                            get(rec, COL_SERVICE), get(rec, COL_ABSTRACT),
+                            get(rec, COL_PARAMS), get(rec, COL_COST), get(rec, COL_LOCATION));
                 }
             }
         }
     }
 
-    /** 组装一行喂给分块缓冲；第0列 serviceName 派生 领域+类型；abstract_sql 空或超长 → 跳过计数。 */
-    private void addRow(ChunkSink sink, int[] skipped,
-                        String serviceName, String cost, String abs, String params) {
+    private static String get(org.apache.commons.csv.CSVRecord rec, int idx) {
+        return rec.size() > idx ? rec.get(idx) : "";
+    }
+
+    /** 一行喂进聚合 Map：键=(serviceName + "\n" + 抽象SQL哈希)；B 列空/超长 → skipped。 */
+    private void addRow(Map<String, ParsedSlowSqlRow> agg, int[] rawRows, int[] skipped,
+                        String serviceName, String abs, String params, String cost, String location) {
         String abstractSql = abs == null ? "" : abs.trim();
         if (abstractSql.isEmpty() || abstractSql.length() > ABSTRACT_SQL_MAX) {
             skipped[0]++;
             return;
         }
+        rawRows[0]++;
         String svc = serviceName == null ? "" : serviceName.trim();
         long ms = SlowSqlParser.parseCostMs(cost);
+        String costRaw = cost == null ? null : cost.trim();
+        String p = params == null ? null : params.trim();
+        String loc = location == null ? null : location.trim();
+        if (loc != null && loc.length() > LOCATION_MAX) loc = loc.substring(0, LOCATION_MAX);
+
         String hash = SlowSqlParser.sha256Hex(abstractSql);
-        sink.add(new ParsedSlowSqlRow(
-                svc, SlowSqlParser.domainOf(svc), SlowSqlParser.bizTypeOf(svc),
-                ms, cost == null ? null : cost.trim(),
-                abstractSql, hash, params == null ? null : params.trim()));
+        String key = svc + "\n" + hash;
+        ParsedSlowSqlRow exist = agg.get(key);
+        if (exist == null) {
+            agg.put(key, new ParsedSlowSqlRow(
+                    svc, SlowSqlParser.bizTypeOf(svc), abstractSql, hash, ms, costRaw, p, loc));
+        } else {
+            exist.absorb(ms, costRaw, p, loc);
+        }
     }
 
     private String cell(Row row, int idx) {

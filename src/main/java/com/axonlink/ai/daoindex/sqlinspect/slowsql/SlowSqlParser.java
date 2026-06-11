@@ -109,4 +109,49 @@ public final class SlowSqlParser {
         }
         return OTHER;
     }
+
+    // ── v2：E 列（slowSqlLocation）来源分类 + 模块→领域 ─────────────────────────
+    // 规则（用户口径）：
+    //   E 无 ":"（如 BUF0101）或为空        → 平台
+    //   E 有 ":" 且含 "Entity"             → odb（冒号后段交 OdbLocationDomainResolver 查模块）
+    //   E 有 ":" 不含 "Entity"             → nsql（冒号后段首段=sqlsId，走 NsqlIdProjectIndex）
+
+    /** 平台领域常量（E 列无 ":" 时归类）。 */
+    public static final String PLATFORM = "平台";
+
+    /** E 列来源类型。 */
+    public enum LocationKind { PLATFORM, ODB, NSQL }
+
+    /** 按 E 列文本分类来源：无 ":" / 空 → PLATFORM；含 "Entity" → ODB；其余 → NSQL。 */
+    public static LocationKind locationKindOf(String location) {
+        if (location == null || !location.contains(":")) return LocationKind.PLATFORM;
+        return location.contains("Entity") ? LocationKind.ODB : LocationKind.NSQL;
+    }
+
+    /** 取 E 列首个 ":" 后段（trim）；无 ":" 返回空串。 */
+    public static String locationAfterColon(String location) {
+        if (location == null) return "";
+        int i = location.indexOf(':');
+        return i < 0 ? "" : location.substring(i + 1).trim();
+    }
+
+    /**
+     * 从 E 列解析 nsql 的 sqlsId：冒号后段的首段（第一个 "." 前）。
+     * 如 {@code BLP7001:DpcbUD55Qry.sel_kdpb_cb_async_task_register_qry} → {@code DpcbUD55Qry}。
+     * 无 ":" 或后段为空 → 空串。
+     */
+    public static String nsqlIdOf(String location) {
+        String after = locationAfterColon(location);
+        if (after.isEmpty()) return "";
+        int dot = after.indexOf('.');
+        return dot < 0 ? after : after.substring(0, dot);
+    }
+
+    /**
+     * 模块名 → 中文领域：含 dept/loan/comm/sett/public → 存款/贷款/公共/结算/全领域；
+     * null / "other" / 无匹配 → 其他。与 {@link #domainOf} 同一映射表（模块名如 loan-bcc 同样命中）。
+     */
+    public static String domainOfModule(String module) {
+        return mapByContains(module, DOMAIN_MAP);
+    }
 }
