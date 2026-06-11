@@ -106,6 +106,10 @@ public class WhitelistApplicationService {
             if (req.sqlHash == null || req.sqlHash.isBlank()) {
                 throw new IllegalArgumentException("SLOW_SQL 模式必须提供 sql_hash(abstract_hash)");
             }
+            // v2：慢SQL白名单粒度 = (微服务+抽象SQL)，微服务名借 projectName 字段携带（必填）
+            if (req.projectName == null || req.projectName.isBlank()) {
+                throw new IllegalArgumentException("SLOW_SQL 模式必须提供微服务名(projectName)");
+            }
         } else {
             targetType = req.includeNamedSql ? TARGET_NAMED_SQL : TARGET_HASH;
             if (TARGET_NAMED_SQL.equals(targetType) && (req.namedSql == null || req.namedSql.isBlank())) {
@@ -117,9 +121,10 @@ public class WhitelistApplicationService {
         }
 
         // 防重复：同 hash / named_sql 已存在活跃申请（非 CANCELLED）则拒绝
+        // （慢SQL v2：按 微服务+hash 查重——不同微服务的同一抽象SQL各自独立申请）
         Map<String, Object> existing;
         if (TARGET_SLOW_SQL.equals(targetType)) {
-            existing = dao.findLatestActiveBySlowHash(req.sqlHash);
+            existing = dao.findLatestActiveBySlowHash(req.sqlHash, req.projectName);
         } else if (TARGET_HASH.equals(targetType)) {
             existing = dao.findLatestActiveBySqlHash(req.sqlHash);
         } else {
@@ -145,7 +150,7 @@ public class WhitelistApplicationService {
                 throw new IllegalStateException("申请人为一级审批人，自动通过一审失败 id=" + id);
             }
             // 同步目标表 wl 字段到 PENDING_L2
-            syncByTargetType(id, STATUS_PENDING_L2, false, targetType, req.sqlHash, req.namedSql);
+            syncByTargetType(id, STATUS_PENDING_L2, false, targetType, req.sqlHash, req.namedSql, req.projectName);
             // 邮件直接通知二级审批人
             sendMailL1PassedNotifyL2(id, autoOpinion, req.l2Approver);
             return id;
@@ -159,7 +164,7 @@ public class WhitelistApplicationService {
                 req.sourceTable, req.sourceId);
 
         // 同步目标表的 wl 字段（PENDING_L1 状态，is_whitelist 不动）
-        syncByTargetType(id, STATUS_PENDING_L1, false, targetType, req.sqlHash, req.namedSql);
+        syncByTargetType(id, STATUS_PENDING_L1, false, targetType, req.sqlHash, req.namedSql, req.projectName);
 
         // 邮件通知 L1 审批人
         sendMailApplyPendingL1(id, targetType, req);
@@ -184,7 +189,8 @@ public class WhitelistApplicationService {
         syncByTargetType(id, STATUS_PENDING_L2, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
-                (String) app.get("named_sql"));
+                (String) app.get("named_sql"),
+                (String) app.get("project_name"));
 
         // 邮件通知 L2 审批人
         sendMailL1PassedNotifyL2(id, opinion, l2Approver);
@@ -201,7 +207,8 @@ public class WhitelistApplicationService {
         syncByTargetType(id, STATUS_REJECTED_L1, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
-                (String) app.get("named_sql"));
+                (String) app.get("named_sql"),
+                (String) app.get("project_name"));
 
         // 邮件通知申请人
         sendMailRejectedNotifyApplicant(id, opinion);
@@ -219,7 +226,8 @@ public class WhitelistApplicationService {
         syncByTargetType(id, STATUS_APPROVED, true,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
-                (String) app.get("named_sql"));
+                (String) app.get("named_sql"),
+                (String) app.get("project_name"));
 
         // 邮件通知申请人
         sendMailApprovedNotifyApplicant(id, opinion, currentUser);
@@ -236,7 +244,8 @@ public class WhitelistApplicationService {
         syncByTargetType(id, STATUS_PENDING_L1, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
-                (String) app.get("named_sql"));
+                (String) app.get("named_sql"),
+                (String) app.get("project_name"));
     }
 
     /** 取消：仅 PENDING_L1 / REJECTED_L1 且申请人本人。 */
@@ -257,10 +266,11 @@ public class WhitelistApplicationService {
      * 中央同步：跃迁成功后把 item / pool / slow_sql 的 wl 冗余字段刷成最新状态。
      */
     private void syncByTargetType(long appId, String status, boolean approved,
-                                  String targetType, String sqlHash, String namedSql) {
+                                  String targetType, String sqlHash, String namedSql,
+                                  String projectName) {
         if (TARGET_SLOW_SQL.equals(targetType)) {
-            // 慢SQL：按 abstract_hash 同步 dii_slow_sql 全部同抽象SQL行
-            slowSqlDao.syncWhitelistByHash(sqlHash, appId, status, approved);
+            // 慢SQL v2：按 (微服务=projectName, abstract_hash) 同步 dii_slow_sql 跨轮次同键行
+            slowSqlDao.syncWhitelistByServiceAndHash(projectName, sqlHash, appId, status, approved);
         } else if (TARGET_NAMED_SQL.equals(targetType)) {
             // nsql 包含模式：所有同 named_sql 池行扩散
             poolDao.syncWhitelistByNamedSql(namedSql, appId, status, approved);
@@ -310,42 +320,43 @@ public class WhitelistApplicationService {
     }
 
     /**
-     * 慢SQL导入后调用：按 abstract_hash 反查 SLOW_SQL 类申请（任意活跃状态），
-     * 命中则把该抽象SQL全部行同步成申请当前状态；APPROVED→is_whitelist=1。
-     */
-    public void inheritOnSlowSqlImport(String abstractHash) {
-        if (abstractHash == null || abstractHash.isEmpty()) return;
-        Map<String, Object> app = dao.findLatestActiveBySlowHash(abstractHash);
-        if (app == null) return;
-        Long appId = ((Number) app.get("id")).longValue();
-        String status = String.valueOf(app.get("status"));
-        boolean approved = STATUS_APPROVED.equals(status);
-        slowSqlDao.syncWhitelistByHash(abstractHash, appId, status, approved);
-    }
-
-    /**
      * 慢SQL **批量**导入后的白名单继承（避免 N+1）：
-     * 一次取全部活跃 SLOW_SQL 申请到内存（数量有限）→ 仅对「本批 distinct hash ∩ 申请」的少数命中项做同步。
-     * 把「逐 hash 一次 SELECT」压成「1 次 SELECT + 命中数次 UPDATE」。
-     * 与逐条 {@link #inheritOnSlowSqlImport} 等价：每个 hash 取最高 id 的活跃申请。
+     * 一次取全部活跃 SLOW_SQL 申请到内存（数量有限）→ 仅对「本批键 ∩ 申请」的少数命中项做同步。
+     * 把「逐键一次 SELECT」压成「1 次 SELECT + 命中数次 UPDATE」。
+     * <p>v2：键 =（微服务 + "\n" + abstract_hash），每键取最高 id 的活跃申请。
      */
-    public void inheritOnSlowSqlImportBatch(Collection<String> abstractHashes) {
-        if (abstractHashes == null || abstractHashes.isEmpty()) return;
+    public void inheritOnSlowSqlImportBatch(Collection<String> svcHashKeys) {
+        if (svcHashKeys == null || svcHashKeys.isEmpty()) return;
         List<Map<String, Object>> apps = dao.listActiveByTargetType(TARGET_SLOW_SQL);
         if (apps == null || apps.isEmpty()) return;
-        Set<String> batch = (abstractHashes instanceof Set)
-                ? (Set<String>) abstractHashes : new HashSet<>(abstractHashes);
-        // apps 已按 id 升序 → 命中 hash 用 map put 覆盖，最终留下最高 id（=最新活跃）那条
+        // v2：键 = 微服务 + "\n" + abstract_hash（与导入聚合键一致）
+        Set<String> batch = (svcHashKeys instanceof Set)
+                ? (Set<String>) svcHashKeys : new HashSet<>(svcHashKeys);
+        // 历史无微服务的申请（project_name 空）按 hash 兜底匹配
+        Set<String> hashesInBatch = new HashSet<>();
+        for (String key : batch) {
+            int nl = key.indexOf('\n');
+            if (nl >= 0) hashesInBatch.add(key.substring(nl + 1));
+        }
+        // apps 已按 id 升序 → 命中用 map put 覆盖，最终留下最高 id（=最新活跃）那条
         Map<String, Map<String, Object>> matched = new HashMap<>();
         for (Map<String, Object> a : apps) {
             String h = (String) a.get("sql_hash");
-            if (h != null && batch.contains(h)) matched.put(h, a);
+            if (h == null) continue;
+            String svc = (String) a.get("project_name");
+            if (svc != null && !svc.isBlank()) {
+                String key = svc.trim() + "\n" + h;
+                if (batch.contains(key)) matched.put(key, a);
+            } else if (hashesInBatch.contains(h)) {
+                matched.put("\n" + h, a);   // 兼容旧申请：hash 级（跨微服务）
+            }
         }
         for (Map<String, Object> a : matched.values()) {
             String h = (String) a.get("sql_hash");
+            String svc = (String) a.get("project_name");
             long appId = ((Number) a.get("id")).longValue();
             String status = String.valueOf(a.get("status"));
-            slowSqlDao.syncWhitelistByHash(h, appId, status, STATUS_APPROVED.equals(status));
+            slowSqlDao.syncWhitelistByServiceAndHash(svc, h, appId, status, STATUS_APPROVED.equals(status));
         }
     }
 

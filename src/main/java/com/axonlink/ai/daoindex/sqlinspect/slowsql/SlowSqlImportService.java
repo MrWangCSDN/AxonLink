@@ -21,10 +21,8 @@ import java.io.InputStream;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -101,10 +99,8 @@ public class SlowSqlImportService {
         int deleted = dao.deleteByRound(r);
         LocalDateTime now = LocalDateTime.now();
         List<ParsedSlowSqlRow> buffer = new ArrayList<>(CHUNK_SIZE);
-        Set<String> hashes = new LinkedHashSet<>();
         for (ParsedSlowSqlRow row : agg.values()) {
             buffer.add(row);
-            hashes.add(row.abstractHash);
             if (buffer.size() >= CHUNK_SIZE) {
                 dao.batchInsert(buffer, r, now);
                 buffer.clear();
@@ -112,12 +108,13 @@ public class SlowSqlImportService {
         }
         if (!buffer.isEmpty()) dao.batchInsert(buffer, r, now);
 
-        // ④ 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断
-        if (!hashes.isEmpty()) {
+        // ④ 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断。
+        //    v2：白名单粒度=(微服务+抽象SQL)——聚合 Map 的键(svc+"\n"+hash)正好就是继承键
+        if (!agg.isEmpty()) {
             WhitelistApplicationService wl = whitelistServiceProvider.getIfAvailable();
             if (wl != null) {
                 try {
-                    wl.inheritOnSlowSqlImportBatch(hashes);
+                    wl.inheritOnSlowSqlImportBatch(agg.keySet());
                 } catch (Exception ex) {
                     log.warn("[slow-sql-import] 批量继承白名单失败: {}", ex.getMessage());
                 }

@@ -139,16 +139,25 @@ public class DiiWhitelistApplicationDao {
     }
 
     /**
-     * 找匹配 abstract_hash 的「最新活跃」慢SQL申请，仅 {@code target_type='SLOW_SQL'}。
+     * 找匹配 (微服务, abstract_hash) 的「最新活跃」慢SQL申请，仅 {@code target_type='SLOW_SQL'}。
+     * <p>慢SQL v2：白名单粒度 = (微服务+抽象SQL)，微服务存 {@code project_name} 列（复用，零 schema 改动）。
+     * serviceName 为空时退化为仅按 hash 匹配（兼容历史无微服务的申请）。
      */
-    public Map<String, Object> findLatestActiveBySlowHash(String abstractHash) {
+    public Map<String, Object> findLatestActiveBySlowHash(String abstractHash, String serviceName) {
         if (abstractHash == null || abstractHash.isEmpty()) return null;
         try {
+            if (serviceName == null || serviceName.isBlank()) {
+                return jdbc.queryForMap(
+                        "SELECT * FROM dii_whitelist_application " +
+                        " WHERE target_type = 'SLOW_SQL' AND sql_hash = ? AND status <> 'CANCELLED' " +
+                        " ORDER BY id DESC LIMIT 1",
+                        abstractHash);
+            }
             return jdbc.queryForMap(
                     "SELECT * FROM dii_whitelist_application " +
-                    " WHERE target_type = 'SLOW_SQL' AND sql_hash = ? AND status <> 'CANCELLED' " +
+                    " WHERE target_type = 'SLOW_SQL' AND sql_hash = ? AND project_name = ? AND status <> 'CANCELLED' " +
                     " ORDER BY id DESC LIMIT 1",
-                    abstractHash);
+                    abstractHash, serviceName.trim());
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
@@ -160,8 +169,9 @@ public class DiiWhitelistApplicationDao {
      * 避免逐 hash 反查的 N+1。按 id 升序便于调用方用 map put 覆盖取「最新（最高 id）」。
      */
     public List<Map<String, Object>> listActiveByTargetType(String targetType) {
+        // v2：带回 project_name（慢SQL=微服务名），导入继承按 (微服务+hash) 匹配
         return jdbc.queryForList(
-                "SELECT id, sql_hash, status FROM dii_whitelist_application " +
+                "SELECT id, sql_hash, project_name, status FROM dii_whitelist_application " +
                 " WHERE target_type = ? AND status <> 'CANCELLED' ORDER BY id ASC",
                 targetType);
     }

@@ -186,14 +186,27 @@ public class DiiSlowSqlDao {
 
     // ── 白名单同步（被 WhitelistApplicationService 调）──
 
-    /** 把某抽象SQL的所有行置成申请的当前状态；approved→is_whitelist 置 1；非通过不回收（与池/项一致）。 */
-    public int syncWhitelistByHash(String abstractHash, long appId, String status, boolean approved) {
+    /**
+     * 把 (微服务, 抽象SQL) 的所有行（跨轮次）置成申请的当前状态；approved→is_whitelist 置 1；
+     * 非通过不回收（与池/项一致）。
+     * <p>v2：白名单粒度 = (service_name + abstract_hash)；serviceName 为空退化为仅按 hash
+     * （兼容历史无微服务的申请）。
+     */
+    public int syncWhitelistByServiceAndHash(String serviceName, String abstractHash,
+                                             long appId, String status, boolean approved) {
         if (abstractHash == null || abstractHash.isEmpty()) return 0;
+        if (serviceName == null || serviceName.isBlank()) {
+            return jdbc.update(
+                    "UPDATE dii_slow_sql SET whitelist_app_id = ?, whitelist_status = ?, " +
+                    "       is_whitelist = CASE WHEN ? THEN 1 ELSE is_whitelist END " +
+                    " WHERE abstract_hash = ?",
+                    appId, status, approved, abstractHash);
+        }
         return jdbc.update(
                 "UPDATE dii_slow_sql SET whitelist_app_id = ?, whitelist_status = ?, " +
                 "       is_whitelist = CASE WHEN ? THEN 1 ELSE is_whitelist END " +
-                " WHERE abstract_hash = ?",
-                appId, status, approved, abstractHash);
+                " WHERE service_name = ? AND abstract_hash = ?",
+                appId, status, approved, serviceName.trim(), abstractHash);
     }
 
     /** 取消申请：清冗余字段(不动 is_whitelist，与池一致)。 */
