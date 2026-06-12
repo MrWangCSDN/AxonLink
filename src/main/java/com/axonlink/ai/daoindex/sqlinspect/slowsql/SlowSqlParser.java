@@ -116,23 +116,47 @@ public final class SlowSqlParser {
     //   E 有 ":" 且含 "Entity"             → odb（冒号后段交 OdbLocationDomainResolver 查模块）
     //   E 有 ":" 不含 "Entity"             → nsql（冒号后段首段=sqlsId，走 NsqlIdProjectIndex）
 
-    /** 平台领域常量（E 列无 ":" 时归类）。 */
+    /** 平台领域常量（E 列无 ":" / 冒号后数字开头 / 模块匹配不到 时归类）。 */
     public static final String PLATFORM = "平台";
 
     /** E 列来源类型。 */
     public enum LocationKind { PLATFORM, ODB, NSQL }
 
-    /** 按 E 列文本分类来源：无 ":" / 空 → PLATFORM；含 "Entity" → ODB；其余 → NSQL。 */
-    public static LocationKind locationKindOf(String location) {
-        if (location == null || !location.contains(":")) return LocationKind.PLATFORM;
-        return location.contains("Entity") ? LocationKind.ODB : LocationKind.NSQL;
+    /**
+     * 规范化 E 列：trim 后剥掉外层 {@code [ ]} 包裹（新版导出所有值带方括号），再 trim。
+     * {@code "[BGBP101]"} → {@code "BGBP101"}；{@code "[]"} → 空串；null → 空串。
+     */
+    public static String normalizeLocation(String location) {
+        String s = location == null ? "" : location.trim();
+        while (s.length() >= 2 && s.charAt(0) == '[' && s.charAt(s.length() - 1) == ']') {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s;
     }
 
-    /** 取 E 列首个 ":" 后段（trim）；无 ":" 返回空串。 */
+    /**
+     * 按 E 列文本分类来源（先 {@link #normalizeLocation} 剥 {@code []}）：
+     * <ul>
+     *   <li>空 / 无 ":" / 冒号后为空 → PLATFORM</li>
+     *   <li>冒号后以数字开头（如 {@code BatchCluster.21.42.23.137:9010LeaseElectionThread}、
+     *       {@code 21.42.23.106:9010-NodeHeart} 的 IP:端口形态）→ PLATFORM</li>
+     *   <li>含 "Entity" → ODB</li>
+     *   <li>其余 → NSQL</li>
+     * </ul>
+     */
+    public static LocationKind locationKindOf(String location) {
+        String s = normalizeLocation(location);
+        if (s.isEmpty() || !s.contains(":")) return LocationKind.PLATFORM;
+        String after = locationAfterColon(s);
+        if (after.isEmpty() || Character.isDigit(after.charAt(0))) return LocationKind.PLATFORM;
+        return s.contains("Entity") ? LocationKind.ODB : LocationKind.NSQL;
+    }
+
+    /** 取 E 列（规范化后）首个 ":" 后段（trim）；无 ":" 返回空串。 */
     public static String locationAfterColon(String location) {
-        if (location == null) return "";
-        int i = location.indexOf(':');
-        return i < 0 ? "" : location.substring(i + 1).trim();
+        String s = normalizeLocation(location);
+        int i = s.indexOf(':');
+        return i < 0 ? "" : s.substring(i + 1).trim();
     }
 
     /**

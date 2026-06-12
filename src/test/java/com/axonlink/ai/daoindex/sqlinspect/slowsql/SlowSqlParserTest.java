@@ -90,6 +90,39 @@ class SlowSqlParserTest {
     }
 
     @Test
+    @DisplayName("v3 E列新规则：剥[]包裹；[]空→平台；冒号后数字开头→平台；冒号后为空→平台")
+    void locationKindOf_v3_rules() {
+        // 剥 []：normalizeLocation
+        assertEquals("BGBP101", SlowSqlParser.normalizeLocation("[BGBP101]"));
+        assertEquals("", SlowSqlParser.normalizeLocation("[]"));
+        assertEquals("", SlowSqlParser.normalizeLocation(null));
+        assertEquals("a:b", SlowSqlParser.normalizeLocation(" [a:b] "));
+        // [] 空 / 剥后无冒号 → 平台
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf("[]"));
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf("[BGBP101]"));
+        // 冒号后以数字开头（IP:端口 / 集群心跳）→ 平台
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf(
+                "[BatchCluster.21.42.23.137:9010LeaseElectionThread]"));
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf(
+                "[21.42.23.106:9010-NodeHeart]"));
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf(
+                "[ReverseClientCluster.21.42.23.125:9502LeaseElectionThread]"));
+        // 冒号后为空 → 平台
+        assertEquals(SlowSqlParser.LocationKind.PLATFORM, SlowSqlParser.locationKindOf("TX0001:"));
+        // 带 [] 的 odb / nsql 仍正常分类
+        assertEquals(SlowSqlParser.LocationKind.ODB, SlowSqlParser.locationKindOf(
+                "[S120020919.AnlspnCorpMntn:Kdpa_cb_cust_acct_num.kdpa_cb_cust_acct_num.Entity.selectByIndex_odb1]"));
+        assertEquals(SlowSqlParser.LocationKind.NSQL, SlowSqlParser.locationKindOf(
+                "[S090020261.CBSPRcnclApl:PyDataQry.sel_kstb_lclccy_pymt_acg_inf_for_count]"));
+        // 带 [] 时 nsqlIdOf / afterColon 同样剥壳生效
+        assertEquals("PyDataQry", SlowSqlParser.nsqlIdOf(
+                "[S090020261.CBSPRcnclApl:PyDataQry.sel_kstb_lclccy_pymt_acg_inf_for_count]"));
+        assertEquals("Kdpa_cb_cust_acct_num.kdpa_cb_cust_acct_num.Entity.selectByIndex_odb1",
+                SlowSqlParser.locationAfterColon(
+                        "[S120020919.AnlspnCorpMntn:Kdpa_cb_cust_acct_num.kdpa_cb_cust_acct_num.Entity.selectByIndex_odb1]"));
+    }
+
+    @Test
     @DisplayName("v2 nsqlId：取冒号后段首段；无冒号→空串")
     void nsqlIdOf_extract() {
         assertEquals("DpcbUD55Qry", SlowSqlParser.nsqlIdOf(

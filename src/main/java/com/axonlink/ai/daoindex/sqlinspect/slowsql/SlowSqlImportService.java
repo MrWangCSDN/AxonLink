@@ -158,11 +158,18 @@ public class SlowSqlImportService {
                 } catch (Exception e) {
                     log.debug("[slow-sql-import] odb 模块解析异常 loc={}: {}", location, e.getMessage());
                 }
+                // 口径（2026-06-12）：odb 文件匹配不到模块 → 归「平台」
+                if (module == null || module.isBlank()) return SlowSqlParser.PLATFORM;
                 return SlowSqlParser.domainOfModule(module);
             }
             case NSQL:
             default: {
                 String module = nsqlIndex.lookupProject(SlowSqlParser.nsqlIdOf(location));
+                // 口径（2026-06-12）：nsql 文件匹配不到模块（索引回 "other"）→ 归「平台」
+                if (module == null || module.isBlank()
+                        || NsqlIdProjectIndex.UNKNOWN_PROJECT.equals(module)) {
+                    return SlowSqlParser.PLATFORM;
+                }
                 return SlowSqlParser.domainOfModule(module);
             }
         }
@@ -224,7 +231,9 @@ public class SlowSqlImportService {
         long ms = SlowSqlParser.parseCostMs(cost);
         String costRaw = cost == null ? null : cost.trim();
         String p = params == null ? null : params.trim();
-        String loc = location == null ? null : location.trim();
+        // 新版导出 E 列带 [] 包裹——规范化后入库（"[]"→空→存 null）
+        String loc = SlowSqlParser.normalizeLocation(location);
+        if (loc.isEmpty()) loc = null;
         if (loc != null && loc.length() > LOCATION_MAX) loc = loc.substring(0, LOCATION_MAX);
 
         String hash = SlowSqlParser.sha256Hex(abstractSql);
