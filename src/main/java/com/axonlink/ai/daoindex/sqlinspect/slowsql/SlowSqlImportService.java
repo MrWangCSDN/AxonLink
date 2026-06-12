@@ -47,15 +47,18 @@ public class SlowSqlImportService {
     private static final int CHUNK_SIZE = 2000;
 
     private final DiiSlowSqlDao dao;
+    private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
     private final NsqlIdProjectIndex nsqlIndex;
     private final OdbLocationDomainResolver odbResolver;
     private final ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
 
     public SlowSqlImportService(DiiSlowSqlDao dao,
+                                com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
                                 NsqlIdProjectIndex nsqlIndex,
                                 OdbLocationDomainResolver odbResolver,
                                 ObjectProvider<WhitelistApplicationService> whitelistServiceProvider) {
         this.dao = dao;
+        this.filterDao = filterDao;
         this.nsqlIndex = nsqlIndex;
         this.odbResolver = odbResolver;
         this.whitelistServiceProvider = whitelistServiceProvider;
@@ -70,16 +73,26 @@ public class SlowSqlImportService {
     public Map<String, Object> importFile(MultipartFile file, String env, String round) throws IOException {
         String r = validateRound(round);
 
+        // ⓪ 采集过滤名单（V23）：抽象SQL 以任一前缀开头（大小写不敏感）→ 不纳入采集
+        List<String> filterPrefixes;
+        try {
+            filterPrefixes = filterDao.listPrefixes();
+        } catch (Exception e) {
+            log.warn("[slow-sql-import] 读取采集过滤名单失败（按无过滤继续）: {}", e.getMessage());
+            filterPrefixes = List.of();
+        }
+
         // ① 解析整文件 → (serviceName + "\n" + hash) → 聚合行。
         //    30 万原始行聚合后通常只剩几千键，Map 内存可控（值只存代表行字段+计数）。
         Map<String, ParsedSlowSqlRow> agg = new LinkedHashMap<>();
         int[] rawRows = {0};
         int[] skipped = {0};
+        int[] filtered = {0};
         String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
         if (name.endsWith(".csv")) {
-            parseCsv(file, agg, rawRows, skipped);
+            parseCsv(file, agg, rawRows, skipped, filterPrefixes, filtered);
         } else {
-            parseXlsx(file, agg, rawRows, skipped);
+            parseXlsx(file, agg, rawRows, skipped, filterPrefixes, filtered);
         }
 
         // ② 回填领域（按代表行的 E 列）+ 重复出现轮次（与库中所有其他轮次比）
@@ -127,6 +140,7 @@ public class SlowSqlImportService {
         result.put("aggregatedRows", agg.size());
         result.put("repeatHit", repeatHit);
         result.put("skipped", skipped[0]);
+        result.put("filtered", filtered[0]);   // v3：被采集过滤名单排除的行数
         result.put("overwritten", deleted);
         log.info("[slow-sql-import] env={} 结果={}", env, result);
         return result;
@@ -176,7 +190,8 @@ public class SlowSqlImportService {
     }
 
     private void parseXlsx(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
-                           int[] rawRows, int[] skipped) throws IOException {
+                           int[] rawRows, int[] skipped,
+                           List<String> filterPrefixes, int[] filtered) throws IOException {
         try (InputStream raw = file.getInputStream();
              BufferedInputStream is = new BufferedInputStream(raw);
              Workbook wb = WorkbookFactory.create(is)) {
@@ -185,7 +200,7 @@ public class SlowSqlImportService {
             boolean header = true;
             for (Row row : sheet) {
                 if (header) { header = false; continue; }   // 跳首行表头
-                addRow(agg, rawRows, skipped,
+                addRow(agg, rawRows, skipped, filterPrefixes, filtered,
                         cell(row, COL_SERVICE), cell(row, COL_ABSTRACT),
                         cell(row, COL_PARAMS), cell(row, COL_COST), cell(row, COL_LOCATION));
             }
@@ -193,7 +208,8 @@ public class SlowSqlImportService {
     }
 
     private void parseCsv(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
-                          int[] rawRows, int[] skipped) throws IOException {
+                          int[] rawRows, int[] skipped,
+                          List<String> filterPrefixes, int[] filtered) throws IOException {
         try (java.io.Reader reader = new java.io.BufferedReader(
                 new java.io.InputStreamReader(file.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
             reader.mark(1);
@@ -206,7 +222,7 @@ public class SlowSqlImportService {
                 boolean header = true;
                 for (org.apache.commons.csv.CSVRecord rec : parser) {
                     if (header) { header = false; continue; }   // 跳首行表头
-                    addRow(agg, rawRows, skipped,
+                    addRow(agg, rawRows, skipped, filterPrefixes, filtered,
                             get(rec, COL_SERVICE), get(rec, COL_ABSTRACT),
                             get(rec, COL_PARAMS), get(rec, COL_COST), get(rec, COL_LOCATION));
                 }
@@ -218,12 +234,21 @@ public class SlowSqlImportService {
         return rec.size() > idx ? rec.get(idx) : "";
     }
 
-    /** 一行喂进聚合 Map：键=(serviceName + "\n" + 抽象SQL哈希)；B 列空/超长 → skipped。 */
+    /**
+     * 一行喂进聚合 Map：键=(serviceName + "\n" + 抽象SQL哈希)；B 列空/超长 → skipped；
+     * 命中采集过滤名单前缀（大小写不敏感）→ filtered，不纳入采集。
+     */
     private void addRow(Map<String, ParsedSlowSqlRow> agg, int[] rawRows, int[] skipped,
+                        List<String> filterPrefixes, int[] filtered,
                         String serviceName, String abs, String params, String cost, String location) {
         String abstractSql = abs == null ? "" : abs.trim();
         if (abstractSql.isEmpty() || abstractSql.length() > ABSTRACT_SQL_MAX) {
             skipped[0]++;
+            return;
+        }
+        // v3：采集过滤名单——以名单前缀开头的抽象SQL不采集（如 EXPLAIN / SET）
+        if (SlowSqlParser.startsWithAnyPrefix(abstractSql, filterPrefixes)) {
+            filtered[0]++;
             return;
         }
         rawRows[0]++;

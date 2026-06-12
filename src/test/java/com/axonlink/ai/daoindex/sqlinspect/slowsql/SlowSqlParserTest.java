@@ -136,6 +136,23 @@ class SlowSqlParserTest {
     }
 
     @Test
+    @DisplayName("v3 采集过滤：前缀大小写不敏感命中；空名单/不命中→false")
+    void startsWithAnyPrefix_rules() {
+        List<String> prefixes = List.of("EXPLAIN", "SET");
+        assertTrue(SlowSqlParser.startsWithAnyPrefix(
+                "EXPLAIN (FORMAT JSON) select * from t", prefixes));
+        assertTrue(SlowSqlParser.startsWithAnyPrefix("explain select 1", prefixes));   // 大小写不敏感
+        assertTrue(SlowSqlParser.startsWithAnyPrefix("  set session timeout=1", prefixes)); // 前导空白 trim
+        assertTrue(SlowSqlParser.startsWithAnyPrefix("SET NAMES utf8", prefixes));
+        // 不以名单前缀开头 → 采集
+        assertFalse(SlowSqlParser.startsWithAnyPrefix("select * from kdpa_cb_acct_info", prefixes));
+        assertFalse(SlowSqlParser.startsWithAnyPrefix("update t set a=1", prefixes));  // SET 在中间不算
+        // 边界
+        assertFalse(SlowSqlParser.startsWithAnyPrefix("select 1", List.of()));
+        assertFalse(SlowSqlParser.startsWithAnyPrefix(null, prefixes));
+    }
+
+    @Test
     @DisplayName("v2 模块→领域：dept/loan/comm/sett/public 命中；null/other→其他")
     void domainOfModule_map() {
         assertEquals("存款", SlowSqlParser.domainOfModule("dept-bcc"));

@@ -29,12 +29,15 @@ public class SlowSqlController {
 
     private final SlowSqlImportService importService;
     private final DiiSlowSqlDao dao;
+    private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
     private final DaoIndexAnalysisProperties props;
 
     public SlowSqlController(SlowSqlImportService importService, DiiSlowSqlDao dao,
+                             com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
                              DaoIndexAnalysisProperties props) {
         this.importService = importService;
         this.dao = dao;
+        this.filterDao = filterDao;
         this.props = props;
     }
 
@@ -102,6 +105,46 @@ public class SlowSqlController {
     @GetMapping("/rounds")
     public R<List<String>> rounds() {
         return R.ok(dao.distinctRoundsSorted());
+    }
+
+    // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
+
+    /** 名单列表（只读，不需口令）。 */
+    @GetMapping("/collect-filters")
+    public R<List<Map<String, Object>>> listCollectFilters() {
+        return R.ok(filterDao.listAll());
+    }
+
+    /** 新增前缀（口令保护，与导入口令一致）。 */
+    @PostMapping("/collect-filters")
+    public ResponseEntity<R<Map<String, Object>>> addCollectFilter(
+            @RequestParam("prefix") String prefix,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        ResponseEntity<R<Map<String, Object>>> denied = checkToken(token, request);
+        if (denied != null) return denied;
+        String p = prefix == null ? "" : prefix.trim();
+        if (p.isEmpty()) return ResponseEntity.badRequest().body(R.fail("前缀不能为空"));
+        if (p.length() > 64) return ResponseEntity.badRequest().body(R.fail("前缀过长（≤64 字符）"));
+        try {
+            filterDao.insert(p);
+            return ResponseEntity.ok(R.ok(Map.of("prefix", p)));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().body(R.fail(e.getMessage()));
+        }
+    }
+
+    /** 删除条目（口令保护）。 */
+    @DeleteMapping("/collect-filters/{id}")
+    public ResponseEntity<R<Map<String, Object>>> deleteCollectFilter(
+            @PathVariable long id,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        ResponseEntity<R<Map<String, Object>>> denied = checkToken(token, request);
+        if (denied != null) return denied;
+        int n = filterDao.deleteById(id);
+        if (n == 0) return ResponseEntity.status(HttpStatus.NOT_FOUND).body(R.fail("未找到 id=" + id));
+        return ResponseEntity.ok(R.ok(Map.of("id", id)));
     }
 
     // ── 导出（v3：与页面筛选联动；列与页面一致；跨分页全量——筛选 100 条分 5 页导出 100 条）──

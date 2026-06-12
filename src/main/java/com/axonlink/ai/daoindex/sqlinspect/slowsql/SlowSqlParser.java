@@ -178,4 +178,22 @@ public final class SlowSqlParser {
     public static String domainOfModule(String module) {
         return mapByContains(module, DOMAIN_MAP);
     }
+
+    /**
+     * v3 采集过滤：抽象SQL（trim 后）是否以任一过滤前缀开头——<b>大小写不敏感</b>。
+     * 命中 → 该行不纳入采集。如名单含 EXPLAIN/SET，则 "EXPLAIN (FORMAT JSON) select…"、
+     * "set session…" 都被过滤。
+     *
+     * @param prefixes 过滤名单（调用方已 trim；空/null 条目跳过）
+     */
+    public static boolean startsWithAnyPrefix(String sql, List<String> prefixes) {
+        if (sql == null || prefixes == null || prefixes.isEmpty()) return false;
+        String s = sql.trim();
+        for (String p : prefixes) {
+            if (p == null || p.isEmpty()) continue;
+            // regionMatches(ignoreCase=true)：零拷贝的大小写不敏感前缀比对
+            if (s.length() >= p.length() && s.regionMatches(true, 0, p, 0, p.length())) return true;
+        }
+        return false;
+    }
 }
