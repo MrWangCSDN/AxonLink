@@ -104,12 +104,18 @@ public class SlowSqlController {
         return R.ok(dao.distinctRoundsSorted());
     }
 
-    // ── 导出（全量透视，不联动筛选）──
+    // ── 导出（v3：与页面筛选联动；列与页面一致；跨分页全量——筛选 100 条分 5 页导出 100 条）──
     @GetMapping("/export")
-    public ResponseEntity<byte[]> export(@RequestParam(required = false) String env) {
+    public ResponseEntity<byte[]> export(@RequestParam(required = false) String env,
+                                         @RequestParam(required = false) String domain,
+                                         @RequestParam(required = false) String bizType,
+                                         @RequestParam(required = false) String keyword,
+                                         @RequestParam(required = false) String whitelistStatus,
+                                         @RequestParam(required = false) String round) {
         try {
-            byte[] bytes = buildWorkbook();
-            String fname = "slow-sql-" + (env == null || env.isBlank() ? "all" : env.trim()) + ".xlsx";
+            byte[] bytes = buildWorkbook(domain, bizType, keyword, whitelistStatus, round);
+            String scope = round == null || round.isBlank() ? "all" : round.trim();
+            String fname = "slow-sql-" + scope + ".xlsx";
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
@@ -121,23 +127,14 @@ public class SlowSqlController {
         }
     }
 
-    /** 透视装配：领域|抽象SQL|执行参数|最大耗时|总出现次数|<每轮次>出现次数。 */
-    private byte[] buildWorkbook() throws Exception {
-        List<String> rounds = dao.distinctRoundsSorted();
-        // hash → (round → cnt)
-        Map<String, Map<String, Long>> perRound = new HashMap<>();
-        for (Map<String, Object> r : dao.roundCounts()) {
-            String h = String.valueOf(r.get("abstract_hash"));
-            String rd = String.valueOf(r.get("round"));
-            long c = ((Number) r.get("cnt")).longValue();
-            perRound.computeIfAbsent(h, k -> new HashMap<>()).put(rd, c);
-        }
-        // hash → total
-        Map<String, Long> totals = new HashMap<>();
-        for (Map<String, Object> r : dao.totalCounts()) {
-            totals.put(String.valueOf(r.get("abstract_hash")), ((Number) r.get("cnt")).longValue());
-        }
-        List<Map<String, Object>> reps = dao.representativeRows();
+    /**
+     * v3 导出：列与页面完全一致——微服务/领域/类型/抽象SQL/最大执行耗时/执行参数/执行次数/
+     * 来源文件/轮次/重复出现轮次/白名单状态；数据=当前筛选下的全量（跨分页，不 OFFSET）。
+     */
+    private byte[] buildWorkbook(String domain, String bizType, String keyword,
+                                 String whitelistStatus, String round) throws Exception {
+        List<Map<String, Object>> rows =
+                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, round, null);
 
         try (XSSFWorkbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("慢SQL维度");
@@ -149,8 +146,8 @@ public class SlowSqlController {
             hs.setFillForegroundColor(IndexedColors.GREY_50_PERCENT.getIndex());
             hs.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
-            List<String> headers = new ArrayList<>(List.of("微服务", "领域", "类型", "抽象SQL", "执行参数", "来源文件", "最大执行耗时(ms)", "总出现次数"));
-            for (String rd : rounds) headers.add(rd + " 出现次数");
+            List<String> headers = List.of("微服务", "领域", "类型", "抽象SQL", "最大执行耗时(ms)",
+                    "执行参数", "执行次数", "来源文件", "轮次", "重复出现轮次", "白名单状态");
             Row hr = sheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
                 Cell c = hr.createCell(i);
@@ -160,25 +157,36 @@ public class SlowSqlController {
             sheet.createFreezePane(0, 1);
 
             int rowIdx = 1;
-            for (Map<String, Object> rep : reps) {
-                String h = String.valueOf(rep.get("abstract_hash"));
+            for (Map<String, Object> r : rows) {
                 Row er = sheet.createRow(rowIdx++);
                 int col = 0;
-                er.createCell(col++).setCellValue(str(rep.get("service_name")));
-                er.createCell(col++).setCellValue(str(rep.get("domain")));
-                er.createCell(col++).setCellValue(str(rep.get("biz_type")));
-                er.createCell(col++).setCellValue(str(rep.get("abstract_sql")));
-                er.createCell(col++).setCellValue(str(rep.get("exec_params")));
-                er.createCell(col++).setCellValue(str(rep.get("source_location")));
-                er.createCell(col++).setCellValue(((Number) rep.get("max_time_cost_ms")).doubleValue());
-                er.createCell(col++).setCellValue(totals.getOrDefault(h, 0L));
-                Map<String, Long> rc = perRound.getOrDefault(h, Map.of());
-                for (String rd : rounds) {
-                    er.createCell(col++).setCellValue(rc.getOrDefault(rd, 0L));
-                }
+                er.createCell(col++).setCellValue(str(r.get("service_name")));
+                er.createCell(col++).setCellValue(str(r.get("domain")));
+                er.createCell(col++).setCellValue(str(r.get("biz_type")));
+                er.createCell(col++).setCellValue(str(r.get("abstract_sql")));
+                er.createCell(col++).setCellValue(((Number) r.get("max_time_cost_ms")).doubleValue());
+                er.createCell(col++).setCellValue(str(r.get("exec_params")));
+                er.createCell(col++).setCellValue(((Number) r.get("exec_count")).doubleValue());
+                er.createCell(col++).setCellValue(str(r.get("source_location")));
+                er.createCell(col++).setCellValue(str(r.get("round")));
+                er.createCell(col++).setCellValue(str(r.get("repeat_rounds")));
+                er.createCell(col++).setCellValue(wlLabel((String) r.get("whitelist_status")));
             }
             wb.write(out);
             return out.toByteArray();
+        }
+    }
+
+    /** 白名单状态中文（与页面一致）。 */
+    private static String wlLabel(String s) {
+        if (s == null || s.isBlank()) return "未申请";
+        switch (s) {
+            case "PENDING_L1":  return "待一级";
+            case "PENDING_L2":  return "待二级";
+            case "APPROVED":    return "已通过";
+            case "REJECTED_L1": return "已退回";
+            case "CANCELLED":   return "已取消";
+            default:            return s;
         }
     }
 

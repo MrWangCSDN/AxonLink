@@ -153,35 +153,26 @@ public class DiiSlowSqlDao {
                 "SELECT DISTINCT biz_type FROM dii_slow_sql ORDER BY biz_type", String.class);
     }
 
-    /** 全部轮次（升序）→ 导出动态列表头 / 页面轮次下拉。 */
+    /** 全部轮次（升序）→ 页面轮次下拉。 */
     public List<String> distinctRoundsSorted() {
         return jdbc.queryForList("SELECT DISTINCT round FROM dii_slow_sql ORDER BY round", String.class);
     }
 
-    // ── 导出透视（全量，不过滤）──
-
-    /** (abstract_hash, round, 次数=SUM(exec_count))。 */
-    public List<Map<String, Object>> roundCounts() {
-        return jdbc.queryForList(
-                "SELECT abstract_hash, round, SUM(exec_count) AS cnt FROM dii_slow_sql GROUP BY abstract_hash, round");
-    }
-
-    /** (abstract_hash, 总次数=SUM(exec_count))。 */
-    public List<Map<String, Object>> totalCounts() {
-        return jdbc.queryForList(
-                "SELECT abstract_hash, SUM(exec_count) AS cnt FROM dii_slow_sql GROUP BY abstract_hash");
-    }
-
-    /** 每抽象SQL代表行(跨轮最大耗时)：导出用。 */
-    public List<Map<String, Object>> representativeRows() {
-        return jdbc.queryForList(
-                "SELECT t.abstract_hash, t.service_name, t.domain, t.biz_type, t.abstract_sql, " +
-                "       t.exec_params, t.source_location, t.max_time_cost_ms FROM ( " +
-                "  SELECT s.abstract_hash, s.service_name, s.domain, s.biz_type, s.abstract_sql, " +
-                "         s.exec_params, s.source_location, s.max_time_cost_ms, " +
-                "         ROW_NUMBER() OVER (PARTITION BY s.abstract_hash ORDER BY s.max_time_cost_ms DESC, s.id ASC) rn " +
-                "    FROM dii_slow_sql s " +
-                ") t WHERE t.rn = 1 ORDER BY t.max_time_cost_ms DESC");
+    /**
+     * 导出用：与 {@link #listAggregated} 同过滤条件的<b>全量</b>行（跨分页，不 OFFSET）。
+     * v3 口径：导出与页面筛选联动、列与页面一致；上限 50000 行兜底防内存炸。
+     */
+    public List<Map<String, Object>> listAggregatedAll(String domain, String bizType, String keyword,
+                                                       String whitelistStatus, String round, String approverUser) {
+        StringBuilder sb = new StringBuilder(
+                "SELECT s.service_name, s.domain, s.biz_type, s.abstract_sql, " +
+                "       s.max_time_cost_ms, s.max_time_cost_raw, s.exec_params, s.source_location, " +
+                "       s.exec_count, s.round, s.repeat_rounds, s.whitelist_status " +
+                "  FROM dii_slow_sql s WHERE 1=1 ");
+        List<Object> args = new ArrayList<>();
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, round, approverUser);
+        sb.append(" ORDER BY s.max_time_cost_ms DESC, s.id ASC LIMIT 50000");
+        return jdbc.queryForList(sb.toString(), args.toArray());
     }
 
     // ── 白名单同步（被 WhitelistApplicationService 调）──
