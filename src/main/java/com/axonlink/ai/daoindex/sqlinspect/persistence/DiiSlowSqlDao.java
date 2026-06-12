@@ -159,6 +159,22 @@ public class DiiSlowSqlDao {
     }
 
     /**
+     * 概览仪表盘：按轮次聚合最近 {@code lastN} 轮（升序）。
+     * 每行 {round, total(问题数=聚合行数), repeat_cnt(重复出现=repeat_rounds非空),
+     * wl_applying(白名单申请中), wl_approved(已申请白名单)}——白名单谓词与大屏其他图同口径。
+     */
+    public List<Map<String, Object>> aggregateByRound(int lastN) {
+        List<Map<String, Object>> all = jdbc.queryForList(
+                "SELECT round, COUNT(*) AS total, " +
+                "       SUM(CASE WHEN repeat_rounds IS NOT NULL AND repeat_rounds <> '' THEN 1 ELSE 0 END) AS repeat_cnt, " +
+                "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, " +
+                "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved " +
+                "  FROM dii_slow_sql GROUP BY round ORDER BY round");
+        int n = Math.max(1, lastN);
+        return all.size() <= n ? all : new ArrayList<>(all.subList(all.size() - n, all.size()));
+    }
+
+    /**
      * 导出用：与 {@link #listAggregated} 同过滤条件的<b>全量</b>行（跨分页，不 OFFSET）。
      * v3 口径：导出与页面筛选联动、列与页面一致；上限 50000 行兜底防内存炸。
      */

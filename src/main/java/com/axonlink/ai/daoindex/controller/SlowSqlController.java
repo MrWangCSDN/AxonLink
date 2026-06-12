@@ -107,6 +107,12 @@ public class SlowSqlController {
         return R.ok(dao.distinctRoundsSorted());
     }
 
+    /** v4：概览仪表盘——慢SQL按轮次统计（最近 lastN 轮，升序）。 */
+    @GetMapping("/round-stats")
+    public R<List<Map<String, Object>>> roundStats(@RequestParam(defaultValue = "7") int lastN) {
+        return R.ok(dao.aggregateByRound(lastN));
+    }
+
     // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
 
     /** 名单列表（只读，不需口令）。 */
