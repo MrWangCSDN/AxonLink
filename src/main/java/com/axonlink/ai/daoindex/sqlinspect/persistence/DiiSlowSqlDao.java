@@ -175,16 +175,18 @@ public class DiiSlowSqlDao {
     }
 
     /**
-     * 概览仪表盘：按领域分布（横向堆叠条用，对齐 SQL 整改分布按领域）。
-     * 每行 {domain, total, wl_applying(白名单申请中), wl_approved(已申请白名单)}；
-     * 前端把 普通=total-applying-approved 作第三段，三段互斥求和=该领域慢SQL总数。
-     * 按 total 倒序，前端再排序展示。
+     * 概览仪表盘：按领域分布（横向堆叠条用）。v4 改口径：每行按 <b>类型(biz_type)</b> 拆——
+     * {domain, biz_online(联机), biz_batch(批量), biz_hotspot(热点账户), biz_other(其他), total}，
+     * 四段互斥求和=该领域慢SQL总数（前端默认堆 联机/批量/热点账户，其他仅在有数据时追加）。
+     * 不再带白名单口径。按 total 倒序，前端再按固定领域序排。
      */
     public List<Map<String, Object>> aggregateByDomain() {
         return jdbc.queryForList(
                 "SELECT domain, COUNT(*) AS total, " +
-                "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, " +
-                "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved " +
+                "       SUM(CASE WHEN biz_type='联机'     THEN 1 ELSE 0 END) AS biz_online, " +
+                "       SUM(CASE WHEN biz_type='批量'     THEN 1 ELSE 0 END) AS biz_batch, " +
+                "       SUM(CASE WHEN biz_type='热点账户' THEN 1 ELSE 0 END) AS biz_hotspot, " +
+                "       SUM(CASE WHEN biz_type NOT IN ('联机','批量','热点账户') THEN 1 ELSE 0 END) AS biz_other " +
                 "  FROM dii_slow_sql GROUP BY domain ORDER BY total DESC");
     }
 
