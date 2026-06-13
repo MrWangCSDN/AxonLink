@@ -113,6 +113,12 @@ public class SlowSqlController {
         return R.ok(dao.aggregateByRound(lastN));
     }
 
+    /** v4：概览仪表盘——慢SQL按领域分布（横向堆叠条；{domain,total,wl_applying,wl_approved}）。 */
+    @GetMapping("/domain-stats")
+    public R<List<Map<String, Object>>> domainStats() {
+        return R.ok(dao.aggregateByDomain());
+    }
+
     // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
 
     /** 名单列表（只读，不需口令）。 */

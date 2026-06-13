@@ -175,6 +175,20 @@ public class DiiSlowSqlDao {
     }
 
     /**
+     * 概览仪表盘：按领域分布（横向堆叠条用，对齐 SQL 整改分布按领域）。
+     * 每行 {domain, total, wl_applying(白名单申请中), wl_approved(已申请白名单)}；
+     * 前端把 普通=total-applying-approved 作第三段，三段互斥求和=该领域慢SQL总数。
+     * 按 total 倒序，前端再排序展示。
+     */
+    public List<Map<String, Object>> aggregateByDomain() {
+        return jdbc.queryForList(
+                "SELECT domain, COUNT(*) AS total, " +
+                "       SUM(CASE WHEN " + DiiDashboardDao.wlApplying("") + " THEN 1 ELSE 0 END) AS wl_applying, " +
+                "       SUM(CASE WHEN " + DiiDashboardDao.wlApproved("") + " THEN 1 ELSE 0 END) AS wl_approved " +
+                "  FROM dii_slow_sql GROUP BY domain ORDER BY total DESC");
+    }
+
+    /**
      * 导出用：与 {@link #listAggregated} 同过滤条件的<b>全量</b>行（跨分页，不 OFFSET）。
      * v3 口径：导出与页面筛选联动、列与页面一致；上限 50000 行兜底防内存炸。
      */
