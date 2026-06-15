@@ -1,6 +1,5 @@
 package com.axonlink.ai.daoindex.errorcode.scan;
 
-import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.errorcode.attribution.ErrorCodeAttributionService;
 import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
 import com.axonlink.ai.daoindex.errorcode.dto.ErrorCodeThrow;
@@ -10,6 +9,7 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
@@ -44,9 +44,15 @@ public class ErrorCodeScanService {
             new JavaParser(new ParserConfiguration()
                     .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17)));
 
-    private final DaoIndexAnalysisProperties props;
     private final DiiErrorCodeDao dao;                          // Task 5
     private final ErrorCodeAttributionService attribution;     // Task 6
+
+    // 与建图（Neo4jGraphBuilder）同一套源码根：错误码必须扫「和建图完全相同的源文件」，
+    // 否则 classFqn 对不上、物化 join 不到（业务 throw 在 src/main/java，不在 target/gen）。
+    @Value("${project.source-roots:}")
+    private String sourceRoots;
+    @Value("${project.workspace-roots:}")
+    private String workspaceRoots;
 
     /**
      * 单飞守卫：用 AtomicBoolean.compareAndSet 原子地「检查并置位」，
@@ -57,10 +63,8 @@ public class ErrorCodeScanService {
      */
     private final AtomicBoolean scanning = new AtomicBoolean(false);
 
-    public ErrorCodeScanService(DaoIndexAnalysisProperties props,
-                                DiiErrorCodeDao dao,
+    public ErrorCodeScanService(DiiErrorCodeDao dao,
                                 ErrorCodeAttributionService attribution) {
-        this.props = props;
         this.dao = dao;
         this.attribution = attribution;
     }
@@ -153,24 +157,67 @@ public class ErrorCodeScanService {
 
     /** 遍历所有源码根，AST 扫描 throw 错误码。 */
     private List<ErrorCodeThrow> scanAllSources() {
-        DaoIndexAnalysisProperties.Scan scan = props.getScan();
         List<ErrorCodeThrow> all = new ArrayList<>();
         AtomicLong seq = new AtomicLong(0);
         long maxBytes = 500L * 1024;   // 与 ProjectIndexer 一致：>500KB 跳过
-        for (String root : scan.getProjectRoots()) {
-            Path base = Path.of(root);
-            if (!Files.isDirectory(base)) {
-                continue;
+        List<Path> files = collectSourceFiles();
+        log.info("[error-code] 收集到 {} 个 .java 源文件待扫描", files.size());
+        for (Path f : files) {
+            scanOneFile(f, maxBytes, seq, all);
+        }
+        return all;
+    }
+
+    /**
+     * 收集 .java 源文件，<b>与建图 {@code Neo4jGraphBuilder.collectFiles} 完全同口径</b>：
+     * <ul>
+     *   <li>{@code project.source-roots}：显式 src 目录（逗号分隔）；</li>
+     *   <li>{@code project.workspace-roots}：递归（深度 8）发现所有以 {@code src/main/java}
+     *       或 {@code target/gen} 结尾的目录；</li>
+     *   <li>收 {@code .java}、排除路径含 {@code /test/}。</li>
+     * </ul>
+     * 必须与建图扫的是同一批源文件——否则 classFqn 对不上、物化 join 不到
+     * （业务 throw 在 src/main/java，旧实现只过滤 target/gen 故 throw=0）。
+     */
+    private List<Path> collectSourceFiles() {
+        List<String> roots = new ArrayList<>();
+        if (sourceRoots != null && !sourceRoots.isBlank()) {
+            for (String r : sourceRoots.split(",")) {
+                if (!r.isBlank()) roots.add(r.trim());
             }
-            try (Stream<Path> walk = Files.walk(base)) {
-                walk.filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> p.toString().contains("/" + scan.getSourceRootRelative() + "/"))
-                    .forEach(p -> scanOneFile(p, maxBytes, seq, all));
+        }
+        if (workspaceRoots != null && !workspaceRoots.isBlank()) {
+            for (String w : workspaceRoots.split(",")) {
+                String ws = w.trim();
+                if (ws.isEmpty()) continue;
+                Path wsPath = Path.of(ws);
+                if (!Files.exists(wsPath)) continue;
+                try (Stream<Path> walk = Files.walk(wsPath, 8)) {
+                    walk.filter(Files::isDirectory)
+                        .filter(p -> {
+                            String rel = wsPath.relativize(p).toString().replace('\\', '/');
+                            return rel.endsWith("src/main/java") || rel.endsWith("target/gen");
+                        })
+                        .map(Path::toString).forEach(roots::add);
+                } catch (IOException e) {
+                    log.warn("[error-code] 发现工作区子目录失败 ws={}", ws, e);
+                }
+            }
+        }
+        List<Path> files = new ArrayList<>();
+        for (String root : roots) {
+            Path p = Path.of(root);
+            if (!Files.exists(p)) continue;
+            try (Stream<Path> walk = Files.walk(p)) {
+                walk.filter(Files::isRegularFile)
+                    .filter(f -> f.toString().endsWith(".java"))
+                    .filter(f -> !f.toString().replace('\\', '/').contains("/test/"))
+                    .forEach(files::add);
             } catch (IOException e) {
                 log.warn("[error-code] 遍历源码根失败 root={}", root, e);
             }
         }
-        return all;
+        return files;
     }
 
     private void scanOneFile(Path file, long maxBytes, AtomicLong seq, List<ErrorCodeThrow> sink) {

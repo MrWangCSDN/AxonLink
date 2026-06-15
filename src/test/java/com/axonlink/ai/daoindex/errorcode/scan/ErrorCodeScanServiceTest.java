@@ -1,13 +1,11 @@
 package com.axonlink.ai.daoindex.errorcode.scan;
 
-import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.daoindex.errorcode.attribution.ErrorCodeAttributionService;
 import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -16,14 +14,13 @@ import static org.mockito.Mockito.*;
 /** detectModule 静态方法测试 + 物化门控测试（明细总重建、物化按 materialize 开关）。 */
 class ErrorCodeScanServiceTest {
 
-    /** 构造一个源码根为空（scanAllSources 返回空、不碰文件系统）的 Service + mock 依赖。 */
+    /**
+     * 构造一个源码根为空的 Service + mock 依赖：
+     * 无 Spring 注入时 sourceRoots/workspaceRoots 为 null → collectSourceFiles 返回空 → 明细空、不碰文件系统。
+     */
     private ErrorCodeScanService newServiceWithEmptyRoots(DiiErrorCodeDao dao,
                                                           ErrorCodeAttributionService attr) {
-        DaoIndexAnalysisProperties props = mock(DaoIndexAnalysisProperties.class);
-        DaoIndexAnalysisProperties.Scan scan = mock(DaoIndexAnalysisProperties.Scan.class);
-        when(props.getScan()).thenReturn(scan);
-        when(scan.getProjectRoots()).thenReturn(List.of());   // 空源码根 → 直接返回空明细
-        return new ErrorCodeScanService(props, dao, attr);
+        return new ErrorCodeScanService(dao, attr);
     }
 
     @Test
