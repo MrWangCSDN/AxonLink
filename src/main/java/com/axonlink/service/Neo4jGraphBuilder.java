@@ -19,6 +19,7 @@ import org.neo4j.driver.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -68,6 +69,7 @@ public class Neo4jGraphBuilder {
     private final ServiceNodeCache serviceNodeCache;
     private final SysUtilTargetRegistry sysUtilTargetRegistry;
     private final TableMetadataResolver tableMetadataResolver;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Value("${project.workspace-roots:}")
     private String workspaceRoots;
@@ -131,7 +133,8 @@ public class Neo4jGraphBuilder {
                              ProjectIndexer projectIndexer,
                              ServiceNodeCache serviceNodeCache,
                              SysUtilTargetRegistry sysUtilTargetRegistry,
-                             TableMetadataResolver tableMetadataResolver) {
+                             TableMetadataResolver tableMetadataResolver,
+                             ApplicationEventPublisher eventPublisher) {
         this.driver = driver;
         this.neo4jConfig = neo4jConfig;
         this.flowtransMetaGraphBuilder = flowtransMetaGraphBuilder;
@@ -143,6 +146,7 @@ public class Neo4jGraphBuilder {
         this.serviceNodeCache = serviceNodeCache;
         this.sysUtilTargetRegistry = sysUtilTargetRegistry;
         this.tableMetadataResolver = tableMetadataResolver;
+        this.eventPublisher = eventPublisher;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -453,6 +457,16 @@ public class Neo4jGraphBuilder {
             }
             long elapsed = System.currentTimeMillis() - startMs;
             log.info("[Neo4j] ===== 图构建完成，耗时 {}ms =====", elapsed);
+
+            // 图（含交易→方法调用图）已就绪 → 发布完成事件，供下游索引（错误码交易维度物化等）
+            // 在图就绪后联动重建，避免与本次构建（开头清空旧图 + 全程数分钟）的时序竞态。
+            // try 包住：监听器异常不得影响构建结果（本项目监听器均 fire-and-forget 异步执行）。
+            try {
+                eventPublisher.publishEvent(new Neo4jGraphBuildCompletedEvent(
+                        context.hasOperationId() ? context.operationId() : null));
+            } catch (Exception evtEx) {
+                log.warn("[Neo4j] 发布图构建完成事件失败（不影响构建结果）：{}", evtEx.getMessage());
+            }
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("classes",    classNodes.size());
