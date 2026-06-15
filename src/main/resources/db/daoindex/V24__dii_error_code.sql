@@ -29,7 +29,7 @@ CREATE TABLE dii_error_code (
 -- (2) 交易维度物化：tx × error_code，扫描期物化、整表重建
 CREATE TABLE dii_tx_error_code (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
-    tx_id         VARCHAR(64)   NOT NULL COMMENT '归属交易 ID',
+    tx_id         VARCHAR(64)            COMMENT '归属交易 ID；UNMATCHED（throw 未归属任何交易，多为批量/工具代码）为 NULL',
     tx_name       VARCHAR(255)           COMMENT '归属交易名(longname)',
     domain_key    VARCHAR(16)            COMMENT '领域 key',
     error_code    VARCHAR(20)   NOT NULL COMMENT '错误码本体',
