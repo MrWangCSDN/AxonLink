@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
@@ -40,7 +41,14 @@ public class ErrorCodeScanService {
     private final DiiErrorCodeDao dao;                          // Task 5
     private final ErrorCodeAttributionService attribution;     // Task 6
 
-    private volatile boolean scanning = false;
+    /**
+     * 单飞守卫：用 AtomicBoolean.compareAndSet 原子地「检查并置位」，
+     * 避免 volatile boolean 的 check-then-set 竞态——否则并发触发（如 onReady 与
+     * triggerRescan 同时进入、或两次快速重扫）会同时读到 false 都放行，导致两个扫描
+     * 交错执行整表 DELETE+INSERT（rebuildThrows / materializeTransactionErrorCodes），
+     * 破坏数据完整性（契约 §4.6）。
+     */
+    private final AtomicBoolean scanning = new AtomicBoolean(false);
 
     public ErrorCodeScanService(DaoIndexAnalysisProperties props,
                                 DiiErrorCodeDao dao,
@@ -87,11 +95,12 @@ public class ErrorCodeScanService {
             Thread.currentThread().interrupt();
             return;
         }
-        if (scanning) {
+        // CAS 放在 sleep 之后：保证去重覆盖整个 3s 延迟窗口，且原子「检查+置位」。
+        // 只有把 false→true 设置成功的线程才进入工作段，其余触发直接跳过。
+        if (!scanning.compareAndSet(false, true)) {
             log.warn("[error-code] 上一轮扫描进行中，跳过本次触发");
             return;
         }
-        scanning = true;
         try {
             List<ErrorCodeThrow> throwDetails = scanAllSources();
             dao.rebuildThrows(throwDetails);                    // Task 5：重建明细
@@ -104,7 +113,7 @@ public class ErrorCodeScanService {
         } catch (Exception ex) {
             log.error("[error-code] 扫描异常", ex);
         } finally {
-            scanning = false;
+            scanning.set(false);
         }
     }
 
