@@ -30,6 +30,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.context.WebApplicationContext;
 import org.springframework.security.web.FilterChainProxy;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import com.axonlink.ai.user.persistence.SysUserDao;
+import com.axonlink.ai.user.service.UserService;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -128,6 +131,14 @@ class UiasIntegrationTest {
         registry.add("axon-link.security.user-search-base", () -> "ou=Users");
         registry.add("axon-link.security.user-search-filter", () -> "(uid={0})");
     }
+
+    // 安全切片只扫 com.axonlink.security；userPrincipalResolver→SysUserDao、authController→UserService
+    // 都在未扫描的业务包，故 mock 进上下文满足装配（③ /api/auth/me 的 username 取自 auth.getName()，不依赖 mock 返回值）。
+    @MockBean
+    private SysUserDao sysUserDao;
+
+    @MockBean
+    private UserService userService;
 
     @Autowired
     private WebApplicationContext context;
