@@ -138,6 +138,12 @@
             <artifactId>unboundid-ldapsdk</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- H2 内存库：DAO 测试以 MODE=MySQL 跑整表重建/查询语义（版本由 Spring Boot BOM 管理） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
