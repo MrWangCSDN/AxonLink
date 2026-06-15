@@ -130,7 +130,7 @@ public class ErrorCodeScanService {
             }
             try (Stream<Path> walk = Files.walk(base)) {
                 walk.filter(p -> p.toString().endsWith(".java"))
-                    .filter(p -> p.toString().contains("/target/gen/"))
+                    .filter(p -> p.toString().contains("/" + scan.getSourceRootRelative() + "/"))
                     .forEach(p -> scanOneFile(p, maxBytes, seq, all));
             } catch (IOException e) {
                 log.warn("[error-code] 遍历源码根失败 root={}", root, e);

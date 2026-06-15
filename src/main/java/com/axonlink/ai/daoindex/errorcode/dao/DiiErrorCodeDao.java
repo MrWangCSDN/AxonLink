@@ -5,6 +5,7 @@ import com.axonlink.ai.daoindex.errorcode.dto.TxErrorCodeRow;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -14,6 +15,7 @@ import java.util.List;
  * 错误码结果库 DAO，对标 DiiSlowSqlDao：DELETE 整表 + batchUpdate 重建。
  * 由 diiResultJdbcTemplate 构造注入（结果库 MySQL）。
  */
+@Repository
 public class DiiErrorCodeDao {
 
     private final JdbcTemplate jdbc;
