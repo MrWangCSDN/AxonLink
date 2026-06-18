@@ -56,6 +56,27 @@ class ThrowStmtVisitorTest {
     }
 
     @Test
+    void throwTextStripsTrailingLineComment() {
+        // 源码：throw ...E0085(); // 说明 —— 注释在 throw 后面。
+        // 旧实现 n.toString() 会把行尾注释当前置注释，落库变成 "// 说明 throw ...;"（语义全变）。
+        List<ErrorCodeThrow> rs = scan(
+                "package com.x; class A { void m(){ throw TaError.Trac.E0085(); // 查询无对应记录\n } }");
+        assertEquals(1, rs.size());
+        String text = rs.get(0).getThrowText();
+        assertEquals("throw TaError.Trac.E0085();", text);
+        assertFalse(text.contains("查询"), "throw_text 不应混进注释");
+        assertFalse(text.startsWith("//"), "注释不应跑到 throw 前面");
+    }
+
+    @Test
+    void throwTextStripsLeadingLineComment() {
+        // 注释在 throw 前一行也应剥除（前置注释）
+        List<ErrorCodeThrow> rs = scan(
+                "package com.x; class A { void m(){ // 前置说明\n throw TaError.Trac.E0086(); } }");
+        assertEquals("throw TaError.Trac.E0086();", rs.get(0).getThrowText());
+    }
+
+    @Test
     void multiLineThrow() {
         List<ErrorCodeThrow> rs = scan(
                 "package com.x; class A { void m(){ throw CmError.Brch.E0003(\n  \"line1\",\n  \"line2\"); } }");

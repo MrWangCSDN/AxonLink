@@ -2,6 +2,7 @@ package com.axonlink.ai.daoindex.errorcode.scan;
 
 import com.axonlink.ai.daoindex.errorcode.dto.ErrorCodeThrow;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.comments.Comment;
 import com.github.javaparser.ast.body.AnnotationDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.EnumDeclaration;
@@ -109,8 +110,23 @@ public class ThrowStmtVisitor extends VoidVisitorAdapter<Void> {
         String method = methodStack.peek() != null ? methodStack.peek() : "<unknown>";
         Integer lineNo = n.getBegin().map(p -> p.line).orElse(null);
         results.add(new ErrorCodeThrow(
-                methodName, scope, n.toString(), classFqn, method,
+                methodName, scope, cleanThrowText(n), classFqn, method,
                 filePath, lineNo, moduleName, null, null, seq.incrementAndGet()));
         super.visit(n, arg);
+    }
+
+    /**
+     * 取 throw 语句文本，但<b>剥除注释</b>。
+     *
+     * <p>直接 {@code ThrowStmt.toString()} 会带上挂在该语句上的注释，且 JavaParser 把
+     * <b>行尾 {@code //} 注释当作前置注释打印</b>——于是源码里 {@code throw ...E0085(); // 说明}
+     * 落库后变成 {@code // 说明 throw ...E0085();}，注释跑到 throw 前面，语义完全不同。
+     * 故克隆节点后移除其关联注释 + 所有内部注释，再 toString（多行 throw 的结构保留）。
+     */
+    private static String cleanThrowText(ThrowStmt n) {
+        ThrowStmt c = n.clone();
+        c.removeComment();                                              // 节点自身关联注释（含被误当前置的行尾注释）
+        new ArrayList<>(c.getAllContainedComments()).forEach(Comment::remove);  // 内部/孤儿注释
+        return c.toString().trim();
     }
 }
