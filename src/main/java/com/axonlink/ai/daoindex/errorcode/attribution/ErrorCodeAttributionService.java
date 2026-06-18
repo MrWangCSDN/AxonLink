@@ -272,7 +272,12 @@ public class ErrorCodeAttributionService {
                 + "OPTIONAL MATCH (step)-[:CALLS_SERVICE]->(op0:ServiceOperation)-[:IMPLEMENTS_BY]->(entry:Method)\n"
                 + "WITH DISTINCT txId, tx, entry\n"
                 + "WHERE entry IS NOT NULL\n"
-                + "MATCH (entry)-[:CALLS|SELF_CALLS|SYS_UTIL_CALLS*0..8]->(reachable:Method)\n"
+                // 可达遍历必须带 IMPLEMENTS_BY：方法调「服务/构件接口」时图里是
+                //   (Method)-[:CALLS|SYS_UTIL_CALLS]->(ServiceOperation)-[:IMPLEMENTS_BY]->(实现 Method)，
+                // 业务 throw 恰在「实现 Method」里（如 TaExtendoPbcbImpl.qryCorpSroAcgParmPbcb）。
+                // 仅走 CALLS/SELF_CALLS/SYS_UTIL_CALLS 会卡在 ServiceOperation 到不了实现方法 → throw 漏归属。
+                // 加 IMPLEMENTS_BY 跨「接口→实现」；每跨一次服务是两条边，故深度提到 16。
+                + "MATCH (entry)-[:CALLS|SELF_CALLS|SYS_UTIL_CALLS|IMPLEMENTS_BY*0..16]->(reachable:Method)\n"
                 + "OPTIONAL MATCH (op:ServiceOperation)-[:IMPLEMENTS_BY]->(reachable)\n"
                 + "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(st:ServiceType)\n"
                 + "RETURN DISTINCT txId AS tx_id,\n"
