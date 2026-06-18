@@ -189,7 +189,8 @@ public class DiiSlowSqlDao {
                 "       SUM(CASE WHEN biz_type NOT IN ('联机','批量','热点账户') THEN 1 ELSE 0 END) AS biz_other, " +
                 // 重复出现：repeat_rounds 非空（该 微服务+抽象SQL 曾在历史轮次出现过）。跨类型子集，分组柱单列展示
                 "       SUM(CASE WHEN repeat_rounds IS NOT NULL AND repeat_rounds <> '' THEN 1 ELSE 0 END) AS repeat_cnt " +
-                "  FROM dii_slow_sql GROUP BY domain ORDER BY total DESC");
+                // 只统计「未申请白名单」的慢SQL（whitelist_status IS NULL）；申请中/已审批的不计入本分布
+                "  FROM dii_slow_sql WHERE whitelist_status IS NULL GROUP BY domain ORDER BY total DESC");
     }
 
     /**
