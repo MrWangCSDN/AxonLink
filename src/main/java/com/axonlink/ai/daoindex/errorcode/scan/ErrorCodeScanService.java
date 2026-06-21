@@ -138,10 +138,18 @@ public class ErrorCodeScanService {
             return;
         }
         try {
+            long t0 = System.currentTimeMillis();
             List<ErrorCodeThrow> throwDetails = scanAllSources();
+            long t1 = System.currentTimeMillis();
             dao.rebuildThrows(throwDetails);                        // 重建明细 dii_error_code
+            long t2 = System.currentTimeMillis();
+            log.info("[error-code] 明细已就绪 dii_error_code throws={} 扫描耗时={}ms 写库耗时={}ms",
+                    throwDetails.size(), t1 - t0, t2 - t1);
             if (materialize) {
-                attribution.materializeTransactionErrorCodes();    // 物化交易维度 dii_tx_error_code（需图就绪）
+                // 物化交易维度 dii_tx_error_code（需图就绪）。比明细慢——每交易跑 getChain 级解析，
+                // 已并行化（见 ErrorCodeAttributionService）。物化耗时由其内部「物化完成 ... 耗时=」日志体现。
+                attribution.materializeTransactionErrorCodes();
+                log.info("[error-code] 本轮全量重建结束（明细+物化）总耗时={}ms", System.currentTimeMillis() - t0);
             }
         } catch (org.springframework.dao.DataAccessException ex) {
             // 缺表/结果库异常（Spring JDBC 把 SQLException 包成 unchecked DataAccessException，

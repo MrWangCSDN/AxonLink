@@ -13,9 +13,14 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 反向归属 + 物化编排。三名分层（勿混用）：
@@ -27,8 +32,9 @@ import java.util.Map;
 public class ErrorCodeAttributionService {
 
     private static final Logger log = LoggerFactory.getLogger(ErrorCodeAttributionService.class);
-    private static final int BATCH = 8;          // 分批 UNWIND 5~10
+    private static final int BATCH = 8;          // 每批交易数
     private static final int RETRY = 3;
+    private static final int PARALLELISM = 8;    // 并行处理的批数（≈并发 collectChainMethods/Neo4j 会话数；过高反压 Neo4j）
 
     private final Driver driver;               // 可为 null（无 Neo4j 时降级）；仅用于取全量交易 id + 可用性判断
     private final DiiErrorCodeDao dao;         // 见 Task 5
@@ -142,15 +148,50 @@ public class ErrorCodeAttributionService {
      */
     MaterializeOutcome materialize(List<String> txIds, List<ErrorCodeThrow> throwDetails,
                                    BatchResolver resolver) {
-        List<ReachableMethod> reachable = new ArrayList<>();
-        boolean anyBatchFailed = false;
+        long startMs = System.currentTimeMillis();
+        // 分批
+        List<List<String>> batches = new ArrayList<>();
         for (int i = 0; i < txIds.size(); i += BATCH) {
-            List<String> batch = txIds.subList(i, Math.min(i + BATCH, txIds.size()));
-            BatchResult br = resolver.resolve(batch);
-            reachable.addAll(br.rows);
-            anyBatchFailed = anyBatchFailed || br.failed;
+            batches.add(new ArrayList<>(txIds.subList(i, Math.min(i + BATCH, txIds.size()))));
         }
-        if (anyBatchFailed) {
+
+        // 并行解析各批（collectChainMethods 是 getChain 级解析、Neo4j 密集，串行会很慢、使
+        // dii_tx_error_code 远晚于 dii_error_code 才有数据）。每个 resolver.resolve 内部已带
+        // 逐交易重试 + 失败标记，故并行只需线程安全聚合 + 等全部完成。
+        List<ReachableMethod> reachable = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean anyBatchFailed = new AtomicBoolean(false);
+        int poolSize = Math.max(1, Math.min(PARALLELISM, batches.size()));
+        ExecutorService pool = Executors.newFixedThreadPool(poolSize, r -> {
+            Thread t = new Thread(r, "error-code-materialize");
+            t.setDaemon(true);
+            return t;
+        });
+        try {
+            List<Future<?>> futures = new ArrayList<>();
+            for (List<String> batch : batches) {
+                futures.add(pool.submit(() -> {
+                    BatchResult br = resolver.resolve(batch);
+                    reachable.addAll(br.rows);
+                    if (br.failed) {
+                        anyBatchFailed.set(true);
+                    }
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get();   // 等全部完成；任务内异常已被 queryReachableWithRetry 吞掉并标 failed
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("[error-code] 物化并行被中断，保留上一轮物化数据");
+            return MaterializeOutcome.incomplete();
+        } catch (java.util.concurrent.ExecutionException ee) {
+            log.error("[error-code] 物化并行任务异常，保留上一轮物化数据", ee.getCause());
+            return MaterializeOutcome.incomplete();
+        } finally {
+            pool.shutdownNow();
+        }
+
+        if (anyBatchFailed.get()) {
             // 部分批次彻底失败 → reachable 不完整 → 拒绝用残缺数据重建整表，保留上一轮物化结果。
             log.error("[error-code] 物化中止：存在彻底失败的批次，reachable 集合不完整，"
                     + "已跳过 DELETE+INSERT 以保留上一轮物化数据（接通 Neo4j 后重试 rescan）"
@@ -159,8 +200,9 @@ public class ErrorCodeAttributionService {
         }
         List<TxErrorCodeRow> rows = joinToTxRows(reachable, throwDetails);
         dao.materializeTxErrorCodes(rows);                          // Task 5
-        log.info("[error-code] 物化完成 reachable={} throw={} txRows={}",
-                reachable.size(), throwDetails.size(), rows.size());
+        log.info("[error-code] 物化完成 reachable={} throw={} txRows={} 交易数={} 并发={} 耗时={}ms",
+                reachable.size(), throwDetails.size(), rows.size(), txIds.size(), poolSize,
+                System.currentTimeMillis() - startMs);
         return MaterializeOutcome.complete(reachable.size(), rows.size());
     }
 
