@@ -40,4 +40,19 @@ public interface FlowtranService {
      * @return FlowtranChain VO；txId 不存在时返回 null
      */
     Map<String, Object> getChain(String txId);
+
+    /**
+     * 收集某交易链路里<b>所有可达的实现方法</b>（复用 {@link #getChain} 同一套
+     * loadFlowSteps / discoverDirectTargets / BoundaryResolver 解析，覆盖
+     * ServiceOperation / 接口(SysUtil.getInstance) / Class / Method 全部调用方式 +
+     * 实现方法内部 CALLS/SELF_CALLS/SYS_UTIL_CALLS 深处）。
+     *
+     * <p>供错误码「交易维度归属」复用——凡链路图上能显示的构件，其实现方法里的
+     * throw 错误码都能据此挂到该交易。
+     *
+     * @param txId flowtran.id
+     * @return Map：{@code {txId, txName, domainKey, methods:[{classFqn, methodName, componentCode, componentName}]}}；
+     *         Neo4j 不可用或交易不存在时返回 null；Neo4j 查询异常向上抛出（由调用方重试/降级）
+     */
+    Map<String, Object> collectChainMethods(String txId);
 }

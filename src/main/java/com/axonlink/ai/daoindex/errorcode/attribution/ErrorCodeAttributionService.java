@@ -3,10 +3,9 @@ package com.axonlink.ai.daoindex.errorcode.attribution;
 import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
 import com.axonlink.ai.daoindex.errorcode.dto.ErrorCodeThrow;
 import com.axonlink.ai.daoindex.errorcode.dto.TxErrorCodeRow;
+import com.axonlink.service.FlowtranService;
 import org.neo4j.driver.Driver;
-import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
-import org.neo4j.driver.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,14 +30,17 @@ public class ErrorCodeAttributionService {
     private static final int BATCH = 8;          // 分批 UNWIND 5~10
     private static final int RETRY = 3;
 
-    private final Driver driver;               // 可为 null（无 Neo4j 时降级）
+    private final Driver driver;               // 可为 null（无 Neo4j 时降级）；仅用于取全量交易 id + 可用性判断
     private final DiiErrorCodeDao dao;         // 见 Task 5
+    private final FlowtranService flowtranService;   // 复用 getChain 同款链路解析（collectChainMethods）
 
     @Autowired
     public ErrorCodeAttributionService(@Qualifier("neo4jDriver") Driver driver,
-                                       DiiErrorCodeDao dao) {
+                                       DiiErrorCodeDao dao,
+                                       FlowtranService flowtranService) {
         this.driver = driver;
         this.dao = dao;
+        this.flowtranService = flowtranService;
     }
 
     /** 可达方法值对象（Neo4j 查询结果一行 + 归属构件反查结果）。 */
@@ -228,78 +230,60 @@ public class ErrorCodeAttributionService {
     }
 
     /**
-     * 带重试 + 逐交易降级的批查询。
+     * 带重试的批解析：对批内每个交易调用 {@link FlowtranService#collectChainMethods}
+     * （复用 getChain 同款链路解析，覆盖 ServiceOperation / 接口(SysUtil.getInstance) / Class / Method
+     * 全部调用方式 + 实现方法内部可达，凡链路图上显示的构件其实现方法都覆盖）。
      *
-     * <p>返回 {@link BatchResult#failed}=true 当且仅当批查询 3 次重试失败、改逐交易降级后
-     * <b>仍有至少一个交易彻底查不出</b>。此时该批的 reachable 集合不完整，由编排层据此
-     * 决定是否中止整表覆盖（保留旧数据），而非把残缺集合静默写入物化表。
+     * <p>返回 {@link BatchResult#failed}=true 当且仅当批内<b>至少一个交易</b>重试 {@link #RETRY} 次仍失败。
+     * 此时该批 reachable 不完整，编排层据此中止整表覆盖、保留旧数据（不写残缺）。
      */
     private BatchResult queryReachableWithRetry(List<String> batch) {
-        RuntimeException last = null;
-        for (int attempt = 1; attempt <= RETRY; attempt++) {
-            try {
-                // 批查询成功 → 该批完整，failed=false。
-                return new BatchResult(queryReachable(batch), false);
-            } catch (RuntimeException ex) {
-                last = ex;
-                log.warn("[error-code] Cypher 批查询失败 attempt={}/{} size={}", attempt, RETRY, batch.size());
-            }
-        }
-        // 降级：逐交易循环单查。任一交易降级仍失败 → 整批标记 failed，触发上层中止覆盖。
-        List<ReachableMethod> fallback = new ArrayList<>();
+        List<ReachableMethod> rows = new ArrayList<>();
         boolean anyTxFailed = false;
         for (String txId : batch) {
-            try {
-                fallback.addAll(queryReachable(List.of(txId)));
-            } catch (RuntimeException ex) {
+            boolean ok = false;
+            for (int attempt = 1; attempt <= RETRY && !ok; attempt++) {
+                try {
+                    rows.addAll(reachableForTx(txId));
+                    ok = true;
+                } catch (RuntimeException ex) {
+                    log.warn("[error-code] collectChainMethods 失败 txId={} attempt={}/{}：{}",
+                            txId, attempt, RETRY, ex.getMessage());
+                }
+            }
+            if (!ok) {
                 anyTxFailed = true;
-                log.error("[error-code] 单交易降级仍失败 txId={}", txId, ex);
+                log.error("[error-code] 交易可达方法解析彻底失败 txId={}（将保留上一轮物化数据）", txId);
             }
         }
-        if (anyTxFailed && last != null) {
-            log.error("[error-code] 批 + 降级均失败（该批 reachable 不完整）", last);
-        }
-        return new BatchResult(fallback, anyTxFailed);
+        return new BatchResult(rows, anyTxFailed);
     }
 
-    private List<ReachableMethod> queryReachable(List<String> batch) {
-        String cypher =
-                "UNWIND $txIds AS txId\n"
-                + "MATCH (tx:Transaction {id: txId})-[:HAS_FLOW]->(flow:FlowBlock)\n"
-                + "MATCH p = (flow)-[:HAS_STEP|EXECUTES|HAS_BRANCH|NEXT*0..24]->(step)\n"
-                + "WHERE step:FlowMethodStep OR step:FlowServiceStep\n"
-                + "OPTIONAL MATCH (step)-[:RESOLVES_TO_METHOD]->(entry:Method)\n"
-                + "OPTIONAL MATCH (step)-[:CALLS_SERVICE]->(op0:ServiceOperation)-[:IMPLEMENTS_BY]->(entry:Method)\n"
-                + "WITH DISTINCT txId, tx, entry\n"
-                + "WHERE entry IS NOT NULL\n"
-                // 可达遍历必须带 IMPLEMENTS_BY：方法调「服务/构件接口」时图里是
-                //   (Method)-[:CALLS|SYS_UTIL_CALLS]->(ServiceOperation)-[:IMPLEMENTS_BY]->(实现 Method)，
-                // 业务 throw 恰在「实现 Method」里（如 TaExtendoPbcbImpl.qryCorpSroAcgParmPbcb）。
-                // 仅走 CALLS/SELF_CALLS/SYS_UTIL_CALLS 会卡在 ServiceOperation 到不了实现方法 → throw 漏归属。
-                // 加 IMPLEMENTS_BY 跨「接口→实现」；每跨一次服务是两条边，故深度提到 16。
-                + "MATCH (entry)-[:CALLS|SELF_CALLS|SYS_UTIL_CALLS|IMPLEMENTS_BY*0..16]->(reachable:Method)\n"
-                + "OPTIONAL MATCH (op:ServiceOperation)-[:IMPLEMENTS_BY]->(reachable)\n"
-                + "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(st:ServiceType)\n"
-                + "RETURN DISTINCT txId AS tx_id,\n"
-                + "                tx.longname AS tx_name,\n"
-                + "                tx.domainKey AS domain_key,\n"
-                + "                reachable.classFqn AS class_fqn,\n"
-                + "                reachable.name AS method_name,\n"
-                + "                coalesce(op.serviceId, st.id) AS component_code,\n"
-                + "                coalesce(op.longname, st.longname) AS component_name";
+    /**
+     * 单交易可达实现方法：复用 {@link FlowtranService#collectChainMethods}，结果摊平为 {@link ReachableMethod}。
+     * collectChainMethods 返回 null（无 Neo4j / 交易不存在）→ 视为空；Neo4j 查询异常会上抛，触发上面的重试。
+     */
+    private List<ReachableMethod> reachableForTx(String txId) {
+        Map<String, Object> chain = flowtranService.collectChainMethods(txId);
+        if (chain == null) {
+            return List.of();
+        }
+        String txName = (String) chain.get("txName");
+        String domainKey = (String) chain.get("domainKey");
+        Object raw = chain.get("methods");
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
         List<ReachableMethod> out = new ArrayList<>();
-        try (Session s = driver.session()) {
-            for (Record r : s.run(cypher, Values.parameters("txIds", batch)).list()) {
-                out.add(new ReachableMethod(
-                        str(r, "tx_id"), str(r, "tx_name"), str(r, "domain_key"),
-                        str(r, "class_fqn"), str(r, "method_name"),
-                        str(r, "component_code"), str(r, "component_name")));
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) {
+                continue;
             }
+            out.add(new ReachableMethod(
+                    txId, txName, domainKey,
+                    (String) m.get("classFqn"), (String) m.get("methodName"),
+                    (String) m.get("componentCode"), (String) m.get("componentName")));
         }
         return out;
-    }
-
-    private static String str(Record r, String key) {
-        return r.get(key).isNull() ? null : r.get(key).asString();
     }
 }

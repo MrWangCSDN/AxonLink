@@ -104,8 +104,8 @@ class ErrorCodeAttributionServiceTest {
     }
 
     private ErrorCodeAttributionService svc(RecordingDao dao) {
-        // driver 传 null：本组测试只验证 materialize(...) 编排核心，不触 Neo4j。
-        return new ErrorCodeAttributionService(null, dao);
+        // driver / flowtranService 传 null：本组测试只验证 materialize(...) 编排核心（注入桩 resolver），不触 Neo4j。
+        return new ErrorCodeAttributionService(null, dao, null);
     }
 
     @Test

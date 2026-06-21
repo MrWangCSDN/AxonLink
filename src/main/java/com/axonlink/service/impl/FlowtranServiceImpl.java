@@ -365,6 +365,125 @@ public class FlowtranServiceImpl implements FlowtranService {
         }
     }
 
+    @Override
+    public Map<String, Object> collectChainMethods(String txId) {
+        if (!neo4jAvailable()) {
+            return null;
+        }
+        // 注意：Neo4j 查询异常此处不捕获，直接上抛——由调用方（错误码物化）重试/降级判 incomplete，
+        // 避免把"瞬时查询失败"当作"该交易无方法"静默写入残缺数据。
+        try (Session session = driver.session()) {
+            TransactionMeta tx = loadTransaction(session, txId);
+            if (tx == null) {
+                return null;
+            }
+            List<FlowStepRef> steps = loadFlowSteps(session, txId);
+
+            // —— 复用 getChain 同一套种子 BFS（loadFlowSteps + discoverDirectTargets + BoundaryResolver），
+            //    但只推进种子集合、不构建 layer/table/dao（只为拿到链路里所有构件/服务的实现方法签名）。
+            LinkedHashMap<String, LogicalSeed> topServiceSeeds = new LinkedHashMap<>();
+            LinkedHashMap<String, LogicalSeed> componentSeeds = new LinkedHashMap<>();
+            for (FlowStepRef step : steps) {
+                LogicalSeed seed = new LogicalSeed(step.code, step.name, step.prefix, step.domainKey,
+                        new LinkedHashSet<>(step.methodSignatures));
+                if (isComponentPrefix(step.prefix)) {
+                    componentSeeds.merge(step.code, seed, LogicalSeed::merge);
+                } else {
+                    topServiceSeeds.merge(step.code, seed, LogicalSeed::merge);
+                }
+            }
+            BoundaryResolver resolver = new BoundaryResolver(session);
+
+            Map<String, Integer> svcProcessed = new HashMap<>();
+            List<String> svcQueue = new ArrayList<>(topServiceSeeds.keySet());
+            for (int i = 0; i < svcQueue.size(); i++) {
+                LogicalSeed seed = topServiceSeeds.get(svcQueue.get(i));
+                if (seed == null || svcProcessed.getOrDefault(svcQueue.get(i), 0) >= seed.methodSignatures.size()) {
+                    continue;
+                }
+                svcProcessed.put(svcQueue.get(i), seed.methodSignatures.size());
+                BoundaryResult dt = discoverDirectTargets(session, seed.methodSignatures, resolver);
+                for (LogicalSeed t : dt.serviceTargets.values()) {
+                    LogicalSeed existing = topServiceSeeds.get(t.code);
+                    if (existing == null) {
+                        topServiceSeeds.put(t.code, t);
+                        svcQueue.add(t.code);
+                    } else {
+                        LogicalSeed merged = existing.merge(t);
+                        topServiceSeeds.put(t.code, merged);
+                        if (merged.methodSignatures.size() > existing.methodSignatures.size()) {
+                            svcQueue.add(t.code);
+                        }
+                    }
+                }
+                for (LogicalSeed t : dt.componentTargets.values()) {
+                    LogicalSeed existing = componentSeeds.get(t.code);
+                    componentSeeds.put(t.code, existing == null ? t : existing.merge(t));
+                }
+            }
+
+            Map<String, Integer> cmpProcessed = new HashMap<>();
+            List<String> cmpQueue = new ArrayList<>(componentSeeds.keySet());
+            for (int i = 0; i < cmpQueue.size(); i++) {
+                LogicalSeed seed = componentSeeds.get(cmpQueue.get(i));
+                if (seed == null || cmpProcessed.getOrDefault(cmpQueue.get(i), 0) >= seed.methodSignatures.size()) {
+                    continue;
+                }
+                cmpProcessed.put(cmpQueue.get(i), seed.methodSignatures.size());
+                BoundaryResult dt = discoverDirectTargets(session, seed.methodSignatures, resolver);
+                for (LogicalSeed t : dt.componentTargets.values()) {
+                    LogicalSeed existing = componentSeeds.get(t.code);
+                    if (existing == null) {
+                        componentSeeds.put(t.code, t);
+                        cmpQueue.add(t.code);
+                    } else {
+                        LogicalSeed merged = existing.merge(t);
+                        componentSeeds.put(t.code, merged);
+                        if (merged.methodSignatures.size() > existing.methodSignatures.size()) {
+                            cmpQueue.add(t.code);
+                        }
+                    }
+                }
+            }
+
+            // 汇总所有种子的方法签名（= 链路里所有构件/服务的实现方法，跨接口/SysUtil/ServiceOperation 已正确解析）
+            Set<String> sigs = new LinkedHashSet<>();
+            topServiceSeeds.values().forEach(s -> sigs.addAll(s.methodSignatures));
+            componentSeeds.values().forEach(s -> sigs.addAll(s.methodSignatures));
+
+            List<Map<String, Object>> methods = new ArrayList<>();
+            if (!sigs.isEmpty()) {
+                // 从每个实现方法再沿 CALLS/SELF_CALLS/SYS_UTIL_CALLS 展开内部可达方法（抓私有校验等深处 throw）；
+                // 跨服务的实现方法已由上面的种子覆盖。反查归属构件（serviceId/longname）。
+                session.run(
+                    "UNWIND $sigs AS sig\n"
+                    + "MATCH (entry:Method {signature: sig})\n"
+                    + "MATCH (entry)-[:CALLS|SELF_CALLS|SYS_UTIL_CALLS*0..8]->(r:Method)\n"
+                    + "OPTIONAL MATCH (op:ServiceOperation)-[:IMPLEMENTS_BY]->(r)\n"
+                    + "OPTIONAL MATCH (op)<-[:DECLARES_OPERATION]-(st:ServiceType)\n"
+                    + "RETURN DISTINCT r.classFqn AS class_fqn, r.name AS method_name,\n"
+                    + "       coalesce(op.serviceId, st.id) AS component_code,\n"
+                    + "       coalesce(op.longname, st.longname) AS component_name",
+                    Values.parameters("sigs", new ArrayList<>(sigs)))
+                    .forEachRemaining(rec -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("classFqn", stringValue(rec, "class_fqn"));
+                        m.put("methodName", stringValue(rec, "method_name"));
+                        m.put("componentCode", stringValue(rec, "component_code"));
+                        m.put("componentName", stringValue(rec, "component_name"));
+                        methods.add(m);
+                    });
+            }
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("txId", tx.id);
+            result.put("txName", tx.longname);
+            result.put("domainKey", tx.domainKey);
+            result.put("methods", methods);
+            return result;
+        }
+    }
+
     private boolean neo4jAvailable() {
         return neo4jConfig.isEnabled() && driver != null;
     }
