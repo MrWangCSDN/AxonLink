@@ -1,5 +1,6 @@
 package com.axonlink.controller;
 
+import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
 import com.axonlink.common.R;
 import com.axonlink.config.FlowtranConfig;
 import com.axonlink.dto.FlowtranDomain;
@@ -51,19 +52,22 @@ public class FlowtranController {
     private final FlowtranImpactStatsService flowtranImpactStatsService;
     private final ServiceNodeCache serviceNodeCache;
     private final FlowtranConfig   flowtranConfig;
+    private final DiiErrorCodeDao  diiErrorCodeDao;   // 链路返回里富化「N 错误码」计数，供折叠卡片直接展示
 
     public FlowtranController(FlowtranService flowtranService,
                               FlowtranImpactService flowtranImpactService,
                               FlowtranImpactExportService flowtranImpactExportService,
                               FlowtranImpactStatsService flowtranImpactStatsService,
                               ServiceNodeCache serviceNodeCache,
-                              FlowtranConfig flowtranConfig) {
+                              FlowtranConfig flowtranConfig,
+                              DiiErrorCodeDao diiErrorCodeDao) {
         this.flowtranService  = flowtranService;
         this.flowtranImpactService = flowtranImpactService;
         this.flowtranImpactExportService = flowtranImpactExportService;
         this.flowtranImpactStatsService = flowtranImpactStatsService;
         this.serviceNodeCache = serviceNodeCache;
         this.flowtranConfig   = flowtranConfig;
+        this.diiErrorCodeDao  = diiErrorCodeDao;
     }
 
     /**
@@ -105,6 +109,13 @@ public class FlowtranController {
     public R<Map<String, Object>> getChain(@PathVariable String txId) {
         Map<String, Object> chain = flowtranService.getChain(txId);
         if (chain == null) return R.fail("交易不存在：" + txId);
+        // 富化「N 错误码」计数（去重错误码数，与徽章口径一致）：列表页对每个交易都调本接口，
+        // 故折叠卡片即可直接展示错误码数，无需展开再单独取数。结果库缺表/异常时降级为 0，不影响链路。
+        try {
+            chain.put("errorCodeCount", diiErrorCodeDao.distinctCountByTxId(txId));
+        } catch (Exception e) {
+            chain.put("errorCodeCount", 0);
+        }
         return R.ok(chain);
     }
 
