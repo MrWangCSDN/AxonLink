@@ -54,10 +54,16 @@ public class SlowSqlOptimizeService {
      * 取消「已优化」：先清冗余列、后删真身。
      * <p>此序保证：若删真身失败，真身仍在（OPTIMIZED），下次导入会从真身重新同步冗余列，
      * 收敛到一致的 OPTIMIZED 态（可见、可重试），不会留下无真身对应的孤儿冗余列。
+     * <p>取消是破坏性操作（无审批自助），故留一条审计日志（谁取消、原打标人），便于追溯。
      */
-    public void unmark(String serviceName, String abstractHash) {
+    public void unmark(String serviceName, String abstractHash, String unmarkedBy) {
+        Map<String, Object> existing = optimizeDao.findByKey(serviceName, abstractHash);
         slowSqlDao.clearOptimizeByServiceAndHash(serviceName, abstractHash);
         optimizeDao.delete(serviceName, abstractHash);
+        if (existing != null) {
+            log.info("[slow-sql-optimize] 取消已优化：操作人={} 原打标人={} (svc={}, hash={})",
+                    unmarkedBy, existing.get("optimized_by"), serviceName, abstractHash);
+        }
     }
 
     /**
@@ -78,7 +84,7 @@ public class SlowSqlOptimizeService {
             String svc = (String) rec.get("service_name");
             String hash = (String) rec.get("abstract_hash");
             if (!batch.contains(svc + "\n" + hash)) continue;   // 本轮未出现，不动
-            String status = String.valueOf(rec.get("status"));
+            String status = (String) rec.get("status");
             String r0 = (String) rec.get("optimized_round");
             String reappeared = (String) rec.get("reappeared_round");
             // 又出现在更晚轮次 → 翻/更新 REGRESSED（DAO 内含 round > r0 守卫）

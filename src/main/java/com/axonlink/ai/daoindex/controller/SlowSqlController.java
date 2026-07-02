@@ -142,13 +142,14 @@ public class SlowSqlController {
     }
 
     @DeleteMapping("/optimize")
-    public R<Map<String, Object>> unmarkOptimized(@RequestBody Map<String, String> body) {
+    public R<Map<String, Object>> unmarkOptimized(@RequestBody Map<String, String> body,
+                                                  HttpServletRequest request) {
         String serviceName = body.get("serviceName");
         String abstractHash = body.get("abstractHash");
         if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
             return R.fail("serviceName / abstractHash 不能为空");
         }
-        optimizeService.unmark(serviceName.trim(), abstractHash.trim());
+        optimizeService.unmark(serviceName.trim(), abstractHash.trim(), request.getRemoteUser());
         return R.ok(Map.of("status", "NONE"));
     }
 

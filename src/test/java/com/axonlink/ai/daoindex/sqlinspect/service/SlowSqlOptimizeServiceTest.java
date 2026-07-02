@@ -118,7 +118,7 @@ class SlowSqlOptimizeServiceTest {
     void unmarkClears() {
         insertRow("svcA", "h1", "20260615-1");
         service.mark("svcA", "h1", "alice");
-        service.unmark("svcA", "h1");
+        service.unmark("svcA", "h1", "bob");
         assertNull(optimizeDao.findByKey("svcA", "h1"));
         assertNull(row("svcA", "h1", "20260615-1").get("optimize_status"));
     }
