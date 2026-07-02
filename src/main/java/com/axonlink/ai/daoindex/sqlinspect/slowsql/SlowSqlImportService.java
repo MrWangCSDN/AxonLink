@@ -2,6 +2,7 @@ package com.axonlink.ai.daoindex.sqlinspect.slowsql;
 
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
 import com.axonlink.ai.daoindex.sqlinspect.service.NsqlIdProjectIndex;
+import com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService;
 import com.axonlink.ai.daoindex.sqlinspect.service.WhitelistApplicationService;
 import com.axonlink.ai.daoindex.sqlinspect.slowsql.dto.ParsedSlowSqlRow;
 import org.apache.poi.ss.usermodel.Cell;
@@ -51,17 +52,20 @@ public class SlowSqlImportService {
     private final NsqlIdProjectIndex nsqlIndex;
     private final OdbLocationDomainResolver odbResolver;
     private final ObjectProvider<WhitelistApplicationService> whitelistServiceProvider;
+    private final ObjectProvider<SlowSqlOptimizeService> optimizeServiceProvider;
 
     public SlowSqlImportService(DiiSlowSqlDao dao,
                                 com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
                                 NsqlIdProjectIndex nsqlIndex,
                                 OdbLocationDomainResolver odbResolver,
-                                ObjectProvider<WhitelistApplicationService> whitelistServiceProvider) {
+                                ObjectProvider<WhitelistApplicationService> whitelistServiceProvider,
+                                ObjectProvider<SlowSqlOptimizeService> optimizeServiceProvider) {
         this.dao = dao;
         this.filterDao = filterDao;
         this.nsqlIndex = nsqlIndex;
         this.odbResolver = odbResolver;
         this.whitelistServiceProvider = whitelistServiceProvider;
+        this.optimizeServiceProvider = optimizeServiceProvider;
     }
 
     /**
@@ -134,6 +138,19 @@ public class SlowSqlImportService {
             }
         }
 
+        // ⑤ 已优化状态继承 + 跨轮次「优化未生效」检测（仿白名单，失败不阻断）。
+        int reappearedHit = 0;
+        if (!agg.isEmpty()) {
+            SlowSqlOptimizeService opt = optimizeServiceProvider.getIfAvailable();
+            if (opt != null) {
+                try {
+                    reappearedHit = opt.inheritAndDetectReappearOnImport(agg.keySet(), r);
+                } catch (Exception ex) {
+                    log.warn("[slow-sql-import] 已优化状态继承/检测失败: {}", ex.getMessage());
+                }
+            }
+        }
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("round", r);
         result.put("rawRows", rawRows[0]);
@@ -142,6 +159,7 @@ public class SlowSqlImportService {
         result.put("skipped", skipped[0]);
         result.put("filtered", filtered[0]);   // v3：被采集过滤名单排除的行数
         result.put("overwritten", deleted);
+        result.put("reappearedHit", reappearedHit);   // 本轮新判「优化未生效」条数
         log.info("[slow-sql-import] env={} 结果={}", env, result);
         return result;
     }
