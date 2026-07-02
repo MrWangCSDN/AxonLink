@@ -31,14 +31,17 @@ public class SlowSqlController {
     private final DiiSlowSqlDao dao;
     private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
     private final DaoIndexAnalysisProperties props;
+    private final com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService;
 
     public SlowSqlController(SlowSqlImportService importService, DiiSlowSqlDao dao,
                              com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
-                             DaoIndexAnalysisProperties props) {
+                             DaoIndexAnalysisProperties props,
+                             com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService) {
         this.importService = importService;
         this.dao = dao;
         this.filterDao = filterDao;
         this.props = props;
+        this.optimizeService = optimizeService;
     }
 
     // ── 导入（口令）──
@@ -118,6 +121,35 @@ public class SlowSqlController {
     @GetMapping("/domain-stats")
     public R<List<Map<String, Object>>> domainStats() {
         return R.ok(dao.aggregateByDomain());
+    }
+
+    // ── 已优化自助开关（无口令、无审批；打标人取当前登录用户）──
+
+    @PostMapping("/optimize")
+    public R<Map<String, Object>> markOptimized(@RequestBody Map<String, String> body,
+                                                HttpServletRequest request) {
+        String serviceName = body.get("serviceName");
+        String abstractHash = body.get("abstractHash");
+        if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        try {
+            String r0 = optimizeService.mark(serviceName.trim(), abstractHash.trim(), request.getRemoteUser());
+            return R.ok(Map.of("status", "OPTIMIZED", "optimizedRound", r0 == null ? "" : r0));
+        } catch (IllegalArgumentException e) {
+            return R.fail(e.getMessage());
+        }
+    }
+
+    @DeleteMapping("/optimize")
+    public R<Map<String, Object>> unmarkOptimized(@RequestBody Map<String, String> body) {
+        String serviceName = body.get("serviceName");
+        String abstractHash = body.get("abstractHash");
+        if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        optimizeService.unmark(serviceName.trim(), abstractHash.trim());
+        return R.ok(Map.of("status", "NONE"));
     }
 
     // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
