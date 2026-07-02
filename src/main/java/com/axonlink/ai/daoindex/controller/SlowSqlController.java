@@ -79,10 +79,11 @@ public class SlowSqlController {
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String whitelistStatus,
+            @RequestParam(required = false) String optimizeStatus,
             @RequestParam(required = false) String round,
             @RequestParam(required = false) String approverUser) {
-        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, round, approverUser, limit, offset);
-        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, round, approverUser);
+        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser, limit, offset);
+        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("total", total);
         payload.put("items", items);
@@ -166,9 +167,10 @@ public class SlowSqlController {
                                          @RequestParam(required = false) String bizType,
                                          @RequestParam(required = false) String keyword,
                                          @RequestParam(required = false) String whitelistStatus,
+                                         @RequestParam(required = false) String optimizeStatus,
                                          @RequestParam(required = false) String round) {
         try {
-            byte[] bytes = buildWorkbook(domain, bizType, keyword, whitelistStatus, round);
+            byte[] bytes = buildWorkbook(domain, bizType, keyword, whitelistStatus, optimizeStatus, round);
             String scope = round == null || round.isBlank() ? "all" : round.trim();
             String fname = "slow-sql-" + scope + ".xlsx";
             HttpHeaders headers = new HttpHeaders();
@@ -184,12 +186,12 @@ public class SlowSqlController {
 
     /**
      * v3 导出：列与页面完全一致——微服务/领域/类型/抽象SQL/最大执行耗时/执行参数/执行次数/
-     * 来源文件/轮次/重复出现轮次/白名单状态；数据=当前筛选下的全量（跨分页，不 OFFSET）。
+     * 来源文件/轮次/重复出现轮次/白名单状态/优化状态；数据=当前筛选下的全量（跨分页，不 OFFSET）。
      */
     private byte[] buildWorkbook(String domain, String bizType, String keyword,
-                                 String whitelistStatus, String round) throws Exception {
+                                 String whitelistStatus, String optimizeStatus, String round) throws Exception {
         List<Map<String, Object>> rows =
-                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, round, null);
+                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, null);
 
         try (XSSFWorkbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("慢SQL维度");
@@ -202,7 +204,7 @@ public class SlowSqlController {
             hs.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
             List<String> headers = List.of("微服务", "领域", "类型", "抽象SQL", "最大执行耗时(ms)",
-                    "执行参数", "执行次数", "来源文件", "轮次", "重复出现轮次", "白名单状态");
+                    "执行参数", "执行次数", "来源文件", "轮次", "重复出现轮次", "白名单状态", "优化状态");
             Row hr = sheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
                 Cell c = hr.createCell(i);
@@ -226,6 +228,7 @@ public class SlowSqlController {
                 er.createCell(col++).setCellValue(str(r.get("round")));
                 er.createCell(col++).setCellValue(str(r.get("repeat_rounds")));
                 er.createCell(col++).setCellValue(wlLabel((String) r.get("whitelist_status")));
+                er.createCell(col++).setCellValue(optLabel(r));
             }
             wb.write(out);
             return out.toByteArray();
@@ -243,6 +246,16 @@ public class SlowSqlController {
             case "CANCELLED":   return "已取消";
             default:            return s;
         }
+    }
+
+    /** 优化状态中文（带轮次上下文，与页面一致）。 */
+    private static String optLabel(Map<String, Object> r) {
+        String s = (String) r.get("optimize_status");
+        if (s == null || s.isBlank()) return "未处理";
+        String r0 = str(r.get("optimized_round"));
+        if ("OPTIMIZED".equals(s)) return "已优化@" + r0;
+        if ("REGRESSED".equals(s)) return "优化未生效(" + r0 + "标→" + str(r.get("reappeared_round")) + "现)";
+        return s;
     }
 
     private static String str(Object v) { return v == null ? "" : String.valueOf(v); }
