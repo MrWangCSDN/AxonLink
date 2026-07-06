@@ -26,19 +26,25 @@ public class DiiSlowSqlOptimizeDao {
         this.jdbc = diiResultJdbcTemplate;
     }
 
-    /** 打标「已优化」：按 (service_name, abstract_hash) upsert，回到 OPTIMIZED 并清 reappeared。 */
+    /**
+     * 打标「已优化」：按 (service_name, abstract_hash) upsert，回到 OPTIMIZED 并清 reappeared。
+     * 记录优化人工号({@code optimizedBy})、姓名({@code optimizedByName})、优化内容({@code note})。
+     */
     public void upsertOptimized(String serviceName, String abstractHash, String optimizedRound,
-                                String optimizedBy, LocalDateTime now) {
+                                String optimizedBy, String optimizedByName, String note, LocalDateTime now) {
         Timestamp ts = Timestamp.valueOf(now);
         jdbc.update(
                 "INSERT INTO dii_slow_sql_optimization " +
                 " (service_name, abstract_hash, status, optimized_round, reappeared_round, " +
-                "  optimized_by, optimized_at, updated_at) " +
-                "VALUES (?, ?, ?, ?, NULL, ?, ?, ?) " +
+                "  optimized_by, optimized_by_name, optimize_note, optimized_at, updated_at) " +
+                "VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?) " +
                 "ON DUPLICATE KEY UPDATE " +
                 "  status = VALUES(status), optimized_round = VALUES(optimized_round), " +
-                "  reappeared_round = NULL, optimized_by = VALUES(optimized_by), updated_at = VALUES(updated_at)",
-                serviceName, abstractHash, STATUS_OPTIMIZED, optimizedRound, optimizedBy, ts, ts);
+                "  reappeared_round = NULL, optimized_by = VALUES(optimized_by), " +
+                "  optimized_by_name = VALUES(optimized_by_name), optimize_note = VALUES(optimize_note), " +
+                "  updated_at = VALUES(updated_at)",
+                serviceName, abstractHash, STATUS_OPTIMIZED, optimizedRound,
+                optimizedBy, optimizedByName, note, ts, ts);
     }
 
     /** 取消标记：物删真身行，返回删除行数。 */

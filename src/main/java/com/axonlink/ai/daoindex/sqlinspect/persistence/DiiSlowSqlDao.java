@@ -130,8 +130,12 @@ public class DiiSlowSqlDao {
                 "       s.max_time_cost_ms, s.max_time_cost_raw, s.exec_params, s.source_location, " +
                 "       s.exec_count, s.round, s.repeat_rounds, " +
                 "       s.whitelist_app_id, s.whitelist_status, s.is_whitelist, " +
-                "       s.optimize_status, s.optimized_round, s.reappeared_round " +
-                "  FROM dii_slow_sql s WHERE 1=1 ");
+                "       s.optimize_status, s.optimized_round, s.reappeared_round, " +
+                "       o.optimized_by, o.optimized_by_name, o.optimize_note " +
+                "  FROM dii_slow_sql s " +
+                "  LEFT JOIN dii_slow_sql_optimization o " +
+                "    ON o.service_name = s.service_name AND o.abstract_hash = s.abstract_hash " +
+                " WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
         appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser);
         sb.append(" ORDER BY s.max_time_cost_ms DESC, s.id ASC LIMIT ? OFFSET ?");
@@ -215,8 +219,12 @@ public class DiiSlowSqlDao {
                 "SELECT s.service_name, s.domain, s.biz_type, s.abstract_sql, " +
                 "       s.max_time_cost_ms, s.max_time_cost_raw, s.exec_params, s.source_location, " +
                 "       s.exec_count, s.round, s.repeat_rounds, s.whitelist_status, " +
-                "       s.optimize_status, s.optimized_round, s.reappeared_round " +
-                "  FROM dii_slow_sql s WHERE 1=1 ");
+                "       s.optimize_status, s.optimized_round, s.reappeared_round, " +
+                "       o.optimized_by, o.optimized_by_name, o.optimize_note " +
+                "  FROM dii_slow_sql s " +
+                "  LEFT JOIN dii_slow_sql_optimization o " +
+                "    ON o.service_name = s.service_name AND o.abstract_hash = s.abstract_hash " +
+                " WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
         appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser);
         sb.append(" ORDER BY s.max_time_cost_ms DESC, s.id ASC LIMIT 50000");

@@ -35,6 +35,14 @@ class DiiSlowSqlDaoOptimizeTest {
                 + "whitelist_app_id BIGINT, whitelist_status VARCHAR(20), is_whitelist TINYINT DEFAULT 0,"
                 + "optimize_status VARCHAR(20) DEFAULT NULL, optimized_round VARCHAR(20) DEFAULT NULL,"
                 + "reappeared_round VARCHAR(20) DEFAULT NULL)");
+        // listAggregated/listAggregatedAll 现 LEFT JOIN 真身表取 优化人/内容 → 建表以供 JOIN
+        jdbc.execute("CREATE TABLE dii_slow_sql_optimization ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, service_name VARCHAR(128) NOT NULL,"
+                + "abstract_hash CHAR(64) NOT NULL, status VARCHAR(20) NOT NULL,"
+                + "optimized_round VARCHAR(20) NOT NULL, reappeared_round VARCHAR(20),"
+                + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
+                + "optimized_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,"
+                + "CONSTRAINT uk_svc_hash UNIQUE (service_name, abstract_hash))");
         dao = new DiiSlowSqlDao(jdbc);
     }
 

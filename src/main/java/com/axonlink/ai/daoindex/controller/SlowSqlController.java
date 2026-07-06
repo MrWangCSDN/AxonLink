@@ -32,16 +32,19 @@ public class SlowSqlController {
     private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
     private final DaoIndexAnalysisProperties props;
     private final com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService;
+    private final com.axonlink.security.UserPrincipalResolver userResolver;
 
     public SlowSqlController(SlowSqlImportService importService, DiiSlowSqlDao dao,
                              com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
                              DaoIndexAnalysisProperties props,
-                             com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService) {
+                             com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService,
+                             com.axonlink.security.UserPrincipalResolver userResolver) {
         this.importService = importService;
         this.dao = dao;
         this.filterDao = filterDao;
         this.props = props;
         this.optimizeService = optimizeService;
+        this.userResolver = userResolver;
     }
 
     // ── 导入（口令）──
@@ -123,34 +126,48 @@ public class SlowSqlController {
         return R.ok(dao.aggregateByDomain());
     }
 
-    // ── 已优化自助开关（无口令、无审批；打标人取当前登录用户）──
+    // ── 标记「已优化」（无口令、无审批；工号/姓名取当前登录用户，需填优化内容）──
 
     @PostMapping("/optimize")
     public R<Map<String, Object>> markOptimized(@RequestBody Map<String, String> body,
                                                 HttpServletRequest request) {
         String serviceName = body.get("serviceName");
         String abstractHash = body.get("abstractHash");
+        String note = body.get("note");
         if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
             return R.fail("serviceName / abstractHash 不能为空");
         }
+        if (note == null || note.trim().isEmpty()) {
+            return R.fail("优化内容不能为空");
+        }
+        note = note.trim();
+        if (note.length() > 200) {
+            return R.fail("优化内容不能超过 200 字");
+        }
+        // 工号/姓名取当前登录用户：优先解析 sys_user（工号 empNo + 姓名 realName），取不到回退登录名。
+        String empNo = request.getRemoteUser();
+        String realName = null;
         try {
-            String r0 = optimizeService.mark(serviceName.trim(), abstractHash.trim(), request.getRemoteUser());
+            com.axonlink.security.UserPrincipalResolver.Resolved r = userResolver.resolve(request);
+            if (r != null && r.user != null) {
+                empNo = firstNonBlank2(r.user.getEmpNo(), r.principal, empNo);
+                realName = r.user.getRealName();
+            }
+        } catch (Exception e) {
+            log.warn("[slow-sql-optimize] 解析优化人失败，回退登录名 {}: {}", empNo, e.getMessage());
+        }
+        try {
+            String r0 = optimizeService.mark(serviceName.trim(), abstractHash.trim(), empNo, realName, note);
             return R.ok(Map.of("status", "OPTIMIZED", "optimizedRound", r0 == null ? "" : r0));
         } catch (IllegalArgumentException e) {
             return R.fail(e.getMessage());
         }
     }
 
-    @DeleteMapping("/optimize")
-    public R<Map<String, Object>> unmarkOptimized(@RequestBody Map<String, String> body,
-                                                  HttpServletRequest request) {
-        String serviceName = body.get("serviceName");
-        String abstractHash = body.get("abstractHash");
-        if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
-            return R.fail("serviceName / abstractHash 不能为空");
-        }
-        optimizeService.unmark(serviceName.trim(), abstractHash.trim(), request.getRemoteUser());
-        return R.ok(Map.of("status", "NONE"));
+    private static String firstNonBlank2(String a, String b, String c) {
+        if (a != null && !a.isBlank()) return a;
+        if (b != null && !b.isBlank()) return b;
+        return c;
     }
 
     // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
@@ -237,7 +254,8 @@ public class SlowSqlController {
             hs.setFillPattern(FillPatternType.SOLID_FOREGROUND);
 
             List<String> headers = List.of("微服务", "领域", "类型", "抽象SQL", "最大执行耗时(ms)",
-                    "执行参数", "执行次数", "来源文件", "轮次", "重复出现轮次", "白名单状态", "优化状态");
+                    "执行参数", "执行次数", "来源文件", "轮次", "重复出现轮次", "白名单状态", "优化状态",
+                    "优化人", "优化内容");
             Row hr = sheet.createRow(0);
             for (int i = 0; i < headers.size(); i++) {
                 Cell c = hr.createCell(i);
@@ -262,6 +280,8 @@ public class SlowSqlController {
                 er.createCell(col++).setCellValue(str(r.get("repeat_rounds")));
                 er.createCell(col++).setCellValue(wlLabel((String) r.get("whitelist_status")));
                 er.createCell(col++).setCellValue(optLabel(r));
+                er.createCell(col++).setCellValue(optOperator(r));
+                er.createCell(col++).setCellValue(str(r.get("optimize_note")));
             }
             wb.write(out);
             return out.toByteArray();
@@ -289,6 +309,16 @@ public class SlowSqlController {
         if ("OPTIMIZED".equals(s)) return "已优化@" + r0;
         if ("REGRESSED".equals(s)) return "优化未生效(" + r0 + "标→" + str(r.get("reappeared_round")) + "现)";
         return s;
+    }
+
+    /** 优化人：姓名(工号)；缺一取其一，都无则空。 */
+    private static String optOperator(Map<String, Object> r) {
+        String name = str(r.get("optimized_by_name"));
+        String emp = str(r.get("optimized_by"));
+        if (name.isEmpty() && emp.isEmpty()) return "";
+        if (name.isEmpty()) return emp;
+        if (emp.isEmpty()) return name;
+        return name + "(" + emp + ")";
     }
 
     private static String str(Object v) { return v == null ? "" : String.valueOf(v); }

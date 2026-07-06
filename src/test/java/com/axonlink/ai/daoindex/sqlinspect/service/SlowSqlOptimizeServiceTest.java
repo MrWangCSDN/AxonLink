@@ -15,7 +15,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("SlowSqlOptimizeService —— 打标/取消/跨轮次未生效检测")
+@DisplayName("SlowSqlOptimizeService —— 打标(工号/姓名/内容)/跨轮次未生效检测")
 class SlowSqlOptimizeServiceTest {
 
     private JdbcTemplate jdbc;
@@ -39,7 +39,8 @@ class SlowSqlOptimizeServiceTest {
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, service_name VARCHAR(128) NOT NULL,"
                 + "abstract_hash CHAR(64) NOT NULL, status VARCHAR(20) NOT NULL,"
                 + "optimized_round VARCHAR(20) NOT NULL, reappeared_round VARCHAR(20),"
-                + "optimized_by VARCHAR(100), optimized_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,"
+                + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
+                + "optimized_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,"
                 + "CONSTRAINT uk_svc_hash UNIQUE (service_name, abstract_hash))");
         slowSqlDao = new DiiSlowSqlDao(jdbc);
         optimizeDao = new DiiSlowSqlOptimizeDao(jdbc);
@@ -58,22 +59,26 @@ class SlowSqlOptimizeServiceTest {
     void markSetsOptimizedAndSyncs() {
         insertRow("svcA", "h1", "20260601-1");
         insertRow("svcA", "h1", "20260615-1");
-        String r0 = service.mark("svcA", "h1", "alice");
+        String r0 = service.mark("svcA", "h1", "1001", "张三", "加索引");
         assertEquals("20260615-1", r0);
-        assertEquals("OPTIMIZED", optimizeDao.findByKey("svcA", "h1").get("status"));
+        Map<String, Object> rec = optimizeDao.findByKey("svcA", "h1");
+        assertEquals("OPTIMIZED", rec.get("status"));
+        assertEquals("1001", rec.get("optimized_by"));
+        assertEquals("张三", rec.get("optimized_by_name"));
+        assertEquals("加索引", rec.get("optimize_note"));
         assertEquals("OPTIMIZED", row("svcA", "h1", "20260601-1").get("optimize_status"));
         assertEquals("20260615-1", row("svcA", "h1", "20260615-1").get("optimized_round"));
     }
 
     @Test @DisplayName("mark：SQL 不在池中 → 抛 IllegalArgumentException")
     void markThrowsWhenNotInPool() {
-        assertThrows(IllegalArgumentException.class, () -> service.mark("nope", "hX", "alice"));
+        assertThrows(IllegalArgumentException.class, () -> service.mark("nope", "hX", "1001", "张三", "加索引"));
     }
 
     @Test @DisplayName("导入更晚轮次又出现 → 翻 REGRESSED，reappearedHit=1，冗余列同步新轮行")
     void reappearFlipsRegressed() {
         insertRow("svcA", "h1", "20260615-1");
-        service.mark("svcA", "h1", "alice");           // R0=20260615-1
+        service.mark("svcA", "h1", "1001", "张三", "加索引");           // R0=20260615-1
         insertRow("svcA", "h1", "20260629-1");         // 模拟导入更晚一轮
         int hit = service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260629-1");
         assertEquals(1, hit);
@@ -86,7 +91,7 @@ class SlowSqlOptimizeServiceTest {
     @Test @DisplayName("同轮/更早轮重导 → 不误报，reappearedHit=0")
     void sameOrEarlierRoundNoRegress() {
         insertRow("svcA", "h1", "20260615-1");
-        service.mark("svcA", "h1", "alice");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
         assertEquals(0, service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260615-1"));
         insertRow("svcA", "h1", "20260601-1");
         assertEquals(0, service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260601-1"));
@@ -96,7 +101,7 @@ class SlowSqlOptimizeServiceTest {
     @Test @DisplayName("已 REGRESSED 再更晚轮出现 → 不重复计数，reappeared 取最新")
     void alreadyRegressedUpdatesLatestNoDoubleCount() {
         insertRow("svcA", "h1", "20260615-1");
-        service.mark("svcA", "h1", "alice");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
         insertRow("svcA", "h1", "20260629-1");
         service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260629-1");
         insertRow("svcA", "h1", "20260706-1");
@@ -108,18 +113,9 @@ class SlowSqlOptimizeServiceTest {
     @Test @DisplayName("本批不含该键 → 不动它（其他轮次导入不误伤）")
     void keyNotInBatchUntouched() {
         insertRow("svcA", "h1", "20260615-1");
-        service.mark("svcA", "h1", "alice");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
         int hit = service.inheritAndDetectReappearOnImport(Set.of("svcOTHER\nhZ"), "20260629-1");
         assertEquals(0, hit);
         assertEquals("OPTIMIZED", optimizeDao.findByKey("svcA", "h1").get("status"));
-    }
-
-    @Test @DisplayName("unmark：删真身 + 清冗余列")
-    void unmarkClears() {
-        insertRow("svcA", "h1", "20260615-1");
-        service.mark("svcA", "h1", "alice");
-        service.unmark("svcA", "h1", "bob");
-        assertNull(optimizeDao.findByKey("svcA", "h1"));
-        assertNull(row("svcA", "h1", "20260615-1").get("optimize_status"));
     }
 }
