@@ -414,6 +414,13 @@ public class FlowtransMetaGraphBuilder {
                     graphEdges.add(edge("HAS_BRANCH", currentKey, whenKey));
                     parseContainer(whenKey, "EXECUTES", txId, txClassFqn, whenEl, fieldIndex, serviceTypes);
                 }
+            } else {
+                // 其它任意流程容器（loop / if / switch / 循环里再嵌 case、case 里再嵌 loop …）：
+                // 不管谁嵌套谁，一律透明递归到底，把最里层的 method / service 步骤都挖出来挂到当前
+                // parent 下（与外层步骤同层）。原先只认 method/service/case → loop、if 等容器里的步骤
+                // 被整段丢弃、链路「流程编排」不显示。递归天然覆盖任意深度、任意组合的嵌套；
+                // method/service 是叶子由上面分支处理，故这里的兜底只会往下找步骤、不会误建节点。
+                parseContainer(parentKey, relationType, txId, txClassFqn, child, fieldIndex, serviceTypes);
             }
 
             if (currentKey != null && previousKey != null) {
