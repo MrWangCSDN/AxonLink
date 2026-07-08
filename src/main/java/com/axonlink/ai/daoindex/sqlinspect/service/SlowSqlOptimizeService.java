@@ -48,6 +48,12 @@ public class SlowSqlOptimizeService {
                        String optimizedBy, String optimizedByName, String note) {
         String r0 = slowSqlDao.maxRoundByServiceAndHash(serviceName, abstractHash);
         if (r0 == null) throw new IllegalArgumentException("该SQL在慢SQL池中不存在，无法标记已优化");
+        // 互斥：白名单与优化二选一。仅拦「新进入优化路线」——已有优化记录的（编辑内容/重新标记）放行，
+        // 兼容互斥规则上线前的存量双态行。
+        if (optimizeDao.findByKey(serviceName, abstractHash) == null
+                && slowSqlDao.hasWhitelistByServiceAndHash(serviceName, abstractHash)) {
+            throw new IllegalArgumentException("该SQL已在白名单流程中（申请/审批/已通过），白名单与优化互斥，不能标记已优化");
+        }
         LocalDateTime now = LocalDateTime.now();
         optimizeDao.upsertOptimized(serviceName, abstractHash, r0, optimizedBy, optimizedByName, note, now);
         slowSqlDao.syncOptimizeByServiceAndHash(

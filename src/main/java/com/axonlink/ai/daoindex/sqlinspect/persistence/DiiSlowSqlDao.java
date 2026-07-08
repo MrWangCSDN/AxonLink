@@ -289,4 +289,24 @@ public class DiiSlowSqlDao {
                 " WHERE service_name = ? AND abstract_hash = ?",
                 serviceName, abstractHash);
     }
+
+    // ── 白名单 / 优化 互斥判定（两条路线二选一，按冗余列查，任意轮次行命中即在该路线上）──
+
+    /** 该 (微服务, 抽象SQL) 是否已在白名单流程中（申请中/已通过/已退回，任意轮次行 whitelist_status 非空）。 */
+    public boolean hasWhitelistByServiceAndHash(String serviceName, String abstractHash) {
+        Long n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_slow_sql " +
+                " WHERE service_name = ? AND abstract_hash = ? AND whitelist_status IS NOT NULL",
+                Long.class, serviceName, abstractHash);
+        return n != null && n > 0;
+    }
+
+    /** 该 (微服务, 抽象SQL) 是否已在优化路线上（已优化/优化未生效，任意轮次行 optimize_status 非空）。 */
+    public boolean hasOptimizeByServiceAndHash(String serviceName, String abstractHash) {
+        Long n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_slow_sql " +
+                " WHERE service_name = ? AND abstract_hash = ? AND optimize_status IS NOT NULL",
+                Long.class, serviceName, abstractHash);
+        return n != null && n > 0;
+    }
 }

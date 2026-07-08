@@ -33,6 +33,7 @@ class SlowSqlOptimizeServiceTest {
         jdbc.execute("CREATE TABLE dii_slow_sql ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, service_name VARCHAR(128) NOT NULL,"
                 + "abstract_hash CHAR(64) NOT NULL, round VARCHAR(20) NOT NULL,"
+                + "whitelist_status VARCHAR(20) DEFAULT NULL,"
                 + "optimize_status VARCHAR(20) DEFAULT NULL, optimized_round VARCHAR(20) DEFAULT NULL,"
                 + "reappeared_round VARCHAR(20) DEFAULT NULL)");
         jdbc.execute("CREATE TABLE dii_slow_sql_optimization ("
@@ -73,6 +74,25 @@ class SlowSqlOptimizeServiceTest {
     @Test @DisplayName("mark：SQL 不在池中 → 抛 IllegalArgumentException")
     void markThrowsWhenNotInPool() {
         assertThrows(IllegalArgumentException.class, () -> service.mark("nope", "hX", "1001", "张三", "加索引"));
+    }
+
+    @Test @DisplayName("互斥：已在白名单流程中 → 新标记被拒")
+    void markBlockedWhenWhitelistActive() {
+        insertRow("svcA", "h1", "20260615-1");
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1' WHERE service_name='svcA'");
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> service.mark("svcA", "h1", "1001", "张三", "加索引"));
+        assertTrue(e.getMessage().contains("互斥"));
+        assertNull(optimizeDao.findByKey("svcA", "h1"));
+    }
+
+    @Test @DisplayName("互斥：已有优化记录（存量双态）→ 编辑内容放行")
+    void markAllowedForExistingOptimizeDespiteWhitelist() {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");                    // 先入优化路线
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1' WHERE service_name='svcA'"); // 模拟存量双态
+        service.mark("svcA", "h1", "1001", "张三", "改写SQL");                   // 编辑不被拦
+        assertEquals("改写SQL", optimizeDao.findByKey("svcA", "h1").get("optimize_note"));
     }
 
     @Test @DisplayName("导入更晚轮次又出现 → 翻 REGRESSED，reappearedHit=1，冗余列同步新轮行")

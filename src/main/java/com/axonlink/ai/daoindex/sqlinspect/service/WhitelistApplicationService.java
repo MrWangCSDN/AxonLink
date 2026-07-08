@@ -135,6 +135,12 @@ public class WhitelistApplicationService {
                     "已存在活跃白名单申请 id=" + existing.get("id") + " status=" + existing.get("status"));
         }
 
+        // 互斥：慢SQL 的白名单与优化二选一——已标记优化（已优化/优化未生效）的 SQL 不能再申请白名单
+        if (TARGET_SLOW_SQL.equals(targetType)
+                && slowSqlDao.hasOptimizeByServiceAndHash(req.projectName, req.sqlHash)) {
+            throw new IllegalStateException("该SQL已标记优化，白名单与优化互斥，不能申请白名单");
+        }
+
         // v8：申请人=一级审批人——先建 PENDING_L1（l1_approver=本人），立即自动通过一审 → PENDING_L2。
         // 复用 l1Approve 跃迁，落库后记录与"被一审通过"的申请完全一致（l1_decision=APPROVE 等），审计可追溯。
         if (applicantIsL1) {
