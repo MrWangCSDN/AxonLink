@@ -178,9 +178,17 @@ public class WhitelistApplicationService {
         return id;
     }
 
+    /** 审批意见必填（通过/退回都要写意见，留审计痕迹）。 */
+    private static void requireOpinion(String opinion) {
+        if (opinion == null || opinion.isBlank()) {
+            throw new IllegalArgumentException("审批意见不能为空");
+        }
+    }
+
     /** L1 通过：PENDING_L1 → PENDING_L2，指定 L2 审批人。 */
     public void l1Approve(long id, String currentUser, String opinion, String l2Approver) {
         ensureEnabled();
+        requireOpinion(opinion);
         if (l2Approver == null || l2Approver.isBlank()) {
             throw new IllegalArgumentException("一级通过时必须指定二级审批人");
         }
@@ -205,6 +213,7 @@ public class WhitelistApplicationService {
     /** L1 退回：PENDING_L1 → REJECTED_L1。 */
     public void l1Reject(long id, String currentUser, String opinion) {
         ensureEnabled();
+        requireOpinion(opinion);
         int n = dao.l1Reject(id, currentUser, opinion);
         if (n == 0) {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L1 且 L1 审批人匹配）");
@@ -223,6 +232,7 @@ public class WhitelistApplicationService {
     /** L2 通过：PENDING_L2 → APPROVED（终态，写 is_whitelist=1）。 */
     public void l2Approve(long id, String currentUser, String opinion) {
         ensureEnabled();
+        requireOpinion(opinion);
         int n = dao.l2Approve(id, currentUser, opinion);
         if (n == 0) {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L2 且 L2 审批人匹配）");
@@ -242,6 +252,7 @@ public class WhitelistApplicationService {
     /** L2 退回：PENDING_L2 → PENDING_L1（带 L2 意见回 L1 再审）。 */
     public void l2Reject(long id, String currentUser, String opinion) {
         ensureEnabled();
+        requireOpinion(opinion);
         int n = dao.l2Reject(id, currentUser, opinion);
         if (n == 0) {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L2 且 L2 审批人匹配）");
@@ -438,6 +449,9 @@ public class WhitelistApplicationService {
         if (req == null) throw new IllegalArgumentException("请求体不能为空");
         if (req.applicant == null || req.applicant.isBlank()) {
             throw new IllegalArgumentException("申请人 (applicant) 不能为空");
+        }
+        if (req.applyReason == null || req.applyReason.isBlank()) {
+            throw new IllegalArgumentException("申请理由不能为空");
         }
         // v8：审批人必填校验移到 apply()——申请人本人是一级审批人时走"直接二审"分支，
         // 此时必填的是 l2Approver 而非 l1Approver，故这里不再统一强校验 l1Approver。
