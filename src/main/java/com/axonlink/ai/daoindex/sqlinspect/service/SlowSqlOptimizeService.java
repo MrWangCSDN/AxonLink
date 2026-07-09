@@ -48,17 +48,31 @@ public class SlowSqlOptimizeService {
                        String optimizedBy, String optimizedByName, String note) {
         String r0 = slowSqlDao.maxRoundByServiceAndHash(serviceName, abstractHash);
         if (r0 == null) throw new IllegalArgumentException("该SQL在慢SQL池中不存在，无法标记已优化");
+        Map<String, Object> existing = optimizeDao.findByKey(serviceName, abstractHash);
         // 互斥：白名单与优化二选一。仅拦「新进入优化路线」——已有优化记录的（编辑内容/重新标记）放行，
         // 兼容互斥规则上线前的存量双态行。
-        if (optimizeDao.findByKey(serviceName, abstractHash) == null
-                && slowSqlDao.hasWhitelistByServiceAndHash(serviceName, abstractHash)) {
+        if (existing == null && slowSqlDao.hasWhitelistByServiceAndHash(serviceName, abstractHash)) {
             throw new IllegalArgumentException("该SQL已在白名单流程中（申请/审批/已通过），白名单与优化互斥，不能标记已优化");
         }
         LocalDateTime now = LocalDateTime.now();
         optimizeDao.upsertOptimized(serviceName, abstractHash, r0, optimizedBy, optimizedByName, note, now);
         slowSqlDao.syncOptimizeByServiceAndHash(
                 serviceName, abstractHash, DiiSlowSqlOptimizeDao.STATUS_OPTIMIZED, r0, null);
+        // 优化路线（追加不删）：首次打标 / 未生效后重新打标 = 新一次尝试 → 追加一条；
+        // 仍是 OPTIMIZED 时的编辑 = 同一次尝试改内容 → 更新最新一条（保留其原 R0 与失败痕迹语义）。
+        boolean newAttempt = existing == null
+                || DiiSlowSqlOptimizeDao.STATUS_REGRESSED.equals(existing.get("status"));
+        if (newAttempt) {
+            optimizeDao.appendHistory(serviceName, abstractHash, r0, optimizedBy, optimizedByName, note, now);
+        } else {
+            optimizeDao.updateLatestHistory(serviceName, abstractHash, optimizedBy, optimizedByName, note, now);
+        }
         return r0;
+    }
+
+    /** 优化路线：该 (微服务, 抽象SQL) 的全部优化尝试（升序=第1次→最新），悬浮弹层用。 */
+    public List<Map<String, Object>> listHistory(String serviceName, String abstractHash) {
+        return optimizeDao.listHistory(serviceName, abstractHash);
     }
 
     /**
@@ -85,6 +99,8 @@ public class SlowSqlOptimizeService {
             // 又出现在更晚轮次 → 翻/更新 REGRESSED（DAO 内含 round > r0 守卫）
             if (r0 != null && round.compareTo(r0) > 0) {
                 optimizeDao.flagReappeared(svc, hash, round, now);
+                // 优化路线：把最新一次尝试回填 reappeared_round——"这次优化失败"永久留痕（重标不覆盖）
+                optimizeDao.stampLatestHistoryReappeared(svc, hash, round);
                 if (DiiSlowSqlOptimizeDao.STATUS_OPTIMIZED.equals(status)) reappearedHit++;
                 status = DiiSlowSqlOptimizeDao.STATUS_REGRESSED;
                 reappeared = (reappeared == null || round.compareTo(reappeared) > 0) ? round : reappeared;

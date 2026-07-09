@@ -88,4 +88,55 @@ public class DiiSlowSqlOptimizeDao {
                 STATUS_REGRESSED, reappearedRound, reappearedRound, Timestamp.valueOf(now),
                 serviceName, abstractHash, reappearedRound);
     }
+
+    // ── 优化路线（dii_slow_sql_optimize_history，追加不删，审计每次优化）──
+
+    /** 追加一条路线（新一次优化尝试：首次打标 / 未生效后重新打标）。 */
+    public void appendHistory(String serviceName, String abstractHash, String optimizedRound,
+                              String optimizedBy, String optimizedByName, String note, LocalDateTime now) {
+        jdbc.update(
+                "INSERT INTO dii_slow_sql_optimize_history " +
+                " (service_name, abstract_hash, optimized_round, optimized_by, optimized_by_name, " +
+                "  optimize_note, optimized_at, reappeared_round) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+                serviceName, abstractHash, optimizedRound, optimizedBy, optimizedByName,
+                note, Timestamp.valueOf(now));
+    }
+
+    /** 最新一条路线的 id（派生表包一层，MySQL 允许 UPDATE 同表 + H2 行为一致；ORDER BY+LIMIT 的 UPDATE 两库有分歧，弃用）。 */
+    private static final String LATEST_HISTORY_ID =
+            "(SELECT mid FROM (SELECT MAX(id) AS mid FROM dii_slow_sql_optimize_history " +
+            "   WHERE service_name = ? AND abstract_hash = ?) t)";
+
+    /** 仍是 OPTIMIZED 时的内容编辑：更新最新一条路线（不新增，属于同一次优化）。 */
+    public int updateLatestHistory(String serviceName, String abstractHash,
+                                   String optimizedBy, String optimizedByName, String note, LocalDateTime now) {
+        return jdbc.update(
+                "UPDATE dii_slow_sql_optimize_history " +
+                "   SET optimized_by = ?, optimized_by_name = ?, optimize_note = ?, optimized_at = ? " +
+                " WHERE id = " + LATEST_HISTORY_ID,
+                optimizedBy, optimizedByName, note, Timestamp.valueOf(now), serviceName, abstractHash);
+    }
+
+    /** 导入检测到该 SQL 又出现：把最新一条路线回填 reappeared_round（取更晚者），留"这次优化失败"的铁证。 */
+    public int stampLatestHistoryReappeared(String serviceName, String abstractHash, String reappearedRound) {
+        return jdbc.update(
+                "UPDATE dii_slow_sql_optimize_history " +
+                "   SET reappeared_round = CASE WHEN reappeared_round IS NULL OR ? > reappeared_round " +
+                "                               THEN ? ELSE reappeared_round END " +
+                " WHERE id = " + LATEST_HISTORY_ID,
+                reappearedRound, reappearedRound, serviceName, abstractHash);
+    }
+
+    /** 查优化路线（按时间升序=第1次→最新），optimized_at 转字符串便于前端直显。 */
+    public List<Map<String, Object>> listHistory(String serviceName, String abstractHash) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT id, optimized_round, optimized_by, optimized_by_name, optimize_note, " +
+                "       optimized_at, reappeared_round " +
+                "  FROM dii_slow_sql_optimize_history " +
+                " WHERE service_name = ? AND abstract_hash = ? ORDER BY id ASC",
+                serviceName, abstractHash);
+        rows.forEach(r -> r.computeIfPresent("optimized_at", (k, v) -> String.valueOf(v)));
+        return rows;
+    }
 }

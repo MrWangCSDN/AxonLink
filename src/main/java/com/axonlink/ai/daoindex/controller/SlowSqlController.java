@@ -170,6 +170,16 @@ public class SlowSqlController {
         return c;
     }
 
+    /** 优化路线（悬浮弹层用）：该 (微服务, 抽象SQL) 的全部优化尝试，升序=第1次→最新。 */
+    @GetMapping("/optimize/history")
+    public R<List<Map<String, Object>>> optimizeHistory(@RequestParam String serviceName,
+                                                        @RequestParam String abstractHash) {
+        if (serviceName.isBlank() || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        return R.ok(optimizeService.listHistory(serviceName.trim(), abstractHash.trim()));
+    }
+
     // ── v3：采集过滤名单（抽象SQL 以名单前缀开头 → 导入不纳入采集）──
 
     /** 名单列表（只读，不需口令）。 */

@@ -10,6 +10,7 @@ import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -43,6 +44,11 @@ class SlowSqlOptimizeServiceTest {
                 + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
                 + "optimized_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,"
                 + "CONSTRAINT uk_svc_hash UNIQUE (service_name, abstract_hash))");
+        jdbc.execute("CREATE TABLE dii_slow_sql_optimize_history ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, service_name VARCHAR(128) NOT NULL,"
+                + "abstract_hash CHAR(64) NOT NULL, optimized_round VARCHAR(20) NOT NULL,"
+                + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
+                + "optimized_at DATETIME NOT NULL, reappeared_round VARCHAR(20) DEFAULT NULL)");
         slowSqlDao = new DiiSlowSqlDao(jdbc);
         optimizeDao = new DiiSlowSqlOptimizeDao(jdbc);
         service = new SlowSqlOptimizeService(optimizeDao, slowSqlDao);
@@ -74,6 +80,42 @@ class SlowSqlOptimizeServiceTest {
     @Test @DisplayName("mark：SQL 不在池中 → 抛 IllegalArgumentException")
     void markThrowsWhenNotInPool() {
         assertThrows(IllegalArgumentException.class, () -> service.mark("nope", "hX", "1001", "张三", "加索引"));
+    }
+
+    @Test @DisplayName("优化路线：首标追加1条；仍OPTIMIZED时编辑=更新最新不追加")
+    void historyAppendOnMarkAndUpdateOnEdit() {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
+        assertEquals(1, service.listHistory("svcA", "h1").size());
+        service.mark("svcA", "h1", "1002", "李四", "改写SQL");        // 仍 OPTIMIZED → 编辑
+        List<Map<String, Object>> hist = service.listHistory("svcA", "h1");
+        assertEquals(1, hist.size());
+        assertEquals("李四", hist.get(0).get("optimized_by_name"));
+        assertEquals("改写SQL", hist.get(0).get("optimize_note"));
+    }
+
+    @Test @DisplayName("优化路线：未生效留痕(reappeared回填) + 重标追加新尝试，旧痕迹不被覆盖")
+    void historyKeepsFailedAttemptAndAppendsRemark() {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");                 // 尝试1
+        insertRow("svcA", "h1", "20260629-1");
+        service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260629-1"); // 尝试1失败
+        service.mark("svcA", "h1", "1002", "李四", "改写SQL去全表扫");         // 尝试2（REGRESSED后重标→追加）
+        List<Map<String, Object>> hist = service.listHistory("svcA", "h1");
+        assertEquals(2, hist.size());
+        // 尝试1：张三，reappeared 留痕，内容不被覆盖
+        assertEquals("张三", hist.get(0).get("optimized_by_name"));
+        assertEquals("加索引", hist.get(0).get("optimize_note"));
+        assertEquals("20260629-1", hist.get(0).get("reappeared_round"));
+        // 尝试2：李四，暂未失效
+        assertEquals("李四", hist.get(1).get("optimized_by_name"));
+        assertNull(hist.get(1).get("reappeared_round"));
+        // 尝试2 再失败 → 只回填最新一条
+        insertRow("svcA", "h1", "20260706-1");
+        service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260706-1");
+        hist = service.listHistory("svcA", "h1");
+        assertEquals("20260629-1", hist.get(0).get("reappeared_round"));   // 旧痕迹不动
+        assertEquals("20260706-1", hist.get(1).get("reappeared_round"));   // 新尝试留痕
     }
 
     @Test @DisplayName("互斥：已在白名单流程中 → 新标记被拒")
