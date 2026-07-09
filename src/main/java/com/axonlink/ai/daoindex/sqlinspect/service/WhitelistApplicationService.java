@@ -160,6 +160,9 @@ public class WhitelistApplicationService {
             syncByTargetType(id, STATUS_PENDING_L2, false, targetType, req.sqlHash, req.namedSql, req.projectName);
             // 邮件直接通知二级审批人
             sendMailL1PassedNotifyL2(id, autoOpinion, req.l2Approver);
+            Map<String, Object> createdApp = dao.findById(id);
+            recordFlow(createdApp, "APPLY", applicant, req.applyReason);
+            recordFlow(createdApp, "L1_APPROVE", applicant, autoOpinion);
             return id;
         }
 
@@ -175,6 +178,7 @@ public class WhitelistApplicationService {
 
         // 邮件通知 L1 审批人
         sendMailApplyPendingL1(id, targetType, req);
+        recordFlow(dao.findById(id), "APPLY", applicant, req.applyReason);
 
         return id;
     }
@@ -209,6 +213,7 @@ public class WhitelistApplicationService {
 
         // 邮件通知 L2 审批人
         sendMailL1PassedNotifyL2(id, opinion, l2Approver);
+        recordFlow(app, "L1_APPROVE", currentUser, opinion);
     }
 
     /** L1 退回：PENDING_L1 → REJECTED_L1。 */
@@ -228,6 +233,7 @@ public class WhitelistApplicationService {
 
         // 邮件通知申请人
         sendMailRejectedNotifyApplicant(id, opinion);
+        recordFlow(app, "L1_REJECT", currentUser, opinion);
     }
 
     /** L2 通过：PENDING_L2 → APPROVED（终态，写 is_whitelist=1）。 */
@@ -248,9 +254,10 @@ public class WhitelistApplicationService {
 
         // 邮件通知申请人
         sendMailApprovedNotifyApplicant(id, opinion, currentUser);
+        recordFlow(app, "L2_APPROVE", currentUser, opinion);
     }
 
-    /** L2 退回：PENDING_L2 → PENDING_L1（带 L2 意见回 L1 再审）。 */
+    /** L2 退回：PENDING_L2 → REJECTED_L2（二级退回，回一级重审——状态可见，不再悄悄回 PENDING_L1）。 */
     public void l2Reject(long id, String currentUser, String opinion) {
         ensureEnabled();
         requireOpinion(opinion);
@@ -259,14 +266,15 @@ public class WhitelistApplicationService {
             throw new IllegalStateException("无权或状态不符（当前必须为 PENDING_L2 且 L2 审批人匹配）");
         }
         Map<String, Object> app = dao.findById(id);
-        syncByTargetType(id, STATUS_PENDING_L1, false,
+        syncByTargetType(id, STATUS_REJECTED_L2, false,
                 (String) app.get("target_type"),
                 (String) app.get("sql_hash"),
                 (String) app.get("named_sql"),
                 (String) app.get("project_name"));
+        recordFlow(app, "L2_REJECT", currentUser, opinion);
     }
 
-    /** 取消：仅 PENDING_L1 / REJECTED_L1 且申请人本人。 */
+    /** 取消/撤回：仅 PENDING_L1 / REJECTED_L1 且申请人本人。撤回后白名单冗余清空 → 优化路线互斥解除。 */
     public void cancel(long id, String currentUser) {
         ensureEnabled();
         int n = dao.cancel(id, currentUser);
@@ -278,6 +286,34 @@ public class WhitelistApplicationService {
         itemDao.clearWhitelistByAppId(id);
         poolDao.clearWhitelistByAppId(id);
         slowSqlDao.clearWhitelistByAppId(id);
+        recordFlow(dao.findById(id), "CANCEL", currentUser, null);
+    }
+
+    /** 慢SQL 某 (微服务, 抽象SQL) 的白名单完整流转路径（跨多次申请，升序），悬浮弹层用。 */
+    public List<Map<String, Object>> listSlowSqlFlow(String serviceName, String abstractHash) {
+        return dao.listFlowBySlowKey(abstractHash, serviceName);
+    }
+
+    /**
+     * 记录一条流转事件（追加不删，审计）。失败不阻断主流程（log.warn）。
+     * 操作人姓名写入时按登录名/工号解析 sys_user 快照；解析不到留空由前端回退显示工号。
+     */
+    private void recordFlow(Map<String, Object> app, String action, String actor, String opinion) {
+        if (app == null) return;
+        try {
+            String actorName = null;
+            try {
+                var u = sysUserDao.findByUsername(actor);
+                if (u == null) u = sysUserDao.findByEmpNo(actor);
+                if (u != null) actorName = u.getRealName();
+            } catch (Exception ignore) { /* 姓名解析失败不影响记录 */ }
+            dao.insertFlowEvent(((Number) app.get("id")).longValue(),
+                    (String) app.get("target_type"), (String) app.get("sql_hash"),
+                    (String) app.get("named_sql"), (String) app.get("project_name"),
+                    action, actor, actorName, opinion);
+        } catch (Exception e) {
+            log.warn("[whitelist-flow] 流转事件记录失败 action={} app={}: {}", action, app.get("id"), e.getMessage());
+        }
     }
 
     /**

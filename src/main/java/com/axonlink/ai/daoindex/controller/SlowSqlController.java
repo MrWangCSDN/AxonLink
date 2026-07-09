@@ -333,7 +333,8 @@ public class SlowSqlController {
             case "PENDING_L1":  return "待一级";
             case "PENDING_L2":  return "待二级";
             case "APPROVED":    return "已通过";
-            case "REJECTED_L1": return "已退回";
+            case "REJECTED_L1": return "一级退回";
+            case "REJECTED_L2": return "二级退回";
             case "CANCELLED":   return "已取消";
             default:            return s;
         }

@@ -113,9 +113,9 @@ public class DiiSlowSqlDao {
         if (round != null && !round.isBlank()) { sb.append(" AND s.round = ? "); args.add(round.trim()); }
         // 「该我审批」：行的白名单申请处于待审，且当前用户是对应级别审批人（铃铛慢SQL待办用）
         if (approverUser != null && !approverUser.isBlank()) {
-            sb.append(" AND s.whitelist_status IN ('PENDING_L1','PENDING_L2') " +
+            sb.append(" AND s.whitelist_status IN ('PENDING_L1','PENDING_L2','REJECTED_L2') " +
                       " AND s.whitelist_app_id IN (SELECT id FROM dii_whitelist_application " +
-                      "   WHERE (status='PENDING_L1' AND l1_approver=?) OR (status='PENDING_L2' AND l2_approver=?)) ");
+                      "   WHERE (status IN ('PENDING_L1','REJECTED_L2') AND l1_approver=?) OR (status='PENDING_L2' AND l2_approver=?)) ");
             args.add(approverUser.trim()); args.add(approverUser.trim());
         }
     }

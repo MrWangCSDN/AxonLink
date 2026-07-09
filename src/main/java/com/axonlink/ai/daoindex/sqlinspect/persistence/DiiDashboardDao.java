@@ -224,12 +224,12 @@ public class DiiDashboardDao {
     // 白名单申请中：未到已申请，且处于待审/退回流程中
     static String wlApplying(String p) {
         return "(NOT(" + p + "is_whitelist=1 OR " + p + "whitelist_status='APPROVED') AND "
-             + p + "whitelist_status IN ('PENDING_L1','PENDING_L2','REJECTED_L1'))";
+             + p + "whitelist_status IN ('PENDING_L1','PENDING_L2','REJECTED_L1','REJECTED_L2'))";
     }
     // 普通（进维度分析/参与报错·需整改统计）：无活跃白名单
     static String plain(String p) {
         return "(" + p + "is_whitelist=0 AND (" + p + "whitelist_status IS NULL OR "
-             + p + "whitelist_status NOT IN ('PENDING_L1','PENDING_L2','REJECTED_L1','APPROVED')))";
+             + p + "whitelist_status NOT IN ('PENDING_L1','PENDING_L2','REJECTED_L1','REJECTED_L2','APPROVED')))";
     }
     // 活跃白名单（进白名单列表）：已申请 或 申请中
     static String wlActive(String p) {

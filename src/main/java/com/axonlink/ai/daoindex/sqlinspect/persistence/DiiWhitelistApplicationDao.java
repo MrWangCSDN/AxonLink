@@ -42,6 +42,8 @@ public class DiiWhitelistApplicationDao {
     public static final String STATUS_PENDING_L2 = "PENDING_L2";
     public static final String STATUS_APPROVED   = "APPROVED";
     public static final String STATUS_REJECTED_L1 = "REJECTED_L1";
+    /** 二级退回：回到一级审批人重审（可再通过/退回），非 CANCELLED 故仍算活跃申请。 */
+    public static final String STATUS_REJECTED_L2 = "REJECTED_L2";
     public static final String STATUS_CANCELLED  = "CANCELLED";
 
     public static final String TARGET_HASH      = "HASH";
@@ -186,7 +188,7 @@ public class DiiWhitelistApplicationDao {
                 "UPDATE dii_whitelist_application " +
                 "   SET status = 'PENDING_L2', l1_decision = 'APPROVE', " +
                 "       l1_opinion = ?, l1_at = NOW(), l2_approver = ? " +
-                " WHERE id = ? AND status = 'PENDING_L1' AND l1_approver = ?",
+                " WHERE id = ? AND status IN ('PENDING_L1','REJECTED_L2') AND l1_approver = ?",
                 truncate(l1Opinion, 1000), l2Approver, id, l1Approver);
     }
 
@@ -196,7 +198,7 @@ public class DiiWhitelistApplicationDao {
                 "UPDATE dii_whitelist_application " +
                 "   SET status = 'REJECTED_L1', l1_decision = 'REJECT', " +
                 "       l1_opinion = ?, l1_at = NOW() " +
-                " WHERE id = ? AND status = 'PENDING_L1' AND l1_approver = ?",
+                " WHERE id = ? AND status IN ('PENDING_L1','REJECTED_L2') AND l1_approver = ?",
                 truncate(l1Opinion, 1000), id, l1Approver);
     }
 
@@ -210,11 +212,11 @@ public class DiiWhitelistApplicationDao {
                 truncate(l2Opinion, 1000), id, l2Approver);
     }
 
-    /** L2 退回：PENDING_L2 → PENDING_L1，写 L2 决策 + 意见，退回 L1 再审。 */
+    /** L2 退回：PENDING_L2 → REJECTED_L2（二级退回，回一级重审），写 L2 决策 + 意见。 */
     public int l2Reject(long id, String l2Approver, String l2Opinion) {
         return jdbc.update(
                 "UPDATE dii_whitelist_application " +
-                "   SET status = 'PENDING_L1', l2_decision = 'REJECT', " +
+                "   SET status = 'REJECTED_L2', l2_decision = 'REJECT', " +
                 "       l2_opinion = ?, l2_at = NOW() " +
                 " WHERE id = ? AND status = 'PENDING_L2' AND l2_approver = ?",
                 truncate(l2Opinion, 1000), id, l2Approver);
@@ -306,5 +308,34 @@ public class DiiWhitelistApplicationDao {
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() <= max ? s : s.substring(0, max - 3) + "...";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 流转路径（dii_whitelist_flow_history，追加不删——与「优化路线」同款审计）
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** 追加一条流转事件（APPLY/L1_APPROVE/L1_REJECT/L2_APPROVE/L2_REJECT/CANCEL）。 */
+    public void insertFlowEvent(long applicationId, String targetType, String sqlHash, String namedSql,
+                                String projectName, String action, String actor, String actorName, String opinion) {
+        jdbc.update(
+                "INSERT INTO dii_whitelist_flow_history " +
+                " (application_id, target_type, sql_hash, named_sql, project_name, " +
+                "  action, actor, actor_name, opinion, created_at) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
+                applicationId, targetType, sqlHash, namedSql, projectName,
+                action, actor, actorName, truncate(opinion, 1000));
+    }
+
+    /** 慢SQL 某 (微服务, 抽象SQL) 的完整流转路径（跨多次申请，升序）；时间转字符串便于前端直显。 */
+    public List<Map<String, Object>> listFlowBySlowKey(String sqlHash, String serviceName) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT application_id, action, actor, actor_name, opinion, created_at " +
+                "  FROM dii_whitelist_flow_history " +
+                " WHERE target_type = 'SLOW_SQL' AND sql_hash = ? " +
+                "   AND (project_name = ? OR project_name IS NULL OR project_name = '') " +
+                " ORDER BY id ASC",
+                sqlHash, serviceName);
+        rows.forEach(r -> r.computeIfPresent("created_at", (k, v) -> String.valueOf(v)));
+        return rows;
     }
 }

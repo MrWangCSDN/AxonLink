@@ -103,6 +103,16 @@ public class WhitelistApplicationController {
         }
     }
 
+    /** 白名单流转路径（慢SQL，跨多次申请，升序）：申请/一级·二级 通过/退回/撤回——谁、何时、理由。 */
+    @GetMapping("/flow")
+    public R<java.util.List<Map<String, Object>>> flow(@RequestParam String serviceName,
+                                                       @RequestParam String abstractHash) {
+        if (serviceName.isBlank() || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        return R.ok(service.listSlowSqlFlow(serviceName.trim(), abstractHash.trim()));
+    }
+
     /** 单条查看。 */
     @GetMapping("/{id}")
     public R<Map<String, Object>> findById(@PathVariable long id) {
