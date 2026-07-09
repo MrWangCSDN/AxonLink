@@ -128,6 +128,18 @@ class SlowSqlOptimizeServiceTest {
         assertNull(optimizeDao.findByKey("svcA", "h1"));
     }
 
+    @Test @DisplayName("互斥：未生效后已转投白名单 → 重新标记(新尝试)被拒")
+    void remarkBlockedWhenRegressedAndWhitelistActive() {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
+        insertRow("svcA", "h1", "20260629-1");
+        service.inheritAndDetectReappearOnImport(Set.of("svcA\nh1"), "20260629-1");   // → REGRESSED
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1' WHERE service_name='svcA'"); // 转投白名单
+        assertThrows(IllegalArgumentException.class,
+                () -> service.mark("svcA", "h1", "1002", "李四", "改写SQL"));
+        assertEquals(1, service.listHistory("svcA", "h1").size());   // 未追加新尝试
+    }
+
     @Test @DisplayName("互斥：已有优化记录（存量双态）→ 编辑内容放行")
     void markAllowedForExistingOptimizeDespiteWhitelist() {
         insertRow("svcA", "h1", "20260615-1");

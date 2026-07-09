@@ -301,11 +301,14 @@ public class DiiSlowSqlDao {
         return n != null && n > 0;
     }
 
-    /** 该 (微服务, 抽象SQL) 是否已在优化路线上（已优化/优化未生效，任意轮次行 optimize_status 非空）。 */
-    public boolean hasOptimizeByServiceAndHash(String serviceName, String abstractHash) {
+    /**
+     * 该 (微服务, 抽象SQL) 的优化是否<b>生效中</b>（optimize_status = OPTIMIZED）。
+     * REGRESSED（未生效）不算——上次尝试已失败归档，路线重新开放：可再「去优化」也可转「申请白名单」。
+     */
+    public boolean hasActiveOptimizeByServiceAndHash(String serviceName, String abstractHash) {
         Long n = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_slow_sql " +
-                " WHERE service_name = ? AND abstract_hash = ? AND optimize_status IS NOT NULL",
+                " WHERE service_name = ? AND abstract_hash = ? AND optimize_status = 'OPTIMIZED'",
                 Long.class, serviceName, abstractHash);
         return n != null && n > 0;
     }

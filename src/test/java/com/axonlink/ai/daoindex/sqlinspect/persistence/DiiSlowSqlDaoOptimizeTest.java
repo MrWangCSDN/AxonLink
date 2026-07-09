@@ -84,15 +84,18 @@ class DiiSlowSqlDaoOptimizeTest {
         assertNull(r.get("reappeared_round"));
     }
 
-    @Test @DisplayName("互斥判定：hasWhitelist / hasOptimize 按冗余列命中任意轮次行")
+    @Test @DisplayName("互斥判定：hasWhitelist 任意状态命中；hasActiveOptimize 仅 OPTIMIZED 算（REGRESSED 路线重开）")
     void mutexPredicates() {
         insertRow("svcA", "h1", "20260601-1", 100);
         assertFalse(dao.hasWhitelistByServiceAndHash("svcA", "h1"));
-        assertFalse(dao.hasOptimizeByServiceAndHash("svcA", "h1"));
+        assertFalse(dao.hasActiveOptimizeByServiceAndHash("svcA", "h1"));
         jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1' WHERE service_name='svcA'");
         assertTrue(dao.hasWhitelistByServiceAndHash("svcA", "h1"));
         dao.syncOptimizeByServiceAndHash("svcA", "h1", "OPTIMIZED", "20260601-1", null);
-        assertTrue(dao.hasOptimizeByServiceAndHash("svcA", "h1"));
+        assertTrue(dao.hasActiveOptimizeByServiceAndHash("svcA", "h1"));
+        // 未生效 → 不再算「生效中」，白名单路线重新开放
+        dao.syncOptimizeByServiceAndHash("svcA", "h1", "REGRESSED", "20260601-1", "20260615-1");
+        assertFalse(dao.hasActiveOptimizeByServiceAndHash("svcA", "h1"));
     }
 
     @Test @DisplayName("listAggregated 按 optimizeStatus 过滤：REGRESSED / NONE(未处理)")

@@ -49,19 +49,19 @@ public class SlowSqlOptimizeService {
         String r0 = slowSqlDao.maxRoundByServiceAndHash(serviceName, abstractHash);
         if (r0 == null) throw new IllegalArgumentException("该SQL在慢SQL池中不存在，无法标记已优化");
         Map<String, Object> existing = optimizeDao.findByKey(serviceName, abstractHash);
-        // 互斥：白名单与优化二选一。仅拦「新进入优化路线」——已有优化记录的（编辑内容/重新标记）放行，
-        // 兼容互斥规则上线前的存量双态行。
-        if (existing == null && slowSqlDao.hasWhitelistByServiceAndHash(serviceName, abstractHash)) {
+        // 新一次尝试 = 首次打标 / 未生效(REGRESSED)后重新打标；仍是 OPTIMIZED 的编辑不算新尝试。
+        boolean newAttempt = existing == null
+                || DiiSlowSqlOptimizeDao.STATUS_REGRESSED.equals(existing.get("status"));
+        // 互斥：白名单与优化二选一——「新尝试」在白名单流程中被拦（未生效后若已转投白名单，优化路线关闭）；
+        // 仍是 OPTIMIZED 的编辑放行（兼容互斥规则上线前的存量双态行）。
+        if (newAttempt && slowSqlDao.hasWhitelistByServiceAndHash(serviceName, abstractHash)) {
             throw new IllegalArgumentException("该SQL已在白名单流程中（申请/审批/已通过），白名单与优化互斥，不能标记已优化");
         }
         LocalDateTime now = LocalDateTime.now();
         optimizeDao.upsertOptimized(serviceName, abstractHash, r0, optimizedBy, optimizedByName, note, now);
         slowSqlDao.syncOptimizeByServiceAndHash(
                 serviceName, abstractHash, DiiSlowSqlOptimizeDao.STATUS_OPTIMIZED, r0, null);
-        // 优化路线（追加不删）：首次打标 / 未生效后重新打标 = 新一次尝试 → 追加一条；
-        // 仍是 OPTIMIZED 时的编辑 = 同一次尝试改内容 → 更新最新一条（保留其原 R0 与失败痕迹语义）。
-        boolean newAttempt = existing == null
-                || DiiSlowSqlOptimizeDao.STATUS_REGRESSED.equals(existing.get("status"));
+        // 优化路线（追加不删）：新尝试 → 追加一条；OPTIMIZED 编辑 → 更新最新一条（保留原 R0 与失败痕迹）。
         if (newAttempt) {
             optimizeDao.appendHistory(serviceName, abstractHash, r0, optimizedBy, optimizedByName, note, now);
         } else {
