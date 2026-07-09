@@ -128,15 +128,28 @@ public class DiiSlowSqlOptimizeDao {
                 reappearedRound, reappearedRound, serviceName, abstractHash);
     }
 
-    /** 查优化路线（按时间升序=第1次→最新），optimized_at 转字符串便于前端直显。 */
+    /** 撤销优化：把撤销人(工号/姓名)与时间记到最新一条路线上——审计留痕，路线不删。 */
+    public int stampLatestHistoryRevoked(String serviceName, String abstractHash,
+                                         String revokedBy, String revokedByName, LocalDateTime now) {
+        return jdbc.update(
+                "UPDATE dii_slow_sql_optimize_history " +
+                "   SET revoked_by = ?, revoked_by_name = ?, revoked_at = ? " +
+                " WHERE id = " + LATEST_HISTORY_ID,
+                revokedBy, revokedByName, Timestamp.valueOf(now), serviceName, abstractHash);
+    }
+
+    /** 查优化路线（按时间升序=第1次→最新），时间列转字符串便于前端直显。 */
     public List<Map<String, Object>> listHistory(String serviceName, String abstractHash) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT id, optimized_round, optimized_by, optimized_by_name, optimize_note, " +
-                "       optimized_at, reappeared_round " +
+                "       optimized_at, reappeared_round, revoked_by, revoked_by_name, revoked_at " +
                 "  FROM dii_slow_sql_optimize_history " +
                 " WHERE service_name = ? AND abstract_hash = ? ORDER BY id ASC",
                 serviceName, abstractHash);
-        rows.forEach(r -> r.computeIfPresent("optimized_at", (k, v) -> String.valueOf(v)));
+        rows.forEach(r -> {
+            r.computeIfPresent("optimized_at", (k, v) -> String.valueOf(v));
+            r.computeIfPresent("revoked_at", (k, v) -> String.valueOf(v));
+        });
         return rows;
     }
 }

@@ -170,6 +170,34 @@ public class SlowSqlController {
         return c;
     }
 
+    /** 撤销优化（互斥出口：生效中的 SQL 想走白名单须先撤销；记撤销人工号/姓名+时间，路线留痕）。 */
+    @PostMapping("/optimize/revoke")
+    public R<Map<String, Object>> revokeOptimized(@RequestBody Map<String, String> body,
+                                                  HttpServletRequest request) {
+        String serviceName = body.get("serviceName");
+        String abstractHash = body.get("abstractHash");
+        if (serviceName == null || serviceName.isBlank() || abstractHash == null || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        String empNo = request.getRemoteUser();
+        String realName = null;
+        try {
+            com.axonlink.security.UserPrincipalResolver.Resolved r = userResolver.resolve(request);
+            if (r != null && r.user != null) {
+                empNo = firstNonBlank2(r.user.getEmpNo(), r.principal, empNo);
+                realName = r.user.getRealName();
+            }
+        } catch (Exception e) {
+            log.warn("[slow-sql-optimize] 解析撤销人失败，回退登录名 {}: {}", empNo, e.getMessage());
+        }
+        try {
+            optimizeService.revoke(serviceName.trim(), abstractHash.trim(), empNo, realName);
+            return R.ok(Map.of("status", "NONE"));
+        } catch (IllegalArgumentException e) {
+            return R.fail(e.getMessage());
+        }
+    }
+
     /** 优化路线（悬浮弹层用）：该 (微服务, 抽象SQL) 的全部优化尝试，升序=第1次→最新。 */
     @GetMapping("/optimize/history")
     public R<List<Map<String, Object>>> optimizeHistory(@RequestParam String serviceName,

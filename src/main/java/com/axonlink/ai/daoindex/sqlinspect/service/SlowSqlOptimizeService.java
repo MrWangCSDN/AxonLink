@@ -76,6 +76,24 @@ public class SlowSqlOptimizeService {
     }
 
     /**
+     * 撤销优化：互斥的出口——生效中(OPTIMIZED)的 SQL 想走白名单必须先撤销。
+     * 撤销人(工号/姓名)与时间盖到最新路线条目（审计留痕，路线不删），随后清冗余列、删真身，
+     * 行回「未处理」→ 白名单可申请。写序：先盖章/清冗余、后删真身——任一步失败时真身仍在，
+     * 下次导入会重新同步冗余列，收敛到一致态（与非事务一致性设计同口径）。
+     * @throws IllegalArgumentException 该 SQL 未标记优化
+     */
+    public void revoke(String serviceName, String abstractHash, String revokedBy, String revokedByName) {
+        Map<String, Object> existing = optimizeDao.findByKey(serviceName, abstractHash);
+        if (existing == null) throw new IllegalArgumentException("该SQL未标记优化，无需撤销");
+        LocalDateTime now = LocalDateTime.now();
+        optimizeDao.stampLatestHistoryRevoked(serviceName, abstractHash, revokedBy, revokedByName, now);
+        slowSqlDao.clearOptimizeByServiceAndHash(serviceName, abstractHash);
+        optimizeDao.delete(serviceName, abstractHash);
+        log.info("[slow-sql-optimize] 撤销优化：撤销人={}({}) 原打标人={} (svc={}, hash={})",
+                revokedByName, revokedBy, existing.get("optimized_by"), serviceName, abstractHash);
+    }
+
+    /**
      * 导入后钩子（步骤⑤）：本轮出现的键 ∩ 真身表 → 对 {@code round > optimized_round} 的
      * OPTIMIZED 记录翻 REGRESSED（记最新 reappeared_round），并把优化态重新盖到本轮新插入的行。
      * @param svcHashKeys 本轮出现的所有键（service + "\n" + abstract_hash），即导入聚合 Map 的 keySet

@@ -48,7 +48,9 @@ class SlowSqlOptimizeServiceTest {
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, service_name VARCHAR(128) NOT NULL,"
                 + "abstract_hash CHAR(64) NOT NULL, optimized_round VARCHAR(20) NOT NULL,"
                 + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
-                + "optimized_at DATETIME NOT NULL, reappeared_round VARCHAR(20) DEFAULT NULL)");
+                + "optimized_at DATETIME NOT NULL, reappeared_round VARCHAR(20) DEFAULT NULL,"
+                + "revoked_by VARCHAR(100) DEFAULT NULL, revoked_by_name VARCHAR(64) DEFAULT NULL,"
+                + "revoked_at DATETIME DEFAULT NULL)");
         slowSqlDao = new DiiSlowSqlDao(jdbc);
         optimizeDao = new DiiSlowSqlOptimizeDao(jdbc);
         service = new SlowSqlOptimizeService(optimizeDao, slowSqlDao);
@@ -126,6 +128,27 @@ class SlowSqlOptimizeServiceTest {
                 () -> service.mark("svcA", "h1", "1001", "张三", "加索引"));
         assertTrue(e.getMessage().contains("互斥"));
         assertNull(optimizeDao.findByKey("svcA", "h1"));
+    }
+
+    @Test @DisplayName("撤销优化：路线盖撤销人/时间(不删) + 清冗余 + 删真身 → 回未处理，白名单可申请")
+    void revokeClearsStateAndStampsAudit() {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");
+        service.revoke("svcA", "h1", "1002", "李四");
+        assertNull(optimizeDao.findByKey("svcA", "h1"));                              // 真身已删
+        assertNull(row("svcA", "h1", "20260615-1").get("optimize_status"));           // 冗余已清
+        assertFalse(slowSqlDao.hasActiveOptimizeByServiceAndHash("svcA", "h1"));      // 白名单互斥解除
+        List<Map<String, Object>> hist = service.listHistory("svcA", "h1");           // 路线留痕
+        assertEquals(1, hist.size());
+        assertEquals("张三", hist.get(0).get("optimized_by_name"));                   // 原打标人还在
+        assertEquals("1002", hist.get(0).get("revoked_by"));                          // 撤销人
+        assertEquals("李四", hist.get(0).get("revoked_by_name"));
+        assertNotNull(hist.get(0).get("revoked_at"));                                 // 撤销时间
+    }
+
+    @Test @DisplayName("撤销优化：未标记 → 抛 IllegalArgumentException")
+    void revokeThrowsWhenNotMarked() {
+        assertThrows(IllegalArgumentException.class, () -> service.revoke("nope", "hX", "1002", "李四"));
     }
 
     @Test @DisplayName("互斥：未生效后已转投白名单 → 重新标记(新尝试)被拒")
