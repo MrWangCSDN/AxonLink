@@ -2,6 +2,7 @@ package com.axonlink.ai.daoindex.sqlinspect.service;
 
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlOptimizeDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiWhitelistApplicationDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ class SlowSqlOptimizeServiceTest {
     private JdbcTemplate jdbc;
     private DiiSlowSqlDao slowSqlDao;
     private DiiSlowSqlOptimizeDao optimizeDao;
+    private DiiWhitelistApplicationDao whitelistDao;
     private SlowSqlOptimizeService service;
 
     @BeforeEach
@@ -51,9 +53,15 @@ class SlowSqlOptimizeServiceTest {
                 + "optimized_at DATETIME NOT NULL, reappeared_round VARCHAR(20) DEFAULT NULL,"
                 + "revoked_by VARCHAR(100) DEFAULT NULL, revoked_by_name VARCHAR(64) DEFAULT NULL,"
                 + "revoked_at DATETIME DEFAULT NULL)");
+        jdbc.execute("CREATE TABLE dii_whitelist_flow_history ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, application_id BIGINT NOT NULL,"
+                + "target_type VARCHAR(16) NOT NULL, sql_hash VARCHAR(64), named_sql VARCHAR(500),"
+                + "project_name VARCHAR(200), action VARCHAR(20) NOT NULL,"
+                + "actor VARCHAR(100), actor_name VARCHAR(64), opinion VARCHAR(1000), created_at DATETIME NOT NULL)");
         slowSqlDao = new DiiSlowSqlDao(jdbc);
         optimizeDao = new DiiSlowSqlOptimizeDao(jdbc);
-        service = new SlowSqlOptimizeService(optimizeDao, slowSqlDao);
+        whitelistDao = new DiiWhitelistApplicationDao(jdbc);
+        service = new SlowSqlOptimizeService(optimizeDao, slowSqlDao, whitelistDao);
     }
 
     private void insertRow(String svc, String hash, String round) {
@@ -144,6 +152,25 @@ class SlowSqlOptimizeServiceTest {
         assertEquals("1002", hist.get(0).get("revoked_by"));                          // 撤销人
         assertEquals("李四", hist.get(0).get("revoked_by_name"));
         assertNotNull(hist.get(0).get("revoked_at"));                                 // 撤销时间
+    }
+
+    @Test @DisplayName("统一处理路径：优化(标记/撤销)+白名单(申请)按时间升序合并成一条时间线")
+    void journeyMergesBothTrailsInTimeOrder() throws Exception {
+        insertRow("svcA", "h1", "20260615-1");
+        service.mark("svcA", "h1", "1001", "张三", "加索引");        // t1 标记
+        Thread.sleep(1100);                                          // DATETIME 秒级精度，隔开时间
+        service.revoke("svcA", "h1", "1002", "李四");                // t2 撤销
+        Thread.sleep(1100);
+        whitelistDao.insertFlowEvent(9L, "SLOW_SQL", "h1", null, "svcA",
+                "APPLY", "user1", "王山河", "优化撤销，转投白名单");   // t3 申请白名单
+        List<Map<String, Object>> j = service.journey("svcA", "h1");
+        assertEquals(3, j.size());
+        assertEquals("MARK",   j.get(0).get("action"));
+        assertEquals("REVOKE", j.get(1).get("action"));
+        assertEquals("APPLY",  j.get(2).get("action"));
+        assertEquals("OPTIMIZE",  j.get(0).get("kind"));
+        assertEquals("WHITELIST", j.get(2).get("kind"));
+        assertEquals("李四", j.get(1).get("actorName"));
     }
 
     @Test @DisplayName("撤销优化：未标记 → 抛 IllegalArgumentException")

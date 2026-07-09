@@ -198,6 +198,16 @@ public class SlowSqlController {
         }
     }
 
+    /** 统一处理路径（悬浮弹层用）：优化侧+白名单侧事件按时间升序合并——完整处理过程一条时间线。 */
+    @GetMapping("/journey")
+    public R<List<Map<String, Object>>> journey(@RequestParam String serviceName,
+                                                @RequestParam String abstractHash) {
+        if (serviceName.isBlank() || abstractHash.isBlank()) {
+            return R.fail("serviceName / abstractHash 不能为空");
+        }
+        return R.ok(optimizeService.journey(serviceName.trim(), abstractHash.trim()));
+    }
+
     /** 优化路线（悬浮弹层用）：该 (微服务, 抽象SQL) 的全部优化尝试，升序=第1次→最新。 */
     @GetMapping("/optimize/history")
     public R<List<Map<String, Object>>> optimizeHistory(@RequestParam String serviceName,

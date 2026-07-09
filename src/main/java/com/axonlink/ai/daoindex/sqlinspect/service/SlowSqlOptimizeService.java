@@ -2,6 +2,7 @@ package com.axonlink.ai.daoindex.sqlinspect.service;
 
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlOptimizeDao;
+import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiWhitelistApplicationDao;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -29,10 +30,13 @@ public class SlowSqlOptimizeService {
 
     private final DiiSlowSqlOptimizeDao optimizeDao;
     private final DiiSlowSqlDao slowSqlDao;
+    private final DiiWhitelistApplicationDao whitelistDao;
 
-    public SlowSqlOptimizeService(DiiSlowSqlOptimizeDao optimizeDao, DiiSlowSqlDao slowSqlDao) {
+    public SlowSqlOptimizeService(DiiSlowSqlOptimizeDao optimizeDao, DiiSlowSqlDao slowSqlDao,
+                                  DiiWhitelistApplicationDao whitelistDao) {
         this.optimizeDao = optimizeDao;
         this.slowSqlDao = slowSqlDao;
+        this.whitelistDao = whitelistDao;
     }
 
     /**
@@ -73,6 +77,50 @@ public class SlowSqlOptimizeService {
     /** 优化路线：该 (微服务, 抽象SQL) 的全部优化尝试（升序=第1次→最新），悬浮弹层用。 */
     public List<Map<String, Object>> listHistory(String serviceName, String abstractHash) {
         return optimizeDao.listHistory(serviceName, abstractHash);
+    }
+
+    /**
+     * 统一处理路径：优化侧（标记/撤销，未生效作为标记事件的标签）+ 白名单侧（申请/审批/退回/撤回）
+     * 按时间升序合并成一条时间线——"优化→未生效→撤销→申请白名单→…"一眼看全。
+     * 事件字段：kind(OPTIMIZE/WHITELIST)、action、actor、actorName、note、at、
+     * 及优化标记事件附带 round / reappearedRound。
+     */
+    public List<Map<String, Object>> journey(String serviceName, String abstractHash) {
+        List<Map<String, Object>> events = new java.util.ArrayList<>();
+        for (Map<String, Object> h : optimizeDao.listHistory(serviceName, abstractHash)) {
+            Map<String, Object> mark = new java.util.LinkedHashMap<>();
+            mark.put("kind", "OPTIMIZE");
+            mark.put("action", "MARK");
+            mark.put("actor", h.get("optimized_by"));
+            mark.put("actorName", h.get("optimized_by_name"));
+            mark.put("note", h.get("optimize_note"));
+            mark.put("round", h.get("optimized_round"));
+            mark.put("reappearedRound", h.get("reappeared_round"));
+            mark.put("at", h.get("optimized_at"));
+            events.add(mark);
+            if (h.get("revoked_at") != null) {
+                Map<String, Object> revoke = new java.util.LinkedHashMap<>();
+                revoke.put("kind", "OPTIMIZE");
+                revoke.put("action", "REVOKE");
+                revoke.put("actor", h.get("revoked_by"));
+                revoke.put("actorName", h.get("revoked_by_name"));
+                revoke.put("at", h.get("revoked_at"));
+                events.add(revoke);
+            }
+        }
+        for (Map<String, Object> f : whitelistDao.listFlowBySlowKey(abstractHash, serviceName)) {
+            Map<String, Object> e = new java.util.LinkedHashMap<>();
+            e.put("kind", "WHITELIST");
+            e.put("action", f.get("action"));
+            e.put("actor", f.get("actor"));
+            e.put("actorName", f.get("actor_name"));
+            e.put("note", f.get("opinion"));
+            e.put("at", f.get("created_at"));
+            events.add(e);
+        }
+        // 时间均为 "yyyy-MM-dd HH:mm:ss[.f]" 字符串，字典序=时间序；稳定排序保持同刻事件的来源顺序
+        events.sort(java.util.Comparator.comparing(e2 -> String.valueOf(e2.get("at"))));
+        return events;
     }
 
     /**
