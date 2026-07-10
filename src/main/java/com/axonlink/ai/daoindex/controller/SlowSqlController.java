@@ -33,18 +33,21 @@ public class SlowSqlController {
     private final DaoIndexAnalysisProperties props;
     private final com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService;
     private final com.axonlink.security.UserPrincipalResolver userResolver;
+    private final com.axonlink.ai.daoindex.sqlinspect.service.WhitelistApplicationService whitelistService;
 
     public SlowSqlController(SlowSqlImportService importService, DiiSlowSqlDao dao,
                              com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao,
                              DaoIndexAnalysisProperties props,
                              com.axonlink.ai.daoindex.sqlinspect.service.SlowSqlOptimizeService optimizeService,
-                             com.axonlink.security.UserPrincipalResolver userResolver) {
+                             com.axonlink.security.UserPrincipalResolver userResolver,
+                             com.axonlink.ai.daoindex.sqlinspect.service.WhitelistApplicationService whitelistService) {
         this.importService = importService;
         this.dao = dao;
         this.filterDao = filterDao;
         this.props = props;
         this.optimizeService = optimizeService;
         this.userResolver = userResolver;
+        this.whitelistService = whitelistService;
     }
 
     // ── 导入（口令）──
@@ -205,7 +208,9 @@ public class SlowSqlController {
         if (serviceName.isBlank() || abstractHash.isBlank()) {
             return R.fail("serviceName / abstractHash 不能为空");
         }
-        return R.ok(optimizeService.journey(serviceName.trim(), abstractHash.trim()));
+        List<Map<String, Object>> events = optimizeService.journey(serviceName.trim(), abstractHash.trim());
+        whitelistService.fillDisplayNames(events, "actor", "actorName");
+        return R.ok(events);
     }
 
     /** 优化路线（悬浮弹层用）：该 (微服务, 抽象SQL) 的全部优化尝试，升序=第1次→最新。 */

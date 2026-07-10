@@ -291,7 +291,43 @@ public class WhitelistApplicationService {
 
     /** 慢SQL 某 (微服务, 抽象SQL) 的白名单完整流转路径（跨多次申请，升序），悬浮弹层用。 */
     public List<Map<String, Object>> listSlowSqlFlow(String serviceName, String abstractHash) {
-        return dao.listFlowBySlowKey(abstractHash, serviceName);
+        List<Map<String, Object>> rows = dao.listFlowBySlowKey(abstractHash, serviceName);
+        fillDisplayNames(rows, "actor", "actor_name");   // 存量回填/写入未命中的姓名，读取时兜底解析
+        return rows;
+    }
+
+    /**
+     * 操作人显示名解析：① yml 审批人配置的 display（审批人不一定在 sys_user 里，但 yml 一定有中文名）
+     * ② sys_user 按 username ③ 按 emp_no。都未命中返回 null（前端回退显示工号）。
+     */
+    public String resolveDisplayName(String actor) {
+        if (actor == null || actor.isBlank()) return null;
+        for (DaoIndexAnalysisProperties.Approver a : getL1Approvers()) {
+            if (actor.equals(a.getUsername()) && a.getDisplay() != null && !a.getDisplay().isBlank()) return a.getDisplay();
+        }
+        for (DaoIndexAnalysisProperties.Approver a : getL2Approvers()) {
+            if (actor.equals(a.getUsername()) && a.getDisplay() != null && !a.getDisplay().isBlank()) return a.getDisplay();
+        }
+        try {
+            var u = sysUserDao.findByUsername(actor);
+            if (u == null) u = sysUserDao.findByEmpNo(actor);
+            if (u != null) return u.getRealName();
+        } catch (Exception ignore) { /* 解析失败回退工号显示 */ }
+        return null;
+    }
+
+    /** 给事件列表补空姓名（读取时兜底）：actorKey 取操作人，nameKey 为空则解析填充。 */
+    public void fillDisplayNames(List<Map<String, Object>> events, String actorKey, String nameKey) {
+        if (events == null) return;
+        Map<String, String> cache = new HashMap<>();
+        for (Map<String, Object> e : events) {
+            Object name = e.get(nameKey);
+            if (name != null && !String.valueOf(name).isBlank()) continue;
+            String actor = e.get(actorKey) == null ? null : String.valueOf(e.get(actorKey));
+            if (actor == null || actor.isBlank()) continue;
+            String resolved = cache.computeIfAbsent(actor, this::resolveDisplayName);
+            if (resolved != null) e.put(nameKey, resolved);
+        }
     }
 
     /**
@@ -301,12 +337,7 @@ public class WhitelistApplicationService {
     private void recordFlow(Map<String, Object> app, String action, String actor, String opinion) {
         if (app == null) return;
         try {
-            String actorName = null;
-            try {
-                var u = sysUserDao.findByUsername(actor);
-                if (u == null) u = sysUserDao.findByEmpNo(actor);
-                if (u != null) actorName = u.getRealName();
-            } catch (Exception ignore) { /* 姓名解析失败不影响记录 */ }
+            String actorName = resolveDisplayName(actor);
             dao.insertFlowEvent(((Number) app.get("id")).longValue(),
                     (String) app.get("target_type"), (String) app.get("sql_hash"),
                     (String) app.get("named_sql"), (String) app.get("project_name"),
