@@ -88,6 +88,7 @@ public class DiiSlowSqlDao {
     private void appendFilters(StringBuilder sb, List<Object> args,
                                String domain, String bizType, String keyword,
                                String whitelistStatus, String optimizeStatus, String initiator,
+                               String curApprover, List<String> curApproverUsers,
                                String round, String approverUser) {
         if (domain != null && !domain.isBlank()) { sb.append(" AND s.domain = ? "); args.add(domain.trim()); }
         if (bizType != null && !bizType.isBlank()) { sb.append(" AND s.biz_type = ? "); args.add(bizType.trim()); }
@@ -119,6 +120,31 @@ public class DiiSlowSqlDao {
             String like = "%" + initiator.trim() + "%";
             args.add(like); args.add(like); args.add(like); args.add(like);
         }
+        // 当前审批人模糊：工号 LIKE + 姓名(yml display 预匹配出的 username 集)。口径与「当前审批人」列一致：
+        // 待一级/二级退回→l1_approver；待二级→l2_approver
+        if ((curApprover != null && !curApprover.isBlank())
+                || (curApproverUsers != null && !curApproverUsers.isEmpty())) {
+            StringBuilder l1Cond = new StringBuilder();
+            StringBuilder l2Cond = new StringBuilder();
+            List<Object> condArgs = new ArrayList<>();
+            if (curApprover != null && !curApprover.isBlank()) {
+                l1Cond.append("w.l1_approver LIKE ?");
+                l2Cond.append("w.l2_approver LIKE ?");
+            }
+            if (curApproverUsers != null && !curApproverUsers.isEmpty()) {
+                String in = String.join(",", java.util.Collections.nCopies(curApproverUsers.size(), "?"));
+                if (l1Cond.length() > 0) { l1Cond.append(" OR "); l2Cond.append(" OR "); }
+                l1Cond.append("w.l1_approver IN (").append(in).append(")");
+                l2Cond.append("w.l2_approver IN (").append(in).append(")");
+            }
+            sb.append(" AND ( (s.whitelist_status IN ('PENDING_L1','REJECTED_L2') AND (").append(l1Cond).append(")) ")
+              .append("    OR (s.whitelist_status = 'PENDING_L2' AND (").append(l2Cond).append(")) ) ");
+            // 参数按出现顺序：l1 段（LIKE? + IN…），再 l2 段（LIKE? + IN…）
+            if (curApprover != null && !curApprover.isBlank()) args.add("%" + curApprover.trim() + "%");
+            if (curApproverUsers != null) args.addAll(curApproverUsers);
+            if (curApprover != null && !curApprover.isBlank()) args.add("%" + curApprover.trim() + "%");
+            if (curApproverUsers != null) args.addAll(curApproverUsers);
+        }
         if (round != null && !round.isBlank()) { sb.append(" AND s.round = ? "); args.add(round.trim()); }
         // 「该我审批」：行的白名单申请处于待审，且当前用户是对应级别审批人（铃铛慢SQL待办用）
         if (approverUser != null && !approverUser.isBlank()) {
@@ -132,7 +158,9 @@ public class DiiSlowSqlDao {
     /** 列表：聚合行直查（导入时已按 轮次+微服务+哈希 聚合），按最大耗时倒序分页。 */
     public List<Map<String, Object>> listAggregated(String domain, String bizType, String keyword,
                                                      String whitelistStatus, String optimizeStatus,
-                                                     String initiator, String round, String approverUser,
+                                                     String initiator,
+                                                     String curApprover, List<String> curApproverUsers,
+                                                     String round, String approverUser,
                                                      int limit, int offset) {
         StringBuilder sb = new StringBuilder(
                 "SELECT s.id, s.service_name, s.domain, s.biz_type, s.abstract_sql, s.abstract_hash, " +
@@ -155,7 +183,7 @@ public class DiiSlowSqlDao {
                 "  LEFT JOIN dii_whitelist_application w ON w.id = s.whitelist_app_id " +
                 " WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser);
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, curApprover, curApproverUsers, round, approverUser);
         sb.append(" ORDER BY s.max_time_cost_ms DESC, s.id ASC LIMIT ? OFFSET ?");
         args.add(Math.min(Math.max(limit, 1), 500));
         args.add(Math.max(offset, 0));
@@ -165,7 +193,9 @@ public class DiiSlowSqlDao {
     /** 列表总数（同过滤条件）。 */
     public long countAggregated(String domain, String bizType, String keyword,
                                 String whitelistStatus, String optimizeStatus,
-                                String initiator, String round, String approverUser) {
+                                String initiator,
+                                String curApprover, List<String> curApproverUsers,
+                                String round, String approverUser) {
         StringBuilder sb = new StringBuilder(
                 "SELECT COUNT(*) FROM dii_slow_sql s " +
                 "  LEFT JOIN dii_slow_sql_optimization o " +
@@ -173,7 +203,7 @@ public class DiiSlowSqlDao {
                 "  LEFT JOIN dii_whitelist_application w ON w.id = s.whitelist_app_id " +
                 " WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser);
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, curApprover, curApproverUsers, round, approverUser);
         Long n = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
         return n == null ? 0L : n;
     }
@@ -236,7 +266,9 @@ public class DiiSlowSqlDao {
      */
     public List<Map<String, Object>> listAggregatedAll(String domain, String bizType, String keyword,
                                                        String whitelistStatus, String optimizeStatus,
-                                                       String initiator, String round, String approverUser) {
+                                                       String initiator,
+                                                       String curApprover, List<String> curApproverUsers,
+                                                       String round, String approverUser) {
         StringBuilder sb = new StringBuilder(
                 "SELECT s.service_name, s.domain, s.biz_type, s.abstract_sql, " +
                 "       s.max_time_cost_ms, s.max_time_cost_raw, s.exec_params, s.source_location, " +
@@ -249,7 +281,7 @@ public class DiiSlowSqlDao {
                 "  LEFT JOIN dii_whitelist_application w ON w.id = s.whitelist_app_id " +
                 " WHERE 1=1 ");
         List<Object> args = new ArrayList<>();
-        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser);
+        appendFilters(sb, args, domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, curApprover, curApproverUsers, round, approverUser);
         sb.append(" ORDER BY s.max_time_cost_ms DESC, s.id ASC LIMIT 50000");
         return jdbc.queryForList(sb.toString(), args.toArray());
     }

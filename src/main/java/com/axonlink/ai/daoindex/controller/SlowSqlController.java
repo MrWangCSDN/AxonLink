@@ -90,10 +90,25 @@ public class SlowSqlController {
             @RequestParam(required = false) String whitelistStatus,
             @RequestParam(required = false) String optimizeStatus,
             @RequestParam(required = false) String initiator,
+            @RequestParam(required = false) String curApprover,
             @RequestParam(required = false) String round,
             @RequestParam(required = false) String approverUser) {
-        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser, limit, offset);
-        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser);
+        // 当前审批人模糊：审批人是 yml 封闭名单——先按 姓名(display)/工号 在名单里匹配出 username 集下推 SQL
+        List<String> curApproverUsers = null;
+        if (curApprover != null && !curApprover.isBlank()) {
+            String t = curApprover.trim();
+            curApproverUsers = new ArrayList<>();
+            for (var a : whitelistService.getL1Approvers()) {
+                if ((a.getDisplay() != null && a.getDisplay().contains(t))
+                        || (a.getUsername() != null && a.getUsername().contains(t))) curApproverUsers.add(a.getUsername());
+            }
+            for (var a : whitelistService.getL2Approvers()) {
+                if ((a.getDisplay() != null && a.getDisplay().contains(t))
+                        || (a.getUsername() != null && a.getUsername().contains(t))) curApproverUsers.add(a.getUsername());
+            }
+        }
+        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, curApprover, curApproverUsers, round, approverUser, limit, offset);
+        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, curApprover, curApproverUsers, round, approverUser);
         // 发起人/当前审批人：空姓名读取时兜底解析（yml 审批人 display / sys_user），仅用于显示
         whitelistService.fillDisplayNames(items, "initiator", "initiator_name");
         items.forEach(it -> it.put("current_approver_name",
@@ -299,7 +314,7 @@ public class SlowSqlController {
     private byte[] buildWorkbook(String domain, String bizType, String keyword,
                                  String whitelistStatus, String optimizeStatus, String round) throws Exception {
         List<Map<String, Object>> rows =
-                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, optimizeStatus, null, round, null);
+                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, optimizeStatus, null, null, null, round, null);
 
         try (XSSFWorkbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("慢SQL维度");

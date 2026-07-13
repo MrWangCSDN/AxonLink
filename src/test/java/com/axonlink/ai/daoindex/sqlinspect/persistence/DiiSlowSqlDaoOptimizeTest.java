@@ -117,7 +117,7 @@ class DiiSlowSqlDaoOptimizeTest {
                 + "VALUES ('svcB','h2','OPTIMIZED','20260701-1','1002','李四',NOW(),NOW())");
         dao.syncOptimizeByServiceAndHash("svcB", "h2", "OPTIMIZED", "20260701-1", null);
 
-        List<Map<String, Object>> all = dao.listAggregated(null, null, null, null, null, null, null, null, 50, 0);
+        List<Map<String, Object>> all = dao.listAggregated(null, null, null, null, null, null, null, null, null, null, 50, 0);
         Map<String, Object> a = all.stream().filter(r -> "svcA".equals(r.get("service_name"))).findFirst().orElseThrow();
         Map<String, Object> b = all.stream().filter(r -> "svcB".equals(r.get("service_name"))).findFirst().orElseThrow();
         assertEquals("c-wangsh8", a.get("initiator"));
@@ -128,9 +128,14 @@ class DiiSlowSqlDaoOptimizeTest {
         assertNull(b.get("current_approver"));                    // 优化行无审批人
 
         // 模糊过滤：姓名 / 工号 各命中对应行
-        assertEquals(1, dao.listAggregated(null, null, null, null, null, "王山", null, null, 50, 0).size());
-        assertEquals(1, dao.listAggregated(null, null, null, null, null, "1002", null, null, 50, 0).size());
-        assertEquals(1, dao.countAggregated(null, null, null, null, null, "李四", null, null));
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, "王山", null, null, null, null, 50, 0).size());
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, "1002", null, null, null, null, 50, 0).size());
+        assertEquals(1, dao.countAggregated(null, null, null, null, null, "李四", null, null, null, null));
+
+        // 当前审批人过滤：工号 LIKE 命中；姓名经 yml 预匹配成 username 集命中；优化行不命中
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, null, "l1u", null, null, null, 50, 0).size());
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, null, null, java.util.List.of("l1u"), null, null, 50, 0).size());
+        assertEquals(0, dao.listAggregated(null, null, null, null, null, null, "nobody", null, null, null, 50, 0).size());
     }
 
     @Test @DisplayName("listAggregated 按 optimizeStatus 过滤：REGRESSED / NONE(未处理)")
@@ -138,12 +143,10 @@ class DiiSlowSqlDaoOptimizeTest {
         insertRow("svcA", "h1", "20260601-1", 300);
         insertRow("svcB", "h2", "20260601-1", 200);
         dao.syncOptimizeByServiceAndHash("svcA", "h1", "REGRESSED", "20260601-1", "20260615-1");
-        List<Map<String, Object>> regressed = dao.listAggregated(
-                null, null, null, null, "REGRESSED", null, null, null, 50, 0);
+        List<Map<String, Object>> regressed = dao.listAggregated(null, null, null, null, "REGRESSED", null, null, null, null, null, 50, 0);
         assertEquals(1, regressed.size());
         assertEquals("svcA", regressed.get(0).get("service_name"));
-        List<Map<String, Object>> none = dao.listAggregated(
-                null, null, null, null, "NONE", null, null, null, 50, 0);
+        List<Map<String, Object>> none = dao.listAggregated(null, null, null, null, "NONE", null, null, null, null, null, 50, 0);
         assertEquals(1, none.size());
         assertEquals("svcB", none.get(0).get("service_name"));
         assertTrue(regressed.get(0).containsKey("optimize_status"));
