@@ -43,6 +43,12 @@ class DiiSlowSqlDaoOptimizeTest {
                 + "optimized_by VARCHAR(100), optimized_by_name VARCHAR(64), optimize_note VARCHAR(200),"
                 + "optimized_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,"
                 + "CONSTRAINT uk_svc_hash UNIQUE (service_name, abstract_hash))");
+        // 列表查询 LEFT JOIN 白名单申请表（发起人/当前审批人列）
+        jdbc.execute("CREATE TABLE dii_whitelist_application ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, target_type VARCHAR(16), sql_hash VARCHAR(64),"
+                + "named_sql VARCHAR(500), project_name VARCHAR(200), status VARCHAR(20),"
+                + "applicant VARCHAR(100), applicant_name VARCHAR(64),"
+                + "l1_approver VARCHAR(100), l2_approver VARCHAR(100))");
         dao = new DiiSlowSqlDao(jdbc);
     }
 
@@ -98,17 +104,46 @@ class DiiSlowSqlDaoOptimizeTest {
         assertFalse(dao.hasActiveOptimizeByServiceAndHash("svcA", "h1"));
     }
 
+    @Test @DisplayName("发起人列/过滤：白名单在途→申请人；优化→打标人；按姓名或工号模糊")
+    void initiatorColumnAndFilter() {
+        // 行A：白名单在途（申请人 王山河/c-wangsh8）
+        insertRow("svcA", "h1", "20260701-1", 300);
+        jdbc.update("INSERT INTO dii_whitelist_application (target_type, sql_hash, project_name, status, applicant, applicant_name, l1_approver) "
+                + "VALUES ('SLOW_SQL','h1','svcA','PENDING_L1','c-wangsh8','王山河','l1u')");
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1', whitelist_app_id=1 WHERE service_name='svcA'");
+        // 行B：已标优化（打标人 李四/1002）
+        insertRow("svcB", "h2", "20260701-1", 200);
+        jdbc.update("INSERT INTO dii_slow_sql_optimization (service_name, abstract_hash, status, optimized_round, optimized_by, optimized_by_name, optimized_at, updated_at) "
+                + "VALUES ('svcB','h2','OPTIMIZED','20260701-1','1002','李四',NOW(),NOW())");
+        dao.syncOptimizeByServiceAndHash("svcB", "h2", "OPTIMIZED", "20260701-1", null);
+
+        List<Map<String, Object>> all = dao.listAggregated(null, null, null, null, null, null, null, null, 50, 0);
+        Map<String, Object> a = all.stream().filter(r -> "svcA".equals(r.get("service_name"))).findFirst().orElseThrow();
+        Map<String, Object> b = all.stream().filter(r -> "svcB".equals(r.get("service_name"))).findFirst().orElseThrow();
+        assertEquals("c-wangsh8", a.get("initiator"));
+        assertEquals("王山河", a.get("initiator_name"));
+        assertEquals("l1u", a.get("current_approver"));          // 待一级 → 一级审批人
+        assertEquals("1002", b.get("initiator"));
+        assertEquals("李四", b.get("initiator_name"));
+        assertNull(b.get("current_approver"));                    // 优化行无审批人
+
+        // 模糊过滤：姓名 / 工号 各命中对应行
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, "王山", null, null, 50, 0).size());
+        assertEquals(1, dao.listAggregated(null, null, null, null, null, "1002", null, null, 50, 0).size());
+        assertEquals(1, dao.countAggregated(null, null, null, null, null, "李四", null, null));
+    }
+
     @Test @DisplayName("listAggregated 按 optimizeStatus 过滤：REGRESSED / NONE(未处理)")
     void listFiltersByOptimizeStatus() {
         insertRow("svcA", "h1", "20260601-1", 300);
         insertRow("svcB", "h2", "20260601-1", 200);
         dao.syncOptimizeByServiceAndHash("svcA", "h1", "REGRESSED", "20260601-1", "20260615-1");
         List<Map<String, Object>> regressed = dao.listAggregated(
-                null, null, null, null, "REGRESSED", null, null, 50, 0);
+                null, null, null, null, "REGRESSED", null, null, null, 50, 0);
         assertEquals(1, regressed.size());
         assertEquals("svcA", regressed.get(0).get("service_name"));
         List<Map<String, Object>> none = dao.listAggregated(
-                null, null, null, null, "NONE", null, null, 50, 0);
+                null, null, null, null, "NONE", null, null, null, 50, 0);
         assertEquals(1, none.size());
         assertEquals("svcB", none.get(0).get("service_name"));
         assertTrue(regressed.get(0).containsKey("optimize_status"));

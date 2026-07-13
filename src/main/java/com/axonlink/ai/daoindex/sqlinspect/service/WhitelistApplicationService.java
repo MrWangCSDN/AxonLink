@@ -149,7 +149,7 @@ public class WhitelistApplicationService {
             long id = dao.create(
                     targetType, req.sqlHash, req.namedSql,
                     req.kindSource, req.sqlText, req.projectName, req.env,
-                    applicant, req.applyReason,
+                    applicant, resolveDisplayName(applicant), req.applyReason,
                     applicant,                      // l1_approver = 申请人本人
                     req.sourceTable, req.sourceId);
             int n = dao.l1Approve(id, applicant, autoOpinion, req.l2Approver);
@@ -169,7 +169,7 @@ public class WhitelistApplicationService {
         long id = dao.create(
                 targetType, req.sqlHash, req.namedSql,
                 req.kindSource, req.sqlText, req.projectName, req.env,
-                applicant, req.applyReason,
+                applicant, resolveDisplayName(applicant), req.applyReason,
                 req.l1Approver,
                 req.sourceTable, req.sourceId);
 

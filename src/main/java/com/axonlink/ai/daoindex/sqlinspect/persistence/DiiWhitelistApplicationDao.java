@@ -53,9 +53,9 @@ public class DiiWhitelistApplicationDao {
     private static final String INSERT_SQL =
             "INSERT INTO dii_whitelist_application (" +
             " target_type, sql_hash, named_sql, sql_kind_source, sql_text, " +
-            " project_name, env, status, applicant, apply_reason, apply_at, " +
+            " project_name, env, status, applicant, applicant_name, apply_reason, apply_at, " +
             " l1_approver, source_table, source_id) " +
-            "VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?, ?,  ?, ?, ?)";
+            "VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?, ?, ?,  ?, ?, ?)";
 
     private final JdbcTemplate jdbc;
 
@@ -67,7 +67,7 @@ public class DiiWhitelistApplicationDao {
     public long create(String targetType, String sqlHash, String namedSql,
                        String kindSource, String sqlText,
                        String projectName, String env,
-                       String applicant, String applyReason,
+                       String applicant, String applicantName, String applyReason,
                        String l1Approver,
                        String sourceTable, long sourceId) {
         KeyHolder kh = new GeneratedKeyHolder();
@@ -83,6 +83,7 @@ public class DiiWhitelistApplicationDao {
             ps.setString(i++, env);
             ps.setString(i++, STATUS_PENDING_L1);
             ps.setString(i++, applicant);
+            ps.setString(i++, applicantName);
             ps.setString(i++, truncate(applyReason, 1000));
             ps.setTimestamp(i++, Timestamp.valueOf(LocalDateTime.now()));
             ps.setString(i++, l1Approver);

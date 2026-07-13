@@ -89,10 +89,15 @@ public class SlowSqlController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String whitelistStatus,
             @RequestParam(required = false) String optimizeStatus,
+            @RequestParam(required = false) String initiator,
             @RequestParam(required = false) String round,
             @RequestParam(required = false) String approverUser) {
-        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser, limit, offset);
-        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, approverUser);
+        List<Map<String, Object>> items = dao.listAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser, limit, offset);
+        long total = dao.countAggregated(domain, bizType, keyword, whitelistStatus, optimizeStatus, initiator, round, approverUser);
+        // 发起人/当前审批人：空姓名读取时兜底解析（yml 审批人 display / sys_user），仅用于显示
+        whitelistService.fillDisplayNames(items, "initiator", "initiator_name");
+        items.forEach(it -> it.put("current_approver_name",
+                whitelistService.resolveDisplayName((String) it.get("current_approver"))));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("total", total);
         payload.put("items", items);
@@ -273,7 +278,7 @@ public class SlowSqlController {
                                          @RequestParam(required = false) String optimizeStatus,
                                          @RequestParam(required = false) String round) {
         try {
-            byte[] bytes = buildWorkbook(domain, bizType, keyword, whitelistStatus, optimizeStatus, round);
+            byte[] bytes = buildWorkbook(domain, bizType, keyword, whitelistStatus, optimizeStatus, round);   // 导出不加发起人筛选
             String scope = round == null || round.isBlank() ? "all" : round.trim();
             String fname = "slow-sql-" + scope + ".xlsx";
             HttpHeaders headers = new HttpHeaders();
@@ -294,7 +299,7 @@ public class SlowSqlController {
     private byte[] buildWorkbook(String domain, String bizType, String keyword,
                                  String whitelistStatus, String optimizeStatus, String round) throws Exception {
         List<Map<String, Object>> rows =
-                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, optimizeStatus, round, null);
+                dao.listAggregatedAll(domain, bizType, keyword, whitelistStatus, optimizeStatus, null, round, null);
 
         try (XSSFWorkbook wb = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("慢SQL维度");
