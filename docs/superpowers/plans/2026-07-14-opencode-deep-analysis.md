@@ -541,6 +541,11 @@ git commit -m "feat(opencode): 协议层——事件归一化解析 + prompt 请
 
 JDK `java.net.http.HttpClient`（项目既有模式，参考 `OpenAiCompatibleClient`）。测试用 `com.sun.net.httpserver.HttpServer` 起 stub，零新依赖。
 
+> **⚠️ Task 0 校准修订（stub fixture 与发送端点）：**
+> 1. stub 的文本事件必须用 `message.part.delta` 格式：`{"type":"message.part.delta","properties":{"sessionID":"ses_test","messageID":"msg_1","partID":"prt_1","field":"text","delta":"hello"}}`（下方草稿里的 text 型 `message.part.updated` 已作废——校准后它解析为 OTHER）
+> 2. 发送端点用 `POST /session/{id}/prompt_async`（实测 204），不是 `/prompt`
+> 3. 顺带落实 Task 2 评审的两条 Minor：`OpencodeEvent` 加 `toString()`（Gateway 日志排障用）；`OpencodeProtocol.parseEvent` 中 TOOL 从 `part.sessionID`、TEXT/DONE/ERROR 从 `properties.sessionID` 取值处加一行注释说明两处实测同值
+
 **线程模型（streamPrompt）：** 调用方线程内完成——先以 `ofInputStream` 建立 `GET /event` 长连接，再发 `POST /session/{id}/prompt`（异步线程发，避免阻塞事件读取），主循环逐行读事件直到终止事件或整体超时；超时/结束时关闭 InputStream 释放连接。
 
 - [ ] **Step 1: 写失败测试**
