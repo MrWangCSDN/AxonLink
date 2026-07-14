@@ -55,4 +55,20 @@ public class OpencodeEvent {
 
     /** 终止事件：收到后本次深度分析的事件消费循环应退出。 */
     public boolean isTerminal() { return kind == Kind.DONE || kind == Kind.ERROR; }
+
+    /** 简洁单行，方便 Gateway 日志排障；text 过长时截断。 */
+    @Override
+    public String toString() {
+        return "OpencodeEvent{kind=" + kind
+                + ", sessionId=" + sessionId
+                + ", text=" + truncate(text)
+                + ", toolName=" + toolName
+                + ", toolStatus=" + toolStatus
+                + '}';
+    }
+
+    private static String truncate(String s) {
+        if (s == null) return null;
+        return s.length() <= 60 ? s : s.substring(0, 60) + "...";
+    }
 }

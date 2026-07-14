@@ -58,6 +58,7 @@ public class OpencodeProtocol {
             case "message.part.updated": {
                 JsonNode part = props.path("part");
                 if ("tool".equals(part.path("type").asText(""))) {
+                    // tool 事件的 sessionID 在 part 内层（与外层 properties.sessionID 实测同值）
                     return OpencodeEvent.tool(
                             part.path("sessionID").asText(null),
                             part.path("tool").asText(""),
