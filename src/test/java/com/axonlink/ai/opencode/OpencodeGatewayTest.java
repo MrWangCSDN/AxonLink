@@ -55,7 +55,8 @@ class OpencodeGatewayTest {
             try (OutputStream os = exchange.getResponseBody()) { os.write("{}".getBytes()); }
         });
 
-        // SSE：推 1 条 text delta、1 条 tool、1 条其他 session 的 delta（应被过滤）、1 条 idle
+        // SSE：推 1 条 text delta、1 条 tool、1 条其他 session 的 delta（应被过滤）、
+        //      1 条本 session 的 OTHER（session.status，应被过滤）、1 条 idle
         server.createContext("/event", exchange -> {
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
@@ -63,6 +64,7 @@ class OpencodeGatewayTest {
                 os.write(sse("{\"type\":\"message.part.delta\",\"properties\":{\"sessionID\":\"ses_test\",\"messageID\":\"msg_1\",\"partID\":\"prt_1\",\"field\":\"text\",\"delta\":\"hello\"}}"));
                 os.write(sse("{\"type\":\"message.part.updated\",\"properties\":{\"sessionID\":\"ses_test\",\"part\":{\"id\":\"prt_2\",\"messageID\":\"msg_1\",\"sessionID\":\"ses_test\",\"type\":\"tool\",\"tool\":\"read\",\"callID\":\"call_1\",\"state\":{\"status\":\"running\",\"input\":{\"filePath\":\"a.java\"}}}}}"));
                 os.write(sse("{\"type\":\"message.part.delta\",\"properties\":{\"sessionID\":\"ses_other\",\"messageID\":\"msg_9\",\"partID\":\"prt_9\",\"field\":\"text\",\"delta\":\"noise\"}}"));
+                os.write(sse("{\"type\":\"session.status\",\"properties\":{\"sessionID\":\"ses_test\",\"status\":{\"type\":\"busy\"}}}"));
                 os.write(sse("{\"type\":\"session.idle\",\"properties\":{\"sessionID\":\"ses_test\"}}"));
                 os.flush();
             } catch (IOException ignored) {
@@ -113,7 +115,7 @@ class OpencodeGatewayTest {
         List<OpencodeEvent> events = new ArrayList<>();
         gateway.streamPrompt("ses_test", "{\"parts\":[]}", events::add, Duration.ofSeconds(10));
 
-        // 收到本 session 的 text/tool/done，过滤掉 ses_other 的 delta
+        // 收到本 session 的 text/tool/done，过滤掉 ses_other 的 delta 与本 session 的 OTHER（session.status）
         assertEquals(3, events.size());
         assertEquals(OpencodeEvent.Kind.TEXT, events.get(0).getKind());
         assertEquals("hello", events.get(0).getText());

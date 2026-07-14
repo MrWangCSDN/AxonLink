@@ -114,6 +114,13 @@ public class OpencodeGateway {
             throw new IOException("订阅 opencode 事件流被中断", e);
         }
         if (eventResp.statusCode() / 100 != 2) {
+            // 非 2xx 时 body 的 InputStream 已经打开：先关闭释放连接再抛，避免连接悬挂
+            //（与 OpenAiCompatibleClient 对非 2xx + InputStream 响应的处理一致）
+            try (InputStream ignored = eventResp.body()) {
+                // try-with-resources 仅为触发自动 close
+            } catch (IOException closeFailure) {
+                log.debug("[opencode] 关闭非 2xx 事件流响应体失败（忽略）：{}", closeFailure.getMessage());
+            }
             throw new IOException("订阅 opencode 事件流失败: HTTP " + eventResp.statusCode());
         }
 
