@@ -248,6 +248,12 @@ git commit -m "feat(opencode): 深度分析配置骨架 ai.opencode.*"
 
 **协议不确定性集中在本类**：下面的事件样例是调研版假设；执行本任务前先看 `docs/superpowers/plans/artifacts/opencode-events-sample.jsonl`（Task 0 产物），**以真实样例替换测试数据**，解析逻辑相应对齐。若 Task 0 判定 text 为增量语义，删除 `TextDeltaTracker`（见 Step 3 说明）。
 
+> **⚠️ Task 0 校准已定稿（2026-07-14，opencode 1.14.40，详见 artifacts/opencode-poc-notes.md）——本任务按以下结论执行，上面调研版样例作废：**
+> 1. **text 是纯增量**：消费 `message.part.delta`（`properties: {sessionID, messageID, partID, field:"text", delta:"片段"}`）作为 TEXT 事件；**删除 TextDeltaTracker 及其测试**
+> 2. `message.part.updated` 只用于 tool 事件：`properties.part: {type:"tool", tool, callID, state:{status: pending/running/completed, input, output}}`；text 类型的 part.updated 忽略（含用户消息回显）
+> 3. 终止事件 `session.idle`（`properties.sessionID`）与假设一致；`session.error` 保留容错解析
+> 4. 请求体字段 `{"agent","model":{"providerID","modelID"},"parts":[{"type":"text","text"}]}` 实测被接受，`buildPromptBody` 不变；发送用 `POST /session/{id}/prompt_async`（204）
+
 - [ ] **Step 1: 写失败测试**
 
 ```java
