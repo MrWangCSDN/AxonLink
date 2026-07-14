@@ -205,6 +205,18 @@ ai:
       max-tokens:  ${AI_ANALYSIS_MINIMAX_MAX_TOKENS:8192}
       enable-thinking: ${AI_ANALYSIS_MINIMAX_ENABLE_THINKING:false}
 
+  opencode:
+    enabled: ${AI_OPENCODE_ENABLED:false}
+    base-url: ${AI_OPENCODE_BASE_URL:http://127.0.0.1:4096}
+    username: ${AI_OPENCODE_USERNAME:opencode}
+    password: ${AI_OPENCODE_PASSWORD:}
+    agent: ${AI_OPENCODE_AGENT:axon-deep}
+    provider-id: ${AI_OPENCODE_PROVIDER_ID:spdb-new-api}
+    model-id: ${AI_OPENCODE_MODEL_ID:glm-47}
+    # 深度分析是多轮 agent 探索，整体超时明显长于单轮的 request-timeout-seconds
+    timeout-seconds: ${AI_OPENCODE_TIMEOUT_SECONDS:300}
+    connect-timeout-seconds: ${AI_OPENCODE_CONNECT_TIMEOUT_SECONDS:5}
+
 # ── DAO 索引巡检模块 ─────────────────────────────────────────────────────────
 # 模块默认开启，不再需要 enabled 总开关；部署时填充连接信息即可。
 # 建议将真实连接信息放到 application-local.yml，避免密码泄漏到仓库。
