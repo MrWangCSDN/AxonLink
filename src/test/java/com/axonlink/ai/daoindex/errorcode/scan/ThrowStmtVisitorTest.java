@@ -56,6 +56,40 @@ class ThrowStmtVisitorTest {
     }
 
     @Test
+    void anyUppercaseLetterPrefixMatched() {
+        // 内网实测：首字母是各域命名空间，不止 E/R——P(Prnt)/A(Acfp,Agnc)/B(Bkdf)/D(Dbsp) 均为真实错误码
+        List<ErrorCodeThrow> rs = scan(
+                "package com.x; class A { void m(){"
+                + " throw StError.Prnt.P0321();"
+                + " } void n(){ throw StError.Acfp.A0002(acnum); }"
+                + " void o(){ throw StError.Bkdf.B0216(); }"
+                + " void p(){ throw StError.Dbsp.D0102(rsp.getMsg()); }"
+                + " void q(){ throw StError.Remt.R1029(); } }");
+        assertEquals(List.of("P0321", "A0002", "B0216", "D0102", "R1029"), codes(rs));
+        assertEquals("StError.Prnt", rs.get(0).getErrorScope());
+    }
+
+    @Test
+    void staticImportedCategoryScopeMatched() {
+        // 静态导入嵌套类后 scope 只剩一段（实测形态：throw Prnt.P0333();）
+        List<ErrorCodeThrow> rs = scan(
+                "package com.x; class A { void m(){ throw Prnt.P0333(); } }");
+        assertEquals(List.of("P0333"), codes(rs));
+        assertEquals("Prnt", rs.get(0).getErrorScope());
+    }
+
+    @Test
+    void nonErrorCodeMethodNamesFiltered() {
+        // 结构像但方法名不符：两个字母 / 小写字母 / 位数不符（2 位、5 位）都不算错误码
+        List<ErrorCodeThrow> rs = scan(
+                "package com.x; class A { void m(){ throw X.AB123(); }"
+                + " void n(){ throw X.e0003(); }"
+                + " void o(){ throw X.P12(); }"
+                + " void p(){ throw X.P00001(); } }");
+        assertTrue(rs.isEmpty());
+    }
+
+    @Test
     void throwTextStripsTrailingLineComment() {
         // 源码：throw ...E0085(); // 说明 —— 注释在 throw 后面。
         // 旧实现 n.toString() 会把行尾注释当前置注释，落库变成 "// 说明 throw ...;"（语义全变）。

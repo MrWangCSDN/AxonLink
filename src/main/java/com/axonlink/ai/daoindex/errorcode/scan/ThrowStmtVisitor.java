@@ -21,13 +21,17 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 /**
- * 访问 throw 语句，识别错误码工厂调用 throw &lt;Scope&gt;.E####/R####(...)。
+ * 访问 throw 语句，识别错误码工厂调用 throw &lt;Scope&gt;.X####(...)（X 为任意一个大写字母）。
  * classFqn = pkg + "." + 栈顶（最近一层）具名类简名，与 Neo4jGraphBuilder:556 对齐。
  */
 public class ThrowStmtVisitor extends VoidVisitorAdapter<Void> {
 
-    /** 错误码方法名权威正则：E/R + 3~4 位数字。 */
-    private static final Pattern CODE = Pattern.compile("^[ER]\\d{3,4}$");
+    /**
+     * 错误码方法名权威正则：单个大写字母 + 3~4 位数字。
+     * 首字母是各域的命名空间而非固定集合——实测有 E/R（存款等）、P（Prnt）、A（Acfp/Agnc）、
+     * B（Bkdf）、D（Dbsp）……故不枚举字母；精度靠结构特征兜底（throw 的必须是带限定符的方法调用）。
+     */
+    private static final Pattern CODE = Pattern.compile("^[A-Z]\\d{3,4}$");
 
     private final String pkg;
     private final String filePath;
