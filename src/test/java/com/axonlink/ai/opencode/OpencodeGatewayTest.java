@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -25,6 +26,8 @@ class OpencodeGatewayTest {
     private OpencodeGateway gateway;
     /** stub 收到的请求记录：METHOD PATH [Authorization] */
     private final List<String> received = new CopyOnWriteArrayList<>();
+    /** 置 true 后 /event 返回 500（覆盖订阅被拒分支）；volatile：HttpServer 工作线程与测试线程共享。 */
+    private volatile boolean eventFail = false;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -58,6 +61,11 @@ class OpencodeGatewayTest {
         // SSE：推 1 条 text delta、1 条 tool、1 条其他 session 的 delta（应被过滤）、
         //      1 条本 session 的 OTHER（session.status，应被过滤）、1 条 idle
         server.createContext("/event", exchange -> {
+            if (eventFail) {
+                exchange.sendResponseHeaders(500, -1);
+                exchange.close();
+                return;
+            }
             exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
             exchange.sendResponseHeaders(200, 0);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -138,6 +146,17 @@ class OpencodeGatewayTest {
             Thread.sleep(10);
         }
         return received.stream().anyMatch(r -> r.startsWith(prefix));
+    }
+
+    @Test
+    @Timeout(5) // 该分支若回归为挂起（泄漏修复前的行为），要快速失败而不是拖死构建
+    void streamPrompt_throwsWhenEventSubscribeRejected() {
+        eventFail = true;
+        IOException ex = assertThrows(IOException.class,
+                () -> gateway.streamPrompt("ses_test", "{\"parts\":[]}", e -> {}, Duration.ofSeconds(5)));
+        assertTrue(ex.getMessage().contains("HTTP 500"));
+        // 订阅被拒时不应再派发 prompt
+        assertTrue(received.stream().noneMatch(r -> r.contains("/prompt_async")));
     }
 
     @Test
