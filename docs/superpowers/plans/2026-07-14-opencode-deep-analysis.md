@@ -872,6 +872,11 @@ git commit -m "feat(opencode): Gateway——session 管理 + prompt + SSE 事件
 NDJSON 事件协议（与 `/code-explain/stream` 同构，前端好复用）：
 `{"type":"start",...}` → `{"type":"delta","content":"..."}` / `{"type":"tool","tool":"read","status":"running"}` → `{"type":"done","content":"全文"}` | `{"type":"error","message":"..."}`；降级时在 done 前多一条 `{"type":"fallback","reason":"..."}`。
 
+> **⚠️ Task 0 校准修订（延续 Task 2/3 结论）：**
+> 1. **`TextDeltaTracker` 已在 Task 2 删除**：text 事件本就是纯增量（`message.part.delta`），下面 `DeepAnalysisService` 骨架里 `tracker.delta(event.getText())` 已作废，改为直接 `event.getText()` 透传并 `fullText.append(delta)`；`OpencodeProtocol` 上也不再有 `TextDeltaTracker` 这个内部类
+> 2. **测试同步调整**：Step 1 测试草稿里「模拟事件流：累积文本 "你好" → "你好，世界"」的注释/断言按纯增量语义改写——`sink.accept` 推两条独立增量 `OpencodeEvent.text("ses_1", "你好")` 与 `OpencodeEvent.text("ses_1", "，世界")`，断言对应产生两条 `delta` 事件（content 分别为 `"你好"`、`"，世界"`），`done` 事件 content 为拼接结果 `"你好，世界"`
+> 3. **附加回归测试（Task 3 code-reviewer 的 non-blocking follow-up，随本任务一并落地）**：给 `OpencodeGatewayTest` 补 `streamPrompt_unlocksReadLineWhenPromptDispatchFails`，覆盖「/event 订阅成功但 prompt_async 派发失败 → 主动关流解锁 `readLine`」路径（此前只有订阅本身被拒的 500 分支有覆盖）。stub server 需要 `server.setExecutor(Executors.newCachedThreadPool())`（默认单派发执行器下 `/event` 阻塞时 `prompt_async` 排不上队会死锁），`/event` 返回 200 后 `latch.await()` 挂住不发数据，`prompt_async` 返回 500，断言用宽松 overallTimeout（60s）+ 实际耗时 < 10s 证明是主动解锁而非命中超时
+
 - [ ] **Step 1: 写失败测试**
 
 ```java
