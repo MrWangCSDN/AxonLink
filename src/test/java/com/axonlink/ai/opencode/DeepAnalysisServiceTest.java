@@ -76,6 +76,9 @@ class DeepAnalysisServiceTest {
         assertEquals("done", events.get(2).get("type").asText());
         assertTrue(events.get(2).get("content").asText().contains("单轮总览"));
         verify(gateway, never()).createSession();
+        // 降级路径 includeCode=true：路径①单轮分析要把代码片段拼进 prompt（与主路径语义相反）
+        verify(orchestrator).analyzeTransaction(eq("TX1"),
+                argThat((AnalysisRequest r) -> r.isIncludeCode()));
     }
 
     @Test
@@ -120,6 +123,10 @@ class DeepAnalysisServiceTest {
         assertEquals("done", events.get(4).get("type").asText());
         assertEquals("你好，世界", events.get(4).get("content").asText());
         verify(gateway).deleteSession("ses_1");
+        // 主路径 includeCode=false：prompt 只用 chain/metadata，不该预取代码片段
+        //（源码由 opencode 自行探索；预取即弃是浪费——防回归断言）
+        verify(contextService).buildTransactionContext(eq("TX1"), anyString(),
+                argThat((AnalysisRequest r) -> !r.isIncludeCode()));
     }
 
     @Test
@@ -136,6 +143,46 @@ class DeepAnalysisServiceTest {
         JsonNode last = events.get(events.size() - 1);
         assertEquals("error", last.get("type").asText());
         assertTrue(last.get("message").asText().contains("连接被拒绝"));
+        verify(gateway).deleteSession("ses_1");
+    }
+
+    @Test
+    void fallbackFailure_writesErrorEvent() throws Exception {
+        props.setEnabled(false);
+        when(orchestrator.analyzeTransaction(eq("TX1"), any()))
+                .thenThrow(new IllegalStateException("图谱查询失败"));
+
+        List<JsonNode> events = runAndParse("TX1", new DeepAnalysisRequest());
+
+        // start → fallback → error，降级失败不能再发 done
+        assertEquals(3, events.size());
+        assertEquals("fallback", events.get(1).get("type").asText());
+        assertEquals("error", events.get(2).get("type").asText());
+        assertTrue(events.get(2).get("message").asText().contains("降级分析也失败了"));
+        assertTrue(events.get(2).get("message").asText().contains("图谱查询失败"));
+    }
+
+    @Test
+    void opencodeErrorEvent_writesErrorEvent_andDeletesSession() throws Exception {
+        when(gateway.isHealthy()).thenReturn(true);
+        when(gateway.createSession()).thenReturn("ses_1");
+        when(contextService.buildTransactionContext(anyString(), anyString(), any()))
+                .thenReturn(new AnalysisContext());
+        // 会话级 ERROR 事件：sink 内抛 IllegalStateException 中断流转，Service 统一收敛为 error 事件
+        doAnswer(inv -> {
+            Consumer<OpencodeEvent> sink = inv.getArgument(2);
+            sink.accept(OpencodeEvent.error("ses_1", "模型崩了"));
+            return null;
+        }).when(gateway).streamPrompt(eq("ses_1"), anyString(), any(), any(Duration.class));
+
+        List<JsonNode> events = runAndParse("TX1", new DeepAnalysisRequest());
+
+        JsonNode last = events.get(events.size() - 1);
+        assertEquals("error", last.get("type").asText());
+        assertTrue(last.get("message").asText().contains("opencode 会话错误"));
+        assertTrue(last.get("message").asText().contains("模型崩了"));
+        // 出错后不能再发 done；session 仍要清理
+        assertTrue(events.stream().noneMatch(e -> "done".equals(e.get("type").asText())));
         verify(gateway).deleteSession("ses_1");
     }
 }

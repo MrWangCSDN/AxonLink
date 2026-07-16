@@ -71,8 +71,10 @@ public class DeepAnalysisService {
         try {
             String analysisSessionId = req.getSessionId() == null || req.getSessionId().isBlank()
                     ? UUID.randomUUID().toString() : req.getSessionId();
+            // 主路径 includeCode=false：深度分析的 prompt 只用 chain/metadata，源码由 opencode
+            // 用只读工具自行探索——预取代码片段（Neo4j 查询 + 文件读取）算完即弃，纯浪费
             AnalysisContext context = contextService.buildTransactionContext(
-                    txId, analysisSessionId, toAnalysisRequest(req));
+                    txId, analysisSessionId, toAnalysisRequest(req, false));
             String promptText = buildDeepPrompt(txId, context, req.getQuestion());
 
             ocSession = gateway.createSession();
@@ -118,7 +120,8 @@ public class DeepAnalysisService {
     private void fallback(OutputStream out, String txId, DeepAnalysisRequest req, String reason) throws IOException {
         writeEvent(out, "fallback", Map.of("reason", reason));
         try {
-            AnalysisResponse resp = orchestrator.analyzeTransaction(txId, toAnalysisRequest(req));
+            // 降级路径 includeCode=true：路径①单轮分析把代码片段拼进 prompt，真正消费片段
+            AnalysisResponse resp = orchestrator.analyzeTransaction(txId, toAnalysisRequest(req, true));
             StringBuilder md = new StringBuilder();
             if (notBlank(resp.getSummary())) {
                 md.append("## 总览\n\n").append(resp.getSummary()).append("\n\n");
@@ -135,10 +138,19 @@ public class DeepAnalysisService {
         }
     }
 
-    private AnalysisRequest toAnalysisRequest(DeepAnalysisRequest req) {
+    /**
+     * 转成路径①的请求对象。
+     *
+     * @param includeCode 是否让 {@link AnalysisContextService} 预取代码片段。两条路径语义不同：
+     *                    主路径传 false（prompt 只用 chain/metadata，源码由 opencode 自行探索，
+     *                    预取即弃）；降级路径传 true（{@link AnalysisOrchestrator} 单轮分析
+     *                    要把片段拼进 prompt）。
+     */
+    private AnalysisRequest toAnalysisRequest(DeepAnalysisRequest req, boolean includeCode) {
         AnalysisRequest r = new AnalysisRequest();
         r.setSessionId(req.getSessionId());
         r.setFocus(req.getQuestion() == null ? "" : req.getQuestion());
+        r.setIncludeCode(includeCode);
         return r;
     }
 
@@ -152,6 +164,7 @@ public class DeepAnalysisService {
         try {
             contextJson = objectMapper.writeValueAsString(graphContext);
         } catch (Exception e) {
+            log.warn("[deep-analysis] tx={} 图谱上下文序列化失败，prompt 退化为仅含 txId：{}", txId, e.getMessage());
             contextJson = "{\"txId\":\"" + txId + "\"}";
         }
         String q = (question == null || question.isBlank())
