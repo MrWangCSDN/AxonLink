@@ -222,6 +222,12 @@ ai:
 # 建议将真实连接信息放到 application-local.yml，避免密码泄漏到仓库。
 dao-index-analysis:
 
+  # 数据源启动 fail-fast 总开关（结果库 MySQL + 全部 GaussDB 目标库统一生效）。
+  # true（默认）：启动时立即建连校验，连不上直接启动失败——内网/生产快速暴露连库配置错误；
+  # false：惰性初始化，启动阶段不连库，首次真正使用才建连报错——外网本地连不上内网库时用
+  # （见 application-local.yml.example 环境 A 配置块）。
+  datasource-fail-fast: ${DII_DATASOURCE_FAIL_FAST:true}
+
   # 索引元数据缓存（pg_index/pg_attribute 查询去重）
   # 缓存粒度 = (env, tableName)，用来减少目标库压力。
   index-meta:

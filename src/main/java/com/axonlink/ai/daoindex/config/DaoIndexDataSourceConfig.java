@@ -53,8 +53,28 @@ public class DaoIndexDataSourceConfig {
             hc.setConnectionTestQuery(cfg.getConnectionTestQuery());
         }
         hc.setPoolName("dii-result-pool");
-        log.info("[dii] 结果库 HikariDataSource 初始化：url={} pool={}", effectiveUrl, hc.getMaximumPoolSize());
+        applyStartupConnectPolicy(hc, props.isDatasourceFailFast());
+        log.info("[dii] 结果库 HikariDataSource 初始化：url={} pool={} failFast={}",
+                effectiveUrl, hc.getMaximumPoolSize(), props.isDatasourceFailFast());
         return new HikariDataSource(hc);
+    }
+
+    /**
+     * 启动建连策略（{@code dao-index-analysis.datasource-fail-fast}）：
+     * <ul>
+     *   <li>true（默认）：保持 HikariCP 默认 fail-fast（initializationFailTimeout=1）——
+     *       池构造时立即建连校验，连不上直接抛异常阻断启动，内网/生产快速暴露配置错误；</li>
+     *   <li>false：惰性初始化——initializationFailTimeout=-1 跳过启动建连校验，
+     *       minimumIdle=0 停掉后台补空闲连接（否则连不上时每个 housekeeping 周期都刷失败日志），
+     *       连接完全按需创建。外网本地连不上内网库时应用也能正常启动。</li>
+     * </ul>
+     */
+    private static void applyStartupConnectPolicy(HikariConfig hc, boolean failFast) {
+        if (failFast) {
+            return;
+        }
+        hc.setInitializationFailTimeout(-1);
+        hc.setMinimumIdle(0);
     }
 
     /**
@@ -89,6 +109,7 @@ public class DaoIndexDataSourceConfig {
             throw new IllegalStateException(
                     "必须至少配置一个 dao-index-analysis.targets.<env>");
         }
+        boolean failFast = props.isDatasourceFailFast();
         Map<String, HikariDataSource> dsMap = new LinkedHashMap<>();
         for (Map.Entry<String, DaoIndexAnalysisProperties.Target> entry : targets.entrySet()) {
             String env = entry.getKey();
@@ -112,12 +133,29 @@ public class DaoIndexDataSourceConfig {
             hc.setConnectionTimeout(t.getConnectionTimeoutMs());
             hc.setReadOnly(true);
             hc.setPoolName("dii-target-" + env);
-            dsMap.put(env, new HikariDataSource(hc));
-            log.info("[dii] 目标库 HikariDataSource 初始化：env={} url={} pool={}",
-                    env, t.getUrl(), hc.getMaximumPoolSize());
+            applyStartupConnectPolicy(hc, failFast);
+            try {
+                dsMap.put(env, new HikariDataSource(hc));
+                log.info("[dii] 目标库 HikariDataSource 初始化：env={} url={} pool={} failFast={}",
+                        env, t.getUrl(), hc.getMaximumPoolSize(), failFast);
+            } catch (RuntimeException ex) {
+                // HikariDataSource 构造时就会解析 JDBC 驱动（DriverDataSource）：驱动缺失、
+                // URL scheme 不被识别（如默认 jdbc:opengauss:// 配社区版 opengauss-jdbc 5.0.0，
+                // 其 SPI 注册的是 org.postgresql.Driver，只认 jdbc:postgresql:）都在这里抛，
+                // 惰性初始化拦不住。fail-fast=false 时按"该目标库不可用"降级跳过，保住应用启动。
+                if (failFast) {
+                    throw ex;
+                }
+                log.warn("[dii] 目标库 env={} 数据源装配失败，惰性模式跳过（该环境巡检不可用）：{}",
+                        env, ex.getMessage());
+            }
         }
         if (dsMap.isEmpty()) {
-            throw new IllegalStateException("dao-index-analysis.targets 全部配置无效");
+            if (failFast) {
+                throw new IllegalStateException("dao-index-analysis.targets 全部配置无效");
+            }
+            log.warn("[dii] 惰性模式：无任何可用目标库数据源，DII 巡检执行能力整体不可用");
+            return new TargetDataSourceRegistry(dsMap, props.getDefaultEnv());
         }
         String defaultEnv = props.getDefaultEnv();
         if (isBlank(defaultEnv) || !dsMap.containsKey(defaultEnv)) {

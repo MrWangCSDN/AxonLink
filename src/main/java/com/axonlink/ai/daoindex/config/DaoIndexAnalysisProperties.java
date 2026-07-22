@@ -17,6 +17,7 @@ import java.util.Map;
  *     <li>{@code scan.*} 控制从哪些工程哪些目录抽取 @Statement SQL；</li>
  *     <li>{@code targets.*} 配置被巡检的目标库（支持多环境，按 env 选择）；</li>
  *     <li>{@code result-datasource.*} 配置结果库，建议与 sunline-benchmark 共库；</li>
+ *     <li>{@code datasource-fail-fast} 控制启动时是否连库校验（外网本地置 false 可离线启动）；</li>
  *     <li>{@code concurrency.*}、{@code skip-if-analyzed-within-hours}、{@code export.*}
  *         控制编排行为、幂等窗口和报告落盘策略。</li>
  * </ul>
@@ -29,6 +30,20 @@ public class DaoIndexAnalysisProperties {
     private Map<String, Target> targets = new LinkedHashMap<>();
     private String defaultEnv = "dev";
     private ResultDatasource resultDatasource = new ResultDatasource();
+
+    /**
+     * 数据源启动 fail-fast 总开关（结果库 MySQL + 全部 GaussDB 目标库统一生效）。
+     *
+     * <p>{@code true}（默认）：保持 HikariCP 默认行为——池构造时立即建连校验，
+     * 连不上直接抛异常阻断应用启动，内网/生产环境快速暴露连库配置错误。
+     *
+     * <p>{@code false}：惰性初始化（{@code initializationFailTimeout=-1} 且
+     * {@code minimumIdle=0}），启动阶段完全不连库，首次真正使用时才按需建连并报错。
+     * 用于外网本地开发等连不上内网库的场景：应用照常启动，DII 巡检、代码提交统计、
+     * 构建状态等依赖结果库的功能在访问时报连接错误。
+     */
+    private boolean datasourceFailFast = true;
+
     private Concurrency concurrency = new Concurrency();
     private int skipIfAnalyzedWithinHours = 24;
     /**
@@ -57,6 +72,9 @@ public class DaoIndexAnalysisProperties {
 
     public ResultDatasource getResultDatasource() { return resultDatasource; }
     public void setResultDatasource(ResultDatasource resultDatasource) { this.resultDatasource = resultDatasource; }
+
+    public boolean isDatasourceFailFast() { return datasourceFailFast; }
+    public void setDatasourceFailFast(boolean datasourceFailFast) { this.datasourceFailFast = datasourceFailFast; }
 
     public Concurrency getConcurrency() { return concurrency; }
     public void setConcurrency(Concurrency concurrency) { this.concurrency = concurrency; }

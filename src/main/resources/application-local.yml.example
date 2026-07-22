@@ -34,6 +34,20 @@ callgraph:
 flowtran:
   datasource: local
 
+# ── DAO 索引巡检 / 结果库连接策略（外网本地必配）─────────────────────────────
+# 结果库（MySQL benchmarkdb）与目标库（GaussDB targets.*）默认都指向内网地址，
+# 外网本地连不上；不配置本项时 HikariCP 启动即 fail-fast，整个应用起不来。
+# datasource-fail-fast=false → 惰性初始化：启动阶段完全不连库，应用照常启动；
+# DII 巡检、代码提交统计、构建状态等依赖结果库的接口在真正访问时才报连接错误。
+# 注：旧的 dao-index-analysis.enabled 总开关已于 2026-05 移除，配了也不生效。
+dao-index-analysis:
+  datasource-fail-fast: false
+
+# 可选：外网期间顺手关掉构建状态轮询（默认开，连不上结果库时每 30s 刷一条失败日志）
+# build-sync:
+#   auto-phase:
+#     enabled: false
+
 benchmark:
   build-status:
     base-url: http://127.0.0.1:8080
@@ -64,6 +78,8 @@ benchmark:
 #
 # flowtran:
 #   datasource: intranet
+#
+# # dao-index-analysis：内网保持默认（datasource-fail-fast=true，启动时连库校验），无需配置
 #
 # benchmark:
 #   build-status:
