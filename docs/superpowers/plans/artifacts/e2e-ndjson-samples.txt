@@ -1,0 +1,179 @@
+# Task 9 端到端联调记录
+
+执行时间：2026-07-22
+分支：feat/opencode-deep-analysis @ cb178fb（联调过程中新增 Part A 加固 commit，见下）
+执行环境：本机 macOS（darwin），JDK 17（JBR 17.0.12），opencode 1.14.40（PoC 沿用版本）
+
+---
+
+## B1：opencode serve + mock 端点复原 —— 通过，产出真实事件样例
+
+原 PoC 的 `scratchpad/mock_openai.py` 在本次会话开始时已不存在（会话间的临时目录未持久化），
+按 `opencode-poc-notes.md` 记录的行为约定（第一轮 tool_calls 调 read、第二轮纯文本）重建于
+`~/poc-opencode/mock_openai.py`（纯标准库 Python，无第三方依赖，`--help` 可查参数）。
+
+重建要点（与原 PoC 的行为差异，均为增强，非语义变化）：
+- 工具调用入参不再硬编码，而是从 opencode 传来的 `tools[].function.parameters` JSON Schema
+  反推 required 字段填值（字符串类默认 `"opencode.json"`——本目录下确定存在，read 必成功）；
+  实测命中：opencode 侧真实执行的 tool 调用 `input` 正是 `{"filePath":"opencode.json"}`。
+- 判定"第几轮"从"数消息条数"改成更健壮的条件：`messages` 里已出现 `role=="tool"` 或者
+  这次请求根本没带 `tools`（覆盖 opencode 内部"生成会话标题"的 small 调用）→ 直接给纯文本；
+  否则给 tool_calls。避免了标题生成调用被错误地当成"该发起工具调用"处理。
+
+### 启动方式（复现步骤）
+
+```bash
+cd ~/poc-opencode
+python3 mock_openai.py --port 8901 &          # OpenAI 兼容 mock，baseURL 已写在 opencode.json
+opencode serve --port 4096 --print-logs --log-level DEBUG &
+curl -s http://127.0.0.1:4096/config -o /dev/null -w '%{http_code}\n'   # 200 即就绪
+```
+
+`~/poc-opencode/opencode.json` 沿用 PoC 原配置（providerID=`poc`，modelID=`mock-model`，
+agent=`axon-deep`，只读工具白名单），未改动。
+
+### 真实事件流样例（GET /event，session 内代表性事件，按时间序）
+
+```jsonl
+data: {"id":"evt_f880da8940013l9F07TujH9Tt1","type":"message.part.updated","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","part":{"type":"text","text":"读取当前目录的 opencode.json 并总结内容","messageID":"msg_f880da889001SxvJtSXk3NGYY7","sessionID":"ses_077f2937dffemjim7Md2k7k01d","id":"prt_f880da88b001QL3qRwPavtQZcM"},"time":1784694024340}}
+data: {"id":"evt_f880da95b002fSjVI8EdQgIk45","type":"message.part.updated","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","part":{"id":"prt_f880da95b0010CBb23h3zKzQbo","messageID":"msg_f880da8c4001IUPmH0lxS5Fwg8","sessionID":"ses_077f2937dffemjim7Md2k7k01d","type":"tool","tool":"read","callID":"call_88732192","state":{"status":"pending","input":{},"raw":""}},"time":1784694024539}}
+data: {"id":"evt_f880da95f001taDmoENBX9JEAq","type":"message.part.updated","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","part":{"type":"tool","tool":"read","callID":"call_88732192","state":{"status":"running","input":{"filePath":"opencode.json"},"raw":"","time":{"start":1784694024543}},"id":"prt_f880da95b0010CBb23h3zKzQbo","sessionID":"ses_077f2937dffemjim7Md2k7k01d","messageID":"msg_f880da8c4001IUPmH0lxS5Fwg8"},"time":1784694024543}}
+data: {"id":"evt_f880da969001RkUzrM1gAkIGEj","type":"message.part.updated","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","part":{"type":"tool","tool":"read","callID":"call_88732192","state":{"status":"completed","input":{"filePath":"opencode.json"},"output":"<path>...opencode.json</path>...(略，真实文件内容)","...":"..."},"id":"prt_f880da95b0010CBb23h3zKzQbo","sessionID":"ses_077f2937dffemjim7Md2k7k01d","messageID":"msg_f880da8c4001IUPmH0lxS5Fwg8"},"time":1784694024553}}
+data: {"id":"evt_f880daa67003aKPsOnZE3FVqif","type":"message.part.delta","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","messageID":"msg_f880daa0c001VnQZ8EyFc0k06B","partID":"prt_f880daa67001rjuibQmNQRJSut","field":"text","delta":"这是"}}
+data: {"id":"evt_f880daa67004U3nq2KuZlhqOf8","type":"message.part.delta","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","messageID":"msg_f880daa0c001VnQZ8EyFc0k06B","partID":"prt_f880daa67001rjuibQmNQRJSut","field":"text","delta":"一个"}}
+data: {"id":"evt_f880daa680017Zz9d6pgTCI564","type":"message.part.delta","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","messageID":"msg_f880daa0c001VnQZ8EyFc0k06B","partID":"prt_f880daa67001rjuibQmNQRJSut","field":"text","delta":"测试响应"}}
+data: {"id":"evt_f880daa68002RnAJ91xGSUu0GJ","type":"message.part.updated","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d","part":{"id":"prt_f880daa67001rjuibQmNQRJSut","messageID":"msg_f880daa0c001VnQZ8EyFc0k06B","sessionID":"ses_077f2937dffemjim7Md2k7k01d","type":"text","text":"这是一个测试响应","time":{"start":1784694024807,"end":1784694024808}},"time":1784694024808}}
+data: {"id":"evt_f880dab1b002PhWe5RoGrG2We1","type":"session.idle","properties":{"sessionID":"ses_077f2937dffemjim7Md2k7k01d"}}
+```
+
+**结论（对照 OpencodeProtocol/OpencodeGateway 的解析假设逐条验证）：**
+- tool 三态 pending → running(input 带上真实参数) → completed(output 带真实 read 结果)全部命中，
+  `OpencodeGateway`/`OpencodeProtocol` 消费的字段路径（`properties.part.type/tool/callID/state.status`）与实测一致。
+  上面第 3/4/5 行的 `sessionID` 均取自 `properties.part.sessionID`（对照 Task 2 评审提到的"两处实测同值"注释——确认一致）。
+- `message.part.delta`（`field:"text"`）三条依次为「这是」「一个」「测试响应」，与 Task 0 PoC 记录**完全一致**，
+  纯增量语义再次确认；同一 partID 的 `message.part.updated` 携带的是全量快照（"这是一个测试响应"，第 8 行），
+  印证了 `OpencodeProtocol` 只消费 delta、忽略 text 型 part.updated 的设计是对的。
+- `session.idle` 携带 `properties.sessionID`，是本次多轮对话的终止信号，`OpencodeGateway.streamPrompt` 的
+  终止条件成立。
+- 完整原始事件流留存于 `~/poc-opencode/event-capture.raw`（80 行，本机文件，未入库）。
+
+---
+
+## B2：后端本机启动 —— 失败，根因与本分支无关（预存环境限制）
+
+尝试命令：
+
+```bash
+cd <backend worktree>
+AI_OPENCODE_ENABLED=true AI_OPENCODE_PROVIDER_ID=poc AI_OPENCODE_MODEL_ID=mock-model mvn spring-boot:run
+```
+
+**结果：`BUILD FAILURE`，启动阶段即失败**，根因栈（节选）：
+
+```
+Caused by: org.springframework.beans.BeanInstantiationException: Failed to instantiate
+  [com.zaxxer.hikari.HikariDataSource]: Factory method 'diiResultDataSource' threw exception
+  with message: Failed to initialize pool: Communications link failure
+Caused by: com.zaxxer.hikari.pool.HikariPool$PoolInitializationException: Failed to initialize
+  pool: Communications link failure
+Caused by: com.mysql.cj.jdbc.exceptions.CommunicationsException: Communications link failure
+  at com.axonlink.ai.daoindex.config.DaoIndexDataSourceConfig.diiResultDataSource(...)
+Caused by: java.net.SocketTimeoutException: Read timed out
+```
+
+**根因**：`DaoIndexDataSourceConfig.diiResultDataSource`（DII 结果库）是一个无条件装配的
+`@Configuration` Bean（未加 `@ConditionalOnProperty`），构造 `HikariDataSource` 时用的是
+Hikari 默认 fail-fast 行为（未设置 `initializationFailTimeout`），目标地址
+`jdbc:mysql://21.64.203.16:3306/benchmarkdb`（`DII_RESULT_URL` 默认值）是内网地址，
+本机（外网开发机）连不通，pool 初始化直接抛异常，导致整个 Spring 容器起不来。
+
+**判定：与本分支（feat/opencode-deep-analysis）无关**——已核实：
+- `git diff $(git merge-base main HEAD) HEAD --stat` 显示本分支只改了
+  `ai/opencode/*`（新增包）+ `config/WebMvcConfig.java`（9 行，只是把全局异步超时上限
+  加了个 `Math.max` 分支，不影响其它端点）+ `application.yml`（新增 `ai.opencode.*` 段）
+  + 文档/artifacts。`DaoIndexDataSourceConfig.java` 完全不在本分支的改动范围内。
+- 这是该项目在"外网本地开发机、无 VPN/内网直连"场景下的**预存限制**，与是否开启
+  `AI_OPENCODE_ENABLED` 无关——即使 `AI_OPENCODE_ENABLED=false` 起服务，同样会在这一步失败。
+- `application-local.yml.example` 里"环境 A：外网本地"配置块只覆盖了 Neo4j / workspace-roots /
+  flowtran datasource，没有覆盖 DII 结果库，说明这确实是该项目目前没有为纯外网本机准备的一个盲区，
+  不是本次改动引入的回归。
+
+按任务指引"只试 5 分钟，别深陷"：已确认没有任何环境变量能让这个 Bean 绕过（无
+`enabled` 开关、无 `initializationFailTimeout` 覆盖入口），需要代码改动（加
+`@ConditionalOnProperty` 或设置 lenient pool init）才能解决，这超出本次"端到端联调"
+任务范围（不应该为了联调去改无关模块的生产代码），故未继续尝试，直接按指引转 B4，
+B3 挂起并列入下方"留待内网环境"清单。
+
+---
+
+## B3：全链路 NDJSON 验证 —— 本机未执行（因 B2 阻塞），留待内网环境
+
+由于后端在本机无法启动，`DeepAnalysisController` 的 `/api/ai/transactions/{txId}/deep-analysis/stream`
+端点无法通过 curl 实际验证。以下场景在内网（DII 结果库可达）环境需要补做：
+
+**前置**：内网跑通 B1（opencode serve 常驻 + 内网真实模型网关或本文档的 mock 脚本）；
+`AXON_SECURITY_ENABLED` 默认 `false`（`PermissiveSecurityConfig` 生效，`/api/**` 免登录），
+如内网默认开启了 Security，需要 `--axon-link.security.enabled=false` 或对应 env 关掉，
+否则要先登录拿 session cookie。
+
+**注**：任务描述里给的示例 curl 用的是 `127.0.0.1:8080`；经核实 `application.yml` 里
+`server.port` 实际配置的是 **8123**（除非 env `SERVER_PORT` 覆盖），内网执行时请用真实端口。
+
+清单：
+1. `curl -sN -X POST http://127.0.0.1:8123/api/ai/transactions/<真实txId>/deep-analysis/stream -H 'Content-Type: application/json' -d '{"question":"这支交易做什么"}'`
+   —— 验证 NDJSON 行完整：`start` → `tool`/`delta` 交替 → `done`。
+2. 用一个不存在的 txId 发起同样请求，观察 `AnalysisContextService.buildTransactionContext`
+   的实际行为（抛错被 catch 落 `error` 事件，还是返回空上下文继续往下走）——两种行为都算
+   有效验证，把实际现象记录进本文件即可，不需要预判。
+3. 杀掉 opencode serve 后再发起同样请求 → 预期收到 `fallback` 事件后走路径①单轮结果；
+   若路径①依赖的 Neo4j/结果库在内网也不可达，预期在 `fallback` 之后紧跟 `error`
+   （`DeepAnalysisService.fallback` 里 orchestrator 调用失败会被 catch 成
+   `"降级分析也失败了：..."` 的 error 事件）——同样是"记录实际现象"而非预判对错。
+4. `AI_OPENCODE_ENABLED=false` 重启后端 → 预期与场景 3 一致（未启用直接走 fallback 分支，
+   `DeepAnalysisService.streamDeepAnalyze` 里 `!props.isEnabled()` 分支）。
+5. 把以上 4 个场景实际收到的原始 NDJSON 行追加进本文件（或新开一节），补全本次未能
+   完成的部分。
+
+---
+
+## B4：前端构建级验证 —— 通过
+
+```bash
+cd /Users/java/axon-link-frontend/.claude-worktrees/deep-analysis
+npm run build
+```
+
+`node_modules` 已就绪，无需重装。结果：`exit code 0`，`✓ built in ~900ms`，无 warning/error。
+产物落在 `vite.config.js` 里 `path.resolve(__dirname, '../axon-link-server/...')` 解析出的
+`.claude-worktrees/axon-link-server/src/main/resources/static/`（worktree 内相对路径解析出的
+旁路目录，不是真正的两个主仓库，未触碰 `/Users/java/axon-link-server` 或
+`/Users/java/axon-link-frontend` 主目录）。
+
+抽查产物确认三个 commit 叠加的深度分析代码确实被打进包（不是空跑）：
+
+```bash
+grep -rl "deep-analysis/stream" .../static/assets/   # 命中 index-*.js、TransactionAnalysis-*.js
+grep -rl "深度分析" .../static/assets/                # 同上
+```
+
+两处均命中，确认 `streamDeepAnalysis` API 函数与 `DeepAnalysisPanel`/`TransactionCard` 的
+中文 UI 文案都在最终产物里。
+
+---
+
+## Part C：全量回归（backend worktree, JDK 17）
+
+```bash
+mvn test
+```
+
+结果：`BUILD SUCCESS`，`Tests run: 191, Failures: 0, Errors: 0, Skipped: 2`。
+
+- `com.axonlink.ai.opencode.*`：11 + 7 + 1 + 6 = **25/25 全绿**（OpencodeProtocolTest /
+  OpencodeGatewayTest / DeepAnalysisControllerTest / DeepAnalysisServiceTest）。
+- 唯一的 2 个 Skipped 在 `com.axonlink.security.SecurityIntegrationTest`，源码里标注
+  `@Disabled("增强 v3 改用 Spring 标准 ActiveDirectoryLdapAuthenticationProvider..."` /
+  `@Disabled("同测例②：AD provider 走真实 AD..."`——预先存在的、依赖真实 AD 服务器的用例，
+  与本分支无关（`SecurityIntegrationTest` 不在本分支 diff 范围内）。
+- 全程无 Failures/Errors，`mvn test`（单测为主，多数不加载完整 Spring 上下文）没有触发
+  B2 里那个 DII 结果库连接问题；该问题只在 `spring-boot:run` 真正启动整个应用时才会出现。
