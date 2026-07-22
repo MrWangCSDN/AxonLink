@@ -1,5 +1,6 @@
 package com.axonlink.config;
 
+import com.axonlink.ai.opencode.OpencodeProperties;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
@@ -19,14 +20,20 @@ import java.io.IOException;
 public class WebMvcConfig implements WebMvcConfigurer {
 
     private final AiAnalysisConfig aiAnalysisConfig;
+    private final OpencodeProperties opencodeProperties;
 
-    public WebMvcConfig(AiAnalysisConfig aiAnalysisConfig) {
+    public WebMvcConfig(AiAnalysisConfig aiAnalysisConfig, OpencodeProperties opencodeProperties) {
         this.aiAnalysisConfig = aiAnalysisConfig;
+        this.opencodeProperties = opencodeProperties;
     }
 
     @Override
     public void configureAsyncSupport(AsyncSupportConfigurer configurer) {
         long timeoutMillis = Math.max(60_000L, (long) aiAnalysisConfig.getRequestTimeoutSeconds() * 1000L + 15_000L);
+        // 深度分析（opencode 多轮探索）整体超时更长：全局异步上限要罩得住它，否则 Spring 先掐断流。
+        // 权衡：全局上限抬高意味着其他挂死的异步流也要等这么久才被容器兜底掐断，但各流自身
+        // 都有更短的业务超时（aiAnalysis 120s / opencode 300s）先触发，全局值只是最后一道防线。
+        timeoutMillis = Math.max(timeoutMillis, (long) opencodeProperties.getTimeoutSeconds() * 1000L + 15_000L);
         configurer.setDefaultTimeout(timeoutMillis);
     }
 
