@@ -1,6 +1,8 @@
 package com.axonlink.ai.daoindex.errorcode.export;
 
 import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
+import com.axonlink.ai.daoindex.errorcode.definition.ErrorDefinitionIndex;
+import com.axonlink.ai.daoindex.errorcode.definition.ErrorDefinitionIndex.ErrorDefinition;
 import com.axonlink.ai.daoindex.errorcode.dto.TxErrorCodeRow;
 import com.axonlink.service.FlowtranImpactExportService.ExportFile;
 import org.apache.poi.ss.usermodel.Row;
@@ -23,16 +25,19 @@ import java.util.List;
 public class ErrorCodeExportService {
 
     private static final String[] SINGLE_HEADERS = {
-            "错误码", "错误类.分类", "throw 内容", "归属构件",
+            "错误码", "错误类.分类", "新错误码", "新错误描述", "throw 内容", "归属构件",
             "源类", "源方法", "文件路径", "行号", "模块"};
     private static final String[] ALL_HEADERS = {
-            "归属交易", "交易名", "领域", "错误码", "错误类.分类", "throw 内容", "归属构件",
+            "归属交易", "交易名", "领域", "错误码", "错误类.分类", "新错误码", "新错误描述",
+            "throw 内容", "归属构件",
             "源类", "源方法", "文件路径", "行号", "模块", "匹配状态"};
 
     private final DiiErrorCodeDao dao;   // Task 5
+    private final ErrorDefinitionIndex definitions;
 
-    public ErrorCodeExportService(DiiErrorCodeDao dao) {
+    public ErrorCodeExportService(DiiErrorCodeDao dao, ErrorDefinitionIndex definitions) {
         this.dao = dao;
+        this.definitions = definitions;
     }
 
     /** 单交易明细导出（§8.1）。 */
@@ -80,6 +85,9 @@ public class ErrorCodeExportService {
         }
         r.createCell(c++).setCellValue(nv(d.getErrorCode()));
         r.createCell(c++).setCellValue(nv(d.getErrorScope()));
+        ErrorDefinition definition = definitions.lookup(d.getErrorScope(), d.getErrorCode()).orElse(null);
+        r.createCell(c++).setCellValue(definition == null ? "" : nv(definition.errorCode()));
+        r.createCell(c++).setCellValue(definition == null ? "" : nv(definition.message()));
         r.createCell(c++).setCellValue(nv(d.getThrowText()));
         r.createCell(c++).setCellValue(d.getComponentName() == null ? "工具方法" : d.getComponentName());
         r.createCell(c++).setCellValue(nv(d.getClassFqn()));
