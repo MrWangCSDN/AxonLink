@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -21,6 +22,7 @@ public class ReplayIssueImportService {
     private final Clock clock;
     private final Semaphore importPermit;
 
+    @Autowired
     public ReplayIssueImportService(ReplayIssueExcelParser parser, ReplayIssueDao dao) {
         this(parser, dao, Clock.systemDefaultZone(), new Semaphore(1));
     }

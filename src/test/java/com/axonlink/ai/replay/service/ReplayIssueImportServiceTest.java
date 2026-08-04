@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 
@@ -53,6 +54,22 @@ class ReplayIssueImportServiceTest {
     }
 
     @Test
+    void springSelectsProductionConstructorAndWiresDependencies() throws Exception {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(ReplayIssueExcelParser.class, () -> parser);
+            context.registerBean(ReplayIssueDao.class, () -> dao);
+            context.register(ReplayIssueImportService.class);
+            context.refresh();
+
+            ReplayIssueImportResult result = context.getBean(ReplayIssueImportService.class)
+                    .importFile(ReplayIssueTestFixtures.validWorkbook(1));
+
+            assertEquals(8, result.totalRows());
+            assertEquals(8, dao.count(ALL));
+        }
+    }
+
+    @Test
     void concurrentImportIsRejectedWithoutChangingRows() {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "old")), IMPORTED_AT);
         ReplayIssueImportService busy = new ReplayIssueImportService(parser, dao,
@@ -76,7 +93,7 @@ class ReplayIssueImportServiceTest {
     }
 
     @Test
-    void parserFailureLeavesPreviousSnapshotUntouched() {
+    void parserFailurePreservesSnapshotAndReleasesPermit() throws Exception {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "old")), IMPORTED_AT);
         MockMultipartFile invalid = new MockMultipartFile("file", "replay-issues.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[] {1, 2, 3});
@@ -84,5 +101,10 @@ class ReplayIssueImportServiceTest {
         assertThrows(Exception.class, () -> service.importFile(invalid));
 
         assertEquals(1, dao.count(ALL));
+
+        ReplayIssueImportResult result = service.importFile(ReplayIssueTestFixtures.validWorkbook(1));
+
+        assertEquals(8, result.totalRows());
+        assertEquals(8, dao.count(ALL));
     }
 }
