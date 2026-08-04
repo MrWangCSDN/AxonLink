@@ -6,6 +6,9 @@ import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.service.ReplayIssueExcelParser;
 import com.axonlink.ai.replay.service.ReplayIssueImportService;
+import org.apache.poi.hssf.usermodel.HSSFWorkbook;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,6 +17,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -66,6 +71,15 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void validLegacyXlsImportsAllTargetSheets() throws Exception {
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                        .file(validLegacyWorkbook())
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalRows").value(8));
+    }
+
+    @Test
     void configuredTokenRejectsMissingAndWrongValues() throws Exception {
         MockMultipartFile file = ReplayIssueTestFixtures.validWorkbook(1);
 
@@ -100,6 +114,20 @@ class ReplayIssueControllerTest {
                         .header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void oversizedXlsxReturnsBadRequestInSharedEnvelope() throws Exception {
+        MockMultipartFile oversized = new MockMultipartFile("file", "replay-issues.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                new byte[50 * 1024 * 1024 + 1]);
+
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                        .file(oversized)
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("文件不能超过 50MB"));
     }
 
     @Test
@@ -180,5 +208,38 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(201))
                 .andExpect(jsonPath("$.data.items.length()").value(200));
+    }
+
+    private static MockMultipartFile validLegacyWorkbook() {
+        try (HSSFWorkbook workbook = new HSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            for (String sheetName : ReplayIssueTestFixtures.TARGET_SHEETS) {
+                writeLegacySheet(workbook, sheetName);
+            }
+            workbook.write(output);
+            return new MockMultipartFile("file", "replay-issues.xls", "application/vnd.ms-excel",
+                    output.toByteArray());
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not create legacy test workbook", exception);
+        }
+    }
+
+    private static void writeLegacySheet(HSSFWorkbook workbook, String sheetName) {
+        Sheet sheet = workbook.createSheet(sheetName);
+        Row headerRow = sheet.createRow(0);
+        Row dataRow = sheet.createRow(1);
+        for (int columnIndex = 0; columnIndex < ReplayIssueTestFixtures.HEADERS.size(); columnIndex++) {
+            String header = ReplayIssueTestFixtures.HEADERS.get(columnIndex);
+            headerRow.createCell(columnIndex).setCellValue(header);
+            dataRow.createCell(columnIndex).setCellValue(legacyValue(header, sheetName));
+        }
+    }
+
+    private static String legacyValue(String header, String sheetName) {
+        return switch (header) {
+            case "领域" -> sheetName.replace("沙箱-", "");
+            case "序号" -> "1";
+            case "issue_key" -> "TRAN|6208|响应码";
+            default -> "value";
+        };
     }
 }
