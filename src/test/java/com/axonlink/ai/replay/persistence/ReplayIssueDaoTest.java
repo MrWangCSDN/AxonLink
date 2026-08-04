@@ -10,6 +10,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -70,8 +71,18 @@ class ReplayIssueDaoTest {
         assertEquals(4, rows.size());
         assertIterableEquals(List.of("F-1", "F-2", "F-2b", "T-2"),
                 rows.stream().map(row -> (String) row.get("transaction_code")).toList());
-        assertEquals("F-1", dao.list(new ReplayIssueQuery(0, 0, null, null, null, null, null))
-                .get(0).get("transaction_code"));
+    }
+
+    @Test
+    void listDefaultsZeroLimitToFiftyRows() {
+        List<ReplayIssueRow> rows = new ArrayList<>();
+        for (int rowOrder = 1; rowOrder <= 51; rowOrder++) {
+            rows.add(ReplayIssueTestFixtures.row("公共组", false, rowOrder,
+                    "T-" + rowOrder, "issue-" + rowOrder));
+        }
+        dao.replaceAll(rows, IMPORTED_AT);
+
+        assertEquals(50, dao.list(new ReplayIssueQuery(0, 0, null, null, null, null, null)).size());
     }
 
     @Test

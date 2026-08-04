@@ -23,6 +23,7 @@ import java.util.Map;
 public class ReplayIssueDao {
 
     private static final int BATCH_SIZE = 2_000;
+    private static final int DEFAULT_LIMIT = 50;
     private static final int MIN_LIMIT = 1;
     private static final int MAX_LIMIT = 200;
 
@@ -181,6 +182,9 @@ public class ReplayIssueDao {
     }
 
     private static int clampLimit(int limit) {
+        if (limit == 0) {
+            return DEFAULT_LIMIT;
+        }
         return Math.min(Math.max(limit, MIN_LIMIT), MAX_LIMIT);
     }
 
