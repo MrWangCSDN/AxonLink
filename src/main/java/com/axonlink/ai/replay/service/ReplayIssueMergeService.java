@@ -7,6 +7,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -23,6 +24,7 @@ public class ReplayIssueMergeService {
     private final Clock clock;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public ReplayIssueMergeService(ReplayIssueDao dao) {
         this(dao, Clock.systemDefaultZone(), new ObjectMapper().findAndRegisterModules());
     }
