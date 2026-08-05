@@ -9,6 +9,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import java.util.concurrent.Semaphore;
 
 /** Serializes replay issue imports while atomically replacing the active snapshot. */
@@ -19,18 +21,27 @@ public class ReplayIssueImportService {
 
     private final ReplayIssueExcelParser parser;
     private final ReplayIssueDao dao;
+    private final ReplayIssueMergeService mergeService;
     private final Clock clock;
     private final Semaphore importPermit;
 
     @Autowired
     public ReplayIssueImportService(ReplayIssueExcelParser parser, ReplayIssueDao dao) {
-        this(parser, dao, Clock.systemDefaultZone(), new Semaphore(1));
+        this(parser, dao, new ReplayIssueMergeService(dao), Clock.systemDefaultZone(), new Semaphore(1));
     }
 
     ReplayIssueImportService(ReplayIssueExcelParser parser, ReplayIssueDao dao, Clock clock,
                              Semaphore importPermit) {
+        this(parser, dao, new ReplayIssueMergeService(dao, clock,
+                        new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()), clock,
+                importPermit);
+    }
+
+    ReplayIssueImportService(ReplayIssueExcelParser parser, ReplayIssueDao dao, ReplayIssueMergeService mergeService,
+                             Clock clock, Semaphore importPermit) {
         this.parser = parser;
         this.dao = dao;
+        this.mergeService = mergeService;
         this.clock = clock;
         this.importPermit = importPermit;
     }
@@ -45,9 +56,7 @@ public class ReplayIssueImportService {
         try {
             ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(file);
             LocalDateTime importedAt = LocalDateTime.now(clock);
-            dao.replaceAll(parsed.rows(), importedAt);
-            return new ReplayIssueImportResult(parsed.rows().size(), parsed.rowsBySheet(), parsed.sandboxRows(),
-                    parsed.nonSandboxRows(), importedAt);
+            return mergeService.merge(parsed, importedAt.toLocalDate(), ReplayIssueOperator.system());
         } finally {
             importPermit.release();
         }

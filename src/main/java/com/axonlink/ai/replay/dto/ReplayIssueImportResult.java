@@ -9,5 +9,16 @@ public record ReplayIssueImportResult(
         Map<String, Integer> rowsBySheet,
         int sandboxRows,
         int nonSandboxRows,
-        LocalDateTime importedAt) {
+        LocalDateTime importedAt,
+        int createdRows,
+        int updatedRows,
+        int ignoredRows,
+        int autoRepairedRows,
+        int rejectedRows) {
+
+    public ReplayIssueImportResult(int totalRows, Map<String, Integer> rowsBySheet,
+                                   int sandboxRows, int nonSandboxRows, LocalDateTime importedAt) {
+        this(totalRows, rowsBySheet, sandboxRows, nonSandboxRows, importedAt,
+                totalRows, 0, 0, 0, 0);
+    }
 }

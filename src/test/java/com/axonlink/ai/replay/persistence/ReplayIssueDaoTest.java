@@ -102,7 +102,7 @@ class ReplayIssueDaoTest {
 
         assertIterableEquals(List.of("公共组", "贷款组"), options.groups());
         assertIterableEquals(List.of("交易级", "字段级"), options.issueLevels());
-        assertIterableEquals(List.of("数据差异", "环境问题"), options.issueTypes());
+        assertIterableEquals(List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"), options.issueTypes());
         assertEquals(3L, stats.get("total"));
         assertEquals(2L, stats.get("groupCount"));
         assertEquals(1L, stats.get("sandboxCount"));

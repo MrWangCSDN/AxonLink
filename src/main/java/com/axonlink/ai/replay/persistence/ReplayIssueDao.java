@@ -3,7 +3,11 @@ package com.axonlink.ai.replay.persistence;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
+import com.axonlink.ai.replay.dto.ReplayIssueOperator;
+import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
@@ -13,10 +17,14 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 /** Result-database access for the active parallel replay issue snapshot. */
 @Repository
@@ -57,6 +65,125 @@ public class ReplayIssueDao {
         });
     }
 
+    /** Runs a merge operation in one result-database transaction. */
+    public <T> T inTransaction(Function<ReplayIssueDao, T> callback) {
+        return txTemplate.execute(status -> callback.apply(this));
+    }
+
+    public ReplayIssueRow findCurrentByIssueKeyForUpdate(String issueKey) {
+        List<ReplayIssueRow> rows = jdbc.query("SELECT * FROM dii_replay_issue WHERE issue_key = ? FOR UPDATE",
+                this::mapRow, issueKey);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public long insertCurrent(ReplayIssueRow row) {
+        String sql = "INSERT INTO dii_replay_issue (source_sheet,group_name,is_sandbox,row_order,domain,sequence_no,"
+                + "batch_no,transaction_code,transaction_name,issue_level,registered_date,field_name,issue_description,"
+                + "transaction_owner,issue_type,initial_analysis,final_solution,resolved_date,cooperation_group,resolver,"
+                + "serial_no,data_repair_date,remark,affected_transaction_count,issue_id,issue_key,historical_occurrence_count,"
+                + "first_occurrence_date,last_occurrence_date,imported_at,issue_status,import_date,defect_repair_date,"
+                + "cooperation_person_username,cooperation_person_real_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        KeyHolder holder = new GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            PreparedStatement statement = connection.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS);
+            bindCurrent(statement, row, false);
+            return statement;
+        }, holder);
+        Number key = holder.getKey();
+        return key == null ? 0L : key.longValue();
+    }
+
+    public void updateCurrent(ReplayIssueRow row) {
+        String sql = "UPDATE dii_replay_issue SET source_sheet=?,group_name=?,is_sandbox=?,row_order=?,domain=?,sequence_no=?,"
+                + "batch_no=?,transaction_code=?,transaction_name=?,issue_level=?,registered_date=?,field_name=?,issue_description=?,"
+                + "transaction_owner=?,issue_type=?,initial_analysis=?,final_solution=?,resolved_date=?,cooperation_group=?,resolver=?,"
+                + "serial_no=?,data_repair_date=?,remark=?,affected_transaction_count=?,issue_id=?,issue_key=?,historical_occurrence_count=?,"
+                + "first_occurrence_date=?,last_occurrence_date=?,imported_at=?,issue_status=?,import_date=?,defect_repair_date=?,"
+                + "cooperation_person_username=?,cooperation_person_real_name=? WHERE id=?";
+        jdbc.update(sql, currentArgs(row, true));
+    }
+
+    public List<ReplayIssueRow> findPendingVerificationMissing(Set<String> incomingKeys) {
+        String sql = "SELECT * FROM dii_replay_issue WHERE issue_status = ?"
+                + (incomingKeys.isEmpty() ? "" : " AND issue_key NOT IN (" + "?,".repeat(incomingKeys.size()).replaceAll(",$", "") + ")")
+                + " FOR UPDATE";
+        List<Object> args = new ArrayList<>();
+        args.add(ReplayIssueStatus.PENDING_VERIFICATION.displayValue());
+        args.addAll(incomingKeys);
+        return jdbc.query(sql, this::mapRow, args.toArray());
+    }
+
+    public void insertHistory(Long replayIssueId, String issueKey, String operationType, LocalDateTime operationAt,
+                              ReplayIssueOperator operator, LocalDate importDate, String sourceSheet, Integer sourceRow,
+                              String beforeSnapshot, String afterSnapshot, String incomingSnapshot) {
+        jdbc.update("INSERT INTO dii_replay_issue_history (replay_issue_id,issue_key,operation_type,operation_at,"
+                        + "operator_username,operator_real_name,import_date,source_sheet,source_row,before_snapshot,"
+                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                replayIssueId, issueKey, operationType, Timestamp.valueOf(operationAt),
+                operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
+                importDate, sourceSheet, sourceRow, beforeSnapshot, afterSnapshot, incomingSnapshot);
+    }
+
+    public long countHistory(String issueKey) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_issue_history WHERE issue_key = ?", Long.class, issueKey);
+        return count == null ? 0L : count;
+    }
+
+    private ReplayIssueRow mapRow(ResultSet rs, int rowNum) throws SQLException {
+        Timestamp imported = rs.getTimestamp("imported_at");
+        java.sql.Date importDate = rs.getDate("import_date");
+        java.sql.Date defectDate = rs.getDate("defect_repair_date");
+        return new ReplayIssueRow(rs.getLong("id"), rs.getString("source_sheet"), rs.getString("group_name"),
+                rs.getBoolean("is_sandbox"), rs.getInt("row_order"), rs.getString("domain"), rs.getString("sequence_no"),
+                rs.getString("batch_no"), rs.getString("transaction_code"), rs.getString("transaction_name"),
+                rs.getString("issue_level"), rs.getString("registered_date"), rs.getString("field_name"),
+                rs.getString("issue_description"), rs.getString("transaction_owner"), rs.getString("issue_type"),
+                rs.getString("initial_analysis"), rs.getString("final_solution"), rs.getString("resolved_date"),
+                rs.getString("cooperation_group"), rs.getString("resolver"), rs.getString("serial_no"),
+                rs.getString("data_repair_date"), rs.getString("remark"), rs.getString("affected_transaction_count"),
+                rs.getString("issue_id"), rs.getString("issue_key"), rs.getString("historical_occurrence_count"),
+                rs.getString("first_occurrence_date"), rs.getString("last_occurrence_date"),
+                imported == null ? null : imported.toLocalDateTime(),
+                ReplayIssueStatus.fromDisplayValue(rs.getString("issue_status")),
+                importDate == null ? null : importDate.toLocalDate(), defectDate == null ? null : defectDate.toLocalDate(),
+                rs.getString("cooperation_person_username"), rs.getString("cooperation_person_real_name"));
+    }
+
+    private void bindCurrent(PreparedStatement s, ReplayIssueRow row, boolean withId) throws SQLException {
+        Object[] args = currentArgs(row, false);
+        for (int i = 0; i < args.length; i++) {
+            Object value = args[i];
+            if (value instanceof LocalDateTime dateTime) s.setTimestamp(i + 1, Timestamp.valueOf(dateTime));
+            else if (value instanceof LocalDate date) s.setDate(i + 1, java.sql.Date.valueOf(date));
+            else if (value instanceof ReplayIssueStatus status) s.setString(i + 1, status.displayValue());
+            else if (value instanceof Boolean bool) s.setBoolean(i + 1, bool);
+            else s.setObject(i + 1, value);
+        }
+        if (withId) s.setLong(args.length + 1, row.id());
+    }
+
+    private Object[] currentArgs(ReplayIssueRow row, boolean withId) {
+        List<Object> args = new ArrayList<>();
+        args.add(row.sourceSheet()); args.add(row.groupName()); args.add(row.sandbox()); args.add(row.rowOrder());
+        args.add(row.domain()); args.add(row.sequenceNo()); args.add(row.batchNo()); args.add(row.transactionCode());
+        args.add(row.transactionName()); args.add(row.issueLevel()); args.add(row.registeredDate()); args.add(row.fieldName());
+        args.add(row.issueDescription()); args.add(row.transactionOwner()); args.add(row.issueType()); args.add(row.initialAnalysis());
+        args.add(row.finalSolution()); args.add(row.resolvedDate()); args.add(row.cooperationGroup()); args.add(row.resolver());
+        args.add(row.serialNo()); args.add(row.dataRepairDate()); args.add(row.remark()); args.add(row.affectedTransactionCount());
+        args.add(row.issueId()); args.add(row.issueKey()); args.add(row.historicalOccurrenceCount()); args.add(row.firstOccurrenceDate());
+        args.add(row.lastOccurrenceDate()); args.add(row.importedAt()); args.add(row.issueStatus() == null ? ReplayIssueStatus.OPEN : row.issueStatus());
+        args.add(row.importDate()); args.add(row.defectRepairDate()); args.add(row.cooperationPersonUsername()); args.add(row.cooperationPersonRealName());
+        if (withId) args.add(row.id());
+        return args.stream().map(ReplayIssueDao::jdbcValue).toArray();
+    }
+
+    private static Object jdbcValue(Object value) {
+        if (value instanceof ReplayIssueStatus status) return status.displayValue();
+        if (value instanceof LocalDateTime dateTime) return Timestamp.valueOf(dateTime);
+        if (value instanceof LocalDate date) return java.sql.Date.valueOf(date);
+        return value;
+    }
+
     public List<Map<String, Object>> list(ReplayIssueQuery query) {
         StringBuilder sql = new StringBuilder("SELECT * FROM dii_replay_issue WHERE 1=1");
         List<Object> args = new ArrayList<>();
@@ -80,7 +207,7 @@ public class ReplayIssueDao {
                 jdbc.queryForList("SELECT DISTINCT group_name FROM dii_replay_issue "
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
-                distinctNonBlank("issue_type"));
+                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"));
     }
 
     public Map<String, Object> stats() {

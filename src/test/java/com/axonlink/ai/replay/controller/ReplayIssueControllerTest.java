@@ -185,7 +185,7 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.groups.length()").value(4))
                 .andExpect(jsonPath("$.data.issueLevels[0]").value("交易级"))
-                .andExpect(jsonPath("$.data.issueTypes[0]").value("数据差异"));
+                .andExpect(jsonPath("$.data.issueTypes[0]").value("迁移问题"));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats"))
                 .andExpect(status().isOk())
@@ -238,7 +238,7 @@ class ReplayIssueControllerTest {
         return switch (header) {
             case "领域" -> sheetName.replace("沙箱-", "");
             case "序号" -> "1";
-            case "issue_key" -> "TRAN|6208|响应码";
+            case "issue_key" -> "TRAN|6208|响应码|" + sheetName;
             default -> "value";
         };
     }

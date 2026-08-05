@@ -50,7 +50,7 @@ class ReplayIssueImportServiceTest {
         assertEquals(8, result.sandboxRows());
         assertEquals(8, result.nonSandboxRows());
         assertEquals(IMPORTED_AT, result.importedAt());
-        assertEquals(16, dao.count(ALL));
+        assertEquals(17, dao.count(ALL));
     }
 
     @Test
@@ -105,6 +105,6 @@ class ReplayIssueImportServiceTest {
         ReplayIssueImportResult result = service.importFile(ReplayIssueTestFixtures.validWorkbook(1));
 
         assertEquals(8, result.totalRows());
-        assertEquals(8, dao.count(ALL));
+        assertEquals(9, dao.count(ALL));
     }
 }

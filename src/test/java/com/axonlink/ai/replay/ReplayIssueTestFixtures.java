@@ -147,7 +147,7 @@ public final class ReplayIssueTestFixtures {
         row.put("问题类型", "数据差异");
         row.put("流水号", "001012213710102");
         row.put("issue_id", "000845");
-        row.put("issue_key", "TRAN|6208|响应码");
+        row.put("issue_key", "TRAN|6208|响应码|" + sheet + "|" + rowOrder);
         return row;
     }
 
