@@ -149,7 +149,7 @@ public class ReplayIssueExcelParser {
 
     private ReplayIssueRow toReplayIssueRow(SheetMetadata metadata, int rowIndex, List<String> values) {
         return new ReplayIssueRow(null, metadata.name(), metadata.groupName(), metadata.sandbox(), rowIndex,
-                values.get(0), values.get(1), values.get(2), values.get(3), values.get(4), values.get(5),
+                metadata.groupName(), values.get(1), values.get(2), values.get(3), values.get(4), values.get(5),
                 values.get(6), values.get(7), values.get(8), values.get(9), values.get(10), values.get(11),
                 values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), "",
                 values.get(18), values.get(19), values.get(20), values.get(21), values.get(22), values.get(23),

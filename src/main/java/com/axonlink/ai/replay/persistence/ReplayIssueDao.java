@@ -161,7 +161,7 @@ public class ReplayIssueDao {
         java.sql.Date importDate = rs.getDate("import_date");
         java.sql.Date defectDate = rs.getDate("defect_repair_date");
         return new ReplayIssueRow(rs.getLong("id"), rs.getString("source_sheet"), rs.getString("group_name"),
-                rs.getBoolean("is_sandbox"), rs.getInt("row_order"), rs.getString("domain"), rs.getString("sequence_no"),
+                rs.getBoolean("is_sandbox"), rs.getInt("row_order"), rs.getString("group_name"), rs.getString("sequence_no"),
                 rs.getString("batch_no"), rs.getString("transaction_code"), rs.getString("transaction_name"),
                 rs.getString("issue_level"), rs.getString("registered_date"), rs.getString("field_name"),
                 rs.getString("issue_description"), rs.getString("transaction_owner"), rs.getString("issue_type"),
@@ -218,7 +218,17 @@ public class ReplayIssueDao {
         sql.append(" ORDER BY group_name, is_sandbox, row_order, id LIMIT ? OFFSET ?");
         args.add(clampLimit(query.limit()));
         args.add(Math.max(query.offset(), 0));
-        return jdbc.queryForList(sql.toString(), args.toArray());
+        return jdbc.queryForList(sql.toString(), args.toArray()).stream()
+                .map(ReplayIssueDao::normalizeDomain)
+                .toList();
+    }
+
+    private static Map<String, Object> normalizeDomain(Map<String, Object> row) {
+        Object groupName = row.get("group_name");
+        if (groupName != null && !groupName.toString().isBlank()) {
+            row.put("domain", groupName.toString());
+        }
+        return row;
     }
 
     public long count(ReplayIssueQuery query) {

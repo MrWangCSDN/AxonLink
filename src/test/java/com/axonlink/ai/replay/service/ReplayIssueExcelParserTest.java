@@ -51,6 +51,18 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
+    void normalizesSandboxSheetDomainToItsGroupName() throws Exception {
+        ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(
+                ReplayIssueTestFixtures.workbook(
+                        ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of("领域", "沙箱-公共组")),
+                        ReplayIssueTestFixtures.HEADERS, false));
+
+        assertEquals("公共组", parsed.rows().get(0).domain());
+        assertEquals("公共组", parsed.rows().get(4).domain());
+        assertTrue(parsed.rows().get(4).sandbox());
+    }
+
+    @Test
     void matchesHeadersAfterReorderingAndPreservesDisplayedIdentifiers() throws Exception {
         List<String> reversed = new ArrayList<>(ReplayIssueExcelParser.HEADERS);
         Collections.reverse(reversed);

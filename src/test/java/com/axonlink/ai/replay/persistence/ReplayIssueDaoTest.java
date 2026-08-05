@@ -62,6 +62,14 @@ class ReplayIssueDaoTest {
     }
 
     @Test
+    void listNormalizesLegacySandboxDomainToGroupName() {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("贷款组", true, 1, "6208", "legacy")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET domain=? WHERE issue_key=?", "沙箱-贷款组", "key-1");
+
+        assertEquals("贷款组", dao.list(ALL).get(0).get("domain"));
+    }
+
+    @Test
     void listClampsPageBoundsAndUsesStableGroupSandboxRowAndIdOrder() {
         dao.replaceAll(List.of(
                 withIssueKey(ReplayIssueTestFixtures.row("贷款组", true, 2, "T-2", "two"), "key-t2"),
