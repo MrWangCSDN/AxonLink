@@ -32,9 +32,9 @@ class ReplayIssueEditServiceTest {
     }
 
     @Test
-    void updatesFiveFieldsAndWritesOneHistoryEvent() {
+    void updatesSixFieldsAndWritesOneHistoryEvent() {
         ReplayIssueRow updated = service.update(issueId,
-                new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION, "代码问题", "analysis", "solution", "sunhy1"),
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION, "代码问题", "analysis", "solution", "sunhy1", "需要联调"),
                 new ReplayIssueOperator("editor", "编辑人"));
 
         assertEquals(ReplayIssueStatus.PENDING_VERIFICATION, updated.issueStatus());
@@ -43,6 +43,7 @@ class ReplayIssueEditServiceTest {
         assertEquals("solution", updated.finalSolution());
         assertEquals("sunhy1", updated.cooperationPersonUsername());
         assertEquals("孙海英", updated.cooperationPersonRealName());
+        assertEquals("需要联调", updated.remark());
         assertEquals(1L, dao.countHistory(updated.issueKey()));
     }
 

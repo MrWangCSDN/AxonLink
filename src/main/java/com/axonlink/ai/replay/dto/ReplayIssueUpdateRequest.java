@@ -1,16 +1,23 @@
 package com.axonlink.ai.replay.dto;
 
-/** The five fields saved together by the replay issue editor. */
+/** The six fields saved together by the replay issue editor. */
 public record ReplayIssueUpdateRequest(
         ReplayIssueStatus issueStatus,
         String issueType,
         String initialAnalysis,
         String finalSolution,
-        String cooperationPersonUsername) {
+        String cooperationPersonUsername,
+        String remark) {
+
+    public ReplayIssueUpdateRequest(ReplayIssueStatus issueStatus, String issueType, String initialAnalysis,
+                                    String finalSolution, String cooperationPersonUsername) {
+        this(issueStatus, issueType, initialAnalysis, finalSolution, cooperationPersonUsername, "");
+    }
 
     public ReplayIssueUpdateRequest {
         validateTextLength("初步问题分析", initialAnalysis);
         validateTextLength("最终处理方案", finalSolution);
+        validateTextLength("备注", remark);
     }
 
     public void validateTextLengths() {

@@ -129,14 +129,15 @@ public class ReplayIssueDao {
         JsonNode snapshot = parseSnapshot(afterSnapshot);
         jdbc.update("INSERT INTO dii_replay_issue_history (replay_issue_id,issue_key,operation_type,operation_at,"
                         + "operator_username,operator_real_name,import_date,source_sheet,source_row,before_snapshot,"
-                        + "issue_status,issue_type,initial_analysis,final_solution,cooperation_person_username,cooperation_person_real_name,"
-                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "issue_status,issue_type,initial_analysis,final_solution,cooperation_person_username,cooperation_person_real_name,remark,"
+                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 replayIssueId, issueKey, operationType, Timestamp.valueOf(operationAt),
                 operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
                 importDate, sourceSheet, sourceRow,
                 beforeSnapshot,
                 text(snapshot, "issueStatus"), text(snapshot, "issueType"), text(snapshot, "initialAnalysis"), text(snapshot, "finalSolution"),
-                text(snapshot, "cooperationPersonUsername"), text(snapshot, "cooperationPersonRealName"), afterSnapshot, incomingSnapshot);
+                text(snapshot, "cooperationPersonUsername"), text(snapshot, "cooperationPersonRealName"), text(snapshot, "remark"),
+                afterSnapshot, incomingSnapshot);
     }
 
     private JsonNode parseSnapshot(String snapshot) {
@@ -249,7 +250,8 @@ public class ReplayIssueDao {
                                 rs.getString("cooperation_person_username"), rs.getString("cooperation_person_real_name"),
                                 rs.getDate("import_date") == null ? null : rs.getDate("import_date").toLocalDate(),
                                 rs.getString("source_sheet"), (Integer) rs.getObject("source_row"),
-                                rs.getString("before_snapshot"), rs.getString("after_snapshot"), rs.getString("incoming_snapshot")), issueId, boundedLimit);
+                                rs.getString("before_snapshot"), rs.getString("after_snapshot"), rs.getString("incoming_snapshot"),
+                                rs.getString("remark")), issueId, boundedLimit);
     }
 
     public Map<String, Object> stats() {

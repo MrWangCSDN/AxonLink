@@ -79,7 +79,7 @@ public class ReplayIssueEditService {
         return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(), row.domain(), row.sequenceNo(),
                 row.batchNo(), row.transactionCode(), row.transactionName(), row.issueLevel(), row.registeredDate(), row.fieldName(),
                 row.issueDescription(), row.transactionOwner(), issueType, request.initialAnalysis(), request.finalSolution(), row.resolvedDate(),
-                row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(),
+                row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), request.remark(), row.affectedTransactionCount(),
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
                 row.importedAt(), request.issueStatus(), row.importDate(), row.defectRepairDate(),
                 collaborator == null ? null : collaborator.getUsername(), collaborator == null ? null : collaborator.getRealName());

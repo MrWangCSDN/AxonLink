@@ -68,7 +68,7 @@ public final class ReplayIssueTestFixtures {
                 + "operator_real_name VARCHAR(128), import_date DATE, source_sheet VARCHAR(64),"
                 + "source_row INT, before_snapshot MEDIUMTEXT, after_snapshot MEDIUMTEXT,"
                 + "issue_status VARCHAR(32), issue_type VARCHAR(128), initial_analysis MEDIUMTEXT, final_solution MEDIUMTEXT,"
-                + "cooperation_person_username VARCHAR(128), cooperation_person_real_name VARCHAR(128), incoming_snapshot MEDIUMTEXT,"
+                + "cooperation_person_username VARCHAR(128), cooperation_person_real_name VARCHAR(128), remark MEDIUMTEXT, incoming_snapshot MEDIUMTEXT,"
                 + "INDEX idx_replay_history_key_time (issue_key, operation_at, id),"
                 + "INDEX idx_replay_history_issue_time (replay_issue_id, operation_at, id))");
     }
