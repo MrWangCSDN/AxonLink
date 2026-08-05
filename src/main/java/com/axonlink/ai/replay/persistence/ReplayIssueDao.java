@@ -235,7 +235,7 @@ public class ReplayIssueDao {
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
                 List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"),
-                distinctNonBlank("issue_status"));
+                List.of("打开", "分析中", "延后修复", "修复待验证", "重新打开", "已修复"));
     }
 
     public List<ReplayIssueHistoryEntry> findHistoryByIssueId(long issueId, int limit) {
@@ -259,6 +259,10 @@ public class ReplayIssueDao {
                 SELECT COUNT(*) AS total,
                        COUNT(DISTINCT group_name) AS group_count,
                        COALESCE(SUM(CASE WHEN is_sandbox = 1 THEN 1 ELSE 0 END), 0) AS sandbox_count,
+                       COALESCE(SUM(CASE WHEN issue_status IN ('打开', '重新打开') THEN 1 ELSE 0 END), 0) AS open_total,
+                       COALESCE(SUM(CASE WHEN issue_status IN ('分析中', '延后修复') THEN 1 ELSE 0 END), 0) AS processing_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '修复待验证' THEN 1 ELSE 0 END), 0) AS pending_verification_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '已修复' THEN 1 ELSE 0 END), 0) AS fixed_total,
                        MAX(imported_at) AS imported_at
                   FROM dii_replay_issue
                 """);
@@ -266,6 +270,32 @@ public class ReplayIssueDao {
         stats.put("total", number(row.get("total")));
         stats.put("groupCount", number(row.get("group_count")));
         stats.put("sandboxCount", number(row.get("sandbox_count")));
+        stats.put("openTotal", number(row.get("open_total")));
+        stats.put("processingTotal", number(row.get("processing_total")));
+        stats.put("pendingVerificationTotal", number(row.get("pending_verification_total")));
+        stats.put("fixedTotal", number(row.get("fixed_total")));
+        Map<String, Map<String, Long>> groupCounts = new LinkedHashMap<>();
+        jdbc.query("""
+                SELECT group_name,
+                       COUNT(*) AS total,
+                       COALESCE(SUM(CASE WHEN issue_status IN ('打开', '重新打开') THEN 1 ELSE 0 END), 0) AS open_total,
+                       COALESCE(SUM(CASE WHEN issue_status IN ('分析中', '延后修复') THEN 1 ELSE 0 END), 0) AS processing_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '修复待验证' THEN 1 ELSE 0 END), 0) AS pending_verification_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '已修复' THEN 1 ELSE 0 END), 0) AS fixed_total
+                  FROM dii_replay_issue
+                 WHERE group_name IS NOT NULL AND TRIM(group_name) <> ''
+                 GROUP BY group_name
+                 ORDER BY group_name
+                """, rs -> {
+            Map<String, Long> counts = new LinkedHashMap<>();
+            counts.put("total", rs.getLong("total"));
+            counts.put("open", rs.getLong("open_total"));
+            counts.put("processing", rs.getLong("processing_total"));
+            counts.put("pendingVerification", rs.getLong("pending_verification_total"));
+            counts.put("fixed", rs.getLong("fixed_total"));
+            groupCounts.put(rs.getString("group_name"), counts);
+        });
+        stats.put("groupCounts", groupCounts);
         stats.put("importedAt", asLocalDateTime(row.get("imported_at")));
         return stats;
     }
@@ -335,6 +365,16 @@ public class ReplayIssueDao {
         if (hasText(query.issueStatus())) {
             sql.append(" AND issue_status = ?");
             args.add(query.issueStatus().trim());
+        }
+        if (hasText(query.transactionOwner())) {
+            sql.append(" AND transaction_owner LIKE ?");
+            args.add("%" + query.transactionOwner().trim() + "%");
+        }
+        if (hasText(query.cooperationPerson())) {
+            sql.append(" AND (cooperation_person_username LIKE ? OR cooperation_person_real_name LIKE ?)");
+            String person = "%" + query.cooperationPerson().trim() + "%";
+            args.add(person);
+            args.add(person);
         }
         if (hasText(query.keyword())) {
             sql.append(" AND (transaction_code LIKE ? OR transaction_name LIKE ? OR field_name LIKE ?"

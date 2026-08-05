@@ -51,9 +51,11 @@ class ReplayIssueDaoTest {
                 ReplayIssueTestFixtures.row("贷款组", false, 1, "6208", "CCBS响应不一致"),
                 ReplayIssueTestFixtures.row("贷款组", true, 2, "6208", "沙箱数据缺失"),
                 ReplayIssueTestFixtures.row("存款组", false, 3, "1001", "CCBS响应不一致")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_owner=?, cooperation_person_username=?, cooperation_person_real_name=? WHERE transaction_code=? AND is_sandbox=0",
+                "张负责人", "sunhy1", "孙海英", "6208");
 
         ReplayIssueQuery query = new ReplayIssueQuery(50, 0, "贷款组", false,
-                "交易级", "数据差异", "CCBS", null);
+                "交易级", "数据差异", "CCBS", null, "张负", "海英");
 
         assertEquals(1, dao.count(query));
         assertEquals("6208", dao.list(query).get(0).get("transaction_code"));
@@ -104,10 +106,18 @@ class ReplayIssueDaoTest {
         assertIterableEquals(List.of("公共组", "贷款组"), options.groups());
         assertIterableEquals(List.of("交易级", "字段级"), options.issueLevels());
         assertIterableEquals(List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"), options.issueTypes());
-        assertIterableEquals(List.of("打开"), options.issueStatuses());
+        assertIterableEquals(List.of("打开", "分析中", "延后修复", "修复待验证", "重新打开", "已修复"), options.issueStatuses());
         assertEquals(3L, stats.get("total"));
+        assertEquals(3L, stats.get("openTotal"));
+        assertEquals(0L, stats.get("processingTotal"));
+        assertEquals(0L, stats.get("pendingVerificationTotal"));
+        assertEquals(0L, stats.get("fixedTotal"));
         assertEquals(2L, stats.get("groupCount"));
         assertEquals(1L, stats.get("sandboxCount"));
+        @SuppressWarnings("unchecked")
+        Map<String, Map<String, Long>> groupCounts = (Map<String, Map<String, Long>>) stats.get("groupCounts");
+        assertEquals(2L, groupCounts.get("贷款组").get("total"));
+        assertEquals(1L, groupCounts.get("公共组").get("total"));
         assertEquals(IMPORTED_AT, stats.get("importedAt"));
     }
 

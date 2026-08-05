@@ -119,9 +119,11 @@ public class ReplayIssueController {
             @RequestParam(required = false) String issueLevel,
             @RequestParam(required = false) String issueType,
             @RequestParam(required = false) String keyword,
-            @RequestParam(required = false) String issueStatus) {
+            @RequestParam(required = false) String issueStatus,
+            @RequestParam(required = false) String transactionOwner,
+            @RequestParam(required = false) String cooperationPerson) {
         ReplayIssueQuery query = new ReplayIssueQuery(limit, offset, groupName,
-                sandbox, issueLevel, issueType, keyword, issueStatus);
+                sandbox, issueLevel, issueType, keyword, issueStatus, transactionOwner, cooperationPerson);
         List<Map<String, Object>> items = dao.list(query).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
