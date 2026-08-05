@@ -61,10 +61,10 @@ class ReplayIssueDaoTest {
     @Test
     void listClampsPageBoundsAndUsesStableGroupSandboxRowAndIdOrder() {
         dao.replaceAll(List.of(
-                ReplayIssueTestFixtures.row("贷款组", true, 2, "T-2", "two"),
+                withIssueKey(ReplayIssueTestFixtures.row("贷款组", true, 2, "T-2", "two"), "key-t2"),
                 ReplayIssueTestFixtures.row("贷款组", false, 2, "F-2", "false-second"),
                 ReplayIssueTestFixtures.row("贷款组", false, 1, "F-1", "false-first"),
-                ReplayIssueTestFixtures.row("贷款组", false, 2, "F-2b", "false-second-by-id")), IMPORTED_AT);
+                withIssueKey(ReplayIssueTestFixtures.row("贷款组", false, 2, "F-2b", "false-second-by-id"), "key-2b")), IMPORTED_AT);
 
         List<Map<String, Object>> rows = dao.list(new ReplayIssueQuery(999, -20, null, null, null, null, null));
 
@@ -107,5 +107,14 @@ class ReplayIssueDaoTest {
         assertEquals(2L, stats.get("groupCount"));
         assertEquals(1L, stats.get("sandboxCount"));
         assertEquals(IMPORTED_AT, stats.get("importedAt"));
+    }
+
+    private ReplayIssueRow withIssueKey(ReplayIssueRow row, String issueKey) {
+        return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(), row.domain(),
+                row.sequenceNo(), row.batchNo(), row.transactionCode(), row.transactionName(), row.issueLevel(), row.registeredDate(),
+                row.fieldName(), row.issueDescription(), row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(),
+                row.resolvedDate(), row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(),
+                row.affectedTransactionCount(), row.issueId(), issueKey, row.historicalOccurrenceCount(), row.firstOccurrenceDate(),
+                row.lastOccurrenceDate(), row.importedAt());
     }
 }

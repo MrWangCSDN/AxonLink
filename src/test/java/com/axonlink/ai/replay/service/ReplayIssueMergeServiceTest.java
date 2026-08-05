@@ -70,8 +70,76 @@ class ReplayIssueMergeServiceTest {
         assertEquals(1L, dao.countHistory("FIXED"));
     }
 
+    @Test
+    void openAnalyzingAndDeferredDuplicatesAreIgnored() {
+        for (ReplayIssueStatus status : List.of(ReplayIssueStatus.OPEN, ReplayIssueStatus.ANALYZING, ReplayIssueStatus.DEFERRED)) {
+            ReplayIssueDao localDao = daoForSchema();
+            localDao.insertCurrent(lifecycle(row("K-" + status, "old"), status, "代码问题", "a", "s", "alice"));
+            ReplayIssueMergeService localMerge = new ReplayIssueMergeService(localDao);
+            var result = localMerge.merge(workbook(row("K-" + status, "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
+            Map<String, Object> current = localDao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
+            assertEquals(1, result.ignoredRows());
+            assertEquals("old", current.get("issue_description"));
+            assertEquals(1L, localDao.countHistory("K-" + status));
+        }
+    }
+
+    @Test
+    void reopenedIssueRemainsReopenedOnARepeatedImport() {
+        dao.insertCurrent(lifecycle(row("REOPEN", "old"), ReplayIssueStatus.REOPENED, "代码问题", "a", "s", "alice"));
+        merge.merge(workbook(row("REOPEN", "new-1")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
+        merge.merge(workbook(row("REOPEN", "new-2")), LocalDate.of(2026, 8, 6), ReplayIssueOperator.system());
+        Map<String, Object> current = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
+        assertEquals("重新打开", current.get("issue_status"));
+        assertEquals("new-2", current.get("issue_description"));
+        assertEquals(2L, dao.countHistory("REOPEN"));
+    }
+
+    @Test
+    void fixedReappearanceRetainsManualFieldsAndClearsDefectDate() {
+        ReplayIssueRow seed = lifecycle(row("FIXED-2", "old"), ReplayIssueStatus.FIXED, "代码问题", "a", "s", "alice");
+        seed = new ReplayIssueRow(seed.id(), seed.sourceSheet(), seed.groupName(), seed.sandbox(), seed.rowOrder(), seed.domain(), seed.sequenceNo(),
+                seed.batchNo(), seed.transactionCode(), seed.transactionName(), seed.issueLevel(), seed.registeredDate(), seed.fieldName(), seed.issueDescription(),
+                seed.transactionOwner(), seed.issueType(), seed.initialAnalysis(), seed.finalSolution(), seed.resolvedDate(), seed.cooperationGroup(), seed.resolver(),
+                seed.serialNo(), seed.dataRepairDate(), seed.remark(), seed.affectedTransactionCount(), seed.issueId(), seed.issueKey(), seed.historicalOccurrenceCount(),
+                seed.firstOccurrenceDate(), seed.lastOccurrenceDate(), seed.importedAt(), seed.issueStatus(), LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 4),
+                seed.cooperationPersonUsername(), seed.cooperationPersonRealName());
+        dao.insertCurrent(seed);
+        merge.merge(workbook(row("FIXED-2", "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
+        Map<String, Object> current = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
+        assertEquals("打开", current.get("issue_status"));
+        assertEquals("代码问题", current.get("issue_type"));
+        assertEquals("a", current.get("initial_analysis"));
+        assertEquals("s", current.get("final_solution"));
+        assertEquals("alice", current.get("cooperation_person_username"));
+        org.junit.jupiter.api.Assertions.assertNull(current.get("defect_repair_date"));
+    }
+
+    @Test
+    void historyInsertFailureRollsBackCurrentProjection() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        ReplayIssueTestFixtures.createSchema(jdbc);
+        ReplayIssueDao failingDao = new ReplayIssueDao(jdbc) {
+            @Override
+            public void insertHistory(Long replayIssueId, String issueKey, String operationType, LocalDateTime operationAt,
+                                      ReplayIssueOperator operator, LocalDate importDate, String sourceSheet, Integer sourceRow,
+                                      String beforeSnapshot, String afterSnapshot, String incomingSnapshot) {
+                throw new IllegalStateException("history unavailable");
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> new ReplayIssueMergeService(failingDao)
+                .merge(workbook(row("ROLLBACK", "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system()));
+        assertEquals(0, failingDao.count(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)));
+    }
+
     private ReplayIssueExcelParser.ParsedWorkbook workbook(ReplayIssueRow... rows) {
         return new ReplayIssueExcelParser.ParsedWorkbook(List.of(rows), Map.of("公共组", rows.length), 0, rows.length);
+    }
+
+    private ReplayIssueDao daoForSchema() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        ReplayIssueTestFixtures.createSchema(jdbc);
+        return new ReplayIssueDao(jdbc);
     }
 
     private ReplayIssueRow row(String key, String description) {

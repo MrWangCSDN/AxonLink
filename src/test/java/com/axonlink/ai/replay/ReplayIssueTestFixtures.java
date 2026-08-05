@@ -54,13 +54,13 @@ public final class ReplayIssueTestFixtures {
                 + "final_solution MEDIUMTEXT, resolved_date VARCHAR(64), cooperation_group VARCHAR(256),"
                 + "resolver VARCHAR(128), serial_no VARCHAR(512), data_repair_date VARCHAR(64),"
                 + "remark MEDIUMTEXT, affected_transaction_count VARCHAR(32), issue_id VARCHAR(64),"
-                + "issue_key VARCHAR(1024), historical_occurrence_count VARCHAR(32),"
+                + "issue_key VARCHAR(1024) NOT NULL, historical_occurrence_count VARCHAR(32),"
                 + "first_occurrence_date VARCHAR(64), last_occurrence_date VARCHAR(64),"
                 + "imported_at DATETIME NOT NULL,"
                 + "issue_status VARCHAR(32) NOT NULL DEFAULT '打开', import_date DATE,"
                 + "defect_repair_date DATE, cooperation_person_username VARCHAR(128),"
                 + "cooperation_person_real_name VARCHAR(128),"
-                + "INDEX idx_replay_issue_key_lookup (issue_key))");
+                + "INDEX idx_replay_issue_key_lookup (issue_key), UNIQUE INDEX uq_dii_replay_issue_key (issue_key))");
         jdbc.execute("CREATE TABLE dii_replay_issue_history ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT,"
                 + "issue_key VARCHAR(1024) NOT NULL, operation_type VARCHAR(64) NOT NULL,"
