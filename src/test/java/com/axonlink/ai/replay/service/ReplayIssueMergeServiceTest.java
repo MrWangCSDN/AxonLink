@@ -48,6 +48,9 @@ class ReplayIssueMergeServiceTest {
         assertEquals("new", current.get("issue_description"));
         assertEquals("代码问题", current.get("issue_type"));
         assertEquals("analysis", current.get("initial_analysis"));
+        assertEquals("solution", current.get("final_solution"));
+        assertEquals("alice", current.get("cooperation_person_username"));
+        assertEquals("2026-08-05", current.get("import_date").toString());
     }
 
     @Test

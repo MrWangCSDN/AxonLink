@@ -1,15 +1,7 @@
--- Normalize and de-duplicate legacy current rows before enforcing one projection row per issue key.
-UPDATE dii_replay_issue
-   SET issue_key = COALESCE(TRIM(issue_key), '');
-
--- Keep the oldest row (smallest generated id) for every normalized issue_key.
-DELETE duplicate_row
-  FROM dii_replay_issue duplicate_row
-  JOIN dii_replay_issue retained_row
-    ON duplicate_row.issue_key = retained_row.issue_key
-   AND duplicate_row.id > retained_row.id;
-
+-- Intentionally fail the migration when legacy rows contain NULL or duplicate keys.
+-- Those rows require explicit business reconciliation; silently deleting one would lose issue data.
 ALTER TABLE dii_replay_issue
+    MODIFY COLUMN issue_key VARCHAR(1024) NOT NULL,
     ADD COLUMN issue_key_hash CHAR(64) GENERATED ALWAYS AS (SHA2(issue_key, 256)) STORED
         COMMENT 'issue_key SHA-256 uniqueness key',
     ADD UNIQUE INDEX uq_dii_replay_issue_key_hash (issue_key_hash);
