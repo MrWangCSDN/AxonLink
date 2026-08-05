@@ -56,7 +56,20 @@ public final class ReplayIssueTestFixtures {
                 + "remark MEDIUMTEXT, affected_transaction_count VARCHAR(32), issue_id VARCHAR(64),"
                 + "issue_key VARCHAR(1024), historical_occurrence_count VARCHAR(32),"
                 + "first_occurrence_date VARCHAR(64), last_occurrence_date VARCHAR(64),"
-                + "imported_at DATETIME NOT NULL)");
+                + "imported_at DATETIME NOT NULL,"
+                + "issue_status VARCHAR(32) NOT NULL DEFAULT '打开', import_date DATE,"
+                + "defect_repair_date DATE, cooperation_person_username VARCHAR(128),"
+                + "cooperation_person_real_name VARCHAR(128),"
+                + "INDEX idx_replay_issue_key_lookup (issue_key))");
+        jdbc.execute("CREATE TABLE dii_replay_issue_history ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT,"
+                + "issue_key VARCHAR(1024) NOT NULL, operation_type VARCHAR(64) NOT NULL,"
+                + "operation_at DATETIME NOT NULL, operator_username VARCHAR(128),"
+                + "operator_real_name VARCHAR(128), import_date DATE, source_sheet VARCHAR(64),"
+                + "source_row INT, before_snapshot MEDIUMTEXT, after_snapshot MEDIUMTEXT,"
+                + "incoming_snapshot MEDIUMTEXT,"
+                + "INDEX idx_replay_history_key_time (issue_key, operation_at, id),"
+                + "INDEX idx_replay_history_issue_time (replay_issue_id, operation_at, id))");
     }
 
     public static ReplayIssueRow row(String groupName, boolean sandbox, int rowOrder,
