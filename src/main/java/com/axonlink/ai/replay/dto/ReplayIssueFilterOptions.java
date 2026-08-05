@@ -6,11 +6,17 @@ import java.util.List;
 public record ReplayIssueFilterOptions(
         List<String> groups,
         List<String> issueLevels,
-        List<String> issueTypes) {
+        List<String> issueTypes,
+        List<String> issueStatuses) {
+
+    public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes) {
+        this(groups, issueLevels, issueTypes, List.of());
+    }
 
     public ReplayIssueFilterOptions {
         groups = List.copyOf(groups);
         issueLevels = List.copyOf(issueLevels);
         issueTypes = List.copyOf(issueTypes);
+        issueStatuses = List.copyOf(issueStatuses);
     }
 }

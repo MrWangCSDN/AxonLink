@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
+import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
@@ -21,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ReplayIssueDaoTest {
 
     private static final LocalDateTime IMPORTED_AT = LocalDateTime.of(2026, 8, 4, 10, 0);
-    private static final ReplayIssueQuery ALL = new ReplayIssueQuery(50, 0, null, null, null, null, null);
+    private static final ReplayIssueQuery ALL = new ReplayIssueQuery(50, 0, null, null, null, null, null, null);
 
     private JdbcTemplate jdbc;
     private ReplayIssueDao dao;
@@ -52,7 +53,7 @@ class ReplayIssueDaoTest {
                 ReplayIssueTestFixtures.row("存款组", false, 3, "1001", "CCBS响应不一致")), IMPORTED_AT);
 
         ReplayIssueQuery query = new ReplayIssueQuery(50, 0, "贷款组", false,
-                "交易级", "数据差异", "CCBS");
+                "交易级", "数据差异", "CCBS", null);
 
         assertEquals(1, dao.count(query));
         assertEquals("6208", dao.list(query).get(0).get("transaction_code"));
@@ -66,7 +67,7 @@ class ReplayIssueDaoTest {
                 ReplayIssueTestFixtures.row("贷款组", false, 1, "F-1", "false-first"),
                 withIssueKey(ReplayIssueTestFixtures.row("贷款组", false, 2, "F-2b", "false-second-by-id"), "key-2b")), IMPORTED_AT);
 
-        List<Map<String, Object>> rows = dao.list(new ReplayIssueQuery(999, -20, null, null, null, null, null));
+        List<Map<String, Object>> rows = dao.list(new ReplayIssueQuery(999, -20, null, null, null, null, null, null));
 
         assertEquals(4, rows.size());
         assertIterableEquals(List.of("F-1", "F-2", "F-2b", "T-2"),
@@ -82,7 +83,7 @@ class ReplayIssueDaoTest {
         }
         dao.replaceAll(rows, IMPORTED_AT);
 
-        assertEquals(50, dao.list(new ReplayIssueQuery(0, 0, null, null, null, null, null)).size());
+        assertEquals(50, dao.list(new ReplayIssueQuery(0, 0, null, null, null, null, null, null)).size());
     }
 
     @Test
@@ -103,10 +104,30 @@ class ReplayIssueDaoTest {
         assertIterableEquals(List.of("公共组", "贷款组"), options.groups());
         assertIterableEquals(List.of("交易级", "字段级"), options.issueLevels());
         assertIterableEquals(List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"), options.issueTypes());
+        assertIterableEquals(List.of("打开"), options.issueStatuses());
         assertEquals(3L, stats.get("total"));
         assertEquals(2L, stats.get("groupCount"));
         assertEquals(1L, stats.get("sandboxCount"));
         assertEquals(IMPORTED_AT, stats.get("importedAt"));
+    }
+
+    @Test
+    void statusFilterIsExactAndHistoryIsNewestFirstWithSnapshots() {
+        ReplayIssueRow row = ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "first");
+        dao.replaceAll(List.of(row), IMPORTED_AT);
+        long id = ((Number) dao.list(ALL).get(0).get("id")).longValue();
+        dao.insertHistory(id, row.issueKey(), "导入新增", IMPORTED_AT, new com.axonlink.ai.replay.dto.ReplayIssueOperator("SYSTEM", "系统"),
+                java.time.LocalDate.of(2026, 8, 4), "公共组", 2, null, "{\"issueStatus\":\"打开\"}", "incoming-1");
+        dao.insertHistory(id, row.issueKey(), "人工保存", IMPORTED_AT.plusSeconds(1), new com.axonlink.ai.replay.dto.ReplayIssueOperator("u", "用户"),
+                java.time.LocalDate.of(2026, 8, 4), null, null, "before-2", "after-2", null);
+
+        assertEquals(1, dao.list(new ReplayIssueQuery(50, 0, null, null, null, null, null, "打开")).size());
+        assertEquals(0, dao.list(new ReplayIssueQuery(50, 0, null, null, null, null, null, "分析中")).size());
+        var history = dao.findHistoryByIssueId(id, 200);
+        assertEquals(2, history.size());
+        assertEquals("人工保存", history.get(0).operationType());
+        assertEquals("after-2", history.get(0).afterSnapshot());
+        assertEquals("{\"issueStatus\":\"打开\"}", history.get(1).afterSnapshot());
     }
 
     private ReplayIssueRow withIssueKey(ReplayIssueRow row, String issueKey) {

@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
+import com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -25,6 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 /** Result-database access for the active parallel replay issue snapshot. */
 @Repository
@@ -48,6 +51,7 @@ public class ReplayIssueDao {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate txTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ReplayIssueDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
@@ -122,12 +126,28 @@ public class ReplayIssueDao {
     public void insertHistory(Long replayIssueId, String issueKey, String operationType, LocalDateTime operationAt,
                               ReplayIssueOperator operator, LocalDate importDate, String sourceSheet, Integer sourceRow,
                               String beforeSnapshot, String afterSnapshot, String incomingSnapshot) {
+        JsonNode snapshot = parseSnapshot(afterSnapshot);
         jdbc.update("INSERT INTO dii_replay_issue_history (replay_issue_id,issue_key,operation_type,operation_at,"
                         + "operator_username,operator_real_name,import_date,source_sheet,source_row,before_snapshot,"
-                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "issue_status,issue_type,initial_analysis,final_solution,cooperation_person_username,cooperation_person_real_name,"
+                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 replayIssueId, issueKey, operationType, Timestamp.valueOf(operationAt),
                 operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
-                importDate, sourceSheet, sourceRow, beforeSnapshot, afterSnapshot, incomingSnapshot);
+                importDate, sourceSheet, sourceRow,
+                beforeSnapshot,
+                text(snapshot, "issueStatus"), text(snapshot, "issueType"), text(snapshot, "initialAnalysis"), text(snapshot, "finalSolution"),
+                text(snapshot, "cooperationPersonUsername"), text(snapshot, "cooperationPersonRealName"), afterSnapshot, incomingSnapshot);
+    }
+
+    private JsonNode parseSnapshot(String snapshot) {
+        if (snapshot == null || snapshot.isBlank()) return null;
+        try { return objectMapper.readTree(snapshot); }
+        catch (Exception ignored) { return null; }
+    }
+
+    private static String text(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.get(field);
+        return value == null || value.isNull() ? null : value.asText();
     }
 
     public long countHistory(String issueKey) {
@@ -213,7 +233,23 @@ public class ReplayIssueDao {
                 jdbc.queryForList("SELECT DISTINCT group_name FROM dii_replay_issue "
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
-                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"));
+                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题"),
+                distinctNonBlank("issue_status"));
+    }
+
+    public List<ReplayIssueHistoryEntry> findHistoryByIssueId(long issueId, int limit) {
+        int boundedLimit = Math.min(Math.max(limit, 1), MAX_LIMIT);
+        return jdbc.query("SELECT * FROM dii_replay_issue_history WHERE replay_issue_id = ?"
+                        + " ORDER BY operation_at DESC, id DESC LIMIT ?", (rs, rowNum) ->
+                        new ReplayIssueHistoryEntry(rs.getLong("id"), rs.getObject("replay_issue_id", Long.class),
+                                rs.getString("issue_key"), rs.getString("operation_type"), rs.getTimestamp("operation_at").toLocalDateTime(),
+                                rs.getString("operator_username"), rs.getString("operator_real_name"),
+                                ReplayIssueStatus.fromDisplayValue(rs.getString("issue_status")), rs.getString("issue_type"),
+                                rs.getString("initial_analysis"), rs.getString("final_solution"),
+                                rs.getString("cooperation_person_username"), rs.getString("cooperation_person_real_name"),
+                                rs.getDate("import_date") == null ? null : rs.getDate("import_date").toLocalDate(),
+                                rs.getString("source_sheet"), (Integer) rs.getObject("source_row"),
+                                rs.getString("before_snapshot"), rs.getString("after_snapshot"), rs.getString("incoming_snapshot")), issueId, boundedLimit);
     }
 
     public Map<String, Object> stats() {
@@ -293,6 +329,10 @@ public class ReplayIssueDao {
         if (hasText(query.issueType())) {
             sql.append(" AND issue_type = ?");
             args.add(query.issueType().trim());
+        }
+        if (hasText(query.issueStatus())) {
+            sql.append(" AND issue_status = ?");
+            args.add(query.issueStatus().trim());
         }
         if (hasText(query.keyword())) {
             sql.append(" AND (transaction_code LIKE ? OR transaction_name LIKE ? OR field_name LIKE ?"

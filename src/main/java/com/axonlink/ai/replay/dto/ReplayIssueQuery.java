@@ -8,5 +8,11 @@ public record ReplayIssueQuery(
         Boolean sandbox,
         String issueLevel,
         String issueType,
-        String keyword) {
+        String keyword,
+        String issueStatus) {
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox,
+                            String issueLevel, String issueType, String keyword) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, null);
+    }
 }

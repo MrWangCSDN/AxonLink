@@ -7,6 +7,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueUpdateRequest;
+import com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.service.ReplayIssueImportBusyException;
 import com.axonlink.ai.replay.service.ReplayIssueImportService;
@@ -117,9 +118,10 @@ public class ReplayIssueController {
             @RequestParam(required = false) Boolean sandbox,
             @RequestParam(required = false) String issueLevel,
             @RequestParam(required = false) String issueType,
-            @RequestParam(required = false) String keyword) {
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String issueStatus) {
         ReplayIssueQuery query = new ReplayIssueQuery(limit, offset, groupName,
-                sandbox, issueLevel, issueType, keyword);
+                sandbox, issueLevel, issueType, keyword, issueStatus);
         List<Map<String, Object>> items = dao.list(query).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
@@ -134,6 +136,12 @@ public class ReplayIssueController {
     @GetMapping("/stats")
     public R<Map<String, Object>> stats() {
         return R.ok(dao.stats());
+    }
+
+    @GetMapping("/{id}/tracking")
+    public R<List<ReplayIssueHistoryEntry>> tracking(@PathVariable long id,
+                                                      @RequestParam(defaultValue = "200") int limit) {
+        return R.ok(dao.findHistoryByIssueId(id, limit));
     }
 
     @ExceptionHandler(Exception.class)
