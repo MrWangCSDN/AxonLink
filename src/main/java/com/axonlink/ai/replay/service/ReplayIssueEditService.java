@@ -8,6 +8,7 @@ import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -24,6 +25,7 @@ public class ReplayIssueEditService {
     private final Clock clock;
     private final ObjectMapper objectMapper;
 
+    @Autowired
     public ReplayIssueEditService(ReplayIssueDao dao, SysUserDao userDao) {
         this(dao, userDao, Clock.systemDefaultZone(), new ObjectMapper().findAndRegisterModules());
     }
