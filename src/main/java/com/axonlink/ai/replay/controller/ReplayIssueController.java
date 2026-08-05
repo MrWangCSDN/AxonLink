@@ -67,10 +67,18 @@ public class ReplayIssueController {
                                                      @RequestBody ReplayIssueUpdateRequest body,
                                                      HttpServletRequest request) {
         UserPrincipalResolver.Resolved resolved = userResolver.resolve(request);
-        if (resolved == null || resolved.user == null) {
+        if (resolved == null || resolved.principal == null || resolved.principal.isBlank()) {
             return error(HttpStatus.UNAUTHORIZED, "请先登录");
         }
-        ReplayIssueOperator operator = new ReplayIssueOperator(resolved.user.getUsername(), resolved.user.getRealName());
+        ReplayIssueOperator operator;
+        if (resolved.user == null) {
+            log.warn("[replay-issue] authenticated principal has no sys_user mapping authMethod={} principal={}",
+                    resolved.authMethod, resolved.principal);
+            operator = new ReplayIssueOperator(resolved.principal, resolved.principal);
+        } else {
+            String username = firstNonBlank(resolved.user.getUsername(), resolved.principal);
+            operator = new ReplayIssueOperator(username, firstNonBlank(resolved.user.getRealName(), username));
+        }
         try {
             return ResponseEntity.ok(R.ok(editService.update(id, body, operator)));
         } catch (IllegalArgumentException exception) {
@@ -161,6 +169,10 @@ public class ReplayIssueController {
         R<T> body = R.fail(message);
         body.setCode(status.value());
         return ResponseEntity.status(status).body(body);
+    }
+
+    private static String firstNonBlank(String preferred, String fallback) {
+        return preferred == null || preferred.isBlank() ? fallback : preferred;
     }
 
     private static Map<String, Object> lowercaseKeys(Map<String, Object> row) {

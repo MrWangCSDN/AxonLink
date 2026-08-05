@@ -18,7 +18,6 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import com.axonlink.security.UserPrincipalResolver;
 
@@ -32,6 +31,7 @@ import java.util.concurrent.Semaphore;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -46,6 +46,7 @@ class ReplayIssueControllerTest {
     private ReplayIssueDao dao;
     private ReplayIssueImportService importService;
     private DaoIndexAnalysisProperties properties;
+    private UserPrincipalResolver.Resolved resolvedUser;
 
     @BeforeEach
     void setUp() {
@@ -59,10 +60,10 @@ class ReplayIssueControllerTest {
         properties = new DaoIndexAnalysisProperties();
         properties.getBatchTrigger().setToken("secret");
         ReplayIssueEditService editService = new ReplayIssueEditService(dao, userDao);
+        resolvedUser = new UserPrincipalResolver.Resolved("LDAP", "sunhy1", userDao.findByUsername("sunhy1"));
         UserPrincipalResolver resolver = new UserPrincipalResolver() {
             @Override public Resolved resolve(jakarta.servlet.http.HttpServletRequest request) {
-                SysUser user = userDao.findByUsername("sunhy1");
-                return new Resolved("LDAP", "sunhy1", user);
+                return resolvedUser;
             }
         };
         ReplayIssueController controller = new ReplayIssueController(importService, dao, properties, editService, resolver);
@@ -238,11 +239,44 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.issueStatus").value("修复待验证"))
                 .andExpect(jsonPath("$.data.cooperationPersonRealName").value("孙海英"));
+        var history = dao.findHistoryByIssueId(id, 10);
+        assertEquals("sunhy1", history.get(0).operatorUsername());
+        assertEquals("孙海英", history.get(0).operatorRealName());
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
                         .contentType("application/json")
                         .content("{\"issueStatus\":\"已修复\",\"issueType\":\"代码问题\",\"initialAnalysis\":\"\",\"finalSolution\":\"\",\"cooperationPersonUsername\":null}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void authenticatedPrincipalWithoutUserMappingCanSaveAndIsRecordedAsOperator() throws Exception {
+        long id = seedIssue();
+        resolvedUser = new UserPrincipalResolver.Resolved("UIAS", "A012345", null);
+
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
+                        .contentType("application/json")
+                        .content("{\"issueStatus\":\"分析中\",\"issueType\":\"代码问题\",\"initialAnalysis\":\"分析\",\"finalSolution\":\"方案\",\"cooperationPersonUsername\":null}"))
+                .andExpect(status().isOk());
+
+        var history = dao.findHistoryByIssueId(id, 10);
+        assertEquals(1, history.size());
+        assertEquals("A012345", history.get(0).operatorUsername());
+        assertEquals("A012345", history.get(0).operatorRealName());
+    }
+
+    @Test
+    void anonymousPrincipalCannotSave() throws Exception {
+        long id = seedIssue();
+        resolvedUser = new UserPrincipalResolver.Resolved("ANONYMOUS", null, null);
+
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
+                        .contentType("application/json")
+                        .content("{\"issueStatus\":\"分析中\",\"issueType\":\"代码问题\",\"initialAnalysis\":\"分析\",\"finalSolution\":\"方案\",\"cooperationPersonUsername\":null}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("请先登录"));
+
+        assertEquals(0, dao.findHistoryByIssueId(id, 10).size());
     }
 
     @Test
@@ -286,5 +320,12 @@ class ReplayIssueControllerTest {
             case "issue_key" -> "TRAN|6208|响应码|" + sheetName;
             default -> "value";
         };
+    }
+
+    private long seedIssue() {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "old")),
+                LocalDateTime.of(2026, 8, 5, 9, 0));
+        return ((Number) dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(
+                1, 0, null, null, null, null, null)).get(0).get("id")).longValue();
     }
 }
