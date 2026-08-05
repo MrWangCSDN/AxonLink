@@ -66,6 +66,20 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
+    void repairDateHeadersAreOptionalAndRenamedHeaderIsAccepted() throws Exception {
+        List<String> headers = new ArrayList<>(ReplayIssueTestFixtures.HEADERS);
+        headers.remove("数据修复日期");
+        headers.add("缺陷修复日期");
+
+        ReplayIssueRow row = parser.parse(ReplayIssueTestFixtures.workbook(
+                ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of("issue_key", "KEY-1")), headers, false))
+                .rows().get(0);
+
+        assertEquals("KEY-1", row.issueKey());
+        assertEquals("", row.dataRepairDate());
+    }
+
+    @Test
     void rejectsMissingTargetSheetWithItsName() {
         Map<String, List<Map<String, String>>> sheets = ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of());
         sheets.remove("沙箱-结算组");

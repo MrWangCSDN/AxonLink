@@ -29,6 +29,11 @@ public class ReplayIssueExcelParser {
             "需协同组", "解决人员", "流水号", "数据修复日期", "备注", "该问题出现在的交易笔数",
             "issue_id", "issue_key", "历史出现次数", "首次出现日期", "上次出现日期");
 
+    /** Repair dates are lifecycle-managed fields and are optional in imported workbooks. */
+    private static final List<String> REQUIRED_HEADERS = HEADERS.stream()
+            .filter(header -> !header.equals("数据修复日期"))
+            .toList();
+
     private static final List<SheetMetadata> TARGET_SHEETS = List.of(
             new SheetMetadata("公共组", "公共组", false),
             new SheetMetadata("存款组", "存款组", false),
@@ -124,7 +129,7 @@ public class ReplayIssueExcelParser {
     }
 
     private void validateRequiredHeaders(String sheetName, Map<String, Integer> columns) {
-        for (String header : HEADERS) {
+        for (String header : REQUIRED_HEADERS) {
             if (!columns.containsKey(normalizeHeader(header))) {
                 throw new IllegalArgumentException("页签“" + sheetName + "”缺少表头：" + header);
             }
@@ -135,7 +140,8 @@ public class ReplayIssueExcelParser {
                                 FormulaEvaluator evaluator) {
         List<String> values = new ArrayList<>(HEADERS.size());
         for (String header : HEADERS) {
-            Cell cell = row == null ? null : row.getCell(columns.get(normalizeHeader(header)));
+            Integer column = columns.get(normalizeHeader(header));
+            Cell cell = row == null || column == null ? null : row.getCell(column);
             values.add(cell == null ? "" : formatter.formatCellValue(cell, evaluator));
         }
         return values;
@@ -145,7 +151,7 @@ public class ReplayIssueExcelParser {
         return new ReplayIssueRow(null, metadata.name(), metadata.groupName(), metadata.sandbox(), rowIndex,
                 values.get(0), values.get(1), values.get(2), values.get(3), values.get(4), values.get(5),
                 values.get(6), values.get(7), values.get(8), values.get(9), values.get(10), values.get(11),
-                values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), values.get(17),
+                values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), "",
                 values.get(18), values.get(19), values.get(20), values.get(21), values.get(22), values.get(23),
                 values.get(24), null);
     }
