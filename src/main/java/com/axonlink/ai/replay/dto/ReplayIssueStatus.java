@@ -1,5 +1,7 @@
 package com.axonlink.ai.replay.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import java.util.Arrays;
 import java.util.List;
 
@@ -20,6 +22,7 @@ public enum ReplayIssueStatus {
         this.manuallySelectable = manuallySelectable;
     }
 
+    @JsonValue
     public String displayValue() {
         return displayValue;
     }
@@ -53,6 +56,7 @@ public enum ReplayIssueStatus {
         return Arrays.stream(values()).filter(ReplayIssueStatus::isManuallySelectable).toList();
     }
 
+    @JsonCreator
     public static ReplayIssueStatus fromDisplayValue(String value) {
         if (value == null) {
             return null;

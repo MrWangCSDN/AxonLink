@@ -3,7 +3,9 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
+import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.service.ReplayIssueEditService;
 import com.axonlink.ai.replay.service.ReplayIssueExcelParser;
 import com.axonlink.ai.replay.service.ReplayIssueImportService;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
@@ -16,6 +18,9 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import com.axonlink.ai.user.entity.SysUser;
+import com.axonlink.ai.user.persistence.SysUserDao;
+import com.axonlink.security.UserPrincipalResolver;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -29,6 +34,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -46,11 +52,21 @@ class ReplayIssueControllerTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         ReplayIssueTestFixtures.createSchema(jdbc);
         dao = new ReplayIssueDao(jdbc);
+        jdbc.execute("CREATE TABLE ccbs_ai_sys_user (id BIGINT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(128), real_name VARCHAR(128), emp_no VARCHAR(64), email VARCHAR(128), phone VARCHAR(64), department VARCHAR(128), status INT, remark VARCHAR(255), creator_id BIGINT, create_time DATETIME, updater_id BIGINT, update_time DATETIME)");
+        jdbc.update("INSERT INTO ccbs_ai_sys_user (username, real_name, status) VALUES (?,?,?)", "sunhy1", "孙海英", 1);
+        SysUserDao userDao = new SysUserDao(jdbc);
         importService = new ReplayIssueImportService(new ReplayIssueExcelParser(), dao);
         properties = new DaoIndexAnalysisProperties();
         properties.getBatchTrigger().setToken("secret");
-        ReplayIssueController controller = new ReplayIssueController(importService, dao, properties);
-        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+        ReplayIssueEditService editService = new ReplayIssueEditService(dao, userDao);
+        UserPrincipalResolver resolver = new UserPrincipalResolver() {
+            @Override public Resolved resolve(jakarta.servlet.http.HttpServletRequest request) {
+                SysUser user = userDao.findByUsername("sunhy1");
+                return new Resolved("LDAP", "sunhy1", user);
+            }
+        };
+        ReplayIssueController controller = new ReplayIssueController(importService, dao, properties, editService, resolver);
+        mvc = MockMvcBuilders.standaloneSetup(controller, new ReplayIssueUserController(userDao)).build();
     }
 
     @Test
@@ -208,6 +224,35 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(201))
                 .andExpect(jsonPath("$.data.items.length()").value(200));
+    }
+
+    @Test
+    void patchAcceptsAllFiveFieldsAndRejectsSystemStatus() throws Exception {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "old")),
+                LocalDateTime.of(2026, 8, 5, 9, 0));
+        long id = ((Number) dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(1, 0, null, null, null, null, null))
+                .get(0).get("id")).longValue();
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
+                        .contentType("application/json")
+                        .content("{\"issueStatus\":\"修复待验证\",\"issueType\":\"代码问题\",\"initialAnalysis\":\"分析\",\"finalSolution\":\"方案\",\"cooperationPersonUsername\":\"sunhy1\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.issueStatus").value("修复待验证"))
+                .andExpect(jsonPath("$.data.cooperationPersonRealName").value("孙海英"));
+
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
+                        .contentType("application/json")
+                        .content("{\"issueStatus\":\"已修复\",\"issueType\":\"代码问题\",\"initialAnalysis\":\"\",\"finalSolution\":\"\",\"cooperationPersonUsername\":null}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void userLookupMatchesUsernameAndRealName() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues/users").param("keyword", "sunh"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].displayName").value("孙海英(sunhy1)"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/users").param("keyword", "海英"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].username").value("sunhy1"));
     }
 
     private static MockMultipartFile validLegacyWorkbook() {

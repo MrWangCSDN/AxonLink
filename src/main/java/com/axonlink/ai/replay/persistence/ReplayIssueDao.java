@@ -76,6 +76,12 @@ public class ReplayIssueDao {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public ReplayIssueRow findCurrentByIdForUpdate(long id) {
+        List<ReplayIssueRow> rows = jdbc.query("SELECT * FROM dii_replay_issue WHERE id = ? FOR UPDATE",
+                this::mapRow, id);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public long insertCurrent(ReplayIssueRow row) {
         String sql = "INSERT INTO dii_replay_issue (source_sheet,group_name,is_sandbox,row_order,domain,sequence_no,"
                 + "batch_no,transaction_code,transaction_name,issue_level,registered_date,field_name,issue_description,"

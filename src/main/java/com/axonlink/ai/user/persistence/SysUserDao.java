@@ -99,6 +99,17 @@ public class SysUserDao {
                 MAPPER, empNo.trim()).stream().findFirst().orElse(null);
     }
 
+    /** Bounded active-user lookup for replay issue collaborator selection. */
+    public List<SysUser> searchByUsernameOrRealName(String keyword, int limit) {
+        int boundedLimit = Math.min(Math.max(limit, 1), 50);
+        String normalized = keyword == null ? "" : keyword.trim();
+        String like = "%" + normalized + "%";
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND (username LIKE ? OR real_name LIKE ?)"
+                        + " ORDER BY real_name, username LIMIT ?",
+                MAPPER, like, like, boundedLimit);
+    }
+
     public long insert(SysUser u) {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {
