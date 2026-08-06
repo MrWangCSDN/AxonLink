@@ -74,7 +74,7 @@ class ReplayIssueMergeServiceTest {
     }
 
     @Test
-    void openAnalyzingAndDeferredDuplicatesAreIgnored() {
+    void openAnalyzingAndDeferredDuplicatesAreIgnoredWithoutHistory() {
         for (ReplayIssueStatus status : List.of(ReplayIssueStatus.OPEN, ReplayIssueStatus.ANALYZING, ReplayIssueStatus.DEFERRED)) {
             ReplayIssueDao localDao = daoForSchema();
             localDao.insertCurrent(lifecycle(row("K-" + status, "old"), status, "代码问题", "a", "s", "alice"));
@@ -83,7 +83,7 @@ class ReplayIssueMergeServiceTest {
             Map<String, Object> current = localDao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
             assertEquals(1, result.ignoredRows());
             assertEquals("old", current.get("issue_description"));
-            assertEquals(1L, localDao.countHistory("K-" + status));
+            assertEquals(0L, localDao.countHistory("K-" + status));
         }
     }
 

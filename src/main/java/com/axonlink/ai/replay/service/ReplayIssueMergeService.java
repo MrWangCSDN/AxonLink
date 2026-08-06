@@ -65,8 +65,6 @@ public class ReplayIssueMergeService {
                 ReplayIssueStatus status = current.issueStatus() == null ? ReplayIssueStatus.OPEN : current.issueStatus();
                 if (status == ReplayIssueStatus.OPEN || status == ReplayIssueStatus.ANALYZING
                         || status == ReplayIssueStatus.DEFERRED) {
-                    currentDao.insertHistory(current.id(), key, "重复导入忽略", operationAt, effectiveOperator, effectiveDate,
-                            incoming.sourceSheet(), incoming.rowOrder() + 1, snapshot(current), snapshot(current), snapshot(incoming));
                     ignored++;
                     continue;
                 }

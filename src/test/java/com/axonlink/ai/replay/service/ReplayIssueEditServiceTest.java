@@ -17,18 +17,33 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ReplayIssueEditServiceTest {
+    private JdbcTemplate jdbc;
     private ReplayIssueDao dao;
     private ReplayIssueEditService service;
     private long issueId;
 
     @BeforeEach
     void setUp() {
-        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        jdbc = ReplayIssueTestFixtures.newJdbc();
         ReplayIssueTestFixtures.createSchema(jdbc);
         createUsers(jdbc);
         dao = new ReplayIssueDao(jdbc);
         issueId = seedCurrent(dao);
         service = new ReplayIssueEditService(dao, new SysUserDao(jdbc));
+    }
+
+    @Test
+    void rejectsEditingAnIssueThatIsAlreadyFixed() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_status = '已修复' WHERE id = ?", issueId);
+        ReplayIssueRow fixed = dao.findCurrentByIdForUpdate(issueId);
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.ANALYZING, "代码问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人")));
+
+        assertEquals("已修复的问题不可编辑", exception.getMessage());
+        assertEquals(0L, dao.countHistory(fixed.issueKey()));
+        assertEquals(ReplayIssueStatus.FIXED, dao.findCurrentByIdForUpdate(issueId).issueStatus());
     }
 
     @Test

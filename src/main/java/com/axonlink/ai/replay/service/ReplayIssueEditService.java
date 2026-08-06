@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
+import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueUpdateRequest;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.user.entity.SysUser;
@@ -15,7 +16,7 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Set;
 
-/** Atomically updates the five page-managed fields and appends one audit snapshot. */
+/** Atomically updates the six page-managed fields and appends one audit snapshot. */
 @Service
 public class ReplayIssueEditService {
     private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "其他问题");
@@ -39,12 +40,15 @@ public class ReplayIssueEditService {
 
     public ReplayIssueRow update(long id, ReplayIssueUpdateRequest request, ReplayIssueOperator operator) {
         validate(request, operator);
-        SysUser collaborator = resolveCollaborator(request.cooperationPersonUsername());
         return dao.inTransaction(currentDao -> {
             ReplayIssueRow before = currentDao.findCurrentByIdForUpdate(id);
             if (before == null) {
                 throw new IllegalArgumentException("回放问题不存在");
             }
+            if (before.issueStatus() == ReplayIssueStatus.FIXED) {
+                throw new IllegalArgumentException("已修复的问题不可编辑");
+            }
+            SysUser collaborator = resolveCollaborator(request.cooperationPersonUsername());
             ReplayIssueRow after = edited(before, request, collaborator);
             currentDao.updateCurrent(after);
             currentDao.insertHistory(after.id(), after.issueKey(), "人工保存", LocalDateTime.now(clock), operator,
