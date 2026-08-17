@@ -30,4 +30,12 @@ public class R<T> {
         r.message = message;
         return r;
     }
+
+    public static <T> R<T> fail(int code, String message, T data) {
+        R<T> r = new R<>();
+        r.code = code;
+        r.message = message;
+        r.data = data;
+        return r;
+    }
 }

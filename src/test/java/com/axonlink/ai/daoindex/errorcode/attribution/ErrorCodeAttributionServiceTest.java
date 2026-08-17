@@ -51,6 +51,43 @@ class ErrorCodeAttributionServiceTest {
     }
 
     @Test
+    void joinDedupesMultiComponentAttributionPerTxThrow() {
+        // 同一实现方法被两个 ServiceOperation 归属（IMPLEMENTS_BY 多对一，pbcb 常见）：
+        // 同 (tx × throw) 只能产 1 行，否则撞物化表唯一键 uk_tx_throw（2026-07-15 内网事故：
+        // TG121 × Bkdf.B0191 Duplicate entry → 非事务写把整表留成 0 行）
+        List<TxErrorCodeRow> rs = ErrorCodeAttributionService.joinToTxRows(
+                List.of(rm("T1", "sett", "com.x.Pbcb", "m", "OP_A"),
+                        rm("T1", "sett", "com.x.Pbcb", "m", "OP_B")),
+                List.of(et("B0191", "com.x.Pbcb", "m", 1)));
+        assertEquals(1, rs.size(), "同 (tx×throw) 多构件归属必须收敛为 1 行");
+        assertEquals("T1", rs.get(0).getTxId());
+        assertEquals("OP_A", rs.get(0).getComponentCode());
+    }
+
+    @Test
+    void joinDedupePrefersNonNullComponent() {
+        // 先 null 后非空：应保留非空 component 的归属变体
+        List<TxErrorCodeRow> rs = ErrorCodeAttributionService.joinToTxRows(
+                List.of(rm("T1", "sett", "com.x.Pbcb", "m", null),
+                        rm("T1", "sett", "com.x.Pbcb", "m", "OP_B")),
+                List.of(et("B0191", "com.x.Pbcb", "m", 1)));
+        assertEquals(1, rs.size());
+        assertEquals("OP_B", rs.get(0).getComponentCode());
+    }
+
+    @Test
+    void joinDedupeDoesNotCollapseDifferentTx() {
+        // 去重只作用于同一 tx 内：不同交易的扇出行为保持不变
+        List<TxErrorCodeRow> rs = ErrorCodeAttributionService.joinToTxRows(
+                List.of(rm("T1", "sett", "com.x.Pbcb", "m", "OP_A"),
+                        rm("T1", "sett", "com.x.Pbcb", "m", "OP_B"),
+                        rm("T2", "sett", "com.x.Pbcb", "m", "OP_A")),
+                List.of(et("B0191", "com.x.Pbcb", "m", 1),
+                        et("B0192", "com.x.Pbcb", "m", 2)));
+        assertEquals(4, rs.size(), "2 tx × 2 throw = 4 行（每对唯一）");
+    }
+
+    @Test
     void joinFanOutToMultipleTx() {
         List<TxErrorCodeRow> rs = ErrorCodeAttributionService.joinToTxRows(
                 List.of(rm("T1", "deposit", "com.x.A", "m", "SVC1"),
@@ -86,6 +123,7 @@ class ErrorCodeAttributionServiceTest {
     private static final class RecordingDao extends DiiErrorCodeDao {
         boolean materializeCalled = false;             // 被调用即代表整表已被 DELETE+INSERT 覆盖
         List<TxErrorCodeRow> lastRows = null;          // 最近一次写入的行
+        List<ErrorCodeThrow> throwsToReturn = List.of();   // 桩明细（守卫测试需要非空明细）
 
         RecordingDao() {
             super(null);                               // 父类构造只存 JdbcTemplate，单测不触 SQL
@@ -93,7 +131,7 @@ class ErrorCodeAttributionServiceTest {
 
         @Override
         public List<ErrorCodeThrow> listAllThrows() {
-            return List.of();                          // 编排只把它透传给 joinToTxRows，空表即可
+            return throwsToReturn;
         }
 
         @Override
@@ -129,6 +167,40 @@ class ErrorCodeAttributionServiceTest {
         assertFalse(out.isComplete(), "部分失败时本轮物化应判为不完整");
         assertTrue(out.isSkippedDueToPartialFailure(), "应标记为因部分失败而跳过覆盖");
         assertFalse(dao.materializeCalled, "存在失败批次时绝不能触发整表 DELETE+INSERT");
+    }
+
+    // ── 2026-07-15 事故守卫：空明细 / 空图 / 无 Driver 一律拒绝覆盖，保留旧数据 ──
+
+    @Test
+    void emptyThrowDetailsSkipsOverwrite() {
+        RecordingDao dao = new RecordingDao();          // 明细为空（默认）
+        ErrorCodeAttributionService s = svc(dao);
+        ErrorCodeAttributionService.MaterializeOutcome out = s.materializeTransactionErrorCodes();
+        assertFalse(out.isComplete(), "明细为空（疑似源码替换窗口）应判不完整");
+        assertFalse(dao.materializeCalled, "明细为空绝不能触发整表覆盖");
+    }
+
+    @Test
+    void nullDriverKeepsOldDataInsteadOfClearing() {
+        RecordingDao dao = new RecordingDao();
+        dao.throwsToReturn = List.of(et("E0001", "com.x.A", "m", 1));   // 明细非空
+        ErrorCodeAttributionService s = svc(dao);       // driver=null
+        ErrorCodeAttributionService.MaterializeOutcome out = s.materializeTransactionErrorCodes();
+        assertFalse(out.isComplete());
+        assertFalse(dao.materializeCalled, "无 Driver 时不得再清空物化表（改为保留旧数据）");
+    }
+
+    @Test
+    void emptyGraphWithThrowsSkipsAllUnmatchedOverwrite() {
+        RecordingDao dao = new RecordingDao();
+        ErrorCodeAttributionService s = svc(dao);
+        // 图无交易（txIds 空）而 throw 非空 → 覆盖会把整表写成全 UNMATCHED，必须拒绝
+        ErrorCodeAttributionService.MaterializeOutcome out = s.materialize(
+                List.of(), List.of(et("E0001", "com.x.A", "m", 1)), batch -> {
+                    throw new AssertionError("txIds 为空不应触达 resolver");
+                });
+        assertFalse(out.isComplete());
+        assertFalse(dao.materializeCalled, "空图+非空明细不得覆盖成全 UNMATCHED");
     }
 
     @Test

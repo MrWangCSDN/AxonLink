@@ -7,10 +7,11 @@ public record ReplayIssueFilterOptions(
         List<String> groups,
         List<String> issueLevels,
         List<String> issueTypes,
-        List<String> issueStatuses) {
+        List<String> issueStatuses,
+        List<String> coverageRounds) {
 
     public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes) {
-        this(groups, issueLevels, issueTypes, List.of());
+        this(groups, issueLevels, issueTypes, List.of(), List.of());
     }
 
     public ReplayIssueFilterOptions {
@@ -18,5 +19,6 @@ public record ReplayIssueFilterOptions(
         issueLevels = List.copyOf(issueLevels);
         issueTypes = List.copyOf(issueTypes);
         issueStatuses = List.copyOf(issueStatuses);
+        coverageRounds = List.copyOf(coverageRounds);
     }
 }

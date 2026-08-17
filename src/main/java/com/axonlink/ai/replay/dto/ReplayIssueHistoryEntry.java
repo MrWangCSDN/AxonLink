@@ -24,7 +24,9 @@ public record ReplayIssueHistoryEntry(
         String beforeSnapshot,
         String afterSnapshot,
         String incomingSnapshot,
-        String remark) {
+        String remark,
+        Long contextRoundId,
+        String occurrenceBatchName) {
 
     public ReplayIssueHistoryEntry(Long id, Long replayIssueId, String issueKey, String operationType,
                                    LocalDateTime operationAt, String operatorUsername, String operatorRealName,
@@ -36,6 +38,6 @@ public record ReplayIssueHistoryEntry(
         this(id, replayIssueId, issueKey, operationType, operationAt, operatorUsername, operatorRealName,
                 issueStatus, issueType, initialAnalysis, finalSolution, cooperationPersonUsername,
                 cooperationPersonRealName, importDate, sourceSheet, sourceRow, beforeSnapshot, afterSnapshot,
-                incomingSnapshot, null);
+                incomingSnapshot, null, null, null);
     }
 }

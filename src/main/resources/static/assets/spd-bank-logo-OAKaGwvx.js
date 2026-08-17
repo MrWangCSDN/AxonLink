@@ -1,1 +1,0 @@
-var e=`/spd-bank-logo.png`;export{e as t};

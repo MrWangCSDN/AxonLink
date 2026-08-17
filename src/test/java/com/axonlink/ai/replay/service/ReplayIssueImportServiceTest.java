@@ -36,7 +36,8 @@ class ReplayIssueImportServiceTest {
         parser = new ReplayIssueExcelParser();
         dao = new ReplayIssueDao(jdbc);
         service = new ReplayIssueImportService(parser, dao,
-                Clock.fixed(Instant.parse("2026-08-04T02:00:00Z"), ZoneOffset.UTC), new Semaphore(1));
+                Clock.fixed(Instant.parse("2026-08-04T02:00:00Z"), ZoneOffset.UTC),
+                new ReplayIssueImportGate(new Semaphore(1)));
     }
 
     @Test
@@ -58,6 +59,7 @@ class ReplayIssueImportServiceTest {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             context.registerBean(ReplayIssueExcelParser.class, () -> parser);
             context.registerBean(ReplayIssueDao.class, () -> dao);
+            context.registerBean(ReplayIssueImportGate.class, () -> new ReplayIssueImportGate());
             context.register(ReplayIssueImportService.class);
             context.refresh();
 
@@ -73,7 +75,8 @@ class ReplayIssueImportServiceTest {
     void concurrentImportIsRejectedWithoutChangingRows() {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "old")), IMPORTED_AT);
         ReplayIssueImportService busy = new ReplayIssueImportService(parser, dao,
-                Clock.fixed(IMPORTED_AT.toInstant(ZoneOffset.UTC), ZoneOffset.UTC), new Semaphore(0));
+                Clock.fixed(IMPORTED_AT.toInstant(ZoneOffset.UTC), ZoneOffset.UTC),
+                new ReplayIssueImportGate(new Semaphore(0)));
 
         assertThrows(ReplayIssueImportBusyException.class,
                 () -> busy.importFile(ReplayIssueTestFixtures.validWorkbook(1)));

@@ -22,14 +22,14 @@ class ReplayIssueStatusTest {
     }
 
     @Test
-    void onlyThreeStatusesAreManuallySelectable() {
-        assertTrue(ReplayIssueStatus.ANALYZING.isManuallySelectable());
+    void onlyTwoStatusesAreManuallySelectable() {
+        assertFalse(ReplayIssueStatus.ANALYZING.isManuallySelectable());
         assertTrue(ReplayIssueStatus.DEFERRED.isManuallySelectable());
         assertTrue(ReplayIssueStatus.PENDING_VERIFICATION.isManuallySelectable());
         assertFalse(ReplayIssueStatus.OPEN.isManuallySelectable());
         assertFalse(ReplayIssueStatus.REOPENED.isManuallySelectable());
         assertFalse(ReplayIssueStatus.FIXED.isManuallySelectable());
-        assertEquals(3, Arrays.stream(ReplayIssueStatus.values())
+        assertEquals(2, Arrays.stream(ReplayIssueStatus.values())
                 .filter(ReplayIssueStatus::isManuallySelectable).count());
     }
 

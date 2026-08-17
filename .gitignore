@@ -17,3 +17,8 @@ axon-link.pid
 output/
 src/main/resources/111.txt
 src/main/resources/111.txt.zip
+
+# GPT 会话导出的备份包不入库
+/*.zip
+# 本地工具状态
+.superpowers/

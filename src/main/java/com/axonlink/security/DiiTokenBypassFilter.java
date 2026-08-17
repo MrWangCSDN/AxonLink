@@ -6,6 +6,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -16,9 +17,10 @@ import java.util.List;
 /**
  * X-DII-Trigger-Token 双轨过滤器。
  *
- * <p>设计目的：脚本/curl 携带 {@code X-DII-Trigger-Token} 且匹配
+ * <p>设计目的：未登录的脚本/curl 携带 {@code X-DII-Trigger-Token} 且匹配
  * {@code dao-index-analysis.batch-trigger.token} 配置时，<b>跳过 LDAP 登录</b>，
  * 让自动化触发链路与现有"未知触发者"语义完全一致（{@code request.getRemoteUser()} 为 null）。
+ * 已有 LDAP/UIAS 登录身份时保留原身份，不能被 token principal 覆盖。
  *
  * <p>实现策略：filter 注册在 Spring Security 链中的
  * {@code UsernamePasswordAuthenticationFilter} 之前；命中 token 时，
@@ -54,7 +56,7 @@ public class DiiTokenBypassFilter extends OncePerRequestFilter {
      * 主流程：检查请求头 → 命中则写认证态 → 总是放行到下一个 filter。
      *
      * <p>注意：本 filter 不主动短路；放行交给 SecurityFilterChain 自身的 authenticated 检查。
-     * 命中 token 时已经把 SecurityContext 标记为已认证，下游会放行；
+     * 命中 token 且没有人工登录身份时，把 SecurityContext 标记为已认证，下游会放行；
      * 未命中时 SecurityContext 仍为空，下游会按未登录处理。
      */
     @Override
@@ -65,9 +67,13 @@ public class DiiTokenBypassFilter extends OncePerRequestFilter {
         String expected = props.getBatchTrigger().getToken();
         // 取出请求头里的 token
         String actual = request.getHeader(HEADER);
+        Authentication current = SecurityContextHolder.getContext().getAuthentication();
+        boolean hasHumanLogin = current != null && current.isAuthenticated()
+                && !DII_PRINCIPAL.equals(current.getName())
+                && !"anonymousUser".equals(String.valueOf(current.getPrincipal()));
         // 三段卫语句：① expected 非空 ② actual 非空 ③ 完全相等 —— 任一不满足都不旁路
         if (expected != null && !expected.trim().isEmpty()
-                && actual != null && expected.equals(actual)) {
+                && actual != null && expected.equals(actual) && !hasHumanLogin) {
             // 命中：写一个已认证的 token-principal 到 SecurityContext
             // 用 UsernamePasswordAuthenticationToken 的"已认证"构造器（带 authorities 参数自动 setAuthenticated(true)）
             UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(

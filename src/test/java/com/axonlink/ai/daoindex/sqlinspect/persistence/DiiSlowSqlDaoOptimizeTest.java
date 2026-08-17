@@ -50,11 +50,17 @@ class DiiSlowSqlDaoOptimizeTest {
                 + "applicant VARCHAR(100), applicant_name VARCHAR(64),"
                 + "l1_approver VARCHAR(100), l2_approver VARCHAR(100))");
         dao = new DiiSlowSqlDao(jdbc);
+        dao.setHideExecCountLte(0);   // 既有用例行 exec_count=1，关闭低频过滤保持原语义；专项用例单独开启
     }
 
     private void insertRow(String svc, String hash, String round, long cost) {
         jdbc.update("INSERT INTO dii_slow_sql (service_name, abstract_hash, round, max_time_cost_ms, exec_count) " +
                 "VALUES (?,?,?,?,1)", svc, hash, round, cost);
+    }
+
+    private void insertRowWithCount(String svc, String hash, String round, int count) {
+        jdbc.update("INSERT INTO dii_slow_sql (service_name, abstract_hash, round, max_time_cost_ms, exec_count) " +
+                "VALUES (?,?,?,100,?)", svc, hash, round, count);
     }
 
     @Test @DisplayName("maxRoundByServiceAndHash：取该键最新轮次；无行返回 null")
@@ -136,6 +142,49 @@ class DiiSlowSqlDaoOptimizeTest {
         assertEquals(1, dao.listAggregated(null, null, null, null, null, null, "l1u", null, null, null, 50, 0).size());
         assertEquals(1, dao.listAggregated(null, null, null, null, null, null, null, java.util.List.of("l1u"), null, null, 50, 0).size());
         assertEquals(0, dao.listAggregated(null, null, null, null, null, null, "nobody", null, null, null, 50, 0).size());
+    }
+
+    @Test @DisplayName("低频隐藏：次数≤阈值一律不可见（不分状态，白名单/已优化同样过滤）")
+    void lowFreqHiddenRegardlessOfStatus() {
+        dao.setHideExecCountLte(5);
+        insertRowWithCount("svcA", "h1", "20260713-1", 3);    // 未处理、次数3 → 隐藏
+        insertRowWithCount("svcB", "h2", "20260713-1", 6);    // 未处理、次数6 → 显示
+        insertRowWithCount("svcC", "h3", "20260713-1", 2);    // 次数2 白名单在途 → 同样隐藏
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L1' WHERE service_name='svcC'");
+        insertRowWithCount("svcD", "h4", "20260713-1", 1);    // 次数1 已优化 → 同样隐藏
+        dao.syncOptimizeByServiceAndHash("svcD", "h4", "OPTIMIZED", "20260713-1", null);
+
+        List<Map<String, Object>> rows = dao.listAggregated(null, null, null, null, null, null, null, null, null, null, 50, 0);
+        List<String> svcs = rows.stream().map(r -> (String) r.get("service_name")).sorted().toList();
+        assertEquals(List.of("svcB"), svcs, "次数≤5 一律隐藏，状态不豁免");
+        assertEquals(1, dao.countAggregated(null, null, null, null, null, null, null, null, null, null));
+        assertEquals(1, dao.listAggregatedAll(null, null, null, null, null, null, null, null, null, null).size(),
+                "导出全量与列表同口径");
+        // 边界：次数=阈值(5) 仍隐藏（语义是 ≤5 不看）
+        insertRowWithCount("svcE", "h5", "20260713-1", 5);
+        assertEquals(1, dao.countAggregated(null, null, null, null, null, null, null, null, null, null));
+        // 阈值=0 关闭过滤 → 全部可见
+        dao.setHideExecCountLte(0);
+        assertEquals(5, dao.countAggregated(null, null, null, null, null, null, null, null, null, null));
+    }
+
+    @Test @DisplayName("「该我审批」视图豁免低频过滤：低频在途申请仍可见可审（2026-07-16 修正）")
+    void myApprovalViewExemptFromLowFreqFilter() {
+        dao.setHideExecCountLte(5);
+        // 低频行（次数2）挂待二级申请，l2u 是二级审批人
+        insertRowWithCount("svcA", "h1", "20260713-1", 2);
+        jdbc.update("INSERT INTO dii_whitelist_application (target_type, sql_hash, project_name, status, applicant, l1_approver, l2_approver) "
+                + "VALUES ('SLOW_SQL','h1','svcA','PENDING_L2','user1','l1u','l2u')");
+        jdbc.update("UPDATE dii_slow_sql SET whitelist_status='PENDING_L2', whitelist_app_id=1 WHERE service_name='svcA'");
+
+        // 普通列表：低频隐藏，看不见
+        assertEquals(0, dao.countAggregated(null, null, null, null, null, null, null, null, null, null));
+        // 该我审批视图（approverUser）：豁免低频——l2u 能看到并进入审批
+        List<Map<String, Object>> mine = dao.listAggregated(null, null, null, null, null, null, null, null, null, "l2u", 50, 0);
+        assertEquals(1, mine.size(), "低频行的待我审批申请必须在该我审批视图可见");
+        assertEquals("svcA", mine.get(0).get("service_name"));
+        // 非审批人查该视图 → 无
+        assertEquals(0, dao.listAggregated(null, null, null, null, null, null, null, null, null, "nobody", 50, 0).size());
     }
 
     @Test @DisplayName("listAggregated 按 optimizeStatus 过滤：REGRESSED / NONE(未处理)")

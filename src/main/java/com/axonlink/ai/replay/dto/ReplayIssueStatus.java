@@ -7,8 +7,10 @@ import java.util.List;
 
 /** Lifecycle states for a replay issue. */
 public enum ReplayIssueStatus {
-    OPEN("打开", false),
-    ANALYZING("分析中", true),
+    NEW("新建", false),
+    OPEN("打开", true),
+    /** Legacy value retained so historical rows can still be read, but it is no longer selectable. */
+    ANALYZING("分析中", false),
     DEFERRED("延后修复", true),
     PENDING_VERIFICATION("修复待验证", true),
     REOPENED("重新打开", false),

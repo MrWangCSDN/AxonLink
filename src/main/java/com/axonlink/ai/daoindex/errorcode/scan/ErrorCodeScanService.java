@@ -140,6 +140,20 @@ public class ErrorCodeScanService {
         try {
             long t0 = System.currentTimeMillis();
             List<ErrorCodeThrow> throwDetails = scanAllSources();
+            // ── 空结果拒绝覆盖（2026-07-15 内网事故守卫）──
+            // ① 收集到 0 个源文件（scanAllSources 返回 null）：源码目录大概率正被 benchmark
+            //    全量替换，此时 DELETE 整表会把好数据抹成 0 行 → 保留旧数据，等下轮触发。
+            if (throwDetails == null) {
+                log.error("[error-code] 本轮扫描中止：源码根为空/不可达（疑似源码替换窗口），"
+                        + "保留 dii_error_code / dii_tx_error_code 旧数据");
+                return;
+            }
+            // ② 扫到文件但 0 个 throw、而库里现存明细非空：银行源码不可能无错误码，视为异常态
+            if (throwDetails.isEmpty() && dao.countThrows() > 0) {
+                log.error("[error-code] 本轮扫描中止：throw 命中 0 条但库中现存明细非空，"
+                        + "拒绝清空覆盖（如确属预期请先人工清表再 rescan）");
+                return;
+            }
             long t1 = System.currentTimeMillis();
             dao.rebuildThrows(throwDetails);                        // 重建明细 dii_error_code
             long t2 = System.currentTimeMillis();
@@ -153,9 +167,11 @@ public class ErrorCodeScanService {
             }
         } catch (org.springframework.dao.DataAccessException ex) {
             // 缺表/结果库异常（Spring JDBC 把 SQLException 包成 unchecked DataAccessException，
-            // 缺表为 BadSqlGrammarException）→ WARN 跳过，不 crash 启动
-            log.warn("[error-code] 结果库异常（可能缺表，需人工执行 daoindex/V24），本轮扫描跳过：{}",
-                    ex.getMessage());
+            // 缺表为 BadSqlGrammarException；也可能是写入失败如唯一键冲突/列截断——
+            // 2026-07-15 曾把 uk_tx_throw 冲突误读成缺表）→ ERROR 跳过，不 crash 启动。
+            // 写方法已事务化，此处到达时旧数据未被破坏。
+            log.error("[error-code] 结果库异常（缺表需人工执行 daoindex/V24~V26；或写入失败，"
+                    + "事务已回滚保留旧数据），本轮扫描跳过：{}", ex.getMessage());
         } catch (Exception ex) {
             log.error("[error-code] 扫描异常", ex);
         } finally {
@@ -163,13 +179,16 @@ public class ErrorCodeScanService {
         }
     }
 
-    /** 遍历所有源码根，AST 扫描 throw 错误码。 */
+    /** 遍历所有源码根，AST 扫描 throw 错误码。收集到 0 个源文件返回 null（调用方拒绝覆盖）。 */
     private List<ErrorCodeThrow> scanAllSources() {
         List<ErrorCodeThrow> all = new ArrayList<>();
         AtomicLong seq = new AtomicLong(0);
         long maxBytes = 500L * 1024;   // 与 ProjectIndexer 一致：>500KB 跳过
         List<Path> files = collectSourceFiles();
         log.info("[error-code] 收集到 {} 个 .java 源文件待扫描", files.size());
+        if (files.isEmpty()) {
+            return null;   // 源码根为空/不可达 → 交由 runSafely 中止本轮，保留旧数据
+        }
         for (Path f : files) {
             scanOneFile(f, maxBytes, seq, all);
         }

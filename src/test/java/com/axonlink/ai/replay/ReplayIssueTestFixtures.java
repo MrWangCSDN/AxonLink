@@ -31,6 +31,12 @@ public final class ReplayIssueTestFixtures {
             "需协同组", "解决人员", "流水号", "数据修复日期", "备注", "该问题出现在的交易笔数",
             "issue_id", "issue_key", "历史出现次数", "首次出现日期", "上次出现日期");
 
+    public static final List<String> FULL_REFRESH_HEADERS = List.of(
+            "领域", "批次", "交易码", "交易名称", "问题级别", "登记日期", "字段名", "问题描述",
+            "交易负责人", "问题类型", "初步问题分析", "最终处理方案", "解决日期", "需协同组",
+            "协同人", "流水号", "数据修复日期", "备注", "该问题出现过的交易笔数",
+            "issue_id", "issue_key", "历史出现次数", "首次出现日期", "上次出现日期", "问题状态", "是否沙箱");
+
     private ReplayIssueTestFixtures() {
     }
 
@@ -43,6 +49,10 @@ public final class ReplayIssueTestFixtures {
     }
 
     public static void createSchema(JdbcTemplate jdbc) {
+        jdbc.execute("CREATE TABLE dii_replay_import_round (id BIGINT AUTO_INCREMENT PRIMARY KEY, round_code VARCHAR(64) UNIQUE NOT NULL, imported_at DATETIME NOT NULL, operator_username VARCHAR(128), operator_real_name VARCHAR(128), input_rows INT NOT NULL DEFAULT 0, created_rows INT NOT NULL DEFAULT 0, updated_rows INT NOT NULL DEFAULT 0, ignored_rows INT NOT NULL DEFAULT 0, auto_repaired_rows INT NOT NULL DEFAULT 0)");
+        jdbc.execute("CREATE TABLE dii_replay_issue_round (id BIGINT AUTO_INCREMENT PRIMARY KEY, round_id BIGINT NOT NULL, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL, appeared TINYINT NOT NULL, status_before VARCHAR(32), status_after VARCHAR(32) NOT NULL, action_type VARCHAR(64) NOT NULL, source_sheet VARCHAR(64), source_row INT, recorded_at DATETIME NOT NULL, UNIQUE(round_id, issue_key))");
+        jdbc.execute("CREATE TABLE dii_replay_issue_occurrence_batch (id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL, batch_name VARCHAR(128) NOT NULL, first_occurred_at DATETIME NOT NULL, last_occurred_at DATETIME NOT NULL, last_status VARCHAR(32), created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, UNIQUE(replay_issue_id, batch_name))");
+        jdbc.execute("CREATE TABLE dii_replay_transaction_person (id BIGINT AUTO_INCREMENT PRIMARY KEY, domain VARCHAR(64) NOT NULL, old_transaction_code VARCHAR(64) UNIQUE NOT NULL, old_transaction_name VARCHAR(256), developer VARCHAR(512), developer_usernames VARCHAR(512), bank_owner VARCHAR(512), bank_owner_emp_nos VARCHAR(512), imported_at DATETIME NOT NULL)");
         jdbc.execute("CREATE TABLE dii_replay_issue ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
                 + "source_sheet VARCHAR(64) NOT NULL, group_name VARCHAR(32) NOT NULL,"
@@ -52,11 +62,11 @@ public final class ReplayIssueTestFixtures {
                 + "registered_date VARCHAR(64), field_name VARCHAR(512), issue_description MEDIUMTEXT,"
                 + "transaction_owner VARCHAR(128), issue_type VARCHAR(128), initial_analysis MEDIUMTEXT,"
                 + "final_solution MEDIUMTEXT, resolved_date VARCHAR(64), cooperation_group VARCHAR(256),"
-                + "resolver VARCHAR(128), serial_no VARCHAR(512), data_repair_date VARCHAR(64),"
+                + "resolver VARCHAR(128), serial_no VARCHAR(512), global_serial_no VARCHAR(512), data_repair_date VARCHAR(64),"
                 + "remark MEDIUMTEXT, affected_transaction_count VARCHAR(32), issue_id VARCHAR(64),"
                 + "issue_key VARCHAR(1024) NOT NULL, historical_occurrence_count VARCHAR(32),"
                 + "first_occurrence_date VARCHAR(64), last_occurrence_date VARCHAR(64),"
-                + "imported_at DATETIME NOT NULL,"
+                + "imported_at DATETIME NOT NULL, coverage_round VARCHAR(64),"
                 + "issue_status VARCHAR(32) NOT NULL DEFAULT '打开', import_date DATE,"
                 + "defect_repair_date DATE, cooperation_person_username VARCHAR(128),"
                 + "cooperation_person_real_name VARCHAR(128),"
@@ -65,7 +75,7 @@ public final class ReplayIssueTestFixtures {
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT,"
                 + "issue_key VARCHAR(1024) NOT NULL, operation_type VARCHAR(64) NOT NULL,"
                 + "operation_at DATETIME NOT NULL, operator_username VARCHAR(128),"
-                + "operator_real_name VARCHAR(128), import_date DATE, source_sheet VARCHAR(64),"
+                + "operator_real_name VARCHAR(128), import_date DATE, coverage_round VARCHAR(64), context_round_id BIGINT, occurrence_batch_name VARCHAR(128), source_sheet VARCHAR(64),"
                 + "source_row INT, before_snapshot MEDIUMTEXT, after_snapshot MEDIUMTEXT,"
                 + "issue_status VARCHAR(32), issue_type VARCHAR(128), initial_analysis MEDIUMTEXT, final_solution MEDIUMTEXT,"
                 + "cooperation_person_username VARCHAR(128), cooperation_person_real_name VARCHAR(128), remark MEDIUMTEXT, incoming_snapshot MEDIUMTEXT,"
@@ -134,6 +144,10 @@ public final class ReplayIssueTestFixtures {
         } catch (IOException e) {
             throw new IllegalStateException("Could not create test workbook", e);
         }
+    }
+
+    public static MockMultipartFile fullRefreshWorkbook(Map<String, List<Map<String, String>>> rowsBySheet) {
+        return workbook(rowsBySheet, FULL_REFRESH_HEADERS, false);
     }
 
     private static Map<String, String> defaultWorkbookRow(String sheet, int rowOrder) {

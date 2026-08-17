@@ -33,15 +33,18 @@ class DiiErrorCodeDaoTest {
                 + "method_name VARCHAR(128) NOT NULL, file_path VARCHAR(512), line_no INT,"
                 + "module_name VARCHAR(128), inner_class_name VARCHAR(128), code_signature VARCHAR(512),"
                 + "throw_seq BIGINT NOT NULL, scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+        // 与 V24/V26 生产 DDL 对齐：tx_id 可空（UNMATCHED 行）+ 唯一键 uk_tx_throw
+        //（2026-07-15 内网事故正是撞在这个唯一键上，测试库必须带上它）
         jdbc.execute("CREATE TABLE dii_tx_error_code ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
-                + "tx_id VARCHAR(64) NOT NULL, tx_name VARCHAR(255), domain_key VARCHAR(16),"
+                + "tx_id VARCHAR(64), tx_name VARCHAR(255), domain_key VARCHAR(16),"
                 + "error_code VARCHAR(20) NOT NULL, error_scope VARCHAR(64) NOT NULL,"
                 + "throw_text VARCHAR(1024) NOT NULL, class_fqn VARCHAR(255) NOT NULL,"
                 + "method_name VARCHAR(128) NOT NULL, file_path VARCHAR(512), line_no INT,"
                 + "module_name VARCHAR(128), component_code VARCHAR(255), component_name VARCHAR(255),"
                 + "match_status VARCHAR(16) NOT NULL DEFAULT 'MATCHED', throw_seq BIGINT NOT NULL,"
-                + "scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+                + "scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                + "CONSTRAINT uk_tx_throw UNIQUE (tx_id, error_scope, error_code, class_fqn, method_name, throw_seq))");
         dao = new DiiErrorCodeDao(jdbc);
     }
 
@@ -109,6 +112,44 @@ class DiiErrorCodeDaoTest {
         dao.materializeTxErrorCodes(List.of(txRow("T1", "deposit", "E0001", "SVC1", "MATCHED", 1)));
         dao.materializeTxErrorCodes(List.of());
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_tx_error_code", Integer.class));
+    }
+
+    // ── 轮2.5：2026-07-15 事故回归（唯一键冲突 / 事务回滚） ─────────────
+
+    @Test void materializeSurvivesDuplicateKeyRows() {
+        // 上游若仍产出撞 uk_tx_throw 的重复行（同 tx×throw），ON DUPLICATE KEY 兜底：
+        // 保首行、不炸整表（事故形态：Duplicate entry 'TG121-...B0191...' → 表停 0 行）
+        TxErrorCodeRow a = txRow("T1", "sett", "B0191", "OP_A", "MATCHED", 1);
+        TxErrorCodeRow b = txRow("T1", "sett", "B0191", "OP_B", "MATCHED", 1);   // 同键不同构件
+        dao.materializeTxErrorCodes(List.of(a, b));
+        List<TxErrorCodeRow> rs = dao.listByTxId("T1");
+        assertEquals(1, rs.size(), "同 uk_tx_throw 键的重复行必须收敛不报错");
+        assertEquals("OP_A", rs.get(0).getComponentCode(), "保留首行");
+    }
+
+    @Test void materializeFailureRollsBackKeepingOldData() {
+        // 先写入好数据，再让本轮写失败（error_code NULL 违反 NOT NULL）——
+        // 事务化后 DELETE 一并回滚，旧数据完好（修复前：DELETE 已提交 → 表停 0 行）
+        dao.materializeTxErrorCodes(List.of(txRow("T1", "deposit", "E0001", "SVC1", "MATCHED", 1)));
+        TxErrorCodeRow bad = txRow("T2", "loan", null, "SVC2", "MATCHED", 2);
+        assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> dao.materializeTxErrorCodes(List.of(bad)));
+        assertEquals(1, dao.countByTxId("T1"), "写失败必须整体回滚，保留上一轮数据");
+    }
+
+    @Test void rebuildThrowsFailureRollsBackKeepingOldData() {
+        dao.rebuildThrows(List.of(throwRow("E0001", "com.x.A", "m", 1)));
+        ErrorCodeThrow bad = throwRow(null, "com.x.B", "n", 2);   // error_code NULL → 写失败
+        assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> dao.rebuildThrows(List.of(bad)));
+        assertEquals(1, dao.countThrows(), "明细写失败必须整体回滚");
+    }
+
+    @Test void countThrowsCounts() {
+        assertEquals(0, dao.countThrows());
+        dao.rebuildThrows(List.of(throwRow("E0001", "com.x.A", "m", 1),
+                                  throwRow("E0002", "com.x.B", "n", 2)));
+        assertEquals(2, dao.countThrows());
     }
 
     // ── 轮3：按交易读 ───────────────────────────────

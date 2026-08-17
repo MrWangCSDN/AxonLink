@@ -13,7 +13,11 @@ import org.springframework.stereotype.Service;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /** Merges an imported workbook into the current issue projection by issue_key. */
@@ -37,16 +41,25 @@ public class ReplayIssueMergeService {
 
     public ReplayIssueImportResult merge(ReplayIssueExcelParser.ParsedWorkbook workbook,
                                          LocalDate importDate, ReplayIssueOperator operator) {
+        return merge(workbook, importDate, operator,
+                LocalDateTime.now(clock).format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")));
+    }
+
+    public ReplayIssueImportResult merge(ReplayIssueExcelParser.ParsedWorkbook workbook,
+                                         LocalDate importDate, ReplayIssueOperator operator, String coverageRound) {
         if (workbook == null || workbook.rows().isEmpty()) {
             throw new IllegalArgumentException("目标页签中没有可导入数据");
         }
         validateKeys(workbook);
         LocalDate effectiveDate = importDate == null ? LocalDate.now(clock) : importDate;
+        LocalDate roundRegisteredDate = latestRegisteredDate(workbook.rows(), effectiveDate);
+        String occurrenceBatchName = incomingBatchName(workbook.rows());
         ReplayIssueOperator effectiveOperator = operator == null ? ReplayIssueOperator.system() : operator;
         LocalDateTime operationAt = LocalDateTime.now(clock);
         Set<String> incomingKeys = workbook.rows().stream().map(row -> row.issueKey().trim()).collect(java.util.stream.Collectors.toSet());
 
         int[] counts = dao.inTransaction(currentDao -> {
+            long roundId = currentDao.insertImportRound(coverageRound, operationAt, effectiveOperator, workbook.rows().size());
             int created = 0;
             int updated = 0;
             int ignored = 0;
@@ -56,43 +69,116 @@ public class ReplayIssueMergeService {
                 if (current == null) {
                     ReplayIssueRow createdRow = newRow(incoming, effectiveDate);
                     long id = currentDao.insertCurrent(createdRow);
+                    currentDao.updateCoverageRound(id, coverageRound);
                     ReplayIssueRow after = withId(createdRow, id);
-                    currentDao.insertHistory(id, key, "导入新增", operationAt, effectiveOperator, effectiveDate,
-                            incoming.sourceSheet(), incoming.rowOrder() + 1, null, snapshot(after), snapshot(incoming));
+                    currentDao.insertIssueRound(roundId, id, key, true, null, ReplayIssueStatus.NEW,
+                            "导入新增", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                    currentDao.upsertOccurrenceBatch(id, key, incoming.batchNo(), operationAt, ReplayIssueStatus.NEW);
+                    currentDao.insertHistoryForRound(id, key, "导入新增", operationAt, effectiveOperator, effectiveDate,
+                            coverageRound, incoming.sourceSheet(), incoming.rowOrder() + 1,
+                            null, snapshot(after), snapshot(incoming), roundId);
+                    currentDao.updateLatestHistoryOccurrenceBatch(id, operationAt, incoming.batchNo());
                     created++;
                     continue;
                 }
+                boolean batchAlreadyKnown = currentDao.occurrenceBatchExists(current.id(), incoming.batchNo());
                 ReplayIssueStatus status = current.issueStatus() == null ? ReplayIssueStatus.OPEN : current.issueStatus();
-                if (status == ReplayIssueStatus.OPEN || status == ReplayIssueStatus.ANALYZING
-                        || status == ReplayIssueStatus.DEFERRED) {
+                if (status == ReplayIssueStatus.NEW || status == ReplayIssueStatus.OPEN || status == ReplayIssueStatus.DEFERRED) {
+                    ReplayIssueRow refreshed = refreshed(current, incoming, status, current.importDate());
+                    currentDao.updateCurrent(refreshed);
+                    currentDao.updateCoverageRound(current.id(), coverageRound);
+                    currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
+                            "数据继承", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                    currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, status);
+                    if (!batchAlreadyKnown) currentDao.insertHistoryForRound(current.id(), key, "基础数据覆盖，人工内容继承",
+                            operationAt, effectiveOperator, effectiveDate, coverageRound,
+                            incoming.sourceSheet(), incoming.rowOrder() + 1,
+                            snapshot(current), snapshot(refreshed), snapshot(incoming), roundId);
+                    if (!batchAlreadyKnown) currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
+                    updated++;
+                    continue;
+                }
+                if (status == ReplayIssueStatus.ANALYZING) {
+                    currentDao.updateCoverageRound(current.id(), coverageRound);
+                    if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
+                            "保持", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                    currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, status);
                     ignored++;
                     continue;
                 }
-                ReplayIssueStatus nextStatus = status == ReplayIssueStatus.PENDING_VERIFICATION
-                        ? ReplayIssueStatus.REOPENED
-                        : status == ReplayIssueStatus.FIXED ? ReplayIssueStatus.OPEN : status;
+                boolean pendingVerificationNeedsReopen = status == ReplayIssueStatus.PENDING_VERIFICATION
+                        && shouldReopenBefore(currentDao.findLatestManualSaveAt(current.id()), roundRegisteredDate);
+                ReplayIssueStatus nextStatus = pendingVerificationNeedsReopen
+                        ? ReplayIssueStatus.REOPENED : status == ReplayIssueStatus.FIXED ? ReplayIssueStatus.NEW : status;
                 boolean resetImportDate = status == ReplayIssueStatus.FIXED;
                 ReplayIssueRow refreshed = refreshed(current, incoming, nextStatus,
                         resetImportDate ? effectiveDate : current.importDate());
                 currentDao.updateCurrent(refreshed);
-                currentDao.insertHistory(current.id(), key,
-                        status == ReplayIssueStatus.FIXED ? "已修复问题重新打开" : "问题重新出现",
-                        operationAt, effectiveOperator, effectiveDate, incoming.sourceSheet(), incoming.rowOrder() + 1,
-                        snapshot(current), snapshot(refreshed), snapshot(incoming));
+                currentDao.updateCoverageRound(current.id(), coverageRound);
+                String actionType = pendingVerificationNeedsReopen ? "重新打开并继承" : "数据继承";
+                if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, nextStatus,
+                        actionType, incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, nextStatus);
+                if (!batchAlreadyKnown) currentDao.insertHistoryForRound(current.id(), key,
+                        pendingVerificationNeedsReopen ? "修复待验证问题重新打开" : status == ReplayIssueStatus.FIXED ? "已修复问题重新新建" : "数据继承",
+                        operationAt, effectiveOperator, effectiveDate, coverageRound,
+                        incoming.sourceSheet(), incoming.rowOrder() + 1,
+                        snapshot(current), snapshot(refreshed), snapshot(incoming), roundId);
+                if (!batchAlreadyKnown) currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
                 updated++;
             }
             int autoRepaired = 0;
-            for (ReplayIssueRow current : currentDao.findPendingVerificationMissing(incomingKeys)) {
-                ReplayIssueRow fixed = withStatusAndDefectDate(current, ReplayIssueStatus.FIXED, effectiveDate);
+            for (ReplayIssueRow current : currentDao.findAutoRepairCandidatesMissing(incomingKeys)) {
+                ReplayIssueRow fixed = withStatusAndDefectDate(current, ReplayIssueStatus.FIXED, roundRegisteredDate);
                 currentDao.updateCurrent(fixed);
-                currentDao.insertHistory(current.id(), current.issueKey(), "问题自动修复", operationAt, effectiveOperator,
-                        effectiveDate, null, null, snapshot(current), snapshot(fixed), null);
+                currentDao.insertIssueRound(roundId, current.id(), current.issueKey(), false,
+                        current.issueStatus(), ReplayIssueStatus.FIXED, "自动修复", null, null, operationAt);
+                currentDao.insertHistoryForRound(current.id(), current.issueKey(), "问题自动修复", operationAt,
+                        effectiveOperator, effectiveDate, coverageRound, null, null,
+                        snapshot(current), snapshot(fixed), null, roundId);
+                currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, occurrenceBatchName);
                 autoRepaired++;
             }
+            currentDao.updateImportRoundStats(roundId, created, updated, ignored, autoRepaired);
             return new int[] {created, updated, ignored, autoRepaired};
         });
         return new ReplayIssueImportResult(workbook.rows().size(), workbook.rowsBySheet(), workbook.sandboxRows(),
-                workbook.nonSandboxRows(), operationAt, counts[0], counts[1], counts[2], counts[3], 0);
+                workbook.nonSandboxRows(), operationAt, counts[0], counts[1], counts[2], counts[3], 0, coverageRound);
+    }
+
+    private String incomingBatchName(List<ReplayIssueRow> rows) {
+        return rows.stream().map(ReplayIssueRow::batchNo)
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim).distinct().findFirst().orElse(null);
+    }
+
+    private boolean shouldReopenBefore(LocalDateTime lastManualSaveAt, LocalDate batchRegisteredDate) {
+        return lastManualSaveAt == null || lastManualSaveAt.toLocalDate().isBefore(batchRegisteredDate);
+    }
+
+    private LocalDate latestRegisteredDate(List<ReplayIssueRow> rows, LocalDate fallback) {
+        return rows.stream()
+                .map(ReplayIssueRow::registeredDate)
+                .map(this::parseRegisteredDate)
+                .filter(java.util.Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(fallback);
+    }
+
+    private LocalDate parseRegisteredDate(String value) {
+        if (value == null || value.isBlank()) return null;
+        String text = value.trim();
+        for (DateTimeFormatter formatter : List.of(
+                DateTimeFormatter.BASIC_ISO_DATE,
+                DateTimeFormatter.ISO_LOCAL_DATE,
+                DateTimeFormatter.ofPattern("yyyy/MM/dd"))) {
+            try {
+                return LocalDate.parse(text, formatter);
+            } catch (DateTimeParseException ignored) {
+                // Try the next Excel date representation.
+            }
+        }
+        return null;
     }
 
     private void validateKeys(ReplayIssueExcelParser.ParsedWorkbook workbook) {
@@ -109,13 +195,13 @@ public class ReplayIssueMergeService {
     }
 
     private ReplayIssueRow newRow(ReplayIssueRow incoming, LocalDate importDate) {
-        ReplayIssueRow row = refreshed(incoming, incoming, ReplayIssueStatus.OPEN, importDate);
+        ReplayIssueRow row = refreshed(incoming, incoming, ReplayIssueStatus.NEW, importDate);
         return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(), row.domain(), row.sequenceNo(),
                 row.batchNo(), row.transactionCode(), row.transactionName(), row.issueLevel(), row.registeredDate(), row.fieldName(),
                 row.issueDescription(), row.transactionOwner(), "", "", "", row.resolvedDate(), row.cooperationGroup(), row.resolver(),
-                row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(), row.issueId(), row.issueKey(),
+                row.serialNo(), row.dataRepairDate(), "", row.affectedTransactionCount(), row.issueId(), row.issueKey(),
                 row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(), row.issueStatus(),
-                row.importDate(), row.defectRepairDate(), null, null);
+                row.importDate(), row.defectRepairDate(), null, null, row.globalSerialNo());
     }
 
     private ReplayIssueRow refreshed(ReplayIssueRow current, ReplayIssueRow incoming,
@@ -124,10 +210,10 @@ public class ReplayIssueMergeService {
                 incoming.domain(), incoming.sequenceNo(), incoming.batchNo(), incoming.transactionCode(), incoming.transactionName(),
                 incoming.issueLevel(), incoming.registeredDate(), incoming.fieldName(), incoming.issueDescription(), incoming.transactionOwner(),
                 current.issueType(), current.initialAnalysis(), current.finalSolution(), incoming.resolvedDate(), incoming.cooperationGroup(),
-                incoming.resolver(), incoming.serialNo(), incoming.dataRepairDate(), incoming.remark(), incoming.affectedTransactionCount(),
+                incoming.resolver(), incoming.serialNo(), incoming.dataRepairDate(), current.remark(), incoming.affectedTransactionCount(),
                 incoming.issueId(), incoming.issueKey().trim(), incoming.historicalOccurrenceCount(), incoming.firstOccurrenceDate(),
                 incoming.lastOccurrenceDate(), LocalDateTime.now(clock), status, importDate, null,
-                current.cooperationPersonUsername(), current.cooperationPersonRealName());
+                current.cooperationPersonUsername(), current.cooperationPersonRealName(), incoming.globalSerialNo());
     }
 
     private ReplayIssueRow withStatusAndDefectDate(ReplayIssueRow row, ReplayIssueStatus status, LocalDate defectDate) {
@@ -136,7 +222,7 @@ public class ReplayIssueMergeService {
                 row.issueDescription(), row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(), row.resolvedDate(),
                 row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(),
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
-                row.importedAt(), status, row.importDate(), defectDate, row.cooperationPersonUsername(), row.cooperationPersonRealName());
+                row.importedAt(), status, row.importDate(), defectDate, row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo());
     }
 
     private ReplayIssueRow withId(ReplayIssueRow row, long id) {
@@ -145,7 +231,7 @@ public class ReplayIssueMergeService {
                 row.issueDescription(), row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(), row.resolvedDate(),
                 row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(),
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
-                row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(), row.cooperationPersonUsername(), row.cooperationPersonRealName());
+                row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(), row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo());
     }
 
     private String snapshot(ReplayIssueRow row) {

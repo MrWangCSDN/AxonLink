@@ -1,6 +1,7 @@
 package com.axonlink.ai.daoindex.sqlinspect.persistence;
 
 import com.axonlink.ai.daoindex.sqlinspect.slowsql.dto.ParsedSlowSqlRow;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -25,8 +26,22 @@ public class DiiSlowSqlDao {
 
     private final JdbcTemplate jdbc;
 
+    /**
+     * 低频隐藏阈值（2026-07-16）：exec_count &le; 该值 的行列表/导出一律不展示
+     * （数据仍照常落库）；0 = 关闭过滤。
+     * <b>不区分状态</b>——白名单在途/已通过、已优化、未生效同样过滤（用户明确决策：
+     * 低频即噪音，一律不看；审批处理走白名单审批页，不受本过滤影响）。
+     */
+    @Value("${dii.slow-sql.hide-exec-count-lte:5}")
+    private int hideExecCountLte = 5;
+
     public DiiSlowSqlDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
+    }
+
+    /** 单测/运维调整阈值入口（生产走 yml 配置 dii.slow-sql.hide-exec-count-lte）。 */
+    public void setHideExecCountLte(int v) {
+        this.hideExecCountLte = v;
     }
 
     private static final String INSERT_SQL =
@@ -90,6 +105,14 @@ public class DiiSlowSqlDao {
                                String whitelistStatus, String optimizeStatus, String initiator,
                                String curApprover, List<String> curApproverUsers,
                                String round, String approverUser) {
+        // 低频隐藏：次数 ≤ 阈值 的行一律不展示/不导出（三条查询路径统一走这里）。
+        // 不区分状态——白名单在途/已通过、已优化、未生效同样过滤（低频即噪音）。
+        // 例外（2026-07-16 修正）：「该我审批」视图（approverUser 非空，铃铛跳转）不过滤——
+        // 慢SQL审批的唯一入口就是本列表，低频也得能审完，否则在途申请永远卡死。
+        if (hideExecCountLte > 0 && (approverUser == null || approverUser.isBlank())) {
+            sb.append(" AND s.exec_count > ? ");
+            args.add(hideExecCountLte);
+        }
         if (domain != null && !domain.isBlank()) { sb.append(" AND s.domain = ? "); args.add(domain.trim()); }
         if (bizType != null && !bizType.isBlank()) { sb.append(" AND s.biz_type = ? "); args.add(bizType.trim()); }
         if (keyword != null && !keyword.isBlank()) {

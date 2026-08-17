@@ -41,6 +41,10 @@ class DiiWhitelistFlowTest {
                 + "target_type VARCHAR(16) NOT NULL, sql_hash VARCHAR(64), named_sql VARCHAR(500),"
                 + "project_name VARCHAR(200), action VARCHAR(20) NOT NULL,"
                 + "actor VARCHAR(100), actor_name VARCHAR(64), opinion VARCHAR(1000), created_at DATETIME NOT NULL)");
+        // 铃铛计数的低频过滤按 whitelist_app_id 关联慢SQL行 → 建最小行表
+        jdbc.execute("CREATE TABLE dii_slow_sql ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                + "whitelist_app_id BIGINT, exec_count INT)");
         dao = new DiiWhitelistApplicationDao(jdbc);
     }
 
@@ -88,5 +92,34 @@ class DiiWhitelistFlowTest {
         long id = insertApp("PENDING_L1");
         dao.insertFlowEvent(id, "SLOW_SQL", "h1", null, null, "APPLY", "user1", null, "历史申请");
         assertEquals(1, dao.listFlowBySlowKey("h1", "svcA").size());
+    }
+
+    // ── 铃铛待办计数：与慢SQL列表低频过滤同口径（2026-07-16）──────────────
+
+    private void linkRow(long appId, int execCount) {
+        jdbc.update("INSERT INTO dii_slow_sql (whitelist_app_id, exec_count) VALUES (?,?)", appId, execCount);
+    }
+
+    private long insertHashApp(String status, String l1) {
+        jdbc.update("INSERT INTO dii_whitelist_application "
+                + "(target_type, sql_hash, status, applicant, apply_at, l1_approver) "
+                + "VALUES ('HASH','hx',?,'user1',NOW(),?)", status, l1);
+        return jdbc.queryForObject("SELECT MAX(id) FROM dii_whitelist_application", Long.class);
+    }
+
+    @Test @DisplayName("待办计数忽略低频过滤：审批入口全量——低频行的在途申请照常计数（2026-07-16 修正）")
+    void todoCountIgnoresLowFreqFilter() {
+        long a1 = insertApp("PENDING_L1");   // 关联行次数3（低频）→ 仍计数（审批必须能完成）
+        linkRow(a1, 3);
+        long a2 = insertApp("PENDING_L1");   // 关联行次数6 → 计
+        linkRow(a2, 6);
+        insertApp("PENDING_L1");             // SLOW_SQL 无关联行 → 仍计数
+        insertHashApp("PENDING_L1", "l1u");  // HASH 类 → 计
+
+        assertEquals(4, dao.countMyPending("l1u"), "铃铛计数=该我审批全量，不受低频隐藏影响");
+        Map<String, Object> c = dao.countMyPendingByCategory("l1u");
+        assertEquals(4L, ((Number) c.get("total")).longValue());
+        assertEquals(3L, ((Number) c.get("slowSql")).longValue());
+        assertEquals(1L, ((Number) c.get("sqlInspect")).longValue());
     }
 }

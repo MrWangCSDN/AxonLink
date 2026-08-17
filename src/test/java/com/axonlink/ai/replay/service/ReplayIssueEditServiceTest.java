@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -63,10 +64,77 @@ class ReplayIssueEditServiceTest {
     }
 
     @Test
+    void preservesCurrentStatusWhenSavingOnlyTheRemark() {
+        ReplayIssueRow updated = service.update(issueId,
+                new ReplayIssueUpdateRequest(null, "代码问题", "", "", null, "111"),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(ReplayIssueStatus.OPEN, updated.issueStatus());
+        assertEquals("111", updated.remark());
+        assertEquals(1L, dao.countHistory(updated.issueKey()));
+    }
+
+    @Test
+    void allowsChangingADeferredIssueBackToOpenWithReasonableDifferenceType() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_status = '延后修复' WHERE id = ?", issueId);
+
+        ReplayIssueRow updated = service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "合理差异", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(ReplayIssueStatus.OPEN, updated.issueStatus());
+        assertEquals("合理差异", updated.issueType());
+        assertEquals(1L, dao.countHistory(updated.issueKey()));
+    }
+
+    @Test
+    void associatesMultipleManualEditsWithTheLatestFormalRound() {
+        long roundId = dao.insertImportRound("20260811-001", LocalDateTime.of(2026, 8, 11, 9, 0),
+                ReplayIssueOperator.system(), 1);
+        ReplayIssueRow issue = dao.findCurrentByIdForUpdate(issueId);
+        dao.insertIssueRound(roundId, issueId, issue.issueKey(), true, ReplayIssueStatus.OPEN,
+                ReplayIssueStatus.OPEN, "保持", issue.sourceSheet(), issue.rowOrder() + 1,
+                LocalDateTime.of(2026, 8, 11, 9, 0));
+
+        service.update(issueId, new ReplayIssueUpdateRequest(ReplayIssueStatus.DEFERRED,
+                "代码问题", "a", "s", null, "first"), new ReplayIssueOperator("editor", "编辑人"));
+        service.update(issueId, new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION,
+                "代码问题", "a", "s", null, "second"), new ReplayIssueOperator("editor", "编辑人"));
+
+        var history = dao.findHistoryByIssueId(issueId, 10);
+        assertEquals(2, history.size());
+        assertEquals(roundId, history.get(0).contextRoundId());
+        assertEquals(roundId, history.get(1).contextRoundId());
+        assertEquals(ReplayIssueStatus.PENDING_VERIFICATION, history.get(0).issueStatus());
+    }
+
+    @Test
+    void associatesManualEditsWithTheLatestRoundForThatIssue() {
+        ReplayIssueRow issue = dao.findCurrentByIdForUpdate(issueId);
+        long firstRoundId = dao.insertImportRound("20260811-001", LocalDateTime.of(2026, 8, 11, 9, 0),
+                ReplayIssueOperator.system(), 1);
+        dao.insertIssueRound(firstRoundId, issueId, issue.issueKey(), true, ReplayIssueStatus.OPEN,
+                ReplayIssueStatus.OPEN, "保持", issue.sourceSheet(), issue.rowOrder() + 1,
+                LocalDateTime.of(2026, 8, 11, 9, 0));
+        long secondRoundId = dao.insertImportRound("20260811-002", LocalDateTime.of(2026, 8, 11, 10, 0),
+                ReplayIssueOperator.system(), 1);
+
+        service.update(issueId, new ReplayIssueUpdateRequest(null,
+                "代码问题", "a", "s", null, "first"), new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(firstRoundId, dao.findHistoryByIssueId(issueId, 10).get(0).contextRoundId());
+
+        dao.insertIssueRound(secondRoundId, issueId, issue.issueKey(), true, ReplayIssueStatus.OPEN,
+                ReplayIssueStatus.OPEN, "保持", issue.sourceSheet(), issue.rowOrder() + 1,
+                LocalDateTime.of(2026, 8, 11, 10, 0));
+        service.update(issueId, new ReplayIssueUpdateRequest(null,
+                "代码问题", "a", "s", null, "second"), new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(secondRoundId, dao.findHistoryByIssueId(issueId, 10).get(0).contextRoundId());
+    }
+
+    @Test
     void rejectsSystemStatusesUnknownTypesAndUnknownUsers() {
-        assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
-                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "代码问题", "", "", null),
-                new ReplayIssueOperator("editor", "编辑人")));
         assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
                 new ReplayIssueUpdateRequest(ReplayIssueStatus.ANALYZING, "错误类型", "", "", null),
                 new ReplayIssueOperator("editor", "编辑人")));
@@ -82,9 +150,10 @@ class ReplayIssueEditServiceTest {
         createUsers(jdbc);
         ReplayIssueDao failingDao = new ReplayIssueDao(jdbc) {
             @Override
-            public void insertHistory(Long replayIssueId, String issueKey, String operationType, LocalDateTime operationAt,
-                                      ReplayIssueOperator operator, java.time.LocalDate importDate, String sourceSheet, Integer sourceRow,
-                                      String beforeSnapshot, String afterSnapshot, String incomingSnapshot) {
+            public void insertHistoryForRound(Long replayIssueId, String issueKey, String operationType, LocalDateTime operationAt,
+                                              ReplayIssueOperator operator, LocalDate importDate, String coverageRound,
+                                              String sourceSheet, Integer sourceRow, String beforeSnapshot,
+                                              String afterSnapshot, String incomingSnapshot, Long contextRoundId) {
                 throw new IllegalStateException("history unavailable");
             }
         };
@@ -92,7 +161,7 @@ class ReplayIssueEditServiceTest {
         ReplayIssueEditService failingService = new ReplayIssueEditService(failingDao, new SysUserDao(jdbc));
 
         assertThrows(IllegalStateException.class, () -> failingService.update(id,
-                new ReplayIssueUpdateRequest(ReplayIssueStatus.ANALYZING, "代码问题", "analysis", "solution", "sunhy1"),
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION, "代码问题", "analysis", "solution", "sunhy1"),
                 new ReplayIssueOperator("editor", "编辑人")));
         ReplayIssueRow unchanged = failingDao.findCurrentByIdForUpdate(id);
         assertEquals(ReplayIssueStatus.OPEN, unchanged.issueStatus());

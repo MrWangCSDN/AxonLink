@@ -253,6 +253,8 @@ public class DiiWhitelistApplicationDao {
      */
     public long countMyPending(String username) {
         if (username == null || username.isBlank()) return 0L;
+        // 2026-07-16 修正：不做低频过滤——「该我审批」视图已豁免低频（审批入口全量），
+        // 铃铛数与该视图保持一致；浏览侧的低频隐藏只作用于普通列表/导出。
         Long n = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_whitelist_application " +
                 " WHERE (l1_approver = ? AND status = 'PENDING_L1') " +

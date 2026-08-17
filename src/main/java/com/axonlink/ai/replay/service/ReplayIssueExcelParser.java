@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
+import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.FormulaEvaluator;
@@ -26,12 +27,12 @@ public class ReplayIssueExcelParser {
     static final List<String> HEADERS = List.of(
             "领域", "序号", "批次", "交易码", "交易名称", "问题级别", "登记日期", "字段名",
             "问题描述", "交易负责人", "问题类型", "初步问题分析", "最终处理方案", "解决日期",
-            "需协同组", "解决人员", "流水号", "数据修复日期", "备注", "该问题出现在的交易笔数",
+            "需协同组", "解决人员", "流水号", "全局流水号", "数据修复日期", "备注", "该问题出现在的交易笔数",
             "issue_id", "issue_key", "历史出现次数", "首次出现日期", "上次出现日期");
 
     /** Repair dates are lifecycle-managed fields and are optional in imported workbooks. */
     private static final List<String> REQUIRED_HEADERS = HEADERS.stream()
-            .filter(header -> !header.equals("数据修复日期"))
+            .filter(header -> !header.equals("数据修复日期") && !header.equals("全局流水号"))
             .toList();
 
     private static final List<SheetMetadata> TARGET_SHEETS = List.of(
@@ -152,8 +153,8 @@ public class ReplayIssueExcelParser {
                 metadata.groupName(), values.get(1), values.get(2), values.get(3), values.get(4), values.get(5),
                 values.get(6), values.get(7), values.get(8), values.get(9), values.get(10), values.get(11),
                 values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), "",
-                values.get(18), values.get(19), values.get(20), values.get(21), values.get(22), values.get(23),
-                values.get(24), null);
+                values.get(19), values.get(20), values.get(21), values.get(22), values.get(23), values.get(24),
+                values.get(25), null, ReplayIssueStatus.OPEN, null, null, null, null, values.get(17));
     }
 
     private String normalizeHeader(String header) {

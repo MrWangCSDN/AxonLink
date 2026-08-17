@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -82,12 +83,30 @@ public class ErrorCodeAttributionService {
     /**
      * 纯函数：按 (classFqn, methodName) 把可达方法与 throw 明细做 JOIN。
      * 命中 → 每个 (tx × throw) 产出一行 MATCHED；未命中 → 一行 UNMATCHED（tx/component 字段空）。
+     *
+     * <p><b>按 (tx × throw) 去重</b>：物化表唯一键 uk_tx_throw 语义是「一交易一 throw 一行」，
+     * 而可达查询对同一 (classFqn, methodName) 可能返回多行——同一实现方法被多个
+     * ServiceOperation 归属（IMPLEMENTS_BY 多对一，pbcb 构件常见）。不去重则同 (tx, throw_seq)
+     * 插两行撞唯一键（2026-07-15 内网事故：TG121 × Bkdf.B0191）。归属构件取首个
+     * component_code 非空的可达行（确定性优先级），其余变体舍弃。
      */
     public static List<TxErrorCodeRow> joinToTxRows(List<ReachableMethod> reachable,
                                                     List<ErrorCodeThrow> throwDetails) {
         Map<String, List<ReachableMethod>> byKey = new HashMap<>();
         for (ReachableMethod r : reachable) {
             byKey.computeIfAbsent(key(r.getClassFqn(), r.getMethodName()), k -> new ArrayList<>()).add(r);
+        }
+        // 每个 (classFqn#methodName) 内按 txId 收敛为一行：component 非空者优先，其余先到先得
+        for (List<ReachableMethod> hits : byKey.values()) {
+            Map<String, ReachableMethod> byTx = new LinkedHashMap<>();
+            for (ReachableMethod r : hits) {
+                ReachableMethod kept = byTx.get(r.getTxId());
+                if (kept == null || (kept.getComponentCode() == null && r.getComponentCode() != null)) {
+                    byTx.put(r.getTxId(), r);
+                }
+            }
+            hits.clear();
+            hits.addAll(byTx.values());
         }
         List<TxErrorCodeRow> out = new ArrayList<>();
         for (ErrorCodeThrow t : throwDetails) {
@@ -129,10 +148,17 @@ public class ErrorCodeAttributionService {
      */
     public MaterializeOutcome materializeTransactionErrorCodes() {
         List<ErrorCodeThrow> throwDetails = dao.listAllThrows();   // Task 5
+        if (throwDetails.isEmpty()) {
+            // 明细为空（正常环境不可能：银行源码必有错误码）→ 大概率处于源码目录被替换窗口，
+            // 拒绝把物化表覆盖成 0 行（2026-07-15 内网事故链的一环）
+            log.error("[error-code] 物化中止：dii_error_code 明细为空，疑似源码目录缺失窗口，"
+                    + "保留上一轮 dii_tx_error_code（源码就绪后 rescan 即可）");
+            return MaterializeOutcome.incomplete();
+        }
         if (driver == null) {
-            log.warn("[error-code] 无 Neo4j Driver，跳过物化，dii_tx_error_code 留空");
-            dao.materializeTxErrorCodes(List.of());
-            return MaterializeOutcome.empty();
+            // 2026-07-15 改：不再显式清空——瞬时不可用不应抹掉历史归属，保留旧数据并告警
+            log.warn("[error-code] 无 Neo4j Driver，跳过物化，保留上一轮 dii_tx_error_code");
+            return MaterializeOutcome.incomplete();
         }
         // 用真正的 Neo4j 批查询（带重试 + 逐交易降级）作为 resolver 注入编排核心。
         return materialize(listAllTransactionIds(), throwDetails, this::queryReachableWithRetry);
@@ -149,6 +175,13 @@ public class ErrorCodeAttributionService {
     MaterializeOutcome materialize(List<String> txIds, List<ErrorCodeThrow> throwDetails,
                                    BatchResolver resolver) {
         long startMs = System.currentTimeMillis();
+        // 图无任何交易而 throw 明细非空（刚清图/重建窗口）→ 整表会被覆盖成全 UNMATCHED
+        // （tx_id 全 NULL：徽章全消失、按领域导出全为空），拒绝覆盖保留旧数据
+        if (txIds.isEmpty() && !throwDetails.isEmpty()) {
+            log.error("[error-code] 物化中止：Neo4j 图中无 Transaction 节点（疑似清图/重建窗口），"
+                    + "保留上一轮 dii_tx_error_code（图就绪后随构建完成事件自动重试）");
+            return MaterializeOutcome.incomplete();
+        }
         // 分批
         List<List<String>> batches = new ArrayList<>();
         for (int i = 0; i < txIds.size(); i += BATCH) {
@@ -233,11 +266,6 @@ public class ErrorCodeAttributionService {
         /** 全量成功并完成整表覆盖。 */
         static MaterializeOutcome complete(int reachableCount, int txRowCount) {
             return new MaterializeOutcome(true, false, reachableCount, txRowCount);
-        }
-
-        /** 无 Neo4j：物化表被清空（设计 §4.6 授权的整体降级），视为完整。 */
-        static MaterializeOutcome empty() {
-            return new MaterializeOutcome(true, false, 0, 0);
         }
 
         /** 部分批次彻底失败：跳过覆盖，保留旧数据。 */

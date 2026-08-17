@@ -14,11 +14,12 @@ public record ReplayIssueImportResult(
         int updatedRows,
         int ignoredRows,
         int autoRepairedRows,
-        int rejectedRows) {
+        int rejectedRows,
+        String coverageRound) {
 
     public ReplayIssueImportResult(int totalRows, Map<String, Integer> rowsBySheet,
                                    int sandboxRows, int nonSandboxRows, LocalDateTime importedAt) {
         this(totalRows, rowsBySheet, sandboxRows, nonSandboxRows, importedAt,
-                totalRows, 0, 0, 0, 0);
+                totalRows, 0, 0, 0, 0, null);
     }
 }

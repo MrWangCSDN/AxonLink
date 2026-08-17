@@ -110,6 +110,22 @@ public class SysUserDao {
                 MAPPER, like, like, boundedLimit);
     }
 
+    public List<SysUser> findActiveByExactRealName(String realName) {
+        if (realName == null || realName.isBlank()) {
+            return List.of();
+        }
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND real_name = ? ORDER BY username",
+                MAPPER, realName.trim());
+    }
+
+    public List<SysUser> findActiveByExactUsernameAndRealName(String username, String realName) {
+        if (username == null || username.isBlank() || realName == null || realName.isBlank()) return List.of();
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND username = ? AND real_name = ? ORDER BY id",
+                MAPPER, username.trim(), realName.trim());
+    }
+
     public long insert(SysUser u) {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(con -> {

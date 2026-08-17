@@ -7,11 +7,17 @@ public record ReplayIssueUpdateRequest(
         String initialAnalysis,
         String finalSolution,
         String cooperationPersonUsername,
-        String remark) {
+        String remark,
+        boolean sendMail) {
 
     public ReplayIssueUpdateRequest(ReplayIssueStatus issueStatus, String issueType, String initialAnalysis,
                                     String finalSolution, String cooperationPersonUsername) {
-        this(issueStatus, issueType, initialAnalysis, finalSolution, cooperationPersonUsername, "");
+        this(issueStatus, issueType, initialAnalysis, finalSolution, cooperationPersonUsername, "", false);
+    }
+
+    public ReplayIssueUpdateRequest(ReplayIssueStatus issueStatus, String issueType, String initialAnalysis,
+                                    String finalSolution, String cooperationPersonUsername, String remark) {
+        this(issueStatus, issueType, initialAnalysis, finalSolution, cooperationPersonUsername, remark, false);
     }
 
     public ReplayIssueUpdateRequest {

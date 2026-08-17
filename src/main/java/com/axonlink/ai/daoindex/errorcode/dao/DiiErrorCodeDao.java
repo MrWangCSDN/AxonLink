@@ -5,7 +5,9 @@ import com.axonlink.ai.daoindex.errorcode.dto.TxErrorCodeRow;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -14,14 +16,35 @@ import java.util.List;
 /**
  * 错误码结果库 DAO，对标 DiiSlowSqlDao：DELETE 整表 + batchUpdate 重建。
  * 由 diiResultJdbcTemplate 构造注入（结果库 MySQL）。
+ *
+ * <p><b>两个整表重建方法必须在事务内执行</b>：JdbcTemplate 默认自动提交时，
+ * DELETE 先独立提交、随后 batchInsert 一旦失败（如唯一键冲突、列截断），表就停留在
+ * 0 行——2026-07-15 内网事故即此路径（uk_tx_throw 冲突 → dii_tx_error_code 全空，
+ * 徽章消失/导出空表）。故用结果库自建 TransactionTemplate 包裹，失败整体回滚保留旧数据。
  */
 @Repository
 public class DiiErrorCodeDao {
 
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate txTemplate;
 
     public DiiErrorCodeDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
+        // 结果库无全局事务管理器（多数据源工程），就地从本 DAO 的 DataSource 构建。
+        // 判空兼容单测桩（子类覆写写方法、传 null JdbcTemplate 不触 SQL）。
+        this.txTemplate = (diiResultJdbcTemplate == null || diiResultJdbcTemplate.getDataSource() == null)
+                ? null
+                : new TransactionTemplate(
+                        new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
+    }
+
+    /** 事务内执行；无事务管理器（单测桩）时直接执行。 */
+    private void inTx(Runnable work) {
+        if (txTemplate == null) {
+            work.run();
+        } else {
+            txTemplate.executeWithoutResult(status -> work.run());
+        }
     }
 
     // ── dii_error_code 明细 ─────────────────────────
@@ -30,9 +53,19 @@ public class DiiErrorCodeDao {
         jdbc.update("DELETE FROM dii_error_code");
     }
 
-    /** 整表重建明细：DELETE + batchInsert。 */
+    /** 明细表现存行数（供扫描侧「空结果拒绝覆盖」守卫）。 */
+    public int countThrows() {
+        Integer c = jdbc.queryForObject("SELECT COUNT(*) FROM dii_error_code", Integer.class);
+        return c == null ? 0 : c;
+    }
+
+    /** 整表重建明细：事务内 DELETE + batchInsert，失败整体回滚（保留旧数据）。 */
     public void rebuildThrows(List<ErrorCodeThrow> rows) {
-        deleteAllThrows();
+        inTx(() -> doRebuildThrows(rows));
+    }
+
+    private void doRebuildThrows(List<ErrorCodeThrow> rows) {
+        jdbc.update("DELETE FROM dii_error_code");
         if (rows == null || rows.isEmpty()) {
             return;
         }
@@ -81,17 +114,25 @@ public class DiiErrorCodeDao {
 
     // ── dii_tx_error_code 物化 ─────────────────────
 
-    /** 物化写库入口（DAO 层）：DELETE 整表 + batchInsert。 */
+    /** 物化写库入口（DAO 层）：事务内 DELETE 整表 + batchInsert，失败整体回滚（保留旧数据）。 */
     public void materializeTxErrorCodes(List<TxErrorCodeRow> rows) {
+        inTx(() -> doMaterializeTxErrorCodes(rows));
+    }
+
+    private void doMaterializeTxErrorCodes(List<TxErrorCodeRow> rows) {
         jdbc.update("DELETE FROM dii_tx_error_code");
         if (rows == null || rows.isEmpty()) {
             return;
         }
+        // ON DUPLICATE KEY UPDATE id=id：uk_tx_throw(tx_id,scope,code,class,method,throw_seq) 冲突时
+        // 静默保留首行——上游 joinToTxRows 已按 (tx×throw) 去重，此处是兜底（物化视图宁可少一条
+        // 归属变体，不可整表写失败）。H2 MODE=MySQL 同样支持该语法（单测可跑）。
         jdbc.batchUpdate(
                 "INSERT INTO dii_tx_error_code (tx_id, tx_name, domain_key, error_code, error_scope,"
                 + " throw_text, class_fqn, method_name, file_path, line_no, module_name,"
                 + " component_code, component_name, match_status, throw_seq)"
-                + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                + " ON DUPLICATE KEY UPDATE id=id",
                 new BatchPreparedStatementSetter() {
                     @Override
                     public void setValues(PreparedStatement ps, int i) throws SQLException {

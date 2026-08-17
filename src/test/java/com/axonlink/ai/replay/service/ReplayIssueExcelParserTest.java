@@ -68,12 +68,13 @@ class ReplayIssueExcelParserTest {
         Collections.reverse(reversed);
         MockMultipartFile file = ReplayIssueTestFixtures.workbook(
                 ReplayIssueTestFixtures.oneRowPerTargetSheet(
-                        Map.of("流水号", "001012213710102", "issue_id", "000845")),
+                        Map.of("流水号", "001012213710102", "全局流水号", "GLOBAL-001", "issue_id", "000845")),
                 reversed, false);
 
         ReplayIssueRow row = parser.parse(file).rows().get(0);
 
         assertEquals("001012213710102", row.serialNo());
+        assertEquals("GLOBAL-001", row.globalSerialNo());
         assertEquals("000845", row.issueId());
     }
 

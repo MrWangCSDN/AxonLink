@@ -52,6 +52,25 @@ public class MailService {
     @Async("diiBatchExecutor")
     public void sendText(List<String> to, List<String> cc, List<String> bcc,
                         String subject, String body) {
+        try {
+            sendTextNow(to, cc, bcc, subject, body);
+        } catch (Exception e) {
+            log.error("[mail] 文本邮件发送失败 subject={} to={} : {}", subject, to, e.getMessage(), e);
+        }
+    }
+
+    /** Synchronous send used by business flows that need to persist the final send result. */
+    public void sendTextSync(List<String> to, List<String> cc, List<String> bcc,
+                             String subject, String body) {
+        try {
+            sendTextNow(to, cc, bcc, subject, body);
+        } catch (Exception e) {
+            throw new IllegalStateException("邮件发送失败：" + e.getMessage(), e);
+        }
+    }
+
+    private void sendTextNow(List<String> to, List<String> cc, List<String> bcc,
+                             String subject, String body) {
         if (to == null || to.isEmpty()) {
             log.warn("[mail] 跳过发送：to 为空 subject={}", subject);
             return;
@@ -69,9 +88,7 @@ public class MailService {
             log.info("[mail] 文本邮件已发送 subject={} to={} cc={} bcc={}",
                     subject, to, cc, bcc);
         } catch (Exception e) {
-            // 异常仅记日志，不向调用方抛（@Async 调用方早已返回）
-            log.error("[mail] 文本邮件发送失败 subject={} to={} : {}",
-                    subject, to, e.getMessage(), e);
+            throw new IllegalStateException(e.getMessage(), e);
         }
     }
 
@@ -111,7 +128,11 @@ public class MailService {
      * <p>调用方需自行捕获异常。
      */
     public void sendTextSync(List<String> to, String subject, String body) {
-        sendText(to, null, null, subject, body);
+        sendTextSync(to, null, null, subject, body);
+    }
+
+    public String configuredFrom() {
+        return resolveFrom();
     }
 
     // ── 业务便捷方法：白名单邮件（自动渲染模板） ─────────────────────────
