@@ -8,7 +8,13 @@ public record ReplayIssueFilterOptions(
         List<String> issueLevels,
         List<String> issueTypes,
         List<String> issueStatuses,
-        List<String> coverageRounds) {
+        List<String> coverageRounds,
+        List<String> reviewStatuses) {
+
+    public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes,
+                                    List<String> issueStatuses, List<String> coverageRounds) {
+        this(groups, issueLevels, issueTypes, issueStatuses, coverageRounds, List.of("待审核", "已审核"));
+    }
 
     public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes) {
         this(groups, issueLevels, issueTypes, List.of(), List.of());
@@ -20,5 +26,6 @@ public record ReplayIssueFilterOptions(
         issueTypes = List.copyOf(issueTypes);
         issueStatuses = List.copyOf(issueStatuses);
         coverageRounds = List.copyOf(coverageRounds);
+        reviewStatuses = List.copyOf(reviewStatuses);
     }
 }

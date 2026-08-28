@@ -12,9 +12,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReplayIssueStatusTest {
 
     @Test
-    void exposesTheSixChineseDisplayValues() {
+    void exposesChineseDisplayValuesIncludingNoAction() {
         assertEquals("打开", ReplayIssueStatus.OPEN.displayValue());
         assertEquals("分析中", ReplayIssueStatus.ANALYZING.displayValue());
+        assertEquals("无需处理", ReplayIssueStatus.NO_ACTION.displayValue());
         assertEquals("延后修复", ReplayIssueStatus.DEFERRED.displayValue());
         assertEquals("修复待验证", ReplayIssueStatus.PENDING_VERIFICATION.displayValue());
         assertEquals("重新打开", ReplayIssueStatus.REOPENED.displayValue());
@@ -22,14 +23,15 @@ class ReplayIssueStatusTest {
     }
 
     @Test
-    void onlyTwoStatusesAreManuallySelectable() {
+    void exposesTheFourManuallySelectableStatuses() {
         assertFalse(ReplayIssueStatus.ANALYZING.isManuallySelectable());
         assertTrue(ReplayIssueStatus.DEFERRED.isManuallySelectable());
         assertTrue(ReplayIssueStatus.PENDING_VERIFICATION.isManuallySelectable());
-        assertFalse(ReplayIssueStatus.OPEN.isManuallySelectable());
+        assertTrue(ReplayIssueStatus.OPEN.isManuallySelectable());
+        assertTrue(ReplayIssueStatus.NO_ACTION.isManuallySelectable());
         assertFalse(ReplayIssueStatus.REOPENED.isManuallySelectable());
         assertFalse(ReplayIssueStatus.FIXED.isManuallySelectable());
-        assertEquals(2, Arrays.stream(ReplayIssueStatus.values())
+        assertEquals(4, Arrays.stream(ReplayIssueStatus.values())
                 .filter(ReplayIssueStatus::isManuallySelectable).count());
     }
 

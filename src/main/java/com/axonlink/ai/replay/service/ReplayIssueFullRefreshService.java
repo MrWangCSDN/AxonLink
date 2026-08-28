@@ -90,7 +90,7 @@ public class ReplayIssueFullRefreshService {
                     operationType = "全量基础数据导入";
                     beforeSnapshot = null;
                 } else {
-                    persisted = withId(identified, existing.id());
+                    persisted = withPlannedCompletionDate(withId(identified, existing.id()), existing.plannedCompletionDate());
                     beforeSnapshot = snapshot(existing);
                     currentDao.updateCurrent(persisted);
                     currentDao.updateCoverageRound(existing.id(), coverageRound);
@@ -160,6 +160,20 @@ public class ReplayIssueFullRefreshService {
                 row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
                 row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(),
                 row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo());
+    }
+
+    private ReplayIssueRow withPlannedCompletionDate(ReplayIssueRow row, java.time.LocalDate plannedCompletionDate) {
+        return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(),
+                row.domain(), row.sequenceNo(), row.batchNo(), row.transactionCode(), row.transactionName(),
+                row.issueLevel(), row.registeredDate(), row.fieldName(), row.issueDescription(),
+                row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(),
+                row.resolvedDate(), row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(),
+                row.remark(), row.affectedTransactionCount(), row.issueId(), row.issueKey(),
+                row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
+                row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(),
+                row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(),
+                row.reviewStatus(), row.reviewerUsername(), row.reviewerRealName(), row.reviewedAt(),
+                plannedCompletionDate);
     }
 
     private String snapshot(ReplayIssueRow row) {

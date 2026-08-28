@@ -79,4 +79,33 @@ public class ReplayTransactionPersonDao {
                 transactionCode.trim());
         return rows.isEmpty() ? null : rows.get(0);
     }
+
+    public List<String> findTransactionCodesByBankOwnerEmpNo(String empNo) {
+        if (empNo == null || empNo.isBlank()) return List.of();
+        String expected = empNo.trim();
+        return jdbc.query("SELECT old_transaction_code,bank_owner_emp_nos FROM dii_replay_transaction_person " +
+                        "WHERE TRIM(COALESCE(bank_owner_emp_nos,''))<>'' ORDER BY old_transaction_code",
+                (rs, rowNum) -> new String[] {rs.getString("old_transaction_code"), rs.getString("bank_owner_emp_nos")})
+                .stream()
+                .filter(row -> splitEmployeeNumbers(row[1]).contains(expected))
+                .map(row -> row[0])
+                .filter(code -> code != null && !code.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
+    public List<String> findBankOwnerEmpNosByTransactionCode(String transactionCode) {
+        ReplayTransactionPersonRow row = findByTransactionCode(transactionCode);
+        return row == null ? List.of() : splitEmployeeNumbers(row.bankOwnerEmpNos());
+    }
+
+    private static List<String> splitEmployeeNumbers(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return java.util.Arrays.stream(value.split("[、,，;；]"))
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .distinct()
+                .toList();
+    }
 }

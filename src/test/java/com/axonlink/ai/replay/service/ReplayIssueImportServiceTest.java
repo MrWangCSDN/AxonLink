@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.persistence.ReplayIssueSummaryDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -12,6 +13,7 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -55,11 +57,36 @@ class ReplayIssueImportServiceTest {
     }
 
     @Test
+    void queryAndDzImportsCannotOverwriteExistingPlannedCompletionDate() throws Exception {
+        MockMultipartFile file = ReplayIssueTestFixtures.validWorkbook(1);
+        var incoming = parser.parse(file, ReplayIssueImportMode.QUERY).rows().get(0);
+        service.importFile(file, ReplayIssueImportMode.QUERY);
+        long id = dao.findCurrentByIssueKeyForUpdate(incoming.issueKey()).id();
+        dao.updatePlannedCompletionDate(id, LocalDate.of(2026, 8, 26));
+
+        ReplayIssueImportService queryReimport = new ReplayIssueImportService(parser, dao,
+                Clock.fixed(Instant.parse("2026-08-04T03:00:00Z"), ZoneOffset.UTC),
+                new ReplayIssueImportGate(new Semaphore(1)));
+        queryReimport.importFile(file, ReplayIssueImportMode.QUERY);
+        assertEquals(LocalDate.of(2026, 8, 26), dao.findCurrentByIdForUpdate(id).plannedCompletionDate());
+
+        ReplayIssueImportService dzReimport = new ReplayIssueImportService(parser, dao,
+                Clock.fixed(Instant.parse("2026-08-04T04:00:00Z"), ZoneOffset.UTC),
+                new ReplayIssueImportGate(new Semaphore(1)));
+        dzReimport.importFile(file, ReplayIssueImportMode.DZ);
+        assertEquals(LocalDate.of(2026, 8, 26), dao.findCurrentByIdForUpdate(id).plannedCompletionDate());
+    }
+
+    @Test
     void springSelectsProductionConstructorAndWiresDependencies() throws Exception {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             context.registerBean(ReplayIssueExcelParser.class, () -> parser);
             context.registerBean(ReplayIssueDao.class, () -> dao);
             context.registerBean(ReplayIssueImportGate.class, () -> new ReplayIssueImportGate());
+            context.registerBean(ReplayIssueSummaryParser.class, ReplayIssueSummaryParser::new);
+            context.registerBean(ReplayIssueSummaryDao.class, () -> new ReplayIssueSummaryDao(dao.jdbc()));
+            context.registerBean(ReplayIssueDailyReportService.class,
+                    () -> new ReplayIssueDailyReportService(dao, "target/test-daily-reports"));
             context.register(ReplayIssueImportService.class);
             context.refresh();
 

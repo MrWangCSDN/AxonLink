@@ -46,6 +46,11 @@ public class ReplayIssueExcelParser {
             new SheetMetadata("沙箱-结算组", "结算组", true));
 
     public ParsedWorkbook parse(MultipartFile file) throws IOException {
+        return parse(file, ReplayIssueImportMode.QUERY);
+    }
+
+    public ParsedWorkbook parse(MultipartFile file, ReplayIssueImportMode mode) throws IOException {
+        ReplayIssueImportMode effectiveMode = mode == null ? ReplayIssueImportMode.QUERY : mode;
         try (InputStream input = file.getInputStream(); Workbook workbook = WorkbookFactory.create(input)) {
             DataFormatter formatter = new DataFormatter();
             FormulaEvaluator evaluator = workbook.getCreationHelper().createFormulaEvaluator();
@@ -65,7 +70,7 @@ public class ReplayIssueExcelParser {
                     if (values.stream().allMatch(String::isEmpty)) {
                         continue;
                     }
-                    rows.add(toReplayIssueRow(metadata, rowIndex, values));
+                    rows.add(toReplayIssueRow(metadata, rowIndex, values, effectiveMode));
                     sheetRows++;
                 }
                 rowsBySheet.put(metadata.name(), sheetRows);
@@ -148,9 +153,10 @@ public class ReplayIssueExcelParser {
         return values;
     }
 
-    private ReplayIssueRow toReplayIssueRow(SheetMetadata metadata, int rowIndex, List<String> values) {
+    private ReplayIssueRow toReplayIssueRow(SheetMetadata metadata, int rowIndex, List<String> values,
+                                             ReplayIssueImportMode mode) {
         return new ReplayIssueRow(null, metadata.name(), metadata.groupName(), metadata.sandbox(), rowIndex,
-                metadata.groupName(), values.get(1), values.get(2), values.get(3), values.get(4), values.get(5),
+                metadata.groupName(), values.get(1), mode.normalizeBatch(values.get(2)), values.get(3), values.get(4), values.get(5),
                 values.get(6), values.get(7), values.get(8), values.get(9), values.get(10), values.get(11),
                 values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), "",
                 values.get(19), values.get(20), values.get(21), values.get(22), values.get(23), values.get(24),

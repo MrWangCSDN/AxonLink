@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
+import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
@@ -63,6 +64,11 @@ public class ReplayIssueDao {
         this.jdbc = diiResultJdbcTemplate;
         this.txTemplate = new TransactionTemplate(
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
+    }
+
+    /** 暴露结果库 JdbcTemplate（供测试构造关联 DAO 使用）。 */
+    public JdbcTemplate jdbc() {
+        return jdbc;
     }
 
     /** Atomically replaces the complete active snapshot. */
@@ -208,11 +214,12 @@ public class ReplayIssueDao {
 
     public long insertCurrent(ReplayIssueRow row) {
         String sql = "INSERT INTO dii_replay_issue (source_sheet,group_name,is_sandbox,row_order,domain,sequence_no,"
-                + "batch_no,transaction_code,transaction_name,issue_level,registered_date,field_name,issue_description,"
+                + "batch_no,transaction_code,transaction_name,issue_level,registered_date,field_name,issue_description,planned_completion_date,"
                 + "transaction_owner,issue_type,initial_analysis,final_solution,resolved_date,cooperation_group,resolver,"
                 + "serial_no,global_serial_no,data_repair_date,remark,affected_transaction_count,issue_id,issue_key,historical_occurrence_count,"
                 + "first_occurrence_date,last_occurrence_date,imported_at,issue_status,import_date,defect_repair_date,"
-                + "cooperation_person_username,cooperation_person_real_name) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                + "cooperation_person_username,cooperation_person_real_name,review_status,reviewer_username,reviewer_real_name,reviewed_at) "
+                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS);
@@ -223,18 +230,24 @@ public class ReplayIssueDao {
         return key == null ? 0L : key.longValue();
     }
 
+    /** Updates the current projection while leaving the independently managed planned completion date untouched. */
     public void updateCurrent(ReplayIssueRow row) {
         String sql = "UPDATE dii_replay_issue SET source_sheet=?,group_name=?,is_sandbox=?,row_order=?,domain=?,sequence_no=?,"
                 + "batch_no=?,transaction_code=?,transaction_name=?,issue_level=?,registered_date=?,field_name=?,issue_description=?,"
                 + "transaction_owner=?,issue_type=?,initial_analysis=?,final_solution=?,resolved_date=?,cooperation_group=?,resolver=?,"
                 + "serial_no=?,global_serial_no=?,data_repair_date=?,remark=?,affected_transaction_count=?,issue_id=?,issue_key=?,historical_occurrence_count=?,"
                 + "first_occurrence_date=?,last_occurrence_date=?,imported_at=?,issue_status=?,import_date=?,defect_repair_date=?,"
-                + "cooperation_person_username=?,cooperation_person_real_name=? WHERE id=?";
-        jdbc.update(sql, currentArgs(row, true));
+                + "cooperation_person_username=?,cooperation_person_real_name=?,review_status=?,reviewer_username=?,reviewer_real_name=?,reviewed_at=? WHERE id=?";
+        jdbc.update(sql, currentArgs(row, true, false));
     }
 
     public void updateCoverageRound(long issueId, String coverageRound) {
         jdbc.update("UPDATE dii_replay_issue SET coverage_round = ? WHERE id = ?", coverageRound, issueId);
+    }
+
+    public void updatePlannedCompletionDate(long id, LocalDate value) {
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date = ? WHERE id = ?",
+                value == null ? null : java.sql.Date.valueOf(value), id);
     }
 
     public void updateLatestHistoryCoverageRound(String issueKey, LocalDateTime operationAt, String coverageRound) {
@@ -244,7 +257,12 @@ public class ReplayIssueDao {
     }
 
     public List<ReplayIssueRow> findAutoRepairCandidatesMissing(Set<String> incomingKeys) {
+        return findAutoRepairCandidatesMissing(incomingKeys, null);
+    }
+
+    public List<ReplayIssueRow> findAutoRepairCandidatesMissing(Set<String> incomingKeys, String batchFamily) {
         String sql = "SELECT * FROM dii_replay_issue WHERE issue_status IN (?, ?, ?, ?, ?)"
+                + (batchFamily == null || batchFamily.isBlank() ? "" : " AND UPPER(TRIM(batch_no)) LIKE ?")
                 + (incomingKeys.isEmpty() ? "" : " AND issue_key NOT IN (" + "?,".repeat(incomingKeys.size()).replaceAll(",$", "") + ")")
                 + " FOR UPDATE";
         List<Object> args = new ArrayList<>();
@@ -253,6 +271,9 @@ public class ReplayIssueDao {
         args.add(ReplayIssueStatus.REOPENED.displayValue());
         args.add(ReplayIssueStatus.DEFERRED.displayValue());
         args.add(ReplayIssueStatus.PENDING_VERIFICATION.displayValue());
+        if (batchFamily != null && !batchFamily.isBlank()) {
+            args.add(batchFamily.trim().toUpperCase(java.util.Locale.ROOT) + "%");
+        }
         args.addAll(incomingKeys);
         return jdbc.query(sql, this::mapRow, args.toArray());
     }
@@ -297,13 +318,16 @@ public class ReplayIssueDao {
         jdbc.update("INSERT INTO dii_replay_issue_history (replay_issue_id,issue_key,operation_type,operation_at,"
                         + "operator_username,operator_real_name,import_date,coverage_round,context_round_id,occurrence_batch_name,source_sheet,source_row,before_snapshot,"
                         + "issue_status,issue_type,initial_analysis,final_solution,cooperation_person_username,cooperation_person_real_name,remark,"
-                        + "after_snapshot,incoming_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "review_status,reviewer_username,reviewer_real_name,reviewed_at,after_snapshot,incoming_snapshot) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 replayIssueId, issueKey, operationType, Timestamp.valueOf(operationAt),
                 operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
                 importDate, coverageRound, contextRoundId, occurrenceBatchName, sourceSheet, sourceRow,
                 beforeSnapshot,
                 text(snapshot, "issueStatus"), text(snapshot, "issueType"), text(snapshot, "initialAnalysis"), text(snapshot, "finalSolution"),
                 text(snapshot, "cooperationPersonUsername"), text(snapshot, "cooperationPersonRealName"), text(snapshot, "remark"),
+                reviewValue(snapshot), text(snapshot, "reviewerUsername"), text(snapshot, "reviewerRealName"),
+                timestamp(snapshot, "reviewedAt"),
                 afterSnapshot, incomingSnapshot);
     }
 
@@ -318,6 +342,18 @@ public class ReplayIssueDao {
         return value == null || value.isNull() ? null : value.asText();
     }
 
+    private static String reviewValue(JsonNode node) {
+        ReplayIssueReviewStatus status = ReplayIssueReviewStatus.fromValue(text(node, "reviewStatus"));
+        return status == null ? null : status.name();
+    }
+
+    private static Timestamp timestamp(JsonNode node, String field) {
+        String value = text(node, field);
+        if (value == null || value.isBlank()) return null;
+        try { return Timestamp.valueOf(LocalDateTime.parse(value)); }
+        catch (RuntimeException ignored) { return null; }
+    }
+
     public long countHistory(String issueKey) {
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_issue_history WHERE issue_key = ?", Long.class, issueKey);
         return count == null ? 0L : count;
@@ -327,6 +363,7 @@ public class ReplayIssueDao {
         Timestamp imported = rs.getTimestamp("imported_at");
         java.sql.Date importDate = rs.getDate("import_date");
         java.sql.Date defectDate = rs.getDate("defect_repair_date");
+        java.sql.Date plannedDate = rs.getDate("planned_completion_date");
         return new ReplayIssueRow(rs.getLong("id"), rs.getString("source_sheet"), rs.getString("group_name"),
                 rs.getBoolean("is_sandbox"), rs.getInt("row_order"), rs.getString("group_name"), rs.getString("sequence_no"),
                 rs.getString("batch_no"), rs.getString("transaction_code"), rs.getString("transaction_name"),
@@ -341,11 +378,14 @@ public class ReplayIssueDao {
                 ReplayIssueStatus.fromDisplayValue(rs.getString("issue_status")),
                 importDate == null ? null : importDate.toLocalDate(), defectDate == null ? null : defectDate.toLocalDate(),
                 rs.getString("cooperation_person_username"), rs.getString("cooperation_person_real_name"),
-                rs.getString("global_serial_no"));
+                rs.getString("global_serial_no"), ReplayIssueReviewStatus.fromValue(rs.getString("review_status")),
+                rs.getString("reviewer_username"), rs.getString("reviewer_real_name"),
+                rs.getTimestamp("reviewed_at") == null ? null : rs.getTimestamp("reviewed_at").toLocalDateTime(),
+                plannedDate == null ? null : plannedDate.toLocalDate());
     }
 
     private void bindCurrent(PreparedStatement s, ReplayIssueRow row, boolean withId) throws SQLException {
-        Object[] args = currentArgs(row, false);
+        Object[] args = currentArgs(row, false, true);
         for (int i = 0; i < args.length; i++) {
             Object value = args[i];
             if (value instanceof LocalDateTime dateTime) s.setTimestamp(i + 1, Timestamp.valueOf(dateTime));
@@ -357,17 +397,21 @@ public class ReplayIssueDao {
         if (withId) s.setLong(args.length + 1, row.id());
     }
 
-    private Object[] currentArgs(ReplayIssueRow row, boolean withId) {
+    private Object[] currentArgs(ReplayIssueRow row, boolean withId, boolean includePlannedCompletionDate) {
         List<Object> args = new ArrayList<>();
         args.add(row.sourceSheet()); args.add(row.groupName()); args.add(row.sandbox()); args.add(row.rowOrder());
         args.add(row.domain()); args.add(row.sequenceNo()); args.add(row.batchNo()); args.add(row.transactionCode());
         args.add(row.transactionName()); args.add(row.issueLevel()); args.add(row.registeredDate()); args.add(row.fieldName());
-        args.add(row.issueDescription()); args.add(row.transactionOwner()); args.add(row.issueType()); args.add(row.initialAnalysis());
+        args.add(row.issueDescription());
+        if (includePlannedCompletionDate) args.add(row.plannedCompletionDate());
+        args.add(row.transactionOwner()); args.add(row.issueType()); args.add(row.initialAnalysis());
         args.add(row.finalSolution()); args.add(row.resolvedDate()); args.add(row.cooperationGroup()); args.add(row.resolver());
         args.add(row.serialNo()); args.add(row.globalSerialNo()); args.add(row.dataRepairDate()); args.add(row.remark()); args.add(row.affectedTransactionCount());
         args.add(row.issueId()); args.add(row.issueKey()); args.add(row.historicalOccurrenceCount()); args.add(row.firstOccurrenceDate());
         args.add(row.lastOccurrenceDate()); args.add(row.importedAt()); args.add(row.issueStatus() == null ? ReplayIssueStatus.OPEN : row.issueStatus());
         args.add(row.importDate()); args.add(row.defectRepairDate()); args.add(row.cooperationPersonUsername()); args.add(row.cooperationPersonRealName());
+        args.add(row.reviewStatus() == null ? null : row.reviewStatus().name());
+        args.add(row.reviewerUsername()); args.add(row.reviewerRealName()); args.add(row.reviewedAt());
         if (withId) args.add(row.id());
         return args.stream().map(ReplayIssueDao::jdbcValue).toArray();
     }
@@ -406,7 +450,10 @@ public class ReplayIssueDao {
     }
 
     private List<Map<String, Object>> list(ReplayIssueQuery query, boolean paged) {
-        StringBuilder sql = new StringBuilder("SELECT i.*, tp.developer AS matched_developer, tp.bank_owner AS matched_bank_owner, "
+        StringBuilder sql = new StringBuilder("SELECT i.*, CASE i.review_status WHEN 'PENDING' THEN '待审核' WHEN 'APPROVED' THEN '已审核' ELSE NULL END AS review_status, "
+                + "tp.developer AS matched_developer, tp.bank_owner AS matched_bank_owner, "
+                + "tp.bank_owner_emp_nos AS matched_bank_owner_emp_nos, "
+                + "EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch wt_ob JOIN dii_replay_weekly_task_batch wt ON wt.batch_name=wt_ob.batch_name WHERE wt_ob.replay_issue_id=i.id) AS weekly_task, "
                 + "(SELECT GROUP_CONCAT(ob.batch_name ORDER BY ob.last_occurred_at DESC,ob.id DESC SEPARATOR '、') FROM dii_replay_issue_occurrence_batch ob "
                 + "WHERE ob.replay_issue_id=i.id) AS occurrence_rounds "
                 + "FROM dii_replay_issue i LEFT JOIN dii_replay_transaction_person tp "
@@ -429,6 +476,12 @@ public class ReplayIssueDao {
         if (groupName != null && !groupName.toString().isBlank()) {
             row.put("domain", groupName.toString());
         }
+        ReplayIssueReviewStatus reviewStatus = ReplayIssueReviewStatus.fromValue(
+                row.get("review_status") == null ? null : row.get("review_status").toString());
+        row.put("review_status", reviewStatus == null ? null : reviewStatus.displayValue());
+        if (row.get("planned_completion_date") instanceof java.sql.Date date) {
+            row.put("planned_completion_date", date.toLocalDate());
+        }
         return row;
     }
 
@@ -446,8 +499,9 @@ public class ReplayIssueDao {
                 jdbc.queryForList("SELECT DISTINCT group_name FROM dii_replay_issue "
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
-                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "其他问题"),
-                List.of("新建", "打开", "延后修复", "修复待验证", "重新打开", "已修复"), coverageRounds());
+                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "外围问题", "其他问题"),
+                List.of("新建", "打开", "无需处理", "延后修复", "修复待验证", "重新打开", "已修复"),
+                coverageRounds(), List.of("待审核", "已审核"));
     }
 
     public List<String> coverageRounds() {
@@ -459,9 +513,17 @@ public class ReplayIssueDao {
             return splitHeaderFilterValues("developer".equals(field) ? "tp.developer" : "tp.bank_owner", query, keyword);
         }
         String expression = switch (field) {
+            case "issueId" -> "i.issue_id";
             case "transactionCode" -> "i.transaction_code";
+            case "groupName" -> "i.group_name";
+            case "sandbox" -> "CASE WHEN i.is_sandbox=1 THEN '是' WHEN i.is_sandbox=0 THEN '否' ELSE NULL END";
             case "issueLevel" -> "i.issue_level";
             case "issueStatus" -> "i.issue_status";
+            case "reviewStatus" -> "CASE i.review_status WHEN 'PENDING' THEN '待审核' WHEN 'APPROVED' THEN '已审核' ELSE NULL END";
+            case "plannedCompletionDate" -> "i.planned_completion_date";
+            case "serialNo" -> "i.serial_no";
+            case "globalSerialNo" -> "i.global_serial_no";
+            case "defectRepairDate" -> "CONCAT('',i.defect_repair_date)";
             case "issueType" -> "i.issue_type";
             case "cooperationPerson" -> "CONCAT(COALESCE(i.cooperation_person_real_name,''),'(',COALESCE(i.cooperation_person_username,''),')')";
             case "occurrenceBatch" -> "ob.batch_name";
@@ -505,13 +567,58 @@ public class ReplayIssueDao {
                                 rs.getDate("import_date") == null ? null : rs.getDate("import_date").toLocalDate(),
                                 rs.getString("source_sheet"), (Integer) rs.getObject("source_row"),
                                 rs.getString("before_snapshot"), rs.getString("after_snapshot"), rs.getString("incoming_snapshot"),
-                                rs.getString("remark"), (Long) rs.getObject("context_round_id"), rs.getString("resolved_occurrence_batch_name")), issueId, boundedLimit);
+                                rs.getString("remark"), (Long) rs.getObject("context_round_id"), rs.getString("resolved_occurrence_batch_name"),
+                                ReplayIssueReviewStatus.fromValue(rs.getString("review_status")), rs.getString("reviewer_username"),
+                                rs.getString("reviewer_real_name"), rs.getTimestamp("reviewed_at") == null
+                                ? null : rs.getTimestamp("reviewed_at").toLocalDateTime()), issueId, boundedLimit);
     }
 
     public List<String> occurrenceBatchNames(long issueId) {
         return jdbc.queryForList("SELECT batch_name FROM dii_replay_issue_occurrence_batch WHERE replay_issue_id=? "
                 + "UNION SELECT TRIM(batch_no) FROM dii_replay_issue WHERE id=? AND TRIM(COALESCE(batch_no,''))<>'' "
                 + "ORDER BY batch_name DESC", String.class, issueId, issueId);
+    }
+
+    /**
+     * 取数据库中所有出现批次，按 last_occurred_at 倒序（最近优先）。
+     * 用于"导入时识别当前批次和上一批次"以及"前端下拉列可下载批次"。
+     */
+    public List<String> occurrenceBatchNamesRecentFirst() {
+        return jdbc.queryForList("""
+                SELECT batch_name
+                  FROM dii_replay_issue_occurrence_batch
+                 WHERE TRIM(COALESCE(batch_name,'')) <> ''
+                 GROUP BY batch_name
+                 ORDER BY MAX(last_occurred_at) DESC, batch_name DESC
+                """, String.class);
+    }
+
+    /** 取最近一次出现的 batch_name（fallback 用于「汇总信息」sheet 缺失时识别当前批次）。 */
+    public String currentBatchName() {
+        List<String> recent = occurrenceBatchNamesRecentFirst();
+        return recent.isEmpty() ? null : recent.get(0);
+    }
+
+    /**
+     * 通过出现批次圈定问题范围，并读取问题清单中的当前分组、分类和状态。
+     * 用于日报按"领域 + 沙箱"分组聚合统计。
+     */
+    public java.util.List<com.axonlink.ai.replay.dto.DailyIssueSlice> findDailySlicesByBatch(String batchName) {
+        if (batchName == null || batchName.isBlank()) {
+            return java.util.List.of();
+        }
+        return jdbc.query("""
+                SELECT i.group_name, i.is_sandbox, i.issue_type, i.issue_level,
+                       i.issue_status AS current_status
+                  FROM dii_replay_issue_occurrence_batch ob
+                  JOIN dii_replay_issue i ON i.id = ob.replay_issue_id
+                 WHERE ob.batch_name = ?
+                """, (rs, rowNum) -> new com.axonlink.ai.replay.dto.DailyIssueSlice(
+                rs.getString("group_name"),
+                rs.getBoolean("is_sandbox"),
+                rs.getString("issue_type"),
+                rs.getString("issue_level"),
+                rs.getString("current_status")), batchName.trim());
     }
 
 
@@ -522,6 +629,7 @@ public class ReplayIssueDao {
                        COALESCE(SUM(CASE WHEN is_sandbox = 1 THEN 1 ELSE 0 END), 0) AS sandbox_count,
                        COALESCE(SUM(CASE WHEN issue_status = '新建' THEN 1 ELSE 0 END), 0) AS new_total,
                        COALESCE(SUM(CASE WHEN issue_status = '打开' THEN 1 ELSE 0 END), 0) AS open_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '无需处理' THEN 1 ELSE 0 END), 0) AS no_action_total,
                        COALESCE(SUM(CASE WHEN issue_status = '重新打开' THEN 1 ELSE 0 END), 0) AS reopened_total,
                        COALESCE(SUM(CASE WHEN issue_status = '延后修复' THEN 1 ELSE 0 END), 0) AS deferred_total,
                        COALESCE(SUM(CASE WHEN issue_status = '修复待验证' THEN 1 ELSE 0 END), 0) AS pending_verification_total,
@@ -535,6 +643,7 @@ public class ReplayIssueDao {
         stats.put("sandboxCount", number(row.get("sandbox_count")));
         stats.put("newTotal", number(row.get("new_total")));
         stats.put("openTotal", number(row.get("open_total")));
+        stats.put("noActionTotal", number(row.get("no_action_total")));
         stats.put("reopenedTotal", number(row.get("reopened_total")));
         stats.put("deferredTotal", number(row.get("deferred_total")));
         stats.put("processingTotal", number(row.get("deferred_total")));
@@ -546,6 +655,7 @@ public class ReplayIssueDao {
                        COUNT(*) AS total,
                        COALESCE(SUM(CASE WHEN issue_status = '新建' THEN 1 ELSE 0 END), 0) AS new_count,
                        COALESCE(SUM(CASE WHEN issue_status = '打开' THEN 1 ELSE 0 END), 0) AS open_total,
+                       COALESCE(SUM(CASE WHEN issue_status = '无需处理' THEN 1 ELSE 0 END), 0) AS no_action_total,
                        COALESCE(SUM(CASE WHEN issue_status = '重新打开' THEN 1 ELSE 0 END), 0) AS reopened_total,
                        COALESCE(SUM(CASE WHEN issue_status = '延后修复' THEN 1 ELSE 0 END), 0) AS deferred_total,
                        COALESCE(SUM(CASE WHEN issue_status = '修复待验证' THEN 1 ELSE 0 END), 0) AS pending_verification_total,
@@ -559,6 +669,7 @@ public class ReplayIssueDao {
             counts.put("total", rs.getLong("total"));
             counts.put("new", rs.getLong("new_count"));
             counts.put("open", rs.getLong("open_total"));
+            counts.put("noAction", rs.getLong("no_action_total"));
             counts.put("reopened", rs.getLong("reopened_total"));
             counts.put("deferred", rs.getLong("deferred_total"));
             counts.put("pendingVerification", rs.getLong("pending_verification_total"));
@@ -575,19 +686,25 @@ public class ReplayIssueDao {
                 SELECT i.group_name,
                        SUM(CASE WHEN i.issue_status = '新建' THEN 1 ELSE 0 END) AS new_count,
                        SUM(CASE WHEN i.issue_status = '打开' THEN 1 ELSE 0 END) AS open_count,
-                       SUM(CASE WHEN i.issue_status = '延后修复' THEN 1 ELSE 0 END) AS deferred_count,
                        SUM(CASE WHEN i.issue_status = '重新打开' THEN 1 ELSE 0 END) AS reopened_count,
+                       SUM(CASE WHEN i.issue_status = '延后修复' THEN 1 ELSE 0 END) AS deferred_count,
                        SUM(CASE WHEN i.issue_status = '修复待验证' THEN 1 ELSE 0 END) AS pending_verification_count,
+                       SUM(CASE WHEN i.issue_status IN ('新建','打开','重新打开','延后修复','修复待验证') THEN 1 ELSE 0 END) AS pending_total_count,
+                       SUM(CASE WHEN i.issue_status = '无需处理' THEN 1 ELSE 0 END) AS no_action_count,
+                       SUM(CASE WHEN i.issue_status = '已修复' THEN 1 ELSE 0 END) AS fixed_count,
+                       SUM(CASE WHEN i.issue_status IN ('无需处理','已修复') THEN 1 ELSE 0 END) AS fixed_total_count,
                        COUNT(*) AS total_count
                   FROM dii_replay_issue i
-                 WHERE i.issue_status <> '已修复'
+                 WHERE i.issue_status IN ('新建','打开','重新打开','延后修复','修复待验证','无需处理','已修复')
                    AND i.group_name IS NOT NULL
                    AND TRIM(i.group_name) <> ''
                  GROUP BY i.group_name
                  ORDER BY i.group_name
                 """, (rs, rowNum) -> new ReplayIssueGroupSummary(
-                rs.getString("group_name"), rs.getLong("new_count"), rs.getLong("open_count"), rs.getLong("deferred_count"),
-                rs.getLong("reopened_count"), rs.getLong("pending_verification_count"),
+                rs.getString("group_name"), rs.getLong("new_count"), rs.getLong("open_count"),
+                rs.getLong("reopened_count"), rs.getLong("deferred_count"), rs.getLong("pending_verification_count"),
+                rs.getLong("pending_total_count"), rs.getLong("no_action_count"), rs.getLong("fixed_count"),
+                rs.getLong("fixed_total_count"),
                 rs.getLong("total_count")));
     }
 
@@ -597,13 +714,17 @@ public class ReplayIssueDao {
                        COALESCE(NULLIF(TRIM(p.developer), ''), '未匹配负责人') AS developer,
                        SUM(CASE WHEN i.issue_status = '新建' THEN 1 ELSE 0 END) AS new_count,
                        SUM(CASE WHEN i.issue_status = '打开' THEN 1 ELSE 0 END) AS open_count,
-                       SUM(CASE WHEN i.issue_status = '延后修复' THEN 1 ELSE 0 END) AS deferred_count,
                        SUM(CASE WHEN i.issue_status = '重新打开' THEN 1 ELSE 0 END) AS reopened_count,
+                       SUM(CASE WHEN i.issue_status = '延后修复' THEN 1 ELSE 0 END) AS deferred_count,
                        SUM(CASE WHEN i.issue_status = '修复待验证' THEN 1 ELSE 0 END) AS pending_verification_count,
+                       SUM(CASE WHEN i.issue_status IN ('新建','打开','重新打开','延后修复','修复待验证') THEN 1 ELSE 0 END) AS pending_total_count,
+                       SUM(CASE WHEN i.issue_status = '无需处理' THEN 1 ELSE 0 END) AS no_action_count,
+                       SUM(CASE WHEN i.issue_status = '已修复' THEN 1 ELSE 0 END) AS fixed_count,
+                       SUM(CASE WHEN i.issue_status IN ('无需处理','已修复') THEN 1 ELSE 0 END) AS fixed_total_count,
                        COUNT(*) AS total_count
                   FROM dii_replay_issue i
                   LEFT JOIN dii_replay_transaction_person p ON i.transaction_code = p.old_transaction_code
-                 WHERE i.issue_status <> '已修复'
+                 WHERE i.issue_status IN ('新建','打开','重新打开','延后修复','修复待验证','无需处理','已修复')
                    AND i.group_name IS NOT NULL
                    AND TRIM(i.group_name) <> ''
                  GROUP BY i.group_name, COALESCE(NULLIF(TRIM(p.developer), ''), '未匹配负责人')
@@ -617,8 +738,10 @@ public class ReplayIssueDao {
             rank = groupName.equals(previousGroup) ? rank + 1 : 1;
             previousGroup = groupName;
             result.add(new ReplayIssuePersonRanking(rank, groupName, String.valueOf(row.get("developer")),
-                    number(row.get("new_count")), number(row.get("open_count")), number(row.get("deferred_count")),
-                    number(row.get("reopened_count")), number(row.get("pending_verification_count")),
+                    number(row.get("new_count")), number(row.get("open_count")), number(row.get("reopened_count")),
+                    number(row.get("deferred_count")), number(row.get("pending_verification_count")),
+                    number(row.get("pending_total_count")), number(row.get("no_action_count")),
+                    number(row.get("fixed_count")), number(row.get("fixed_total_count")),
                     number(row.get("total_count"))));
         }
         return result;
@@ -672,13 +795,20 @@ public class ReplayIssueDao {
 
     private static void appendFilters(StringBuilder sql, List<Object> args, ReplayIssueQuery query) {
         if (hasText(query.groupName())) {
-            sql.append(" AND group_name = ?");
+            sql.append(" AND i.group_name = ?");
             args.add(query.groupName().trim());
         }
         if (query.sandbox() != null) {
-            sql.append(" AND is_sandbox = ?");
+            sql.append(" AND i.is_sandbox = ?");
             args.add(query.sandbox());
         }
+        if (hasText(query.issueId())) {
+            sql.append(" AND i.issue_id LIKE ?");
+            args.add("%" + query.issueId().trim() + "%");
+        }
+        appendIn(sql, args, "i.issue_id", query.issueIds());
+        appendIn(sql, args, "i.group_name", query.groupNames());
+        appendSandboxFilters(sql, args, query.sandboxes());
         if (hasText(query.issueLevel())) {
             sql.append(" AND issue_level = ?");
             args.add(query.issueLevel().trim());
@@ -690,6 +820,9 @@ public class ReplayIssueDao {
         if (hasText(query.issueStatus())) {
             sql.append(" AND issue_status = ?");
             args.add(query.issueStatus().trim());
+        }
+        if (hasText(query.reviewStatus())) {
+            appendIn(sql, args, "i.review_status", List.of(reviewStatusCode(query.reviewStatus())));
         }
         if (hasText(query.developer())) {
             sql.append(" AND tp.developer LIKE ?");
@@ -710,13 +843,26 @@ public class ReplayIssueDao {
         appendSplitAny(sql, args, "tp.developer", query.developers());
         appendSplitAny(sql, args, "tp.bank_owner", query.bankOwners());
         appendIn(sql, args, "i.issue_status", query.issueStatuses());
+        if (query.reviewStatuses() != null && !query.reviewStatuses().isEmpty()) {
+            appendIn(sql, args, "i.review_status", query.reviewStatuses().stream()
+                    .map(ReplayIssueDao::reviewStatusCode).toList());
+        }
         appendIn(sql, args, "i.issue_type", query.issueTypes());
+        appendPlannedCompletionDates(sql, args, query.plannedCompletionDates());
+        appendIn(sql, args, "i.serial_no", query.serialNos());
+        appendIn(sql, args, "i.global_serial_no", query.globalSerialNos());
+        appendDateFilters(sql, args, "i.defect_repair_date", query.defectRepairDates());
         if (query.cooperationPersons() != null && !query.cooperationPersons().isEmpty()) {
             sql.append(" AND CONCAT(COALESCE(i.cooperation_person_real_name,''),'(',COALESCE(i.cooperation_person_username,''),')') IN (")
                     .append("?,".repeat(query.cooperationPersons().size()).replaceAll(",$", "")).append(")");
             args.addAll(query.cooperationPersons());
         }
         appendOccurrenceBatches(sql, args, query.occurrenceBatches());
+        if (Boolean.TRUE.equals(query.weeklyTask())) {
+            sql.append(" AND EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch wt_filter_ob "
+                    + "JOIN dii_replay_weekly_task_batch wt_filter ON wt_filter.batch_name=wt_filter_ob.batch_name "
+                    + "WHERE wt_filter_ob.replay_issue_id=i.id)");
+        }
         if (hasText(query.serialNo())) {
             sql.append(" AND serial_no LIKE ?");
             args.add("%" + query.serialNo().trim() + "%");
@@ -743,6 +889,27 @@ public class ReplayIssueDao {
                 args.add(keyword);
             }
         }
+    }
+
+    private static String reviewStatusCode(String value) {
+        ReplayIssueReviewStatus status = ReplayIssueReviewStatus.fromValue(value);
+        return status == null ? value : status.name();
+    }
+
+    private static void appendSandboxFilters(StringBuilder sql, List<Object> args, List<String> values) {
+        if (values == null || values.isEmpty()) return;
+        List<Integer> normalized = values.stream()
+                .filter(ReplayIssueDao::hasText)
+                .map(String::trim)
+                .distinct()
+                .filter(value -> "是".equals(value) || "否".equals(value))
+                .map(value -> "是".equals(value) ? 1 : 0)
+                .toList();
+        if (normalized.isEmpty()) return;
+        sql.append(" AND i.is_sandbox IN (")
+                .append("?,".repeat(normalized.size()).replaceAll(",$", ""))
+                .append(")");
+        args.addAll(normalized);
     }
 
     private static void appendIn(StringBuilder sql, List<Object> args, String column, List<String> values) {
@@ -782,6 +949,31 @@ public class ReplayIssueDao {
         boolean wrote = false;
         if (!normalized.isEmpty()) { sql.append("EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch ob_filter WHERE ob_filter.replay_issue_id=i.id AND ob_filter.batch_name IN (").append("?,".repeat(normalized.size()).replaceAll(",$", "")).append("))"); args.addAll(normalized); wrote = true; }
         if (empty) { if (wrote) sql.append(" OR "); sql.append("NOT EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch ob_empty WHERE ob_empty.replay_issue_id=i.id AND TRIM(COALESCE(ob_empty.batch_name,''))<>'' )"); }
+        sql.append(")");
+    }
+
+    private static void appendPlannedCompletionDates(StringBuilder sql, List<Object> args, List<String> values) {
+        appendDateFilters(sql, args, "i.planned_completion_date", values);
+    }
+
+    private static void appendDateFilters(StringBuilder sql, List<Object> args, String column, List<String> values) {
+        if (values == null || values.isEmpty()) return;
+        List<String> normalized = values.stream().filter(ReplayIssueDao::hasText).map(String::trim)
+                .distinct().collect(Collectors.toCollection(ArrayList::new));
+        boolean empty = normalized.removeIf(ReplayIssueDao::isEmptyFilterValue);
+        if (normalized.isEmpty() && !empty) return;
+        sql.append(" AND (");
+        boolean wrote = false;
+        if (!normalized.isEmpty()) {
+            sql.append(column).append(" IN (")
+                    .append("?,".repeat(normalized.size()).replaceAll(",$", "")).append(")");
+            normalized.stream().map(LocalDate::parse).map(java.sql.Date::valueOf).forEach(args::add);
+            wrote = true;
+        }
+        if (empty) {
+            if (wrote) sql.append(" OR ");
+            sql.append(column).append(" IS NULL");
+        }
         sql.append(")");
     }
 

@@ -31,7 +31,8 @@ import java.util.Map;
  * <p><b>保护策略</b>：
  * <ul>
  *   <li>放行：登录入口 {@code /api/auth/**}、健康检查 {@code /actuator/health} / {@code /api/health}、
- *       SPA 首屏 {@code /} / {@code /index.html} / {@code /assets/**} / {@code /monaco/**} /
+ *       SPA 首屏及登录页 {@code /} / {@code /login} / {@code /index.html} /
+ *       {@code /assets/**} / {@code /monaco/**} /
  *       {@code /favicon*} / {@code /spd-bank-logo.png}</li>
  *   <li>其它所有路径：需登录（B 档不分角色）</li>
  *   <li>CSRF 禁用（内部应用 + 同源 + SameSite=Lax + JSON POST 已闭合主流攻击面）</li>
@@ -63,6 +64,9 @@ public class SecurityConfig {
             "/actuator/health",
             "/api/health",
             "/",
+            // Vue Router 使用 history 模式；未登录直访/刷新 /login 时必须先返回 SPA index.html。
+            // 查询参数（如 ?redirect=/）不参与 Spring Security 的路径匹配，此精确路径已覆盖。
+            "/login",
             "/index.html",
             "/assets/**",
             "/monaco/**",

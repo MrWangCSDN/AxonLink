@@ -39,6 +39,20 @@ benchmark:
     base-url: http://127.0.0.1:8080
     timeout-ms: 5000
 
+# 回放问题“计划验证日期”维护人员：有工号填写 emp_no；无工号填写 username，可用英文逗号分隔多人。
+dii:
+  replay:
+    issue-plan-date:
+      editors:
+        公共组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_PUBLIC:}
+        存款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_DEPOSIT:}
+        贷款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_LOAN:}
+        结算组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_SETTLEMENT:}
+
 
 # ┌──────────────────────────────────────────────────────────┐
 # │  环境 B：内网 Linux（生产/联调）                           │

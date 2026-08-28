@@ -9,6 +9,7 @@ import java.util.List;
 public enum ReplayIssueStatus {
     NEW("新建", false),
     OPEN("打开", true),
+    NO_ACTION("无需处理", true),
     /** Legacy value retained so historical rows can still be read, but it is no longer selectable. */
     ANALYZING("分析中", false),
     DEFERRED("延后修复", true),

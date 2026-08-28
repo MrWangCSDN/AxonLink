@@ -26,7 +26,90 @@ public record ReplayIssueQuery(
         List<String> issueStatuses,
         List<String> issueTypes,
         List<String> cooperationPersons,
-        List<String> occurrenceBatches) {
+        List<String> occurrenceBatches,
+        Boolean weeklyTask,
+        String reviewStatus,
+        List<String> reviewStatuses,
+        String issueId,
+        List<String> groupNames,
+        List<String> sandboxes,
+        List<String> plannedCompletionDates,
+        List<String> issueIds,
+        List<String> serialNos,
+        List<String> globalSerialNos,
+        List<String> defectRepairDates) {
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches, Boolean weeklyTask,
+                            String reviewStatus, List<String> reviewStatuses, String issueId,
+                            List<String> groupNames, List<String> sandboxes, List<String> plannedCompletionDates) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, reviewStatus, reviewStatuses, issueId, groupNames, sandboxes,
+                plannedCompletionDates, List.of(), List.of(), List.of(), List.of());
+    }
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches, Boolean weeklyTask,
+                            String reviewStatus, List<String> reviewStatuses, String issueId,
+                            List<String> groupNames, List<String> sandboxes) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, reviewStatus, reviewStatuses, issueId, groupNames, sandboxes,
+                List.of(), List.of(), List.of(), List.of(), List.of());
+    }
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches, Boolean weeklyTask,
+                            String reviewStatus, List<String> reviewStatuses) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, reviewStatus, reviewStatuses, null, List.of(), List.of(), List.of());
+    }
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches, Boolean weeklyTask) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, null, List.of(), null, List.of(), List.of(), List.of());
+    }
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
+                transactionCodes, issueLevels, developers, bankOwners, issueStatuses, issueTypes,
+                cooperationPersons, occurrenceBatches, null);
+    }
 
     public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
                             String issueType, String keyword, String issueStatus, String developer, String bankOwner,
@@ -34,7 +117,7 @@ public record ReplayIssueQuery(
                             String defectRepairDate, String coverageRound) {
         this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
                 cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
-                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null);
     }
 
     public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
@@ -46,7 +129,7 @@ public record ReplayIssueQuery(
                             List<String> cooperationPersons) {
         this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
                 cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
-                transactionCodes, issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons, List.of());
+                transactionCodes, issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons, List.of(), null);
     }
 
     public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox,

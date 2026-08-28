@@ -1,14 +1,19 @@
 package com.axonlink.controller;
 
 import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
+import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.common.R;
 import com.axonlink.config.FlowtranConfig;
 import com.axonlink.dto.FlowtranDomain;
+import com.axonlink.service.FlowtranChainExportService;
 import com.axonlink.service.FlowtranImpactExportService;
 import com.axonlink.service.FlowtranImpactService;
 import com.axonlink.service.FlowtranImpactStatsService;
 import com.axonlink.service.FlowtranService;
 import com.axonlink.service.ServiceNodeCache;
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -28,6 +33,7 @@ import java.util.NoSuchElementException;
  * <ul>
  *   <li>{@code GET  /api/flowtran/domains}                       — 领域列表（替代 /api/domains）</li>
  *   <li>{@code GET  /api/flowtran/domains/{domainKey}/transactions} — 分页交易列表</li>
+ *   <li>{@code GET  /api/flowtran/domains/{domainKey}/chains/export} — 当前领域全量交易链路 Excel</li>
  *   <li>{@code GET  /api/flowtran/transactions/{txId}/chain}     — 交易完整链路</li>
  *   <li>{@code GET  /api/flowtran/impact/table/{tableId}}         — 表级全领域影响分析</li>
  *   <li>{@code GET  /api/flowtran/impact/component/{componentId}} — 构件级全领域影响分析</li>
@@ -46,28 +52,36 @@ import java.util.NoSuchElementException;
 @RequestMapping("/api/flowtran")
 public class FlowtranController {
 
+    private static final Logger log = LoggerFactory.getLogger(FlowtranController.class);
+
     private final FlowtranService  flowtranService;
     private final FlowtranImpactService flowtranImpactService;
     private final FlowtranImpactExportService flowtranImpactExportService;
+    private final FlowtranChainExportService flowtranChainExportService;
     private final FlowtranImpactStatsService flowtranImpactStatsService;
     private final ServiceNodeCache serviceNodeCache;
     private final FlowtranConfig   flowtranConfig;
     private final DiiErrorCodeDao  diiErrorCodeDao;   // 链路返回里富化「N 错误码」计数，供折叠卡片直接展示
+    private final DaoIndexAnalysisProperties daoIndexProperties;
 
     public FlowtranController(FlowtranService flowtranService,
                               FlowtranImpactService flowtranImpactService,
                               FlowtranImpactExportService flowtranImpactExportService,
+                              FlowtranChainExportService flowtranChainExportService,
                               FlowtranImpactStatsService flowtranImpactStatsService,
                               ServiceNodeCache serviceNodeCache,
                               FlowtranConfig flowtranConfig,
-                              DiiErrorCodeDao diiErrorCodeDao) {
+                              DiiErrorCodeDao diiErrorCodeDao,
+                              DaoIndexAnalysisProperties daoIndexProperties) {
         this.flowtranService  = flowtranService;
         this.flowtranImpactService = flowtranImpactService;
         this.flowtranImpactExportService = flowtranImpactExportService;
+        this.flowtranChainExportService = flowtranChainExportService;
         this.flowtranImpactStatsService = flowtranImpactStatsService;
         this.serviceNodeCache = serviceNodeCache;
         this.flowtranConfig   = flowtranConfig;
         this.diiErrorCodeDao  = diiErrorCodeDao;
+        this.daoIndexProperties = daoIndexProperties;
     }
 
     /**
@@ -98,6 +112,31 @@ public class FlowtranController {
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false)    String keyword) {
         return R.ok(flowtranService.listTransactions(domainKey, page, size, keyword));
+    }
+
+    /**
+     * 导出指定领域的全部交易链路，固定包含交易、服务、构件、数据库表四个 Sheet。
+     */
+    @GetMapping("/domains/{domainKey}/chains/export")
+    public ResponseEntity<?> exportDomainChains(
+            @PathVariable String domainKey,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        String expected = daoIndexProperties.getBatchTrigger().getToken();
+        if (expected != null && !expected.trim().isEmpty() && !expected.equals(token)) {
+            log.warn("[flowtran-chain-export] token rejected remoteAddr={} hasToken={}",
+                    request.getRemoteAddr(), token != null);
+            return textError(HttpStatus.UNAUTHORIZED, "口令错误");
+        }
+        try {
+            return asExcel(flowtranChainExportService.exportDomain(domainKey));
+        } catch (IllegalArgumentException e) {
+            return textError(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (NoSuchElementException e) {
+            return textError(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (Exception e) {
+            return textError(HttpStatus.INTERNAL_SERVER_ERROR, "交易链路导出失败：" + e.getMessage());
+        }
     }
 
     /**
@@ -247,5 +286,21 @@ public class FlowtranController {
             .filename(exportFile.getFileName(), StandardCharsets.UTF_8)
             .build());
         return new ResponseEntity<>(exportFile.getContent(), headers, HttpStatus.OK);
+    }
+
+    private ResponseEntity<byte[]> asExcel(FlowtranChainExportService.ExportFile exportFile) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        headers.setContentDisposition(ContentDisposition.attachment()
+            .filename(exportFile.getFileName(), StandardCharsets.UTF_8)
+            .build());
+        return new ResponseEntity<>(exportFile.getContent(), headers, HttpStatus.OK);
+    }
+
+    private ResponseEntity<String> textError(HttpStatus status, String message) {
+        return ResponseEntity.status(status)
+            .contentType(new MediaType("text", "plain", StandardCharsets.UTF_8))
+            .body(message == null ? "交易链路导出失败" : message);
     }
 }

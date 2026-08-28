@@ -99,6 +99,20 @@ public class SysUserDao {
                 MAPPER, empNo.trim()).stream().findFirst().orElse(null);
     }
 
+    public SysUser findActiveByEmpNo(String empNo) {
+        if (empNo == null || empNo.isBlank()) return null;
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND emp_no = ? LIMIT 1",
+                MAPPER, empNo.trim()).stream().findFirst().orElse(null);
+    }
+
+    public SysUser findActiveByUsername(String username) {
+        if (username == null || username.isBlank()) return null;
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND username = ? LIMIT 1",
+                MAPPER, username.trim()).stream().findFirst().orElse(null);
+    }
+
     /** Bounded active-user lookup for replay issue collaborator selection. */
     public List<SysUser> searchByUsernameOrRealName(String keyword, int limit) {
         int boundedLimit = Math.min(Math.max(limit, 1), 50);

@@ -89,6 +89,37 @@ axon-link:
       sso-target: ${AXON_UIAS_SSO_TARGET:}
       session-empno-key: ${AXON_UIAS_SESSION_EMPNO_KEY:uiasEmpNo}
 
+# 回放问题日报：导入后落盘 .xlsx（快照语义，状态修改不影响日报数据）。
+# 目录相对工作目录；线上建议改为 /home/cbs/logs/replay-daily-reports 等持久化目录。
+replay:
+  daily-report:
+    directory: ${REPLAY_DAILY_REPORT_DIR:daily-reports}
+
+# 回放问题“无需处理”审核人员：按领域配置员工工号，沙箱与非沙箱共用。
+dii:
+  replay:
+    issue-review:
+      reviewers:
+        公共组:
+          emp-nos: ${DII_REPLAY_REVIEWERS_PUBLIC:}
+        存款组:
+          emp-nos: ${DII_REPLAY_REVIEWERS_DEPOSIT:}
+        贷款组:
+          emp-nos: ${DII_REPLAY_REVIEWERS_LOAN:}
+        结算组:
+          emp-nos: ${DII_REPLAY_REVIEWERS_SETTLEMENT:}
+    # 计划验证日期维护人员：有工号填 emp_no；无工号填 username，均使用英文逗号分隔。
+    issue-plan-date:
+      editors:
+        公共组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_PUBLIC:}
+        存款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_DEPOSIT:}
+        贷款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_LOAN:}
+        结算组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_SETTLEMENT:}
+
 logging:
   level:
     com.axonlink: info

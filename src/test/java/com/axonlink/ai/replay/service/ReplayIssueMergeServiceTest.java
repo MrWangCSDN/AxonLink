@@ -8,6 +8,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
+import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -86,9 +87,81 @@ class ReplayIssueMergeServiceTest {
     }
 
     @Test
+    void reimportPreservesPlannedCompletionDate() {
+        ReplayIssueRow seed = lifecycle(row("K-PLAN", "old"), ReplayIssueStatus.OPEN,
+                "代码问题", "analysis", "solution", "alice");
+        long id = dao.insertCurrent(seed);
+        dao.updatePlannedCompletionDate(id, LocalDate.of(2026, 8, 26));
+
+        merge.merge(workbook(row("K-PLAN", "new")), LocalDate.of(2026, 8, 27), ReplayIssueOperator.system());
+
+        Map<String, Object> current = dao.list(new ReplayIssueQuery(10, 0,
+                null, null, null, null, null, null)).get(0);
+        assertEquals(LocalDate.of(2026, 8, 26), current.get("planned_completion_date"));
+    }
+
+    @Test
     void rejectsBlankAndDuplicateKeysBeforeTransaction() {
         assertThrows(IllegalArgumentException.class, () -> merge.merge(workbook(row("", "bad")), LocalDate.now(), ReplayIssueOperator.system()));
         assertThrows(IllegalArgumentException.class, () -> merge.merge(workbook(row("K1", "one"), row("K1", "two")), LocalDate.now(), ReplayIssueOperator.system()));
+    }
+
+    @Test
+    void autoRepairUsesRptBatchDateInsteadOfRegisteredOrImportDate() {
+        dao.insertCurrent(lifecycle(
+                withBatch(row("RPT-MISSING", "old"), "RPT20260819-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+
+        merge.merge(workbook(withBatch(row("RPT-PRESENT", "new"), "RPT20260820-142055-9860")),
+                LocalDate.of(2026, 8, 27), ReplayIssueOperator.system());
+
+        assertEquals(LocalDate.of(2026, 8, 20),
+                dao.findCurrentByIssueKeyForUpdate("RPT-MISSING").defectRepairDate());
+    }
+
+    @Test
+    void autoRepairUsesDzBatchDate() {
+        dao.insertCurrent(lifecycle(
+                withBatch(row("DZ-MISSING", "old"), "DZ20260819-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+
+        merge.merge(workbook(withBatch(row("DZ-PRESENT", "new"), "DZ20260821-142055-9860")),
+                LocalDate.of(2026, 8, 27), ReplayIssueOperator.system());
+
+        assertEquals(LocalDate.of(2026, 8, 21),
+                dao.findCurrentByIssueKeyForUpdate("DZ-MISSING").defectRepairDate());
+    }
+
+    @Test
+    void rejectsInvalidBatchFormatBeforeTransaction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> merge.merge(workbook(withBatch(row("BAD", "bad"), "BATCH20260820")),
+                        LocalDate.of(2026, 8, 27), ReplayIssueOperator.system(), "invalid-format"));
+
+        assertTrue(error.getMessage().contains("批次号日期格式不合法"));
+        assertEquals(0, dao.listImportRounds().size());
+    }
+
+    @Test
+    void rejectsImpossibleBatchDateBeforeTransaction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> merge.merge(workbook(withBatch(row("BAD-DATE", "bad"), "RPT20260230-100000-0001")),
+                        LocalDate.of(2026, 8, 27), ReplayIssueOperator.system(), "invalid-date"));
+
+        assertTrue(error.getMessage().contains("批次号日期格式不合法"));
+        assertEquals(0, dao.listImportRounds().size());
+    }
+
+    @Test
+    void rejectsMultipleBatchDatesBeforeTransaction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> merge.merge(workbook(
+                                withBatch(row("DAY-20", "one"), "RPT20260820-100000-0001"),
+                                withBatch(row("DAY-21", "two"), "RPT20260821-100000-0002")),
+                        LocalDate.of(2026, 8, 27), ReplayIssueOperator.system(), "mixed-date"));
+
+        assertEquals("同一工作簿存在多个批次日期：2026-08-20、2026-08-21", error.getMessage());
+        assertEquals(0, dao.listImportRounds().size());
     }
 
     @Test
@@ -122,6 +195,115 @@ class ReplayIssueMergeServiceTest {
     }
 
     @Test
+    void noActionReappearanceRefreshesSourceAndInheritsApprovedReview() {
+        ReplayIssueRow reviewed = withReviewAndDefectDate(
+                lifecycle(row("NO-ACTION", "old"), ReplayIssueStatus.NO_ACTION,
+                        "合理差异", "人工分析", "人工方案", "alice"),
+                ReplayIssueReviewStatus.APPROVED, "reviewer", "审核人",
+                LocalDateTime.of(2026, 8, 5, 12, 0), LocalDate.of(2026, 8, 5));
+        long id = dao.insertCurrent(reviewed);
+        dao.updatePlannedCompletionDate(id, LocalDate.of(2026, 8, 26));
+
+        merge.merge(workbook(row("NO-ACTION", "new")), LocalDate.of(2026, 8, 6),
+                ReplayIssueOperator.system(), "20260806-001");
+
+        ReplayIssueRow current = dao.findCurrentByIdForUpdate(id);
+        assertEquals("new", current.issueDescription());
+        assertEquals(ReplayIssueStatus.NO_ACTION, current.issueStatus());
+        assertEquals(ReplayIssueReviewStatus.APPROVED, current.reviewStatus());
+        assertEquals("reviewer", current.reviewerUsername());
+        assertEquals(LocalDate.of(2026, 8, 5), current.defectRepairDate());
+        assertEquals("人工分析", current.initialAnalysis());
+        assertEquals("人工方案", current.finalSolution());
+        assertEquals("alice", current.cooperationPersonUsername());
+        assertEquals(LocalDate.of(2026, 8, 26), current.plannedCompletionDate());
+        ReplayIssueHistoryEntry history = dao.findHistoryByIssueId(id, 10).get(0);
+        assertEquals("基础数据覆盖，人工内容继承", history.operationType());
+        assertEquals(ReplayIssueReviewStatus.APPROVED, history.reviewStatus());
+        assertTrue(history.afterSnapshot().contains("已审核"));
+    }
+
+    @Test
+    void missingApprovedNoActionRemainsReviewedAndIsNotAutoRepaired() {
+        ReplayIssueRow reviewed = withReviewAndDefectDate(
+                lifecycle(row("NO-ACTION-MISSING", "old"), ReplayIssueStatus.NO_ACTION,
+                        "合理差异", "人工分析", "人工方案", "alice"),
+                ReplayIssueReviewStatus.APPROVED, "reviewer", "审核人",
+                LocalDateTime.of(2026, 8, 5, 12, 0), LocalDate.of(2026, 8, 5));
+        long id = dao.insertCurrent(reviewed);
+
+        ReplayIssueImportResult result = merge.merge(workbook(row("PRESENT", "new")), LocalDate.of(2026, 8, 6),
+                ReplayIssueOperator.system(), "20260806-002");
+
+        ReplayIssueRow current = dao.findCurrentByIdForUpdate(id);
+        assertEquals(ReplayIssueStatus.NO_ACTION, current.issueStatus());
+        assertEquals(ReplayIssueReviewStatus.APPROVED, current.reviewStatus());
+        assertEquals("reviewer", current.reviewerUsername());
+        assertEquals(LocalDateTime.of(2026, 8, 5, 12, 0), current.reviewedAt());
+        assertEquals(LocalDate.of(2026, 8, 5), current.defectRepairDate());
+        assertEquals("人工分析", current.initialAnalysis());
+        assertEquals(0, result.autoRepairedRows());
+        assertTrue(dao.findHistoryByIssueId(id, 10).isEmpty());
+        assertTrue(dao.findIssueRounds(id).isEmpty());
+    }
+
+    @Test
+    void missingPendingNoActionRemainsPendingWithoutDefectRepairDate() {
+        ReplayIssueRow pending = withReviewAndDefectDate(
+                lifecycle(row("NO-ACTION-PENDING", "old"), ReplayIssueStatus.NO_ACTION,
+                        "合理差异", "人工分析", "人工方案", "alice"),
+                ReplayIssueReviewStatus.PENDING, null, null, null, null);
+        long id = dao.insertCurrent(pending);
+
+        ReplayIssueImportResult result = merge.merge(workbook(row("PRESENT", "new")), LocalDate.of(2026, 8, 6),
+                ReplayIssueOperator.system(), "20260806-003");
+
+        ReplayIssueRow current = dao.findCurrentByIdForUpdate(id);
+        assertEquals(ReplayIssueStatus.NO_ACTION, current.issueStatus());
+        assertEquals(ReplayIssueReviewStatus.PENDING, current.reviewStatus());
+        assertNull(current.defectRepairDate());
+        assertEquals(0, result.autoRepairedRows());
+        assertTrue(dao.findHistoryByIssueId(id, 10).isEmpty());
+        assertTrue(dao.findIssueRounds(id).isEmpty());
+    }
+
+    @Test
+    void dzImportOnlyAutoRepairsMissingDzIssues() {
+        dao.insertCurrent(lifecycle(withBatch(row("QUERY-MISSING", "query"), "RPT20260820-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+        dao.insertCurrent(lifecycle(withBatch(row("DZ-MISSING", "dz"), "DZ20260820-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+
+        ReplayIssueImportResult result = merge.merge(
+                workbook(withBatch(row("DZ-PRESENT", "present"), "DZ20260821-100000-0001")),
+                LocalDate.of(2026, 8, 21), ReplayIssueOperator.system());
+
+        assertEquals(1, result.autoRepairedRows());
+        assertEquals(ReplayIssueStatus.OPEN,
+                dao.findCurrentByIssueKeyForUpdate("QUERY-MISSING").issueStatus());
+        assertEquals(ReplayIssueStatus.FIXED,
+                dao.findCurrentByIssueKeyForUpdate("DZ-MISSING").issueStatus());
+    }
+
+    @Test
+    void queryImportOnlyAutoRepairsMissingQueryIssues() {
+        dao.insertCurrent(lifecycle(withBatch(row("QUERY-MISSING", "query"), "RPT20260820-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+        dao.insertCurrent(lifecycle(withBatch(row("DZ-MISSING", "dz"), "DZ20260820-100000-0001"),
+                ReplayIssueStatus.OPEN, "代码问题", "a", "s", null));
+
+        ReplayIssueImportResult result = merge.merge(
+                workbook(withBatch(row("QUERY-PRESENT", "present"), "RPT20260821-100000-0001")),
+                LocalDate.of(2026, 8, 21), ReplayIssueOperator.system());
+
+        assertEquals(1, result.autoRepairedRows());
+        assertEquals(ReplayIssueStatus.FIXED,
+                dao.findCurrentByIssueKeyForUpdate("QUERY-MISSING").issueStatus());
+        assertEquals(ReplayIssueStatus.OPEN,
+                dao.findCurrentByIssueKeyForUpdate("DZ-MISSING").issueStatus());
+    }
+
+    @Test
     void missingActiveStatusesBecomeFixedWithContentAndHistoryPreserved() {
         for (ReplayIssueStatus status : List.of(ReplayIssueStatus.OPEN, ReplayIssueStatus.REOPENED,
                 ReplayIssueStatus.DEFERRED, ReplayIssueStatus.PENDING_VERIFICATION)) {
@@ -129,6 +311,7 @@ class ReplayIssueMergeServiceTest {
             ReplayIssueRow seed = withRemark(lifecycle(row("MISSING-" + status.name(), "原基础数据"), status,
                     "代码问题", "人工分析", "人工方案", "alice"), "人工备注");
             long id = localDao.insertCurrent(seed);
+            localDao.updatePlannedCompletionDate(id, LocalDate.of(2026, 8, 26));
             ReplayIssueMergeService localMerge = new ReplayIssueMergeService(localDao);
 
             ReplayIssueImportResult result = localMerge.merge(workbook(row("PRESENT-" + status.name(), "本批次数据")),
@@ -144,6 +327,7 @@ class ReplayIssueMergeServiceTest {
             assertEquals("人工方案", current.get("final_solution"));
             assertEquals("alice", current.get("cooperation_person_username"));
             assertEquals("人工备注", current.get("remark"));
+            assertEquals(LocalDate.of(2026, 8, 26), current.get("planned_completion_date"));
             assertEquals("2026-08-05", current.get("defect_repair_date").toString());
             assertEquals(1, result.autoRepairedRows());
 
@@ -254,7 +438,7 @@ class ReplayIssueMergeServiceTest {
         dao.insertCurrent(seed);
         merge.merge(workbook(row("FIXED-2", "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
         Map<String, Object> current = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
-        assertEquals("打开", current.get("issue_status"));
+        assertEquals("新建", current.get("issue_status"));
         assertEquals("代码问题", current.get("issue_type"));
         assertEquals("a", current.get("initial_analysis"));
         assertEquals("s", current.get("final_solution"));
@@ -291,7 +475,7 @@ class ReplayIssueMergeServiceTest {
     }
 
     private ReplayIssueRow row(String key, String description) {
-        return new ReplayIssueRow(null, "公共组", "公共组", false, 1, "公共组", "1", "B", "6208", "交易", "交易级",
+        return new ReplayIssueRow(null, "公共组", "公共组", false, 1, "公共组", "1", "RPT20260805-000000-0000", "6208", "交易", "交易级",
                 "2026-08-05", "字段", description, "负责人", "", "", "", "", "", "", "S", "", "", "1", "I", key,
                 "0", "", "", LocalDateTime.of(2026, 8, 5, 1, 0), ReplayIssueStatus.OPEN, LocalDate.of(2026, 8, 5), null, null, null);
     }
@@ -312,5 +496,27 @@ class ReplayIssueMergeServiceTest {
                 row.serialNo(), row.dataRepairDate(), remark, row.affectedTransactionCount(), row.issueId(), row.issueKey(), row.historicalOccurrenceCount(),
                 row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(),
                 row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo());
+    }
+
+    private ReplayIssueRow withBatch(ReplayIssueRow row, String batchNo) {
+        return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(), row.domain(), row.sequenceNo(),
+                batchNo, row.transactionCode(), row.transactionName(), row.issueLevel(), row.registeredDate(), row.fieldName(), row.issueDescription(),
+                row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(), row.resolvedDate(), row.cooperationGroup(), row.resolver(),
+                row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(), row.issueId(), row.issueKey(), row.historicalOccurrenceCount(),
+                row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(),
+                row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(), row.reviewStatus(), row.reviewerUsername(),
+                row.reviewerRealName(), row.reviewedAt());
+    }
+
+    private ReplayIssueRow withReviewAndDefectDate(ReplayIssueRow row, ReplayIssueReviewStatus status,
+                                                   String reviewerUsername, String reviewerRealName,
+                                                   LocalDateTime reviewedAt, LocalDate defectRepairDate) {
+        return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(), row.domain(), row.sequenceNo(),
+                row.batchNo(), row.transactionCode(), row.transactionName(), row.issueLevel(), row.registeredDate(), row.fieldName(), row.issueDescription(),
+                row.transactionOwner(), row.issueType(), row.initialAnalysis(), row.finalSolution(), row.resolvedDate(), row.cooperationGroup(), row.resolver(),
+                row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(), row.issueId(), row.issueKey(), row.historicalOccurrenceCount(),
+                row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(), row.issueStatus(), row.importDate(), defectRepairDate,
+                row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(), status,
+                reviewerUsername, reviewerRealName, reviewedAt, row.plannedCompletionDate());
     }
 }

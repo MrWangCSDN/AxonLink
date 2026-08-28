@@ -2,6 +2,8 @@ package com.axonlink.security;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.common.R;
+import com.axonlink.config.AiAnalysisConfig;
+import com.axonlink.config.WebMvcConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.unboundid.ldap.listener.InMemoryDirectoryServer;
@@ -21,6 +23,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.FilterType;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -94,6 +97,7 @@ class SecurityIntegrationTest {
                     classes = SecurityIntegrationTest.ProtectedTestController.class))
     @EnableAutoConfiguration(exclude = DataSourceAutoConfiguration.class)
     @EnableConfigurationProperties(DaoIndexAnalysisProperties.class)
+    @Import(WebMvcConfig.class)
     static class SecurityTestApp {
     }
 
@@ -176,6 +180,9 @@ class SecurityIntegrationTest {
 
     @MockBean
     private UserService userService;
+
+    @MockBean
+    private AiAnalysisConfig aiAnalysisConfig;
 
     @Autowired
     private WebApplicationContext context;
@@ -306,5 +313,21 @@ class SecurityIntegrationTest {
         int actuatorStatus = mvc().perform(get("/actuator/health")).andReturn().getResponse().getStatus();
         assertTrue(actuatorStatus != 401,
                 "/actuator/health 应在放行清单（非 401），实际：" + actuatorStatus);
+    }
+
+    @Test
+    @DisplayName("未认证刷新登录页路由应进入 SPA，不得被 Security 拦截为 401")
+    void loginSpaRoute_accessibleWithoutAuth() throws Exception {
+        MvcResult loginResult = mvc().perform(get("/login")).andReturn();
+        assertEquals(200, loginResult.getResponse().getStatus(), "/login 应返回 SPA index.html");
+        assertTrue(loginResult.getResponse().getContentAsString().contains("<div id=\"app\"></div>"),
+                "/login 应加载 Vue SPA 入口");
+
+        MvcResult redirectedLoginResult = mvc().perform(get("/login").queryParam("redirect", "/"))
+                .andReturn();
+        assertEquals(200, redirectedLoginResult.getResponse().getStatus(),
+                "/login?redirect=/ 应返回 SPA index.html");
+        assertTrue(redirectedLoginResult.getResponse().getContentAsString().contains("<div id=\"app\"></div>"),
+                "带 redirect 参数的登录页也应加载 Vue SPA 入口");
     }
 }

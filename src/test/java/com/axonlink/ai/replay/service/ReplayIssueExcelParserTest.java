@@ -63,6 +63,33 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
+    void dzModeNormalizesRptBatchWhileQueryAndExistingDzStayUnchanged() throws Exception {
+        MockMultipartFile rpt = ReplayIssueTestFixtures.workbook(
+                ReplayIssueTestFixtures.oneRowPerTargetSheet(
+                        Map.of("批次", "RPT20260820-142055-9860")),
+                ReplayIssueTestFixtures.HEADERS, true);
+        MockMultipartFile dz = ReplayIssueTestFixtures.workbook(
+                ReplayIssueTestFixtures.oneRowPerTargetSheet(
+                        Map.of("批次", "DZ20260820-142055-9860")),
+                ReplayIssueTestFixtures.HEADERS, true);
+
+        assertEquals("RPT20260820-142055-9860",
+                parser.parse(rpt, ReplayIssueImportMode.QUERY).rows().get(0).batchNo());
+        assertEquals("DZ20260820-142055-9860",
+                parser.parse(rpt, ReplayIssueImportMode.DZ).rows().get(0).batchNo());
+        assertEquals("DZ20260820-142055-9860",
+                parser.parse(dz, ReplayIssueImportMode.DZ).rows().get(0).batchNo());
+    }
+
+    @Test
+    void importModeRejectsUnknownValue() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReplayIssueImportMode.fromRequest("OTHER"));
+
+        assertEquals("未知回放类型：OTHER", error.getMessage());
+    }
+
+    @Test
     void matchesHeadersAfterReorderingAndPreservesDisplayedIdentifiers() throws Exception {
         List<String> reversed = new ArrayList<>(ReplayIssueExcelParser.HEADERS);
         Collections.reverse(reversed);
