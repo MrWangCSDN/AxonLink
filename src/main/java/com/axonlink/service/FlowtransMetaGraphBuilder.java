@@ -339,7 +339,14 @@ public class FlowtransMetaGraphBuilder {
 
             if ("method".equals(tag)) {
                 order++;
-                currentKey = txKey(txId) + ":METHOD:" + order + ":" + attr(child, "id");
+                currentKey = flowStepKey(
+                    txId,
+                    parentKey,
+                    "METHOD",
+                    order,
+                    attr(child, "id"),
+                    attr(child, "method")
+                );
                 methodStepNodes.add(node(
                     "key", currentKey,
                     "txId", txId,
@@ -363,7 +370,14 @@ public class FlowtransMetaGraphBuilder {
                 String serviceTypeId = splitLeft(serviceName);
                 String serviceId = splitRight(serviceName, attr(child, "id"));
                 String operationKey = serviceOperationKey(serviceTypeId, serviceId);
-                currentKey = txKey(txId) + ":SERVICE:" + order + ":" + attr(child, "id");
+                currentKey = flowStepKey(
+                    txId,
+                    parentKey,
+                    "SERVICE",
+                    order,
+                    attr(child, "id"),
+                    serviceName
+                );
 
                 serviceStepNodes.add(node(
                     "key", currentKey,
@@ -891,6 +905,27 @@ public class FlowtransMetaGraphBuilder {
 
     private static String txKey(String txId) {
         return "TX:" + txId;
+    }
+
+    private static String flowStepKey(String txId,
+                                      String parentKey,
+                                      String stepType,
+                                      int order,
+                                      String id,
+                                      String fallbackIdentity) {
+        String identity = firstNonBlank(id, fallbackIdentity, String.valueOf(order));
+        return txKey(txId)
+            + ":" + stepType
+            + ":" + keySegment(parentKey)
+            + ":" + order
+            + ":" + keySegment(identity);
+    }
+
+    private static String keySegment(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace("%", "%25").replace(":", "%3A");
     }
 
     private static String serviceTypeKey(String serviceTypeId) {
