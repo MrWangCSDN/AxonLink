@@ -2,8 +2,11 @@ package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssuePlanDatePermissions;
+import com.axonlink.ai.replay.dto.ReplayIssuePlanDateChanges;
+import com.axonlink.ai.replay.dto.ReplayIssuePlanDateUpdateResult;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.persistence.ReplayTransactionPersonDao;
 import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -30,20 +33,24 @@ public class ReplayIssuePlanDateService {
 
     private final ReplayIssueDao issueDao;
     private final SysUserDao userDao;
+    private final ReplayTransactionPersonDao personDao;
     private final ReplayIssuePlanDateProperties properties;
     private final Clock clock;
     private final ObjectMapper objectMapper;
 
     @Autowired
     public ReplayIssuePlanDateService(ReplayIssueDao issueDao, SysUserDao userDao,
+                                      ReplayTransactionPersonDao personDao,
                                       ReplayIssuePlanDateProperties properties) {
-        this(issueDao, userDao, properties, Clock.systemDefaultZone());
+        this(issueDao, userDao, personDao, properties, Clock.systemDefaultZone());
     }
 
     ReplayIssuePlanDateService(ReplayIssueDao issueDao, SysUserDao userDao,
+                               ReplayTransactionPersonDao personDao,
                                ReplayIssuePlanDateProperties properties, Clock clock) {
         this.issueDao = issueDao;
         this.userDao = userDao;
+        this.personDao = personDao;
         this.properties = properties;
         this.clock = clock;
         this.objectMapper = new ObjectMapper().findAndRegisterModules()
@@ -54,45 +61,72 @@ public class ReplayIssuePlanDateService {
         SysUser user = activeUser(operator);
         String identity = permissionIdentity(user);
         if (identity == null) {
-            return new ReplayIssuePlanDatePermissions(List.of());
+            return new ReplayIssuePlanDatePermissions(List.of(), List.of());
         }
         List<String> groups = properties.getEditors().entrySet().stream()
                 .filter(entry -> containsIdentity(entry.getValue(), identity))
                 .map(java.util.Map.Entry::getKey)
                 .toList();
-        return new ReplayIssuePlanDatePermissions(groups);
+        return new ReplayIssuePlanDatePermissions(groups, ownedTransactionCodes(user));
     }
 
-    public ReplayIssueRow update(long issueId, String value, ReplayIssueOperator operator) {
+    public ReplayIssuePlanDateUpdateResult update(long issueId, String value, ReplayIssueOperator operator) {
         return issueDao.inTransaction(dao -> {
             ReplayIssueRow before = dao.findCurrentByIdForUpdate(issueId);
             if (before == null) throw new IllegalArgumentException("回放问题不存在");
             if (before.defectRepairDate() != null) {
                 throw new IllegalArgumentException(REPAIRED_DATE_LOCK_MESSAGE);
             }
-            if (!canEdit(before.groupName(), operator)) {
-                throw new ReplayIssuePlanDateForbiddenException("没有权限编辑该领域的计划验证日期");
+            if (!canEdit(before, operator)) {
+                throw new ReplayIssuePlanDateForbiddenException("没有计划验证日期编辑权限");
             }
             LocalDate plannedDate = parse(value);
-            if (Objects.equals(before.plannedCompletionDate(), plannedDate)) return before;
+            if (Objects.equals(before.plannedCompletionDate(), plannedDate)) {
+                return result(before, dao.countPlanDateChanges(issueId));
+            }
             validateOccurrenceBoundary(before.firstOccurrenceDate(), plannedDate);
 
             dao.updatePlannedCompletionDate(issueId, plannedDate);
             ReplayIssueRow after = dao.findCurrentByIdForUpdate(issueId);
             LocalDateTime operationAt = LocalDateTime.now(clock);
+            dao.insertPlanDateChange(after.id(), after.issueKey(), plannedDate, operator, operationAt);
             dao.insertHistoryForRound(after.id(), after.issueKey(), "修改计划验证日期", operationAt,
                     operator, after.importDate(), null, null, null, snapshot(before), snapshot(after), null,
                     dao.findLatestIssueRoundId(after.id()));
             dao.updateLatestHistoryOccurrenceBatch(after.id(), operationAt, after.batchNo());
-            return after;
+            return result(after, dao.countPlanDateChanges(issueId));
         });
     }
 
-    private boolean canEdit(String groupName, ReplayIssueOperator operator) {
-        if (groupName == null) return false;
+    public ReplayIssuePlanDateChanges changes(long issueId) {
+        return issueDao.inTransaction(dao -> {
+            if (dao.findCurrentByIdForUpdate(issueId) == null) {
+                throw new IllegalArgumentException("回放问题不存在");
+            }
+            return new ReplayIssuePlanDateChanges(
+                    dao.countPlanDateChanges(issueId), dao.listPlanDateChanges(issueId));
+        });
+    }
+
+    private static ReplayIssuePlanDateUpdateResult result(ReplayIssueRow row, long changeCount) {
+        return new ReplayIssuePlanDateUpdateResult(row.id(), row.plannedCompletionDate(), changeCount);
+    }
+
+    private boolean canEdit(ReplayIssueRow row, ReplayIssueOperator operator) {
+        if (row == null) return false;
         SysUser user = activeUser(operator);
         String identity = permissionIdentity(user);
-        return identity != null && containsIdentity(properties.getEditors().get(groupName), identity);
+        boolean groupAllowed = identity != null
+                && containsIdentity(properties.getEditors().get(row.groupName()), identity);
+        return groupAllowed || ownedTransactionCodes(user).contains(row.transactionCode());
+    }
+
+    private List<String> ownedTransactionCodes(SysUser user) {
+        if (user == null || user.getEmpNo() == null || user.getEmpNo().isBlank()
+                || user.getUsername() == null || user.getUsername().isBlank()) {
+            return List.of();
+        }
+        return personDao.findTransactionCodesByDeveloperUsername(user.getUsername().trim());
     }
 
     private SysUser activeUser(ReplayIssueOperator operator) {

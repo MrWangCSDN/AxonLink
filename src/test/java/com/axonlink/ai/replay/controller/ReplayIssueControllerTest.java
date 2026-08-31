@@ -8,6 +8,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueMailStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueSummaryRow;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueCompletionStatsDao;
+import com.axonlink.ai.replay.persistence.ReplayTransactionPersonDao;
 import com.axonlink.ai.replay.service.ReplayIssueEditService;
 import com.axonlink.ai.replay.service.ReplayIssueExcelParser;
 import com.axonlink.ai.replay.service.ReplayIssueFullRefreshExcelParser;
@@ -126,7 +127,7 @@ class ReplayIssueControllerTest {
         publicEditors.setEmpNos(List.of("100001"));
         planDateProperties.setEditors(new LinkedHashMap<>(Map.of("公共组", publicEditors)));
         ReflectionTestUtils.setField(controller, "planDateService",
-                new ReplayIssuePlanDateService(dao, userDao, planDateProperties));
+                new ReplayIssuePlanDateService(dao, userDao, new ReplayTransactionPersonDao(jdbc), planDateProperties));
         ReplayIssueDomainProperties domainProperties = new ReplayIssueDomainProperties();
         ReplayIssueDomainProperties.EditorGroup publicDomainEditors = new ReplayIssueDomainProperties.EditorGroup();
         publicDomainEditors.setEmpNos(List.of("100001"));
@@ -169,13 +170,21 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/plan-date-permissions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.editableGroups[0]").value("公共组"));
+                .andExpect(jsonPath("$.data.editableGroups[0]").value("公共组"))
+                .andExpect(jsonPath("$.data.editableTransactionCodes.length()").value(0));
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", issueId)
                         .contentType("application/json")
                         .content("{\"plannedCompletionDate\":\"2026-08-26\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.plannedCompletionDate").value("2026-08-26"));
+                .andExpect(jsonPath("$.data.plannedCompletionDate").value("2026-08-26"))
+                .andExpect(jsonPath("$.data.changeCount").value(1));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/planned-completion-date-changes", issueId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.changeCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].plannedCompletionDate").value("2026-08-26"))
+                .andExpect(jsonPath("$.data.items[0].operatorUsername").value("sunhy1"));
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", issueId)
                         .contentType("application/json")
@@ -199,6 +208,8 @@ class ReplayIssueControllerTest {
 
         resolvedUser = null;
         mvc.perform(get("/api/ai/parallel-replay/issues/plan-date-permissions"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/planned-completion-date-changes", issueId))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -304,6 +315,10 @@ class ReplayIssueControllerTest {
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", 99999)
                         .contentType("application/json")
                         .content("{\"plannedCompletionDate\":\"2026-08-26\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("回放问题不存在"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/planned-completion-date-changes", 99999))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("回放问题不存在"));
     }

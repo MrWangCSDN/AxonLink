@@ -226,7 +226,7 @@ public class ReplayIssueController {
     }
 
     @PatchMapping("/{id}/planned-completion-date")
-    public ResponseEntity<R<ReplayIssueRow>> updatePlannedCompletionDate(
+    public ResponseEntity<R<com.axonlink.ai.replay.dto.ReplayIssuePlanDateUpdateResult>> updatePlannedCompletionDate(
             @PathVariable long id,
             @RequestBody(required = false) ReplayIssuePlannedCompletionDateUpdateRequest body,
             HttpServletRequest request) {
@@ -237,6 +237,20 @@ public class ReplayIssueController {
                     body == null ? null : body.plannedCompletionDate(), operator)));
         } catch (ReplayIssuePlanDateForbiddenException exception) {
             return error(HttpStatus.FORBIDDEN, exception.getMessage());
+        } catch (IllegalArgumentException exception) {
+            HttpStatus status = "回放问题不存在".equals(exception.getMessage())
+                    ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+            return error(status, exception.getMessage());
+        }
+    }
+
+    @GetMapping("/{id}/planned-completion-date-changes")
+    public ResponseEntity<R<com.axonlink.ai.replay.dto.ReplayIssuePlanDateChanges>> plannedCompletionDateChanges(
+            @PathVariable long id, HttpServletRequest request) {
+        ReplayIssueOperator operator = resolveOperator(request);
+        if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
+        try {
+            return ResponseEntity.ok(R.ok(planDateService.changes(id)));
         } catch (IllegalArgumentException exception) {
             HttpStatus status = "回放问题不存在".equals(exception.getMessage())
                     ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;

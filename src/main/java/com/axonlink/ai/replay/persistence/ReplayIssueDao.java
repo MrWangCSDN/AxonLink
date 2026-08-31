@@ -13,6 +13,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOption;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
+import com.axonlink.ai.replay.dto.ReplayIssuePlanDateChangeEntry;
 import com.axonlink.ai.replay.dto.ReplayImportRound;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
@@ -295,6 +296,32 @@ public class ReplayIssueDao {
                         rs.getTimestamp("transferred_at").toLocalDateTime()), issueId);
     }
 
+    public long countPlanDateChanges(long issueId) {
+        Long count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_issue_plan_date_change WHERE replay_issue_id=?",
+                Long.class, issueId);
+        return count == null ? 0L : count;
+    }
+
+    public void insertPlanDateChange(long issueId, String issueKey, LocalDate plannedDate,
+                                     ReplayIssueOperator operator, LocalDateTime changedAt) {
+        jdbc.update("INSERT INTO dii_replay_issue_plan_date_change "
+                        + "(replay_issue_id,issue_key,planned_completion_date,operator_username,operator_real_name,changed_at) "
+                        + "VALUES (?,?,?,?,?,?)",
+                issueId, issueKey, plannedDate == null ? null : java.sql.Date.valueOf(plannedDate),
+                operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
+                Timestamp.valueOf(changedAt));
+    }
+
+    public List<ReplayIssuePlanDateChangeEntry> listPlanDateChanges(long issueId) {
+        return jdbc.query("SELECT planned_completion_date,operator_username,operator_real_name,changed_at "
+                        + "FROM dii_replay_issue_plan_date_change WHERE replay_issue_id=? "
+                        + "ORDER BY changed_at DESC,id DESC",
+                (rs, rowNum) -> new ReplayIssuePlanDateChangeEntry(
+                        localDate(rs.getDate("planned_completion_date")), rs.getString("operator_username"),
+                        rs.getString("operator_real_name"), rs.getTimestamp("changed_at").toLocalDateTime()), issueId);
+    }
+
     private static LocalDate localDate(java.sql.Date value) {
         return value == null ? null : value.toLocalDate();
     }
@@ -527,6 +554,7 @@ public class ReplayIssueDao {
                 + "tp.developer AS matched_developer, tp.bank_owner AS matched_bank_owner, "
                 + "tp.bank_owner_emp_nos AS matched_bank_owner_emp_nos, "
                 + "(SELECT COUNT(*) FROM dii_replay_issue_domain_transfer dt WHERE dt.replay_issue_id=i.id) AS issue_domain_transfer_count, "
+                + "(SELECT COUNT(*) FROM dii_replay_issue_plan_date_change pc WHERE pc.replay_issue_id=i.id) AS planned_completion_date_change_count, "
                 + "EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch wt_ob JOIN dii_replay_weekly_task_batch wt ON wt.batch_name=wt_ob.batch_name WHERE wt_ob.replay_issue_id=i.id) AS weekly_task, "
                 + "(SELECT GROUP_CONCAT(ob.batch_name ORDER BY ob.last_occurred_at DESC,ob.id DESC SEPARATOR '、') FROM dii_replay_issue_occurrence_batch ob "
                 + "WHERE ob.replay_issue_id=i.id) AS occurrence_rounds "

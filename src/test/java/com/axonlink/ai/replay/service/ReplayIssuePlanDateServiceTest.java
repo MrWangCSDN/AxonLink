@@ -3,8 +3,9 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssuePlanDatePermissions;
-import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.persistence.ReplayTransactionPersonDao;
+import com.axonlink.ai.replay.dto.ReplayTransactionPersonRow;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,6 +43,7 @@ class ReplayIssuePlanDateServiceTest {
                 new Object[]{"public-editor", "公共编辑人", "100001", 1},
                 new Object[]{"loan-editor", "贷款编辑人", "200001", 1},
                 new Object[]{"username-editor", "无工号编辑人", null, 1},
+                new Object[]{"developer-owner", "开发负责人", "300001", 1},
                 new Object[]{"inactive", "停用人员", "100002", 0}));
 
         ReplayIssuePlanDateProperties properties = new ReplayIssuePlanDateProperties();
@@ -58,7 +60,14 @@ class ReplayIssuePlanDateServiceTest {
         publicIssueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
         loanIssueId = issueDao.findCurrentByIssueKeyForUpdate("key-2").id();
         jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='2026-08-20'");
-        service = new ReplayIssuePlanDateService(issueDao, new SysUserDao(jdbc), properties,
+        ReplayTransactionPersonDao personDao = new ReplayTransactionPersonDao(jdbc);
+        java.time.LocalDateTime importedAt = java.time.LocalDateTime.of(2026, 8, 26, 9, 0);
+        personDao.replaceAll(List.of(
+                new ReplayTransactionPersonRow(null, "公共组", "6208", "交易6208", "开发负责人",
+                        "developer-owner、inactive", null, null, importedAt),
+                new ReplayTransactionPersonRow(null, "贷款组", "6209", "交易6209", "无工号编辑人",
+                        "username-editor", null, null, importedAt)), importedAt);
+        service = new ReplayIssuePlanDateService(issueDao, new SysUserDao(jdbc), personDao, properties,
                 Clock.fixed(Instant.parse("2026-08-26T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
     }
 
@@ -68,6 +77,7 @@ class ReplayIssuePlanDateServiceTest {
                 new ReplayIssueOperator("public-editor", "公共编辑人"));
 
         assertEquals(List.of("公共组"), permissions.editableGroups());
+        assertEquals(List.of(), permissions.editableTransactionCodes());
         assertThrows(ReplayIssuePlanDateForbiddenException.class, () -> service.update(loanIssueId,
                 "2026-08-26", new ReplayIssueOperator("public-editor", "公共编辑人")));
         assertThrows(ReplayIssuePlanDateForbiddenException.class, () -> service.update(publicIssueId,
@@ -75,11 +85,29 @@ class ReplayIssuePlanDateServiceTest {
     }
 
     @Test
+    void enabledBankEmployeeDeveloperCanEditOnlyOwnedTransactions() {
+        ReplayIssueOperator owner = new ReplayIssueOperator("developer-owner", "开发负责人");
+
+        ReplayIssuePlanDatePermissions permissions = service.permissions(owner);
+        assertEquals(List.of(), permissions.editableGroups());
+        assertEquals(List.of("6208"), permissions.editableTransactionCodes());
+        assertEquals(LocalDate.of(2026, 8, 26),
+                service.update(publicIssueId, "2026-08-26", owner).plannedCompletionDate());
+        assertThrows(ReplayIssuePlanDateForbiddenException.class,
+                () -> service.update(loanIssueId, "2026-08-26", owner));
+
+        ReplayIssueOperator noEmpNo = new ReplayIssueOperator("username-editor", "无工号编辑人");
+        assertEquals(List.of(), service.permissions(noEmpNo).editableTransactionCodes());
+        assertEquals(List.of(), service.permissions(new ReplayIssueOperator("inactive", "停用人员"))
+                .editableTransactionCodes());
+    }
+
+    @Test
     void fallsBackToUsernameOnlyWhenActiveUserHasNoEmployeeNumber() {
         ReplayIssueOperator usernameOnly = new ReplayIssueOperator("username-editor", "无工号编辑人");
 
         assertEquals(List.of("公共组"), service.permissions(usernameOnly).editableGroups());
-        ReplayIssueRow updated = service.update(publicIssueId, "2026-08-26", usernameOnly);
+        var updated = service.update(publicIssueId, "2026-08-26", usernameOnly);
         assertEquals(LocalDate.of(2026, 8, 26), updated.plannedCompletionDate());
 
         ReplayIssueOperator employee = new ReplayIssueOperator("public-editor", "公共编辑人");
@@ -90,7 +118,7 @@ class ReplayIssuePlanDateServiceTest {
 
     @Test
     void acceptsRealIsoDateAndSandboxUsesItsDomainPermission() {
-        ReplayIssueRow updated = service.update(publicIssueId, "2026-08-26",
+        var updated = service.update(publicIssueId, "2026-08-26",
                 new ReplayIssueOperator("public-editor", "公共编辑人"));
 
         assertEquals(LocalDate.of(2026, 8, 26), updated.plannedCompletionDate());
@@ -117,16 +145,16 @@ class ReplayIssuePlanDateServiceTest {
     void unchangedAndBlankToBlankAreIdempotentButExistingDateCanBeCleared() {
         ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
 
-        ReplayIssueRow blank = service.update(publicIssueId, "  ", operator);
+        var blank = service.update(publicIssueId, "  ", operator);
         assertNull(blank.plannedCompletionDate());
         assertEquals(0L, issueDao.countHistory("key-1"));
 
         service.update(publicIssueId, "2026-08-26", operator);
-        ReplayIssueRow unchanged = service.update(publicIssueId, "2026-08-26", operator);
+        var unchanged = service.update(publicIssueId, "2026-08-26", operator);
         assertEquals(LocalDate.of(2026, 8, 26), unchanged.plannedCompletionDate());
         assertEquals(1L, issueDao.countHistory("key-1"));
 
-        ReplayIssueRow cleared = service.update(publicIssueId, null, operator);
+        var cleared = service.update(publicIssueId, null, operator);
         assertNull(cleared.plannedCompletionDate());
         assertEquals(2L, issueDao.countHistory("key-1"));
         var latest = issueDao.findHistoryByIssueId(publicIssueId, 10).get(0);
@@ -146,7 +174,7 @@ class ReplayIssuePlanDateServiceTest {
             assertEquals("问题已有缺陷修复日期，计划验证日期不可修改", error.getMessage());
         }
 
-        ReplayIssueRow unchanged = issueDao.findCurrentByIdForUpdate(publicIssueId);
+        var unchanged = issueDao.findCurrentByIdForUpdate(publicIssueId);
         assertEquals(LocalDate.of(2026, 8, 25), unchanged.plannedCompletionDate());
         assertEquals(0L, issueDao.countHistory("key-1"));
     }
@@ -174,6 +202,25 @@ class ReplayIssuePlanDateServiceTest {
 
         jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-26' WHERE id=?", publicIssueId);
         assertNull(service.update(publicIssueId, null, operator).plannedCompletionDate());
+    }
+
+    @Test
+    void eachRealChangeAddsOneResultingValueHistoryAndSameValueIsIdempotent() {
+        ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
+
+        assertEquals(1L, service.update(publicIssueId, "2026-08-25", operator).changeCount());
+        assertEquals(2L, service.update(publicIssueId, "2026-08-26", operator).changeCount());
+        assertEquals(3L, service.update(publicIssueId, null, operator).changeCount());
+        assertEquals(4L, service.update(publicIssueId, "2026-08-27", operator).changeCount());
+        assertEquals(4L, service.update(publicIssueId, "2026-08-27", operator).changeCount());
+
+        var changes = service.changes(publicIssueId);
+        assertEquals(4L, changes.changeCount());
+        assertEquals(4, changes.items().size());
+        assertEquals(LocalDate.of(2026, 8, 27), changes.items().get(0).plannedCompletionDate());
+        assertNull(changes.items().get(1).plannedCompletionDate());
+        assertEquals(LocalDate.of(2026, 8, 25), changes.items().get(3).plannedCompletionDate());
+        assertEquals(4L, issueDao.countHistory("key-1"));
     }
 
     private static ReplayIssuePlanDateProperties.EditorGroup editorGroup(String... empNos) {

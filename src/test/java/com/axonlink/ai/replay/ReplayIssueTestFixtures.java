@@ -79,6 +79,10 @@ public final class ReplayIssueTestFixtures {
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL,"
                 + "from_domain VARCHAR(32) NOT NULL, to_domain VARCHAR(32) NOT NULL, operator_username VARCHAR(128),"
                 + "operator_real_name VARCHAR(128), transferred_at DATETIME NOT NULL)");
+        jdbc.execute("CREATE TABLE dii_replay_issue_plan_date_change ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL,"
+                + "planned_completion_date DATE, operator_username VARCHAR(128), operator_real_name VARCHAR(128),"
+                + "changed_at DATETIME NOT NULL)");
         jdbc.execute("CREATE TABLE dii_replay_issue_history ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT,"
                 + "issue_key VARCHAR(1024) NOT NULL, operation_type VARCHAR(64) NOT NULL,"

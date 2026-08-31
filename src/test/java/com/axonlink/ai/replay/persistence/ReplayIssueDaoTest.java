@@ -8,6 +8,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOption;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
+import com.axonlink.ai.replay.dto.ReplayIssuePlanDateChangeEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
@@ -27,6 +28,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -119,6 +121,29 @@ class ReplayIssueDaoTest {
 
         Map<String, Object> transferred = dao.list(ALL).get(0);
         assertEquals(1L, ((Number) transferred.get("issue_domain_transfer_count")).longValue());
+    }
+
+    @Test
+    void planDateChangesRoundTripNewestFirstAndListProjectsCount() {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "plan history")), IMPORTED_AT);
+        Map<String, Object> initial = dao.list(ALL).get(0);
+        long id = ((Number) initial.get("id")).longValue();
+        ReplayIssueOperator zhang = new ReplayIssueOperator("c-zhangs", "张三");
+        ReplayIssueOperator li = new ReplayIssueOperator("c-lisi", "李四");
+
+        assertEquals(0L, ((Number) initial.get("planned_completion_date_change_count")).longValue());
+        dao.insertPlanDateChange(id, "key-1", LocalDate.of(2026, 8, 5), li, IMPORTED_AT.plusMinutes(1));
+        dao.insertPlanDateChange(id, "key-1", LocalDate.of(2026, 8, 7), zhang, IMPORTED_AT.plusMinutes(2));
+        dao.insertPlanDateChange(id, "key-1", null, zhang, IMPORTED_AT.plusMinutes(3));
+
+        assertEquals(3L, dao.countPlanDateChanges(id));
+        assertEquals(3L, ((Number) dao.list(ALL).get(0).get("planned_completion_date_change_count")).longValue());
+        List<ReplayIssuePlanDateChangeEntry> items = dao.listPlanDateChanges(id);
+        assertEquals(3, items.size());
+        assertNull(items.get(0).plannedCompletionDate());
+        assertEquals(LocalDate.of(2026, 8, 7), items.get(1).plannedCompletionDate());
+        assertEquals("张三", items.get(1).operatorRealName());
+        assertEquals(LocalDate.of(2026, 8, 5), items.get(2).plannedCompletionDate());
     }
 
     @Test

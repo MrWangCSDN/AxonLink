@@ -95,6 +95,22 @@ public class ReplayTransactionPersonDao {
                 .toList();
     }
 
+    public List<String> findTransactionCodesByDeveloperUsername(String username) {
+        if (username == null || username.isBlank()) return List.of();
+        String expected = username.trim();
+        return jdbc.query("SELECT old_transaction_code,developer_usernames FROM dii_replay_transaction_person "
+                                + "WHERE TRIM(COALESCE(developer_usernames,''))<>'' ORDER BY old_transaction_code",
+                        (rs, rowNum) -> new String[]{
+                                rs.getString("old_transaction_code"), rs.getString("developer_usernames")})
+                .stream()
+                .filter(row -> splitEmployeeNumbers(row[1]).contains(expected))
+                .map(row -> row[0])
+                .filter(code -> code != null && !code.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
     public List<String> findBankOwnerEmpNosByTransactionCode(String transactionCode) {
         ReplayTransactionPersonRow row = findByTransactionCode(transactionCode);
         return row == null ? List.of() : splitEmployeeNumbers(row.bankOwnerEmpNos());
