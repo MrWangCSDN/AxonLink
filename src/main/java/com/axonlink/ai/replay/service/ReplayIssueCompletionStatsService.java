@@ -38,25 +38,27 @@ public class ReplayIssueCompletionStatsService {
 
     public ReplayIssueCompletionDatePointsResponse datePoints() {
         List<ReplayIssueCompletionDatePoint> points = dao.findDatePoints();
-        if (points.isEmpty()) {
-            return new ReplayIssueCompletionDatePointsResponse(List.of(), null, null);
-        }
-        int defaultStart = Math.max(0, points.size() - 3);
+        LocalDate today = LocalDate.now(clock);
         return new ReplayIssueCompletionDatePointsResponse(List.copyOf(points),
-                points.get(defaultStart).date(), points.get(points.size() - 1).date());
+                today, today);
     }
 
     public ReplayIssueCompletionDashboard dashboard(String startDate, String endDate) {
+        return dashboard(startDate, endDate, "domain");
+    }
+
+    public ReplayIssueCompletionDashboard dashboard(String startDate, String endDate, String groupBy) {
+        String normalizedGroupBy = ReplayIssueCompletionStatsDao.normalizeGroupBy(groupBy);
         List<ReplayIssueCompletionDatePoint> points = dao.findDatePoints();
         LocalDate today = LocalDate.now(clock);
         if (points.isEmpty()) {
-            if (hasText(startDate) || hasText(endDate)) throw new ReplayIssueCompletionRangeException();
-            return new ReplayIssueCompletionDashboard(null, null, today,
+            if (!isDefaultTodayRange(startDate, endDate, today)) throw new ReplayIssueCompletionRangeException();
+            return new ReplayIssueCompletionDashboard(today, today, today,
                     ReplayIssueCompletionCounts.of(0, 0, 0, 0), List.of());
         }
-        NormalizedRange range = normalize(points, startDate, endDate);
+        NormalizedRange range = normalize(points, startDate, endDate, today);
         List<ReplayIssueCompletionStatsDao.CompletionAggregateRow> aggregates =
-                dao.aggregate(range.startDate(), range.endDate(), today);
+                dao.aggregate(range.startDate(), range.endDate(), today, normalizedGroupBy);
         List<ReplayIssueCompletionGroupRow> groups = groups(aggregates);
         ReplayIssueCompletionCounts summary = sum(groups.stream().map(ReplayIssueCompletionGroupRow::counts).toList());
         verifyReconciliation(groups, summary);
@@ -66,6 +68,13 @@ public class ReplayIssueCompletionStatsService {
     public ReplayIssueCompletionIssuePage issues(String startDate, String endDate, String groupName,
                                                  String matchedDeveloper, String category,
                                                  int limit, int offset) {
+        return issues(startDate, endDate, "domain", groupName, matchedDeveloper, category, limit, offset);
+    }
+
+    public ReplayIssueCompletionIssuePage issues(String startDate, String endDate, String groupBy, String groupName,
+                                                 String matchedDeveloper, String category,
+                                                 int limit, int offset) {
+        String normalizedGroupBy = ReplayIssueCompletionStatsDao.normalizeGroupBy(groupBy);
         if (!hasText(groupName)) throw new IllegalArgumentException("领域不能为空");
         ReplayIssueCompletionCategory parsedCategory;
         try {
@@ -79,24 +88,27 @@ public class ReplayIssueCompletionStatsService {
         List<ReplayIssueCompletionDatePoint> points = dao.findDatePoints();
         LocalDate today = LocalDate.now(clock);
         if (points.isEmpty()) {
-            if (hasText(startDate) || hasText(endDate)) throw new ReplayIssueCompletionRangeException();
+            if (!isDefaultTodayRange(startDate, endDate, today)) throw new ReplayIssueCompletionRangeException();
             return new ReplayIssueCompletionIssuePage(0, List.of(), limit, offset, today);
         }
-        NormalizedRange range = normalize(points, startDate, endDate);
-        return dao.findIssues(range.startDate(), range.endDate(), today, groupName.trim(),
+        NormalizedRange range = normalize(points, startDate, endDate, today);
+        return dao.findIssues(range.startDate(), range.endDate(), today, normalizedGroupBy, groupName.trim(),
                 hasText(matchedDeveloper) ? matchedDeveloper.trim() : null,
                 parsedCategory, limit, offset);
     }
 
     private static NormalizedRange normalize(List<ReplayIssueCompletionDatePoint> points,
-                                             String startText, String endText) {
+                                             String startText, String endText, LocalDate today) {
         LocalDate first = points.get(0).date();
         LocalDate last = points.get(points.size() - 1).date();
         if (!hasText(startText) && !hasText(endText)) {
-            return new NormalizedRange(points.get(Math.max(0, points.size() - 3)).date(), last);
+            return new NormalizedRange(today, today);
         }
         LocalDate requestedStart = hasText(startText) ? parse(startText) : first;
         LocalDate requestedEnd = hasText(endText) ? parse(endText) : last;
+        if (requestedStart.equals(today) && requestedEnd.equals(today)) {
+            return new NormalizedRange(today, today);
+        }
         if (requestedStart.isBefore(first) || requestedStart.isAfter(last)
                 || requestedEnd.isBefore(first) || requestedEnd.isAfter(last)) {
             throw new ReplayIssueCompletionRangeException();
@@ -169,6 +181,12 @@ public class ReplayIssueCompletionStatsService {
 
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private static boolean isDefaultTodayRange(String startDate, String endDate, LocalDate today) {
+        if (!hasText(startDate) && !hasText(endDate)) return true;
+        return hasText(startDate) && hasText(endDate)
+                && parse(startDate).equals(today) && parse(endDate).equals(today);
     }
 
     private record NormalizedRange(LocalDate startDate, LocalDate endDate) {

@@ -25,6 +25,8 @@ import java.util.Objects;
 public class ReplayIssuePlanDateService {
     public static final String INVALID_DATE_MESSAGE = "填写日期格式不合法，请按 2026-08-26 格式填写";
     public static final String REPAIRED_DATE_LOCK_MESSAGE = "问题已有缺陷修复日期，计划验证日期不可修改";
+    public static final String INVALID_FIRST_OCCURRENCE_MESSAGE = "首次出现日期无效，无法填写计划验证日期";
+    public static final String DATE_LIMIT_MESSAGE = "计划验证日期不能超过首次出现日期后 7 个自然日";
 
     private final ReplayIssueDao issueDao;
     private final SysUserDao userDao;
@@ -73,6 +75,7 @@ public class ReplayIssuePlanDateService {
             }
             LocalDate plannedDate = parse(value);
             if (Objects.equals(before.plannedCompletionDate(), plannedDate)) return before;
+            validateOccurrenceBoundary(before.firstOccurrenceDate(), plannedDate);
 
             dao.updatePlannedCompletionDate(issueId, plannedDate);
             ReplayIssueRow after = dao.findCurrentByIdForUpdate(issueId);
@@ -121,6 +124,33 @@ public class ReplayIssuePlanDateService {
             return LocalDate.parse(normalized, DateTimeFormatter.ISO_LOCAL_DATE);
         } catch (DateTimeParseException exception) {
             throw new IllegalArgumentException(INVALID_DATE_MESSAGE);
+        }
+    }
+
+    private static void validateOccurrenceBoundary(String firstOccurrenceValue, LocalDate plannedDate) {
+        if (plannedDate == null) return;
+        LocalDate firstOccurrenceDate = parseFirstOccurrenceDate(firstOccurrenceValue);
+        if (firstOccurrenceDate == null) {
+            throw new IllegalArgumentException(INVALID_FIRST_OCCURRENCE_MESSAGE);
+        }
+        if (plannedDate.isAfter(firstOccurrenceDate.plusDays(7))) {
+            throw new IllegalArgumentException(DATE_LIMIT_MESSAGE);
+        }
+    }
+
+    private static LocalDate parseFirstOccurrenceDate(String value) {
+        if (value == null) return null;
+        String normalized = value.trim();
+        if (normalized.length() < 10 || !normalized.substring(0, 10).matches("\\d{4}-\\d{2}-\\d{2}")) {
+            return null;
+        }
+        if (normalized.length() > 10 && normalized.charAt(10) != ' ' && normalized.charAt(10) != 'T') {
+            return null;
+        }
+        try {
+            return LocalDate.parse(normalized.substring(0, 10), DateTimeFormatter.ISO_LOCAL_DATE);
+        } catch (DateTimeParseException exception) {
+            return null;
         }
     }
 

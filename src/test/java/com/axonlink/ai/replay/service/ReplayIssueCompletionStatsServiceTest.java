@@ -15,7 +15,6 @@ import java.time.ZoneId;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ReplayIssueCompletionStatsServiceTest {
@@ -42,24 +41,29 @@ class ReplayIssueCompletionStatsServiceTest {
     }
 
     @Test
-    void datePointsDefaultToTheLatestThreeRealDates() {
+    void datePointsDefaultToServerTodayWithoutAddingAnEmptyAxisPoint() {
         var response = service.datePoints();
 
         assertEquals(4, response.datePoints().size());
-        assertEquals(LocalDate.of(2026, 8, 22), response.defaultStartDate());
-        assertEquals(LocalDate.of(2026, 8, 28), response.defaultEndDate());
+        assertEquals(LocalDate.of(2026, 8, 27), response.defaultStartDate());
+        assertEquals(LocalDate.of(2026, 8, 27), response.defaultEndDate());
+        assertEquals(List.of(
+                        LocalDate.of(2026, 8, 20),
+                        LocalDate.of(2026, 8, 22),
+                        LocalDate.of(2026, 8, 26),
+                        LocalDate.of(2026, 8, 28)),
+                response.datePoints().stream().map(point -> point.date()).toList());
     }
 
     @Test
-    void dashboardWithoutBoundsUsesLatestThreeAndServerToday() {
+    void dashboardWithoutBoundsUsesOnlyServerToday() {
         var dashboard = service.dashboard(null, null);
 
-        assertEquals(LocalDate.of(2026, 8, 22), dashboard.effectiveStartDate());
-        assertEquals(LocalDate.of(2026, 8, 28), dashboard.effectiveEndDate());
+        assertEquals(LocalDate.of(2026, 8, 27), dashboard.effectiveStartDate());
+        assertEquals(LocalDate.of(2026, 8, 27), dashboard.effectiveEndDate());
         assertEquals(LocalDate.of(2026, 8, 27), dashboard.today());
-        assertEquals(3, dashboard.summary().plannedTotal());
-        assertEquals(2, dashboard.summary().overdueUnfinishedCount());
-        assertEquals(1, dashboard.summary().unfinishedCount());
+        assertEquals(0, dashboard.summary().plannedTotal());
+        assertEquals(0, dashboard.groups().size());
     }
 
     @Test
@@ -98,8 +102,12 @@ class ReplayIssueCompletionStatsServiceTest {
                 new ReplayIssueCompletionStatsDao(emptyJdbc),
                 Clock.fixed(Instant.parse("2026-08-27T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
 
-        assertNull(empty.datePoints().defaultStartDate());
-        assertEquals(0, empty.dashboard(null, null).summary().plannedTotal());
+        assertEquals(LocalDate.of(2026, 8, 27), empty.datePoints().defaultStartDate());
+        assertEquals(LocalDate.of(2026, 8, 27), empty.datePoints().defaultEndDate());
+        var dashboard = empty.dashboard(null, null);
+        assertEquals(LocalDate.of(2026, 8, 27), dashboard.effectiveStartDate());
+        assertEquals(LocalDate.of(2026, 8, 27), dashboard.effectiveEndDate());
+        assertEquals(0, dashboard.summary().plannedTotal());
     }
 
     @Test

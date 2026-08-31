@@ -58,7 +58,7 @@ public final class ReplayIssueTestFixtures {
         jdbc.execute("CREATE TABLE dii_replay_transaction_person (id BIGINT AUTO_INCREMENT PRIMARY KEY, domain VARCHAR(64) NOT NULL, old_transaction_code VARCHAR(64) UNIQUE NOT NULL, old_transaction_name VARCHAR(256), developer VARCHAR(512), developer_usernames VARCHAR(512), bank_owner VARCHAR(512), bank_owner_emp_nos VARCHAR(512), imported_at DATETIME NOT NULL)");
         jdbc.execute("CREATE TABLE dii_replay_issue ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
-                + "source_sheet VARCHAR(64) NOT NULL, group_name VARCHAR(32) NOT NULL,"
+                + "source_sheet VARCHAR(64) NOT NULL, group_name VARCHAR(32) NOT NULL, issue_domain VARCHAR(32),"
                 + "is_sandbox TINYINT NOT NULL, row_order INT NOT NULL,"
                 + "domain VARCHAR(64), sequence_no VARCHAR(32), batch_no VARCHAR(128),"
                 + "transaction_code VARCHAR(64), transaction_name VARCHAR(256), issue_level VARCHAR(64),"
@@ -75,6 +75,10 @@ public final class ReplayIssueTestFixtures {
                 + "cooperation_person_real_name VARCHAR(128), review_status VARCHAR(16), reviewer_username VARCHAR(128),"
                 + "reviewer_real_name VARCHAR(128), reviewed_at DATETIME,"
                 + "INDEX idx_replay_issue_key_lookup (issue_key), UNIQUE INDEX uq_dii_replay_issue_key (issue_key))");
+        jdbc.execute("CREATE TABLE dii_replay_issue_domain_transfer ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL,"
+                + "from_domain VARCHAR(32) NOT NULL, to_domain VARCHAR(32) NOT NULL, operator_username VARCHAR(128),"
+                + "operator_real_name VARCHAR(128), transferred_at DATETIME NOT NULL)");
         jdbc.execute("CREATE TABLE dii_replay_issue_history ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT,"
                 + "issue_key VARCHAR(1024) NOT NULL, operation_type VARCHAR(64) NOT NULL,"
@@ -92,7 +96,7 @@ public final class ReplayIssueTestFixtures {
                                      String transactionCode, String issueDescription) {
         String sourceSheet = sandbox ? "沙箱-" + groupName : groupName;
         return new ReplayIssueRow(null, sourceSheet, groupName, sandbox, rowOrder,
-                groupName, String.valueOf(rowOrder), "BATCH-" + rowOrder, transactionCode,
+                groupName, String.valueOf(rowOrder), "RPT20260820-142055-" + String.format("%04d", rowOrder), transactionCode,
                 "交易" + transactionCode, "交易级", "2026-08-04", "响应码", issueDescription,
                 "张三", "数据差异", "初步分析", "处理方案", "", "", "", "001" + rowOrder,
                 "", "", "1", "issue-" + rowOrder, "key-" + rowOrder, "0", "", "", null);
@@ -316,7 +320,7 @@ public final class ReplayIssueTestFixtures {
         Map<String, String> row = new LinkedHashMap<>();
         row.put("领域", sheet.replace("沙箱-", ""));
         row.put("序号", String.valueOf(rowOrder));
-        row.put("批次", "BATCH-" + rowOrder);
+        row.put("批次", "RPT20260820-142055-" + String.format("%04d", rowOrder));
         row.put("交易码", "6208");
         row.put("交易名称", "对公贷款还款计划查询");
         row.put("问题级别", "交易级");

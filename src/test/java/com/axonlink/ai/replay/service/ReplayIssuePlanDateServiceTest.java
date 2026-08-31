@@ -57,6 +57,7 @@ class ReplayIssuePlanDateServiceTest {
                 java.time.LocalDateTime.of(2026, 8, 26, 9, 0));
         publicIssueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
         loanIssueId = issueDao.findCurrentByIssueKeyForUpdate("key-2").id();
+        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='2026-08-20'");
         service = new ReplayIssuePlanDateService(issueDao, new SysUserDao(jdbc), properties,
                 Clock.fixed(Instant.parse("2026-08-26T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
     }
@@ -148,6 +149,31 @@ class ReplayIssuePlanDateServiceTest {
         ReplayIssueRow unchanged = issueDao.findCurrentByIdForUpdate(publicIssueId);
         assertEquals(LocalDate.of(2026, 8, 25), unchanged.plannedCompletionDate());
         assertEquals(0L, issueDao.countHistory("key-1"));
+    }
+
+    @Test
+    void plannedDateAllowsExactlySevenNaturalDaysAndRejectsTheEighthDay() {
+        ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
+
+        assertEquals(LocalDate.of(2026, 8, 27),
+                service.update(publicIssueId, "2026-08-27", operator).plannedCompletionDate());
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.update(publicIssueId, "2026-08-28", operator));
+        assertEquals("计划验证日期不能超过首次出现日期后 7 个自然日", error.getMessage());
+    }
+
+    @Test
+    void nonEmptyPlanDateRequiresAValidFirstOccurrenceDateButCanStillBeCleared() {
+        ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
+        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='not-a-date' WHERE id=?", publicIssueId);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.update(publicIssueId, "2026-08-26", operator));
+        assertEquals("首次出现日期无效，无法填写计划验证日期", error.getMessage());
+
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-26' WHERE id=?", publicIssueId);
+        assertNull(service.update(publicIssueId, null, operator).plannedCompletionDate());
     }
 
     private static ReplayIssuePlanDateProperties.EditorGroup editorGroup(String... empNos) {

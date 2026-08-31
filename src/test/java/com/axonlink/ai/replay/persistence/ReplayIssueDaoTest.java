@@ -2,7 +2,10 @@ package com.axonlink.ai.replay.persistence;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
+import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
+import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOption;
+import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
@@ -22,6 +25,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +34,28 @@ class ReplayIssueDaoTest {
 
     private static final LocalDateTime IMPORTED_AT = LocalDateTime.of(2026, 8, 4, 10, 0);
     private static final ReplayIssueQuery ALL = new ReplayIssueQuery(50, 0, null, null, null, null, null, null);
+
+    @Test
+    void affectedTransactionCountOrderingIsNumericStableAndKeepsInvalidValuesLast() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-10", "ten"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "two"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-BLANK", "blank"),
+                ReplayIssueTestFixtures.row("公共组", false, 4, "T-BAD", "bad")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='10' WHERE transaction_code='T-10'");
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='2' WHERE transaction_code='T-2'");
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='' WHERE transaction_code='T-BLANK'");
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='bad' WHERE transaction_code='T-BAD'");
+
+        assertEquals(List.of("T-2", "T-10", "T-BLANK", "T-BAD"),
+                dao.list(ALL, ReplayIssueAffectedTransactionCountOrder.ASC).stream()
+                        .map(row -> row.get("transaction_code")).toList());
+        assertEquals(List.of("T-10", "T-2", "T-BLANK", "T-BAD"),
+                dao.list(ALL, ReplayIssueAffectedTransactionCountOrder.DESC).stream()
+                        .map(row -> row.get("transaction_code")).toList());
+        assertEquals(List.of("T-10", "T-2", "T-BLANK", "T-BAD"),
+                dao.list(ALL).stream().map(row -> row.get("transaction_code")).toList());
+    }
 
     private JdbcTemplate jdbc;
     private ReplayIssueDao dao;
@@ -78,6 +104,24 @@ class ReplayIssueDaoTest {
     }
 
     @Test
+    void issueDomainInitializesFromGroupAndListProjectsTransferCount() {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "domain")), IMPORTED_AT);
+        Map<String, Object> initial = dao.list(ALL).get(0);
+        long id = ((Number) initial.get("id")).longValue();
+
+        assertEquals("公共组", initial.get("issue_domain"));
+        assertEquals(0L, ((Number) initial.get("issue_domain_transfer_count")).longValue());
+
+        jdbc.update("INSERT INTO dii_replay_issue_domain_transfer "
+                        + "(replay_issue_id,issue_key,from_domain,to_domain,operator_username,operator_real_name,transferred_at) "
+                        + "VALUES (?,?,?,?,?,?,?)",
+                id, "key-1", "公共组", "平台组", "c-zhangsan", "张三", IMPORTED_AT.plusHours(1));
+
+        Map<String, Object> transferred = dao.list(ALL).get(0);
+        assertEquals(1L, ((Number) transferred.get("issue_domain_transfer_count")).longValue());
+    }
+
+    @Test
     void genericCurrentUpdateCannotOverwritePlannedCompletionDate() {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "before import")), IMPORTED_AT);
         long id = ((Number) dao.list(ALL).get(0).get("id")).longValue();
@@ -117,6 +161,25 @@ class ReplayIssueDaoTest {
     }
 
     @Test
+    void issueDomainHeaderCandidatesUseStoredValueAndFallbackToGroup() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-FALLBACK", "fallback"),
+                ReplayIssueTestFixtures.row("存款组", false, 2, "T-PLATFORM", "platform"),
+                ReplayIssueTestFixtures.row("贷款组", false, 3, "T-DEPOSIT", "deposit")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='' WHERE transaction_code='T-FALLBACK'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='平台组' WHERE transaction_code='T-PLATFORM'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='存款组' WHERE transaction_code='T-DEPOSIT'");
+
+        assertEquals(List.of("公共组", "存款组", "平台组"),
+                dao.headerFilterValues("issueDomain", ALL, null));
+        ReplayIssueHeaderFilterOptionResult counted = dao.headerFilterOptionCounts("issueDomain", ALL, "组");
+        assertEquals(3, counted.candidateCount());
+        assertEquals(3L, counted.matchedIssueCount());
+        assertEquals(List.of("公共组", "存款组", "平台组"),
+                counted.items().stream().map(ReplayIssueHeaderFilterOption::value).toList());
+    }
+
+    @Test
     void issueSerialGlobalSerialAndDefectDateHeaderFiltersSupportSearchEmptyAndComposition() {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("公共组", false, 1, "T-EMPTY", "empty"),
@@ -152,6 +215,102 @@ class ReplayIssueDaoTest {
                 List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null,
                 null, List.of(), null, List.of(), List.of(), List.of(),
                 issueIds, serialNos, globalSerialNos, defectRepairDates);
+    }
+
+    @Test
+    void longTextHeaderFiltersSupportFuzzyCandidatesEmptyValuesAndCrossFieldComposition() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-EMPTY", "empty"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-100", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-200", "second")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='',field_name='',issue_description='',issue_key='' WHERE transaction_code='T-EMPTY'");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户查询',field_name='custName',issue_description='新老核心客户名称不一致',issue_key='TC001|custName' WHERE transaction_code='T-100'");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户维护',field_name='accountStatus',issue_description='新老核心账户状态不一致',issue_key='TC002|accountStatus' WHERE transaction_code='T-200'");
+
+        assertEquals(List.of("账户查询"), dao.headerFilterValues("transactionName", ALL, "查询"));
+        assertEquals(List.of("custName"), dao.headerFilterValues("fieldName", ALL, "cust"));
+        assertEquals(List.of("新老核心客户名称不一致"), dao.headerFilterValues("issueDescription", ALL, "客户名称"));
+        assertEquals(List.of("TC002|accountStatus"), dao.headerFilterValues("issueKey", ALL, "TC002"));
+        assertTrue(dao.headerFilterValues("transactionName", ALL, null).contains("空"));
+
+        ReplayIssueQuery query = queryWithLongTextHeaderFilters(
+                List.of("账户查询", "账户维护"), List.of("accountStatus"),
+                List.of("新老核心账户状态不一致"), List.of("TC002|accountStatus"));
+
+        assertEquals(1L, dao.count(query));
+        assertEquals(List.of("T-200"), dao.list(query).stream()
+                .map(row -> row.get("transaction_code")).toList());
+    }
+
+    @Test
+    void headerFilterOptionCountsNormalizeSearchAndDeduplicateIssues() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-1", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "second"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-3", "third")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户查询' WHERE transaction_code IN ('T-1','T-2')");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='  ' WHERE transaction_code='T-3'");
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'RPT20260830-100000-0001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='T-1'",
+                IMPORTED_AT, IMPORTED_AT, IMPORTED_AT, IMPORTED_AT);
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'RPT20260830-100000-0001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='T-2'",
+                IMPORTED_AT, IMPORTED_AT, IMPORTED_AT, IMPORTED_AT);
+
+        ReplayIssueHeaderFilterOptionResult all = dao.headerFilterOptionCounts("transactionName", ALL, null);
+        assertEquals(2, all.candidateCount());
+        assertEquals(3L, all.matchedIssueCount());
+        assertFalse(all.truncated());
+        assertEquals(List.of(
+                new ReplayIssueHeaderFilterOption("空", 1),
+                new ReplayIssueHeaderFilterOption("账户查询", 2)), all.items());
+
+        ReplayIssueHeaderFilterOptionResult searched = dao.headerFilterOptionCounts("transactionName", ALL, "查询");
+        assertEquals(2L, searched.matchedIssueCount());
+        assertEquals(List.of(new ReplayIssueHeaderFilterOption("账户查询", 2)), searched.items());
+
+        ReplayIssueHeaderFilterOptionResult batches = dao.headerFilterOptionCounts("occurrenceBatch", ALL, "RPT20260830");
+        assertEquals(List.of(new ReplayIssueHeaderFilterOption("RPT20260830-100000-0001", 2)), batches.items());
+    }
+
+    @Test
+    void headerFilterOptionCountsSplitPeopleWithoutDuplicateIssues() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-1", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "second"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-3", "third")), IMPORTED_AT);
+        jdbc.batchUpdate("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,old_transaction_name,developer,bank_owner,imported_at) VALUES (?,?,?,?,?,?)", List.of(
+                new Object[]{"公共组", "T-1", "交易1", "张三、李四", "王五、赵六", IMPORTED_AT},
+                new Object[]{"公共组", "T-2", "交易2", "张三", "王五", IMPORTED_AT},
+                new Object[]{"公共组", "T-3", "交易3", " ", "", IMPORTED_AT}));
+
+        ReplayIssueHeaderFilterOptionResult developers = dao.headerFilterOptionCounts("developer", ALL, null);
+        assertEquals(3L, developers.matchedIssueCount());
+        assertEquals(List.of(
+                new ReplayIssueHeaderFilterOption("空", 1),
+                new ReplayIssueHeaderFilterOption("张三", 2),
+                new ReplayIssueHeaderFilterOption("李四", 1)), developers.items());
+
+        ReplayIssueHeaderFilterOptionResult searched = dao.headerFilterOptionCounts("developer", ALL, "李");
+        assertEquals(1L, searched.matchedIssueCount());
+        assertEquals(List.of(new ReplayIssueHeaderFilterOption("李四", 1)), searched.items());
+
+        ReplayIssueHeaderFilterOptionResult bankOwners = dao.headerFilterOptionCounts("bankOwner", ALL, null);
+        assertEquals(List.of(
+                new ReplayIssueHeaderFilterOption("空", 1),
+                new ReplayIssueHeaderFilterOption("王五", 2),
+                new ReplayIssueHeaderFilterOption("赵六", 1)), bankOwners.items());
+    }
+
+    private static ReplayIssueQuery queryWithLongTextHeaderFilters(
+            List<String> transactionNames, List<String> fieldNames,
+            List<String> issueDescriptions, List<String> issueKeys) {
+        return new ReplayIssueQuery(50, 0, null, null, null, null, null, null,
+                null, null, null, null, null, null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null,
+                null, List.of(), null, List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(),
+                transactionNames, fieldNames, issueDescriptions, issueKeys);
     }
 
     @Test
@@ -259,7 +418,8 @@ class ReplayIssueDaoTest {
                 + "SELECT id,issue_key,'TASK-B',?,?,?,? FROM dii_replay_issue WHERE issue_key='key-1'",
                 IMPORTED_AT, IMPORTED_AT, IMPORTED_AT, IMPORTED_AT);
         jdbc.batchUpdate("INSERT INTO dii_replay_weekly_task_batch(batch_name) VALUES (?)",
-                List.of(new Object[]{"BATCH-1"}, new Object[]{"TASK-B"}, new Object[]{"BATCH-2"}));
+                List.of(new Object[]{"RPT20260820-142055-0001"}, new Object[]{"TASK-B"},
+                        new Object[]{"RPT20260820-142055-0002"}));
 
         List<Map<String, Object>> allRows = dao.list(ALL);
         ReplayIssueQuery weeklyPublic = new ReplayIssueQuery(50, 0, "公共组", null, null, null,
@@ -493,10 +653,10 @@ class ReplayIssueDaoTest {
         dao.upsertOccurrenceBatch(issueId, row.issueKey(), "20260804-001", IMPORTED_AT, ReplayIssueStatus.OPEN);
 
         Map<String, Object> listed = dao.list(ALL).get(0);
-        assertEquals("20260804-001、BATCH-1", listed.get("occurrence_rounds"));
+        assertEquals("20260804-001、RPT20260820-142055-0001", listed.get("occurrence_rounds"));
         assertEquals(1, dao.list(queryForRound("20260804-001")).size());
         assertEquals(0, dao.list(queryForRound("20260805-001")).size());
-        assertTrue(dao.coverageRounds().containsAll(List.of("20260804-001", "BATCH-1")));
+        assertTrue(dao.coverageRounds().containsAll(List.of("20260804-001", "RPT20260820-142055-0001")));
     }
 
     @Test

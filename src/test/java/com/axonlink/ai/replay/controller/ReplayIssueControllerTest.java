@@ -23,6 +23,8 @@ import com.axonlink.ai.replay.service.ReplayIssueReviewProperties;
 import com.axonlink.ai.replay.service.ReplayIssueReviewService;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateProperties;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateService;
+import com.axonlink.ai.replay.service.ReplayIssueDomainProperties;
+import com.axonlink.ai.replay.service.ReplayIssueDomainService;
 import com.axonlink.ai.replay.service.ReplayIssueCompletionStatsService;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -55,6 +57,7 @@ import java.util.Map;
 import java.util.concurrent.Semaphore;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -124,7 +127,37 @@ class ReplayIssueControllerTest {
         planDateProperties.setEditors(new LinkedHashMap<>(Map.of("公共组", publicEditors)));
         ReflectionTestUtils.setField(controller, "planDateService",
                 new ReplayIssuePlanDateService(dao, userDao, planDateProperties));
+        ReplayIssueDomainProperties domainProperties = new ReplayIssueDomainProperties();
+        ReplayIssueDomainProperties.EditorGroup publicDomainEditors = new ReplayIssueDomainProperties.EditorGroup();
+        publicDomainEditors.setEmpNos(List.of("100001"));
+        domainProperties.setEditors(new LinkedHashMap<>(Map.of("公共组", publicDomainEditors)));
+        ReflectionTestUtils.setField(controller, "issueDomainService",
+                new ReplayIssueDomainService(dao, userDao, domainProperties));
         mvc = MockMvcBuilders.standaloneSetup(controller, new ReplayIssueUserController(userDao)).build();
+    }
+
+    @Test
+    void issueDomainPermissionsPatchAndHistoryAreExposed() throws Exception {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "domain")),
+                LocalDateTime.of(2026, 8, 31, 9, 0));
+        long issueId = dao.findCurrentByIssueKeyForUpdate("key-1").id();
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/issue-domain-permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.editableDomains[0]").value("公共组"));
+
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/issue-domain", issueId)
+                        .contentType("application/json")
+                        .content("{\"issueDomain\":\"平台组\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.issueDomain").value("平台组"))
+                .andExpect(jsonPath("$.data.transferCount").value(1));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/issue-domain-transfers", issueId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.transferCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].fromDomain").value("公共组"))
+                .andExpect(jsonPath("$.data.items[0].toDomain").value("平台组"));
     }
 
     @Test
@@ -132,6 +165,7 @@ class ReplayIssueControllerTest {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", true, 1, "6208", "planned")),
                 LocalDateTime.of(2026, 8, 26, 9, 0));
         long issueId = dao.findCurrentByIssueKeyForUpdate("key-1").id();
+        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='2026-08-20' WHERE id=?", issueId);
 
         mvc.perform(get("/api/ai/parallel-replay/issues/plan-date-permissions"))
                 .andExpect(status().isOk())
@@ -183,8 +217,14 @@ class ReplayIssueControllerTest {
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/date-points"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.datePoints.length()").value(2))
-                .andExpect(jsonPath("$.data.defaultStartDate").value("2026-08-22"))
-                .andExpect(jsonPath("$.data.defaultEndDate").value("2026-08-28"));
+                .andExpect(jsonPath("$.data.defaultStartDate").value("2026-08-27"))
+                .andExpect(jsonPath("$.data.defaultEndDate").value("2026-08-27"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.effectiveStartDate").value("2026-08-27"))
+                .andExpect(jsonPath("$.data.effectiveEndDate").value("2026-08-27"))
+                .andExpect(jsonPath("$.data.summary.plannedTotal").value(0));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
                         .param("startDate", "2026-08-22")
@@ -228,6 +268,35 @@ class ReplayIssueControllerTest {
                         .param("limit", "0"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("完成情况分类不合法"));
+    }
+
+    @Test
+    void plannedCompletionStatisticsUseTheSelectedGroupingForDashboardAndDrillDown() throws Exception {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6201", "所属领域统计")),
+                LocalDateTime.of(2026, 8, 27, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='平台组', planned_completion_date='2026-08-22' "
+                + "WHERE issue_key='key-1'");
+        ReflectionTestUtils.setField(controller, "completionStatsService",
+                new ReplayIssueCompletionStatsService(new ReplayIssueCompletionStatsDao(jdbc),
+                        Clock.fixed(Instant.parse("2026-08-27T02:00:00Z"), ZoneId.of("Asia/Shanghai"))));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
+                        .param("groupBy", "issueDomain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.groups[0].groupName").value("平台组"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/issues")
+                        .param("groupBy", "issueDomain")
+                        .param("groupName", "平台组")
+                        .param("category", "OVERDUE_UNFINISHED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].issueId").value("issue-1"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
+                        .param("groupBy", "unknown"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("统计分组口径仅支持 domain 或 issueDomain"));
     }
 
     @Test
@@ -391,7 +460,7 @@ class ReplayIssueControllerTest {
                 .andReturn().getResponse().getContentAsByteArray();
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
             assertEquals(2, workbook.getSheetAt(0).getPhysicalNumberOfRows());
-            assertEquals("T-2", workbook.getSheetAt(0).getRow(1).getCell(4).getStringCellValue());
+            assertEquals("T-2", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
         }
     }
 
@@ -424,7 +493,39 @@ class ReplayIssueControllerTest {
                 .andReturn().getResponse().getContentAsByteArray();
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
             assertEquals(2, workbook.getSheetAt(0).getPhysicalNumberOfRows());
-            assertEquals("T-27", workbook.getSheetAt(0).getRow(1).getCell(4).getStringCellValue());
+            assertEquals("T-27", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
+        }
+    }
+
+    @Test
+    void issueDomainHeaderFilterEndpointUsesDomainFallbackCandidates() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-FALLBACK", "fallback"),
+                ReplayIssueTestFixtures.row("存款组", false, 2, "T-PLATFORM", "platform")),
+                LocalDateTime.of(2026, 8, 31, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='' WHERE transaction_code='T-FALLBACK'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain='平台组' WHERE transaction_code='T-PLATFORM'");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .param("field", "issueDomain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(2))
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(2))
+                .andExpect(jsonPath("$.data.items[0].value").value("公共组"))
+                .andExpect(jsonPath("$.data.items[1].value").value("平台组"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues")
+                        .param("issueDomains", "平台组"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-PLATFORM"));
+
+        byte[] body = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                        .param("issueDomains", "公共组", "平台组"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
+            assertEquals(3, workbook.getSheetAt(0).getPhysicalNumberOfRows());
         }
     }
 
@@ -479,8 +580,113 @@ class ReplayIssueControllerTest {
                 .andReturn().getResponse().getContentAsByteArray();
         try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
             assertEquals(2, workbook.getSheetAt(0).getPhysicalNumberOfRows());
-            assertEquals("T-200", workbook.getSheetAt(0).getRow(1).getCell(4).getStringCellValue());
+            assertEquals("T-200", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
         }
+    }
+
+    @Test
+    void fourLongTextHeaderFiltersSupportCandidateSearchCompositionAndExport() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-100", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-200", "second")),
+                LocalDateTime.of(2026, 8, 30, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户查询',field_name='custName',issue_description='新老核心客户名称不一致',issue_key='TC001|custName' WHERE transaction_code='T-100'");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户维护',field_name='accountStatus',issue_description='新老核心账户状态不一致',issue_key='TC002|accountStatus' WHERE transaction_code='T-200'");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-options")
+                        .param("field", "issueDescription")
+                        .param("keyword", "账户状态")
+                        .param("transactionNames", "账户维护"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0]").value("新老核心账户状态不一致"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues")
+                        .param("transactionNames", "账户查询", "账户维护")
+                        .param("fieldNames", "accountStatus")
+                        .param("issueDescriptions", "新老核心账户状态不一致")
+                        .param("issueKeys", "TC002|accountStatus"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-200"));
+
+        byte[] body = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                        .param("transactionNames", "账户查询", "账户维护")
+                        .param("fieldNames", "accountStatus")
+                        .param("issueDescriptions", "新老核心账户状态不一致")
+                        .param("issueKeys", "TC002|accountStatus"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
+            assertEquals(2, workbook.getSheetAt(0).getPhysicalNumberOfRows());
+            assertEquals("T-200", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
+        }
+    }
+
+    @Test
+    void countedHeaderFilterEndpointPreservesLegacyCandidateResponse() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-1", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "second"),
+                ReplayIssueTestFixtures.row("贷款组", false, 3, "T-3", "third")),
+                LocalDateTime.of(2026, 8, 30, 10, 0));
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='账户查询' WHERE transaction_code IN ('T-1','T-2')");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_name='贷款查询' WHERE transaction_code='T-3'");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .param("field", "transactionName")
+                        .param("keyword", "账户")
+                        .param("groupNames", "公共组", "贷款组"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(1))
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(2))
+                .andExpect(jsonPath("$.data.truncated").value(false))
+                .andExpect(jsonPath("$.data.items[0].value").value("账户查询"))
+                .andExpect(jsonPath("$.data.items[0].count").value(2));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-options")
+                        .param("field", "transactionName")
+                        .param("keyword", "账户"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0]").value("账户查询"));
+    }
+
+    @Test
+    void affectedTransactionCountOrderAppliesToListAndExport() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-2", "two"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-10", "ten")),
+                LocalDateTime.of(2026, 8, 30, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='2' WHERE transaction_code='T-2'");
+        jdbc.update("UPDATE dii_replay_issue SET affected_transaction_count='10' WHERE transaction_code='T-10'");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues")
+                        .param("affectedTransactionCountOrder", "DESC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-10"))
+                .andExpect(jsonPath("$.data.items[0].affected_transaction_count").value("10"));
+
+        byte[] body = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                        .param("affectedTransactionCountOrder", "DESC"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
+            var sheet = workbook.getSheetAt(0);
+            var headerRow = sheet.getRow(0);
+            List<String> headers = new ArrayList<>();
+            for (int index = 0; index < headerRow.getLastCellNum(); index++) {
+                headers.add(headerRow.getCell(index).getStringCellValue());
+            }
+            assertFalse(headers.contains("上次出现日期"));
+            assertEquals("出现笔数", headerRow.getCell(25).getStringCellValue());
+            assertEquals("10", sheet.getRow(1).getCell(25).getStringCellValue());
+        }
+    }
+
+    @Test
+    void invalidAffectedTransactionCountOrderIsRejected() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues")
+                        .param("affectedTransactionCountOrder", "SIDEWAYS"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -588,23 +794,28 @@ class ReplayIssueControllerTest {
             assertFalse(headers.contains("导入时间"));
             assertFalse(headers.contains("登记时间"));
             assertFalse(headers.contains("历史出现次数"));
+            assertFalse(headers.contains("上次出现日期"));
             assertEquals(headers.indexOf("问题类型") + 1, headers.indexOf("需协同人"));
-            assertEquals("优先任务", headers.get(0));
-            assertEquals("-", dataRow.getCell(0).getStringCellValue());
-            assertEquals("公共组", dataRow.getCell(1).getStringCellValue());
-            assertEquals("否", dataRow.getCell(3).getStringCellValue());
+            assertEquals(headers.indexOf("问题描述") + 1, headers.indexOf("优先任务"));
+            assertEquals(headers.indexOf("优先任务") + 1, headers.indexOf("领域"));
+            assertEquals(headers.indexOf("领域") + 1, headers.indexOf("问题所属领域"));
+            assertEquals(headers.indexOf("问题所属领域") + 1, headers.indexOf("计划验证日期"));
+            assertFalse(headers.contains("转组次数"));
+            assertEquals("-", dataRow.getCell(headers.indexOf("优先任务")).getStringCellValue());
+            assertEquals("公共组", dataRow.getCell(headers.indexOf("领域")).getStringCellValue());
+            assertEquals("公共组", dataRow.getCell(headers.indexOf("问题所属领域")).getStringCellValue());
+            assertEquals("否", dataRow.getCell(headers.indexOf("是否沙箱")).getStringCellValue());
             assertEquals("2026-08-26", dataRow.getCell(headers.indexOf("计划验证日期")).getStringCellValue());
             assertEquals("张开发", dataRow.getCell(headers.indexOf("开发负责人")).getStringCellValue());
             assertEquals("刘科技", dataRow.getCell(headers.indexOf("科技负责人")).getStringCellValue());
             assertEquals("孙海英(sunhy1)", dataRow.getCell(headers.indexOf("需协同人")).getStringCellValue());
             assertEquals("2026-07-28", dataRow.getCell(headers.indexOf("首次出现日期")).getStringCellValue());
-            assertEquals("2026-07-31", dataRow.getCell(headers.indexOf("上次出现日期")).getStringCellValue());
             assertTrue(!dataRow.getCell(headers.indexOf("出现批次")).getStringCellValue().isBlank());
         }
     }
 
     @Test
-    void exportUsesPriorityTaskAsTheFirstVisibleHeader() throws Exception {
+    void exportPlacesPriorityAndDomainsBetweenDescriptionAndPlanDate() throws Exception {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "优先任务表头")),
                 LocalDateTime.of(2026, 8, 27, 9, 0));
 
@@ -618,7 +829,11 @@ class ReplayIssueControllerTest {
             for (int index = 0; index < headerRow.getLastCellNum(); index++) {
                 headers.add(headerRow.getCell(index).getStringCellValue());
             }
-            assertEquals("优先任务", headers.get(0));
+            assertEquals("issue_id", headers.get(0));
+            assertEquals(headers.indexOf("问题描述") + 1, headers.indexOf("优先任务"));
+            assertEquals(headers.indexOf("优先任务") + 1, headers.indexOf("领域"));
+            assertEquals(headers.indexOf("领域") + 1, headers.indexOf("问题所属领域"));
+            assertEquals(headers.indexOf("问题所属领域") + 1, headers.indexOf("计划验证日期"));
             assertTrue(headers.contains("计划验证日期"));
             assertFalse(headers.contains("计划完成日期"));
         }
@@ -895,6 +1110,47 @@ class ReplayIssueControllerTest {
                 .andExpect(jsonPath("$.data[0].fixedCount").value(1))
                 .andExpect(jsonPath("$.data[0].fixedTotalCount").value(2))
                 .andExpect(jsonPath("$.data[0].totalCount").value(7));
+    }
+
+    @Test
+    void statisticsEndpointsCanGroupByIssueDomainWithGroupNameFallback() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("贷款组", false, 1, "T-PLATFORM", "platform"),
+                ReplayIssueTestFixtures.row("贷款组", false, 2, "T-FALLBACK", "fallback")),
+                LocalDateTime.of(2026, 8, 11, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain = '平台组', issue_status = '新建' WHERE transaction_code = 'T-PLATFORM'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain = NULL, issue_status = '打开' WHERE transaction_code = 'T-FALLBACK'");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats").param("groupBy", "issueDomain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.groupCount").value(2))
+                .andExpect(jsonPath("$.data.groupCounts.平台组.total").value(1))
+                .andExpect(jsonPath("$.data.groupCounts.贷款组.total").value(1));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/groups").param("groupBy", "issueDomain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].groupName", hasItems("贷款组", "平台组")));
+    }
+
+    @Test
+    void personRankingKeepsDynamicDeveloperWhenGroupedByIssueDomain() throws Exception {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("贷款组", false, 1, "T-PLATFORM", "platform")),
+                LocalDateTime.of(2026, 8, 11, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET issue_domain = '平台组', issue_status = '新建' WHERE transaction_code = 'T-PLATFORM'");
+        jdbc.update("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,old_transaction_name,developer,imported_at) VALUES (?,?,?,?,?)",
+                "贷款", "T-PLATFORM", "平台问题交易", "张三(c-zhangs3)", LocalDateTime.of(2026, 8, 11, 8, 0));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/person-ranking").param("groupBy", "issueDomain"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].groupName").value("平台组"))
+                .andExpect(jsonPath("$.data[0].developer").value("张三(c-zhangs3)"));
+    }
+
+    @Test
+    void statisticsEndpointsRejectUnknownGroupingDimension() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats").param("groupBy", "unknown"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("统计分组口径仅支持 domain 或 issueDomain"));
     }
 
     @Test
@@ -1218,6 +1474,7 @@ class ReplayIssueControllerTest {
         return switch (header) {
             case "领域" -> sheetName.replace("沙箱-", "");
             case "序号" -> "1";
+            case "批次" -> "RPT20260820-142055-9860";
             case "issue_key" -> "TRAN|6208|响应码|" + sheetName;
             default -> "value";
         };

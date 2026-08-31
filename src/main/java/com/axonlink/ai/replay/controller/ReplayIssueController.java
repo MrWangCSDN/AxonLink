@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.controller;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
+import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.dto.ReplayIssueFullRefreshResult;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
@@ -12,6 +13,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry;
 import com.axonlink.ai.replay.dto.ReplayImportRound;
 import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
+import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundTrackingGroup;
@@ -38,6 +40,8 @@ import com.axonlink.ai.replay.service.ReplayIssueReviewService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewForbiddenException;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateService;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateForbiddenException;
+import com.axonlink.ai.replay.service.ReplayIssueDomainForbiddenException;
+import com.axonlink.ai.replay.service.ReplayIssueDomainService;
 import com.axonlink.ai.replay.service.ReplayIssueCompletionStatsService;
 import com.axonlink.security.UserPrincipalResolver;
 import com.axonlink.common.R;
@@ -57,6 +61,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -103,6 +108,9 @@ public class ReplayIssueController {
 
     @org.springframework.beans.factory.annotation.Autowired
     private ReplayIssueCompletionStatsService completionStatsService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ReplayIssueDomainService issueDomainService;
 
     public ReplayIssueController(ReplayIssueImportService importService,
                                  ReplayIssueFullRefreshService fullRefreshService, ReplayIssueDao dao,
@@ -174,6 +182,47 @@ public class ReplayIssueController {
         ReplayIssueOperator operator = resolveOperator(request);
         if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
         return ResponseEntity.ok(R.ok(planDateService.permissions(operator)));
+    }
+
+    @GetMapping("/issue-domain-permissions")
+    public ResponseEntity<R<com.axonlink.ai.replay.dto.ReplayIssueDomainPermissions>> issueDomainPermissions(
+            HttpServletRequest request) {
+        ReplayIssueOperator operator = resolveOperator(request);
+        if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
+        return ResponseEntity.ok(R.ok(issueDomainService.permissions(operator)));
+    }
+
+    @PatchMapping("/{id}/issue-domain")
+    public ResponseEntity<R<com.axonlink.ai.replay.dto.ReplayIssueDomainUpdateResult>> updateIssueDomain(
+            @PathVariable long id,
+            @RequestBody(required = false) com.axonlink.ai.replay.dto.ReplayIssueDomainUpdateRequest body,
+            HttpServletRequest request) {
+        ReplayIssueOperator operator = resolveOperator(request);
+        if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
+        try {
+            return ResponseEntity.ok(R.ok(issueDomainService.update(
+                    id, body == null ? null : body.issueDomain(), operator)));
+        } catch (ReplayIssueDomainForbiddenException exception) {
+            return error(HttpStatus.FORBIDDEN, exception.getMessage());
+        } catch (IllegalArgumentException exception) {
+            HttpStatus status = "回放问题不存在".equals(exception.getMessage())
+                    ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+            return error(status, exception.getMessage());
+        }
+    }
+
+    @GetMapping("/{id}/issue-domain-transfers")
+    public ResponseEntity<R<com.axonlink.ai.replay.dto.ReplayIssueDomainTransfers>> issueDomainTransfers(
+            @PathVariable long id, HttpServletRequest request) {
+        ReplayIssueOperator operator = resolveOperator(request);
+        if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
+        try {
+            return ResponseEntity.ok(R.ok(issueDomainService.transfers(id)));
+        } catch (IllegalArgumentException exception) {
+            HttpStatus status = "回放问题不存在".equals(exception.getMessage())
+                    ? HttpStatus.NOT_FOUND : HttpStatus.BAD_REQUEST;
+            return error(status, exception.getMessage());
+        }
     }
 
     @PatchMapping("/{id}/planned-completion-date")
@@ -340,19 +389,26 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> reviewStatuses,
             @RequestParam(required = false) String issueId,
             @RequestParam(required = false) List<String> groupNames,
+            @RequestParam(required = false) List<String> issueDomains,
             @RequestParam(required = false) List<String> sandboxes,
             @RequestParam(required = false) List<String> plannedCompletionDates,
             @RequestParam(required = false) List<String> issueIds,
             @RequestParam(required = false) List<String> serialNos,
             @RequestParam(required = false) List<String> globalSerialNos,
-            @RequestParam(required = false) List<String> defectRepairDates) {
+            @RequestParam(required = false) List<String> defectRepairDates,
+            @RequestParam(required = false) List<String> transactionNames,
+            @RequestParam(required = false) List<String> fieldNames,
+            @RequestParam(required = false) List<String> issueDescriptions,
+            @RequestParam(required = false) List<String> issueKeys,
+            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
         ReplayIssueQuery query = new ReplayIssueQuery(limit, offset, groupName,
                 sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner, cooperationPerson,
                 serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
-                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates));
-        List<Map<String, Object>> items = dao.list(query).stream()
+                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
+        List<Map<String, Object>> items = dao.list(query, affectedTransactionCountOrder).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
         return R.ok(Map.of("total", dao.count(query), "items", items));
@@ -386,18 +442,75 @@ public class ReplayIssueController {
                                                 @RequestParam(required = false) List<String> reviewStatuses,
                                                 @RequestParam(required = false) String issueId,
                                                 @RequestParam(required = false) List<String> groupNames,
+                                                @RequestParam(required = false) List<String> issueDomains,
                                                 @RequestParam(required = false) List<String> sandboxes,
                                                 @RequestParam(required = false) List<String> plannedCompletionDates,
                                                 @RequestParam(required = false) List<String> issueIds,
                                                 @RequestParam(required = false) List<String> serialNos,
                                                 @RequestParam(required = false) List<String> globalSerialNos,
-                                                @RequestParam(required = false) List<String> defectRepairDates) {
+                                                @RequestParam(required = false) List<String> defectRepairDates,
+                                                @RequestParam(required = false) List<String> transactionNames,
+                                                @RequestParam(required = false) List<String> fieldNames,
+                                                @RequestParam(required = false) List<String> issueDescriptions,
+                                                @RequestParam(required = false) List<String> issueKeys) {
         ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
-                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates));
+                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
         return R.ok(dao.headerFilterValues(field, query, keyword));
+    }
+
+    @GetMapping("/header-filter-option-counts")
+    public R<ReplayIssueHeaderFilterOptionResult> headerFilterOptionCounts(
+            @RequestParam String field,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String groupName,
+            @RequestParam(required = false) Boolean sandbox,
+            @RequestParam(required = false) String issueLevel,
+            @RequestParam(required = false) String issueType,
+            @RequestParam(required = false) String issueStatus,
+            @RequestParam(required = false) String developer,
+            @RequestParam(required = false) String bankOwner,
+            @RequestParam(required = false) String cooperationPerson,
+            @RequestParam(required = false) String serialNo,
+            @RequestParam(required = false) String globalSerialNo,
+            @RequestParam(required = false) String defectRepairDate,
+            @RequestParam(required = false) String coverageRound,
+            @RequestParam(required = false) List<String> transactionCodes,
+            @RequestParam(required = false) List<String> issueLevels,
+            @RequestParam(required = false) List<String> developers,
+            @RequestParam(required = false) List<String> bankOwners,
+            @RequestParam(required = false) List<String> issueStatuses,
+            @RequestParam(required = false) List<String> issueTypes,
+            @RequestParam(required = false) List<String> cooperationPersons,
+            @RequestParam(required = false) List<String> occurrenceBatches,
+            @RequestParam(required = false) Boolean weeklyTask,
+            @RequestParam(required = false) String reviewStatus,
+            @RequestParam(required = false) List<String> reviewStatuses,
+            @RequestParam(required = false) String issueId,
+            @RequestParam(required = false) List<String> groupNames,
+            @RequestParam(required = false) List<String> issueDomains,
+            @RequestParam(required = false) List<String> sandboxes,
+            @RequestParam(required = false) List<String> plannedCompletionDates,
+            @RequestParam(required = false) List<String> issueIds,
+            @RequestParam(required = false) List<String> serialNos,
+            @RequestParam(required = false) List<String> globalSerialNos,
+            @RequestParam(required = false) List<String> defectRepairDates,
+            @RequestParam(required = false) List<String> transactionNames,
+            @RequestParam(required = false) List<String> fieldNames,
+            @RequestParam(required = false) List<String> issueDescriptions,
+            @RequestParam(required = false) List<String> issueKeys) {
+        ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
+                issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate,
+                coverageRound, safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners),
+                safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
+                reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes),
+                safe(plannedCompletionDates), safe(issueIds), safe(serialNos), safe(globalSerialNos),
+                safe(defectRepairDates), safe(transactionNames), safe(fieldNames), safe(issueDescriptions),
+                safe(issueKeys), safe(issueDomains));
+        return R.ok(dao.headerFilterOptionCounts(field, query, keyword));
     }
 
     private static List<String> safe(List<String> values) {
@@ -410,18 +523,33 @@ public class ReplayIssueController {
     }
 
     @GetMapping("/stats")
-    public R<Map<String, Object>> stats() {
-        return R.ok(dao.stats());
+    public ResponseEntity<R<Map<String, Object>>> stats(
+            @RequestParam(defaultValue = "domain") String groupBy) {
+        try {
+            return ResponseEntity.ok(R.ok(dao.stats(groupBy)));
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
     }
 
     @GetMapping("/stats/groups")
-    public R<List<ReplayIssueGroupSummary>> groupSummaries() {
-        return R.ok(dao.groupIssueSummaries());
+    public ResponseEntity<R<List<ReplayIssueGroupSummary>>> groupSummaries(
+            @RequestParam(defaultValue = "domain") String groupBy) {
+        try {
+            return ResponseEntity.ok(R.ok(dao.groupIssueSummaries(groupBy)));
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
     }
 
     @GetMapping("/stats/person-ranking")
-    public R<List<ReplayIssuePersonRanking>> personRankings() {
-        return R.ok(dao.personIssueRankings());
+    public ResponseEntity<R<List<ReplayIssuePersonRanking>>> personRankings(
+            @RequestParam(defaultValue = "domain") String groupBy) {
+        try {
+            return ResponseEntity.ok(R.ok(dao.personIssueRankings(groupBy)));
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
     }
 
     @GetMapping("/stats/planned-completion/date-points")
@@ -432,9 +560,10 @@ public class ReplayIssueController {
     @GetMapping("/stats/planned-completion")
     public ResponseEntity<R<ReplayIssueCompletionDashboard>> plannedCompletionDashboard(
             @RequestParam(required = false) String startDate,
-            @RequestParam(required = false) String endDate) {
+            @RequestParam(required = false) String endDate,
+            @RequestParam(defaultValue = "domain") String groupBy) {
         try {
-            return ResponseEntity.ok(R.ok(completionStatsService.dashboard(startDate, endDate)));
+            return ResponseEntity.ok(R.ok(completionStatsService.dashboard(startDate, endDate, groupBy)));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -444,13 +573,14 @@ public class ReplayIssueController {
     public ResponseEntity<R<ReplayIssueCompletionIssuePage>> plannedCompletionIssues(
             @RequestParam(required = false) String startDate,
             @RequestParam(required = false) String endDate,
+            @RequestParam(defaultValue = "domain") String groupBy,
             @RequestParam String groupName,
             @RequestParam(required = false) String matchedDeveloper,
             @RequestParam String category,
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "0") int offset) {
         try {
-            return ResponseEntity.ok(R.ok(completionStatsService.issues(startDate, endDate,
+            return ResponseEntity.ok(R.ok(completionStatsService.issues(startDate, endDate, groupBy,
                     groupName, matchedDeveloper, category, limit, offset)));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
@@ -526,33 +656,41 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> reviewStatuses,
             @RequestParam(required = false) String issueId,
             @RequestParam(required = false) List<String> groupNames,
+            @RequestParam(required = false) List<String> issueDomains,
             @RequestParam(required = false) List<String> sandboxes,
             @RequestParam(required = false) List<String> plannedCompletionDates,
             @RequestParam(required = false) List<String> issueIds,
             @RequestParam(required = false) List<String> serialNos,
             @RequestParam(required = false) List<String> globalSerialNos,
-            @RequestParam(required = false) List<String> defectRepairDates) {
+            @RequestParam(required = false) List<String> defectRepairDates,
+            @RequestParam(required = false) List<String> transactionNames,
+            @RequestParam(required = false) List<String> fieldNames,
+            @RequestParam(required = false) List<String> issueDescriptions,
+            @RequestParam(required = false) List<String> issueKeys,
+            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
         ReplayIssueQuery query = new ReplayIssueQuery(200, 0, groupName, sandbox, issueLevel, issueType, keyword,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
-                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates));
+                safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(200); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             workbook.setCompressTempFiles(true);
             Sheet sheet = workbook.createSheet("回放问题清单");
-            String[] headers = {"优先任务", "领域", "issue_id", "是否沙箱", "交易码", "交易名称", "问题级别", "字段名", "流水号", "全局流水号", "问题描述",
-                    "计划验证日期", "缺陷修复日期", "开发负责人", "科技负责人", "问题状态", "审核状态", "审核人", "审核时间", "问题类型", "需协同人", "初步问题分析", "最终处理方案", "备注",
-                    "该问题出现在的交易笔数", "issue_key", "首次出现日期", "上次出现日期", "出现批次"};
+            String[] headers = {"issue_id", "是否沙箱", "交易码", "交易名称", "问题级别", "字段名", "流水号", "全局流水号", "问题描述",
+                    "优先任务", "领域", "问题所属领域", "计划验证日期", "缺陷修复日期", "开发负责人", "科技负责人", "问题状态", "审核状态", "审核人", "审核时间", "问题类型", "需协同人", "初步问题分析", "最终处理方案", "备注",
+                    "出现笔数", "issue_key", "首次出现日期", "出现批次"};
             Row header = sheet.createRow(0);
             for (int i = 0; i < headers.length; i++) header.createCell(i).setCellValue(headers[i]);
             int rowIndex = 1;
-            for (Map<String, Object> item : dao.listForExport(query)) {
+            for (Map<String, Object> item : dao.listForExport(query, affectedTransactionCountOrder)) {
                 Row row = sheet.createRow(rowIndex++);
-                Object[] values = {weeklyTaskText(item.get("weekly_task")), text(item.get("domain")), text(item.get("issue_id")), sandboxText(item.get("is_sandbox")), text(item.get("transaction_code")),
+                Object[] values = {text(item.get("issue_id")), sandboxText(item.get("is_sandbox")), text(item.get("transaction_code")),
                         text(item.get("transaction_name")), text(item.get("issue_level")), text(item.get("field_name")), text(item.get("serial_no")), text(item.get("global_serial_no")),
-                        text(item.get("issue_description")), text(item.get("planned_completion_date")), text(item.get("defect_repair_date")), text(item.get("matched_developer")), text(item.get("matched_bank_owner")), text(item.get("issue_status")), text(item.get("review_status")), text(item.get("reviewer_real_name")), text(item.get("reviewed_at")), text(item.get("issue_type")), personText(item), text(item.get("initial_analysis")),
+                        text(item.get("issue_description")), weeklyTaskText(item.get("weekly_task")), text(item.get("domain")), text(item.get("issue_domain")),
+                        text(item.get("planned_completion_date")), text(item.get("defect_repair_date")), text(item.get("matched_developer")), text(item.get("matched_bank_owner")), text(item.get("issue_status")), text(item.get("review_status")), text(item.get("reviewer_real_name")), text(item.get("reviewed_at")), text(item.get("issue_type")), personText(item), text(item.get("initial_analysis")),
                         text(item.get("final_solution")), text(item.get("remark")), text(item.get("affected_transaction_count")), text(item.get("issue_key")),
-                        dateOnlyText(item.get("first_occurrence_date")), dateOnlyText(item.get("last_occurrence_date")), text(item.get("occurrence_rounds"))};
+                        dateOnlyText(item.get("first_occurrence_date")), text(item.get("occurrence_rounds"))};
                 for (int i = 0; i < values.length; i++) row.createCell(i).setCellValue(String.valueOf(values[i]));
             }
             workbook.write(output);
@@ -632,6 +770,12 @@ public class ReplayIssueController {
             log.error("[replay-issue] 日报下载失败 batchNo={}", batchNo, e);
             return ResponseEntity.internalServerError().build();
         }
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<R<Void>> handleInvalidRequestParameter(
+            MethodArgumentTypeMismatchException exception) {
+        return error(HttpStatus.BAD_REQUEST, "请求参数错误");
     }
 
     @ExceptionHandler(Exception.class)

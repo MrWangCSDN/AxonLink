@@ -19,9 +19,10 @@ import java.util.List;
 public class ReplayIssueCompletionStatsDao {
     public static final String UNMATCHED_DEVELOPER = "未匹配负责人";
 
-    private static final String CLASSIFIED_SOURCE = """
+    private static final String CLASSIFIED_SOURCE_TEMPLATE = """
             SELECT i.id, i.issue_id, i.transaction_code, i.transaction_name, i.issue_status,
-                   i.planned_completion_date, i.defect_repair_date, i.issue_key, i.group_name,
+                   i.planned_completion_date, i.defect_repair_date, i.issue_key,
+                   %s AS group_name,
                    COALESCE(NULLIF(TRIM(tp.developer), ''), '未匹配负责人') AS matched_developer,
                    CASE
                      WHEN i.defect_repair_date IS NOT NULL
@@ -58,6 +59,12 @@ public class ReplayIssueCompletionStatsDao {
     }
 
     public List<CompletionAggregateRow> aggregate(LocalDate startDate, LocalDate endDate, LocalDate today) {
+        return aggregate(startDate, endDate, today, "domain");
+    }
+
+    public List<CompletionAggregateRow> aggregate(LocalDate startDate, LocalDate endDate, LocalDate today,
+                                                   String groupBy) {
+        String classifiedSource = classifiedSource(groupBy);
         String sql = """
                 SELECT group_name, matched_developer,
                        SUM(CASE WHEN completion_category='ON_TIME_FIXED' THEN 1 ELSE 0 END) AS on_time_count,
@@ -65,7 +72,7 @@ public class ReplayIssueCompletionStatsDao {
                        SUM(CASE WHEN completion_category='UNFINISHED' THEN 1 ELSE 0 END) AS unfinished_count,
                        SUM(CASE WHEN completion_category='OVERDUE_UNFINISHED' THEN 1 ELSE 0 END) AS overdue_count
                   FROM (
-                """ + CLASSIFIED_SOURCE + """
+                """ + classifiedSource + """
                        ) classified
                  GROUP BY group_name, matched_developer
                  ORDER BY group_name, matched_developer
@@ -81,6 +88,14 @@ public class ReplayIssueCompletionStatsDao {
                                                       String groupName, String matchedDeveloper,
                                                       ReplayIssueCompletionCategory category,
                                                       int limit, int offset) {
+        return findIssues(startDate, endDate, today, "domain", groupName, matchedDeveloper, category, limit, offset);
+    }
+
+    public ReplayIssueCompletionIssuePage findIssues(LocalDate startDate, LocalDate endDate, LocalDate today,
+                                                      String groupBy, String groupName, String matchedDeveloper,
+                                                      ReplayIssueCompletionCategory category,
+                                                      int limit, int offset) {
+        String classifiedSource = classifiedSource(groupBy);
         StringBuilder predicate = new StringBuilder(" WHERE group_name=? AND completion_category=?");
         List<Object> baseArgs = new ArrayList<>(List.of(sqlDate(today), sqlDate(startDate), sqlDate(endDate),
                 groupName, category.name()));
@@ -89,14 +104,14 @@ public class ReplayIssueCompletionStatsDao {
             baseArgs.add(matchedDeveloper);
         }
 
-        Long totalValue = jdbc.queryForObject("SELECT COUNT(*) FROM (" + CLASSIFIED_SOURCE + ") classified"
+        Long totalValue = jdbc.queryForObject("SELECT COUNT(*) FROM (" + classifiedSource + ") classified"
                 + predicate, Long.class, baseArgs.toArray());
         long total = totalValue == null ? 0L : totalValue;
 
         List<Object> pageArgs = new ArrayList<>(baseArgs);
         pageArgs.add(limit);
         pageArgs.add(offset);
-        List<ReplayIssueCompletionIssueItem> items = jdbc.query("SELECT * FROM (" + CLASSIFIED_SOURCE
+        List<ReplayIssueCompletionIssueItem> items = jdbc.query("SELECT * FROM (" + classifiedSource
                         + ") classified" + predicate + " ORDER BY planned_completion_date,id LIMIT ? OFFSET ?",
                 (rs, rowNum) -> new ReplayIssueCompletionIssueItem(
                         rs.getLong("id"), rs.getString("issue_id"), rs.getString("transaction_code"),
@@ -104,6 +119,23 @@ public class ReplayIssueCompletionStatsDao {
                         localDate(rs.getDate("planned_completion_date")), localDate(rs.getDate("defect_repair_date")),
                         rs.getString("matched_developer"), rs.getString("issue_key")), pageArgs.toArray());
         return new ReplayIssueCompletionIssuePage(total, items, limit, offset, today);
+    }
+
+    public static String normalizeGroupBy(String groupBy) {
+        String normalized = groupBy == null || groupBy.isBlank() ? "domain" : groupBy.trim();
+        if (!"domain".equals(normalized) && !"issueDomain".equals(normalized)) {
+            throw new IllegalArgumentException("统计分组口径仅支持 domain 或 issueDomain");
+        }
+        return normalized;
+    }
+
+    private static String classifiedSource(String groupBy) {
+        String expression = switch (normalizeGroupBy(groupBy)) {
+            case "domain" -> "i.group_name";
+            case "issueDomain" -> "COALESCE(NULLIF(TRIM(i.issue_domain), ''), i.group_name)";
+            default -> throw new IllegalStateException("不可达的统计分组口径");
+        };
+        return CLASSIFIED_SOURCE_TEMPLATE.formatted(expression);
     }
 
     private static Date sqlDate(LocalDate value) {
