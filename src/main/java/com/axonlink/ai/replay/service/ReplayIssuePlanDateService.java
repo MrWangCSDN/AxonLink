@@ -21,6 +21,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Objects;
 
 /** Permission-checked, audited maintenance of replay issue planned completion dates. */
@@ -61,13 +62,20 @@ public class ReplayIssuePlanDateService {
         SysUser user = activeUser(operator);
         String identity = permissionIdentity(user);
         if (identity == null) {
-            return new ReplayIssuePlanDatePermissions(List.of(), List.of());
+            return new ReplayIssuePlanDatePermissions(List.of(), List.of(), List.of());
         }
-        List<String> groups = properties.getEditors().entrySet().stream()
+        List<String> regularGroups = properties.getEditors().entrySet().stream()
                 .filter(entry -> containsIdentity(entry.getValue(), identity))
                 .map(java.util.Map.Entry::getKey)
                 .toList();
-        return new ReplayIssuePlanDatePermissions(groups, ownedTransactionCodes(user));
+        List<String> advancedGroups = properties.getAdvancedEditors().entrySet().stream()
+                .filter(entry -> containsIdentity(entry.getValue(), identity))
+                .map(java.util.Map.Entry::getKey)
+                .toList();
+        LinkedHashSet<String> editableGroups = new LinkedHashSet<>(regularGroups);
+        editableGroups.addAll(advancedGroups);
+        return new ReplayIssuePlanDatePermissions(
+                List.copyOf(editableGroups), advancedGroups, ownedTransactionCodes(user));
     }
 
     public ReplayIssuePlanDateUpdateResult update(long issueId, String value, ReplayIssueOperator operator) {
@@ -80,11 +88,14 @@ public class ReplayIssuePlanDateService {
             if (!canEdit(before, operator)) {
                 throw new ReplayIssuePlanDateForbiddenException("没有计划验证日期编辑权限");
             }
+            boolean dateLimitBypassed = canBypassDateLimit(before, operator);
             LocalDate plannedDate = parse(value);
             if (Objects.equals(before.plannedCompletionDate(), plannedDate)) {
                 return result(before, dao.countPlanDateChanges(issueId));
             }
-            validateOccurrenceBoundary(before.firstOccurrenceDate(), plannedDate);
+            if (!dateLimitBypassed) {
+                validateOccurrenceBoundary(before.firstOccurrenceDate(), plannedDate);
+            }
 
             dao.updatePlannedCompletionDate(issueId, plannedDate);
             ReplayIssueRow after = dao.findCurrentByIdForUpdate(issueId);
@@ -118,7 +129,16 @@ public class ReplayIssuePlanDateService {
         String identity = permissionIdentity(user);
         boolean groupAllowed = identity != null
                 && containsIdentity(properties.getEditors().get(row.groupName()), identity);
-        return groupAllowed || ownedTransactionCodes(user).contains(row.transactionCode());
+        boolean advancedGroupAllowed = identity != null
+                && containsIdentity(properties.getAdvancedEditors().get(row.groupName()), identity);
+        return groupAllowed || advancedGroupAllowed || ownedTransactionCodes(user).contains(row.transactionCode());
+    }
+
+    private boolean canBypassDateLimit(ReplayIssueRow row, ReplayIssueOperator operator) {
+        if (row == null) return false;
+        String identity = permissionIdentity(activeUser(operator));
+        return identity != null
+                && containsIdentity(properties.getAdvancedEditors().get(row.groupName()), identity);
     }
 
     private List<String> ownedTransactionCodes(SysUser user) {

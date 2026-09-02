@@ -88,7 +88,7 @@ class ReplayIssueSummaryImportIntegrationTest {
         assertEquals(8, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_issue", Integer.class));
         assertTrue(summaryDao.findByRound(result.coverageRound()).isEmpty(),
                 "正式导入生成日报不应继续写入遗留汇总表");
-        Path report = reportDirectory.resolve("BATCH-CURR日报.xlsx");
+        Path report = reportDirectory.resolve("RPT20260820-142055-0002日报.xlsx");
         assertTrue(Files.exists(report), () -> "正式导入应自动生成日报: " + report);
 
         try (XSSFWorkbook workbook = new XSSFWorkbook(report.toFile())) {
@@ -129,7 +129,8 @@ class ReplayIssueSummaryImportIntegrationTest {
     }
 
     private MockMultipartFile workbookWithDetailsAndTwoSectionSummary() throws Exception {
-        return workbookWithDetailsAndTwoSectionSummary("BATCH-PREV", "BATCH-CURR");
+        return workbookWithDetailsAndTwoSectionSummary(
+                "RPT20260819-142055-0001", "RPT20260820-142055-0002");
     }
 
     private MockMultipartFile workbookWithDetailsAndTwoSectionSummary(String previousBatch,

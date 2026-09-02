@@ -119,6 +119,16 @@ dii:
           emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_LOAN:}
         结算组:
           emp-nos: ${DII_REPLAY_PLAN_DATE_EDITORS_SETTLEMENT:}
+      # 高级维护人员：自动拥有对应组编辑权限，并可突破首次出现日期后 7 个自然日限制。
+      advanced-editors:
+        公共组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_ADVANCED_EDITORS_PUBLIC:}
+        存款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_ADVANCED_EDITORS_DEPOSIT:}
+        贷款组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_ADVANCED_EDITORS_LOAN:}
+        结算组:
+          emp-nos: ${DII_REPLAY_PLAN_DATE_ADVANCED_EDITORS_SETTLEMENT:}
     # 问题所属领域转组维护人员：权限按转组前的当前所属领域判断；支持 emp_no，或无工号人员的 username。
     issue-domain:
       editors:
@@ -134,6 +144,20 @@ dii:
           emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_EDITORS_MIGRATION:}
         平台组:
           emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_EDITORS_PLATFORM:}
+      # 高级转组人员：自动拥有对应当前所属领域编辑权限，并可突破普通人员最多 3 次限制。
+      advanced-editors:
+        公共组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_PUBLIC:}
+        存款组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_DEPOSIT:}
+        贷款组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_LOAN:}
+        结算组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_SETTLEMENT:}
+        迁移组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_MIGRATION:}
+        平台组:
+          emp-nos: ${DII_REPLAY_ISSUE_DOMAIN_ADVANCED_EDITORS_PLATFORM:}
 
 logging:
   level:

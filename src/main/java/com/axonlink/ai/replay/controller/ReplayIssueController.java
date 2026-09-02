@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.dto.ReplayIssueFullRefreshResult;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
@@ -17,6 +18,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundTrackingGroup;
+import com.axonlink.ai.replay.dto.ReplayIssueOriginalDataItem;
 import com.axonlink.ai.replay.dto.ReplayIssueMailStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayIssueWeeklyTaskConfig;
@@ -39,6 +41,7 @@ import com.axonlink.ai.replay.service.ReplayIssueWeeklyTaskService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewForbiddenException;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateService;
+import com.axonlink.ai.replay.service.ReplayIssueTrackingProjection;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateForbiddenException;
 import com.axonlink.ai.replay.service.ReplayIssueDomainForbiddenException;
 import com.axonlink.ai.replay.service.ReplayIssueDomainService;
@@ -414,6 +417,7 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> fieldNames,
             @RequestParam(required = false) List<String> issueDescriptions,
             @RequestParam(required = false) List<String> issueKeys,
+            @RequestParam(required = false) String replayType,
             @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
         ReplayIssueQuery query = new ReplayIssueQuery(limit, offset, groupName,
                 sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner, cooperationPerson,
@@ -421,7 +425,8 @@ public class ReplayIssueController {
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
-                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
+                ReplayIssueReplayType.parse(replayType));
         List<Map<String, Object>> items = dao.list(query, affectedTransactionCountOrder).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
@@ -466,13 +471,15 @@ public class ReplayIssueController {
                                                 @RequestParam(required = false) List<String> transactionNames,
                                                 @RequestParam(required = false) List<String> fieldNames,
                                                 @RequestParam(required = false) List<String> issueDescriptions,
-                                                @RequestParam(required = false) List<String> issueKeys) {
+                                                @RequestParam(required = false) List<String> issueKeys,
+                                                @RequestParam(required = false) String replayType) {
         ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
-                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
+                ReplayIssueReplayType.parse(replayType));
         return R.ok(dao.headerFilterValues(field, query, keyword));
     }
 
@@ -515,7 +522,8 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> transactionNames,
             @RequestParam(required = false) List<String> fieldNames,
             @RequestParam(required = false) List<String> issueDescriptions,
-            @RequestParam(required = false) List<String> issueKeys) {
+            @RequestParam(required = false) List<String> issueKeys,
+            @RequestParam(required = false) String replayType) {
         ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate,
                 coverageRound, safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners),
@@ -523,7 +531,7 @@ public class ReplayIssueController {
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes),
                 safe(plannedCompletionDates), safe(issueIds), safe(serialNos), safe(globalSerialNos),
                 safe(defectRepairDates), safe(transactionNames), safe(fieldNames), safe(issueDescriptions),
-                safe(issueKeys), safe(issueDomains));
+                safe(issueKeys), safe(issueDomains), ReplayIssueReplayType.parse(replayType));
         return R.ok(dao.headerFilterOptionCounts(field, query, keyword));
     }
 
@@ -538,9 +546,10 @@ public class ReplayIssueController {
 
     @GetMapping("/stats")
     public ResponseEntity<R<Map<String, Object>>> stats(
-            @RequestParam(defaultValue = "domain") String groupBy) {
+            @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType) {
         try {
-            return ResponseEntity.ok(R.ok(dao.stats(groupBy)));
+            return ResponseEntity.ok(R.ok(dao.stats(groupBy, ReplayIssueReplayType.parse(replayType))));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -548,9 +557,11 @@ public class ReplayIssueController {
 
     @GetMapping("/stats/groups")
     public ResponseEntity<R<List<ReplayIssueGroupSummary>>> groupSummaries(
-            @RequestParam(defaultValue = "domain") String groupBy) {
+            @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType) {
         try {
-            return ResponseEntity.ok(R.ok(dao.groupIssueSummaries(groupBy)));
+            return ResponseEntity.ok(R.ok(dao.groupIssueSummaries(
+                    groupBy, ReplayIssueReplayType.parse(replayType))));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -558,16 +569,20 @@ public class ReplayIssueController {
 
     @GetMapping("/stats/person-ranking")
     public ResponseEntity<R<List<ReplayIssuePersonRanking>>> personRankings(
-            @RequestParam(defaultValue = "domain") String groupBy) {
+            @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType) {
         try {
-            return ResponseEntity.ok(R.ok(dao.personIssueRankings(groupBy)));
+            return ResponseEntity.ok(R.ok(dao.personIssueRankings(
+                    groupBy, ReplayIssueReplayType.parse(replayType))));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
     }
 
     @GetMapping("/stats/planned-completion/date-points")
-    public R<ReplayIssueCompletionDatePointsResponse> plannedCompletionDatePoints() {
+    public R<ReplayIssueCompletionDatePointsResponse> plannedCompletionDatePoints(
+            @RequestParam(required = false) String replayType) {
+        ReplayIssueReplayType.parse(replayType);
         return R.ok(completionStatsService.datePoints());
     }
 
@@ -575,9 +590,11 @@ public class ReplayIssueController {
     public ResponseEntity<R<ReplayIssueCompletionDashboard>> plannedCompletionDashboard(
             @RequestParam(required = false) String startDate,
             @RequestParam(required = false) String endDate,
-            @RequestParam(defaultValue = "domain") String groupBy) {
+            @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType) {
         try {
-            return ResponseEntity.ok(R.ok(completionStatsService.dashboard(startDate, endDate, groupBy)));
+            return ResponseEntity.ok(R.ok(completionStatsService.dashboard(startDate, endDate, groupBy,
+                    ReplayIssueReplayType.parse(replayType))));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -588,6 +605,7 @@ public class ReplayIssueController {
             @RequestParam(required = false) String startDate,
             @RequestParam(required = false) String endDate,
             @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType,
             @RequestParam String groupName,
             @RequestParam(required = false) String matchedDeveloper,
             @RequestParam String category,
@@ -595,7 +613,7 @@ public class ReplayIssueController {
             @RequestParam(defaultValue = "0") int offset) {
         try {
             return ResponseEntity.ok(R.ok(completionStatsService.issues(startDate, endDate, groupBy,
-                    groupName, matchedDeveloper, category, limit, offset)));
+                    ReplayIssueReplayType.parse(replayType), groupName, matchedDeveloper, category, limit, offset)));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -608,7 +626,9 @@ public class ReplayIssueController {
 
     @GetMapping("/{id}/round-tracking")
     public R<List<ReplayIssueRoundTrackingGroup>> roundTracking(@PathVariable long id) {
-        List<ReplayIssueHistoryEntry> history = dao.findHistoryByIssueId(id, 200);
+        List<ReplayIssueHistoryEntry> history = dao.findHistoryByIssueId(id, 200).stream()
+                .map(this::projectHistory)
+                .toList();
         Map<String, List<ReplayIssueHistoryEntry>> inheritedByBatch = new LinkedHashMap<>();
         Map<String, List<ReplayIssueHistoryEntry>> manualByBatch = new LinkedHashMap<>();
         List<ReplayIssueHistoryEntry> baseEvents = new ArrayList<>();
@@ -618,8 +638,14 @@ public class ReplayIssueController {
                 baseEvents.add(event);
             } else if ("人工保存".equals(event.operationType())) {
                 manualByBatch.computeIfAbsent(batch, ignored -> new ArrayList<>()).add(event);
-            } else if (INHERITED_CONTENT_OPERATION.equals(event.operationType())) {
+            } else {
                 inheritedByBatch.computeIfAbsent(batch, ignored -> new ArrayList<>()).add(event);
+            }
+        }
+        Map<String, ReplayIssueRoundEntry> roundEntryByBatch = new LinkedHashMap<>();
+        for (ReplayIssueRoundEntry round : dao.findIssueRounds(id)) {
+            if (round.batchName() != null && !round.batchName().isBlank()) {
+                roundEntryByBatch.putIfAbsent(round.batchName(), round);
             }
         }
         List<ReplayIssueRoundTrackingGroup> result = new ArrayList<>();
@@ -628,9 +654,18 @@ public class ReplayIssueController {
             List<ReplayIssueHistoryEntry> inherited = inheritedByBatch.getOrDefault(batch, List.of());
             ReplayIssueHistoryEntry latest = history.stream().filter(event -> batch.equals(event.occurrenceBatchName())).findFirst().orElse(null);
             ReplayIssueHistoryEntry importEvent = history.stream().filter(event -> batch.equals(event.occurrenceBatchName()) && !"人工保存".equals(event.operationType())).findFirst().orElse(latest);
-            result.add(new ReplayIssueRoundTrackingGroup(null, batch, latest == null ? null : latest.operationAt(), true,
-                    null, importEvent == null ? null : importEvent.issueStatus(), importEvent == null ? "批次记录" : importEvent.operationType(), null, null, manual.size(),
-                    manual.isEmpty() ? latest == null ? null : latest.issueStatus() : manual.get(0).issueStatus(), inherited, manual));
+            ReplayIssueRoundEntry round = roundEntryByBatch.get(batch);
+            List<ReplayIssueOriginalDataItem> originalData = round == null
+                    ? importEvent == null ? List.of() : importEvent.originalData()
+                    : ReplayIssueTrackingProjection.originalData(round.incomingSnapshot());
+            result.add(new ReplayIssueRoundTrackingGroup(round == null ? null : round.roundId(), batch,
+                    round == null ? latest == null ? null : latest.operationAt() : round.importedAt(), true,
+                    round == null ? null : round.statusBefore(),
+                    round == null ? importEvent == null ? null : importEvent.issueStatus() : round.statusAfter(),
+                    importEvent == null ? round == null ? "导入" : round.actionType() : importEvent.operationType(),
+                    round == null ? null : round.sourceSheet(), round == null ? null : round.sourceRow(), manual.size(),
+                    manual.isEmpty() ? latest == null ? null : latest.issueStatus() : manual.get(0).issueStatus(), inherited, manual,
+                    originalData));
         }
         result.sort(Comparator.comparing(ReplayIssueRoundTrackingGroup::importedAt,
                 Comparator.nullsLast(Comparator.reverseOrder())));
@@ -640,6 +675,18 @@ public class ReplayIssueController {
                     List.of(), baseEvents));
         }
         return R.ok(result);
+    }
+
+    private ReplayIssueHistoryEntry projectHistory(ReplayIssueHistoryEntry event) {
+        return new ReplayIssueHistoryEntry(event.id(), event.replayIssueId(), event.issueKey(), event.operationType(),
+                event.operationAt(), event.operatorUsername(), event.operatorRealName(), event.issueStatus(),
+                event.issueType(), event.initialAnalysis(), event.finalSolution(), event.cooperationPersonUsername(),
+                event.cooperationPersonRealName(), event.importDate(), event.sourceSheet(), event.sourceRow(),
+                event.beforeSnapshot(), event.afterSnapshot(), event.incomingSnapshot(), event.remark(),
+                event.contextRoundId(), event.occurrenceBatchName(), event.reviewStatus(), event.reviewerUsername(),
+                event.reviewerRealName(), event.reviewedAt(),
+                ReplayIssueTrackingProjection.fieldChanges(event.beforeSnapshot(), event.afterSnapshot()),
+                ReplayIssueTrackingProjection.originalData(event.incomingSnapshot()));
     }
 
     @GetMapping("/export")
@@ -681,13 +728,15 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> fieldNames,
             @RequestParam(required = false) List<String> issueDescriptions,
             @RequestParam(required = false) List<String> issueKeys,
+            @RequestParam(required = false) String replayType,
             @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
         ReplayIssueQuery query = new ReplayIssueQuery(200, 0, groupName, sandbox, issueLevel, issueType, keyword,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
                 reviewStatus, safe(reviewStatuses), issueId, safe(groupNames), safe(sandboxes), safe(plannedCompletionDates),
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
-                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains));
+                safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
+                ReplayIssueReplayType.parse(replayType));
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(200); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             workbook.setCompressTempFiles(true);
             Sheet sheet = workbook.createSheet("回放问题清单");
@@ -790,6 +839,11 @@ public class ReplayIssueController {
     public ResponseEntity<R<Void>> handleInvalidRequestParameter(
             MethodArgumentTypeMismatchException exception) {
         return error(HttpStatus.BAD_REQUEST, "请求参数错误");
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<R<Void>> handleInvalidArgument(IllegalArgumentException exception) {
+        return error(HttpStatus.BAD_REQUEST, exception.getMessage());
     }
 
     @ExceptionHandler(Exception.class)

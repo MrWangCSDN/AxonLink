@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueCompletionCounts;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionDatePoint;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionIssueItem;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionIssuePage;
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -22,7 +23,7 @@ public class ReplayIssueCompletionStatsDao {
     private static final String CLASSIFIED_SOURCE_TEMPLATE = """
             SELECT i.id, i.issue_id, i.transaction_code, i.transaction_name, i.issue_status,
                    i.planned_completion_date, i.defect_repair_date, i.issue_key,
-                   %s AS group_name,
+                   %1$s AS group_name,
                    COALESCE(NULLIF(TRIM(tp.developer), ''), '未匹配负责人') AS matched_developer,
                    CASE
                      WHEN i.defect_repair_date IS NOT NULL
@@ -38,6 +39,7 @@ public class ReplayIssueCompletionStatsDao {
                 ON tp.old_transaction_code = i.transaction_code
              WHERE i.planned_completion_date IS NOT NULL
                AND i.planned_completion_date BETWEEN ? AND ?
+               %2$s
             """;
 
     private final JdbcTemplate jdbc;
@@ -59,29 +61,39 @@ public class ReplayIssueCompletionStatsDao {
     }
 
     public List<CompletionAggregateRow> aggregate(LocalDate startDate, LocalDate endDate, LocalDate today) {
-        return aggregate(startDate, endDate, today, "domain");
+        return aggregate(startDate, endDate, today, "domain", ReplayIssueReplayType.ALL);
     }
 
     public List<CompletionAggregateRow> aggregate(LocalDate startDate, LocalDate endDate, LocalDate today,
                                                    String groupBy) {
-        String classifiedSource = classifiedSource(groupBy);
+        return aggregate(startDate, endDate, today, groupBy, ReplayIssueReplayType.ALL);
+    }
+
+    public List<CompletionAggregateRow> aggregate(LocalDate startDate, LocalDate endDate, LocalDate today,
+                                                   String groupBy, ReplayIssueReplayType replayType) {
+        ClassifiedSource classifiedSource = classifiedSource(groupBy, replayType);
         String sql = """
                 SELECT group_name, matched_developer,
                        SUM(CASE WHEN completion_category='ON_TIME_FIXED' THEN 1 ELSE 0 END) AS on_time_count,
                        SUM(CASE WHEN completion_category='LATE_FIXED' THEN 1 ELSE 0 END) AS late_count,
                        SUM(CASE WHEN completion_category='UNFINISHED' THEN 1 ELSE 0 END) AS unfinished_count,
-                       SUM(CASE WHEN completion_category='OVERDUE_UNFINISHED' THEN 1 ELSE 0 END) AS overdue_count
+                       SUM(CASE WHEN completion_category='OVERDUE_UNFINISHED' THEN 1 ELSE 0 END) AS overdue_count,
+                       SUM(CASE WHEN defect_repair_date IS NULL AND issue_status='修复待验证'
+                                THEN 1 ELSE 0 END) AS pending_verification_count
                   FROM (
-                """ + classifiedSource + """
+                """ + classifiedSource.sql() + """
                        ) classified
                  GROUP BY group_name, matched_developer
                  ORDER BY group_name, matched_developer
                 """;
+        List<Object> args = new ArrayList<>(List.of(sqlDate(today), sqlDate(startDate), sqlDate(endDate)));
+        args.addAll(classifiedSource.args());
         return jdbc.query(sql, (rs, rowNum) -> new CompletionAggregateRow(
                         rs.getString("group_name"), rs.getString("matched_developer"),
                         ReplayIssueCompletionCounts.of(rs.getLong("on_time_count"), rs.getLong("late_count"),
-                                rs.getLong("unfinished_count"), rs.getLong("overdue_count"))),
-                sqlDate(today), sqlDate(startDate), sqlDate(endDate));
+                                rs.getLong("unfinished_count"), rs.getLong("overdue_count"),
+                                rs.getLong("pending_verification_count"))),
+                args.toArray());
     }
 
     public ReplayIssueCompletionIssuePage findIssues(LocalDate startDate, LocalDate endDate, LocalDate today,
@@ -95,23 +107,34 @@ public class ReplayIssueCompletionStatsDao {
                                                       String groupBy, String groupName, String matchedDeveloper,
                                                       ReplayIssueCompletionCategory category,
                                                       int limit, int offset) {
-        String classifiedSource = classifiedSource(groupBy);
+        return findIssues(startDate, endDate, today, groupBy, ReplayIssueReplayType.ALL,
+                groupName, matchedDeveloper, category, limit, offset);
+    }
+
+    public ReplayIssueCompletionIssuePage findIssues(LocalDate startDate, LocalDate endDate, LocalDate today,
+                                                      String groupBy, ReplayIssueReplayType replayType,
+                                                      String groupName, String matchedDeveloper,
+                                                      ReplayIssueCompletionCategory category,
+                                                      int limit, int offset) {
+        ClassifiedSource classifiedSource = classifiedSource(groupBy, replayType);
         StringBuilder predicate = new StringBuilder(" WHERE group_name=? AND completion_category=?");
-        List<Object> baseArgs = new ArrayList<>(List.of(sqlDate(today), sqlDate(startDate), sqlDate(endDate),
-                groupName, category.name()));
+        List<Object> baseArgs = new ArrayList<>(List.of(sqlDate(today), sqlDate(startDate), sqlDate(endDate)));
+        baseArgs.addAll(classifiedSource.args());
+        baseArgs.add(groupName);
+        baseArgs.add(category.name());
         if (matchedDeveloper != null) {
             predicate.append(" AND matched_developer=?");
             baseArgs.add(matchedDeveloper);
         }
 
-        Long totalValue = jdbc.queryForObject("SELECT COUNT(*) FROM (" + classifiedSource + ") classified"
+        Long totalValue = jdbc.queryForObject("SELECT COUNT(*) FROM (" + classifiedSource.sql() + ") classified"
                 + predicate, Long.class, baseArgs.toArray());
         long total = totalValue == null ? 0L : totalValue;
 
         List<Object> pageArgs = new ArrayList<>(baseArgs);
         pageArgs.add(limit);
         pageArgs.add(offset);
-        List<ReplayIssueCompletionIssueItem> items = jdbc.query("SELECT * FROM (" + classifiedSource
+        List<ReplayIssueCompletionIssueItem> items = jdbc.query("SELECT * FROM (" + classifiedSource.sql()
                         + ") classified" + predicate + " ORDER BY planned_completion_date,id LIMIT ? OFFSET ?",
                 (rs, rowNum) -> new ReplayIssueCompletionIssueItem(
                         rs.getLong("id"), rs.getString("issue_id"), rs.getString("transaction_code"),
@@ -129,13 +152,19 @@ public class ReplayIssueCompletionStatsDao {
         return normalized;
     }
 
-    private static String classifiedSource(String groupBy) {
+    private static ClassifiedSource classifiedSource(String groupBy, ReplayIssueReplayType replayType) {
         String expression = switch (normalizeGroupBy(groupBy)) {
             case "domain" -> "i.group_name";
             case "issueDomain" -> "COALESCE(NULLIF(TRIM(i.issue_domain), ''), i.group_name)";
             default -> throw new IllegalStateException("不可达的统计分组口径");
         };
-        return CLASSIFIED_SOURCE_TEMPLATE.formatted(expression);
+        if (replayType == null || replayType == ReplayIssueReplayType.ALL) {
+            return new ClassifiedSource(CLASSIFIED_SOURCE_TEMPLATE.formatted(expression, ""), List.of());
+        }
+        String predicate = "AND EXISTS (SELECT 1 FROM dii_replay_issue_occurrence_batch replay_type_ob "
+                + "WHERE replay_type_ob.replay_issue_id=i.id AND replay_type_ob.batch_name LIKE ?)";
+        return new ClassifiedSource(CLASSIFIED_SOURCE_TEMPLATE.formatted(expression, predicate),
+                List.of(replayType.batchPrefix() + "%"));
     }
 
     private static Date sqlDate(LocalDate value) {
@@ -150,5 +179,8 @@ public class ReplayIssueCompletionStatsDao {
             String groupName,
             String matchedDeveloper,
             ReplayIssueCompletionCounts counts) {
+    }
+
+    private record ClassifiedSource(String sql, List<Object> args) {
     }
 }

@@ -13,6 +13,7 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "dii.replay.issue-plan-date")
 public class ReplayIssuePlanDateProperties {
     private Map<String, EditorGroup> editors = new LinkedHashMap<>();
+    private Map<String, EditorGroup> advancedEditors = new LinkedHashMap<>();
 
     public Map<String, EditorGroup> getEditors() {
         return editors;
@@ -20,6 +21,15 @@ public class ReplayIssuePlanDateProperties {
 
     public void setEditors(Map<String, EditorGroup> editors) {
         this.editors = editors == null ? new LinkedHashMap<>() : new LinkedHashMap<>(editors);
+    }
+
+    public Map<String, EditorGroup> getAdvancedEditors() {
+        return advancedEditors;
+    }
+
+    public void setAdvancedEditors(Map<String, EditorGroup> advancedEditors) {
+        this.advancedEditors = advancedEditors == null
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(advancedEditors);
     }
 
     public static class EditorGroup {

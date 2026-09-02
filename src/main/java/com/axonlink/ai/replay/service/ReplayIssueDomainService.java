@@ -47,10 +47,10 @@ public class ReplayIssueDomainService {
 
     public ReplayIssueDomainPermissions permissions(ReplayIssueOperator operator) {
         String identity = permissionIdentity(activeUser(operator));
-        if (identity == null) return new ReplayIssueDomainPermissions(List.of());
-        return new ReplayIssueDomainPermissions(ALLOWED_DOMAINS.stream()
-                .filter(domain -> containsIdentity(properties.getEditors().get(domain), identity))
-                .toList());
+        if (identity == null) return new ReplayIssueDomainPermissions(List.of(), List.of());
+        return new ReplayIssueDomainPermissions(
+                ALLOWED_DOMAINS.stream().filter(domain -> canEdit(domain, identity)).toList(),
+                ALLOWED_DOMAINS.stream().filter(domain -> canBypassTransferLimit(domain, identity)).toList());
     }
 
     public ReplayIssueDomainUpdateResult update(long issueId, String targetValue, ReplayIssueOperator operator) {
@@ -63,10 +63,13 @@ public class ReplayIssueDomainService {
             if (target.equals(state.issueDomain())) {
                 return new ReplayIssueDomainUpdateResult(issueId, state.issueDomain(), transferCount);
             }
-            if (!canEdit(state.issueDomain(), operator)) {
+            String identity = permissionIdentity(activeUser(operator));
+            if (!canEdit(state.issueDomain(), identity)) {
                 throw new ReplayIssueDomainForbiddenException("没有权限修改该问题所属领域");
             }
-            if (transferCount >= 3) throw new IllegalArgumentException(TRANSFER_LIMIT_MESSAGE);
+            if (transferCount >= 3 && !canBypassTransferLimit(state.issueDomain(), identity)) {
+                throw new IllegalArgumentException(TRANSFER_LIMIT_MESSAGE);
+            }
 
             LocalDateTime transferredAt = LocalDateTime.now(clock);
             dao.updateIssueDomain(issueId, target);
@@ -97,9 +100,15 @@ public class ReplayIssueDomainService {
         return normalized;
     }
 
-    private boolean canEdit(String issueDomain, ReplayIssueOperator operator) {
-        String identity = permissionIdentity(activeUser(operator));
-        return identity != null && containsIdentity(properties.getEditors().get(issueDomain), identity);
+    private boolean canEdit(String issueDomain, String identity) {
+        return identity != null
+                && (containsIdentity(properties.getEditors().get(issueDomain), identity)
+                || containsIdentity(properties.getAdvancedEditors().get(issueDomain), identity));
+    }
+
+    private boolean canBypassTransferLimit(String issueDomain, String identity) {
+        return identity != null
+                && containsIdentity(properties.getAdvancedEditors().get(issueDomain), identity);
     }
 
     private SysUser activeUser(ReplayIssueOperator operator) {

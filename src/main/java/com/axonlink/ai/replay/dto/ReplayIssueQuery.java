@@ -42,7 +42,32 @@ public record ReplayIssueQuery(
         List<String> fieldNames,
         List<String> issueDescriptions,
         List<String> issueKeys,
-        List<String> issueDomains) {
+        List<String> issueDomains,
+        ReplayIssueReplayType replayType) {
+
+    public ReplayIssueQuery {
+        replayType = replayType == null ? ReplayIssueReplayType.ALL : replayType;
+    }
+
+    public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
+                            String issueType, String keyword, String issueStatus, String developer, String bankOwner,
+                            String cooperationPerson, String serialNo, String globalSerialNo,
+                            String defectRepairDate, String coverageRound,
+                            List<String> transactionCodes, List<String> issueLevels, List<String> developers,
+                            List<String> bankOwners, List<String> issueStatuses, List<String> issueTypes,
+                            List<String> cooperationPersons, List<String> occurrenceBatches, Boolean weeklyTask,
+                            String reviewStatus, List<String> reviewStatuses, String issueId,
+                            List<String> groupNames, List<String> sandboxes, List<String> plannedCompletionDates,
+                            List<String> issueIds, List<String> serialNos, List<String> globalSerialNos,
+                            List<String> defectRepairDates, List<String> transactionNames, List<String> fieldNames,
+                            List<String> issueDescriptions, List<String> issueKeys, List<String> issueDomains) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, reviewStatus, reviewStatuses, issueId, groupNames, sandboxes,
+                plannedCompletionDates, issueIds, serialNos, globalSerialNos, defectRepairDates,
+                transactionNames, fieldNames, issueDescriptions, issueKeys, issueDomains, ReplayIssueReplayType.ALL);
+    }
 
     public ReplayIssueQuery(int limit, int offset, String groupName, Boolean sandbox, String issueLevel,
                             String issueType, String keyword, String issueStatus, String developer, String bankOwner,

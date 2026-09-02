@@ -36,7 +36,8 @@ class ReplayIssueDomainServiceTest {
                 new Object[]{"public-editor", "公共编辑人", "100001", 1},
                 new Object[]{"platform-editor", "平台编辑人", null, 1},
                 new Object[]{"deposit-editor", "存款编辑人", "300001", 1},
-                new Object[]{"migration-editor", "迁移编辑人", "400001", 1}));
+                new Object[]{"migration-editor", "迁移编辑人", "400001", 1},
+                new Object[]{"advanced-editor", "高级迁移编辑人", "500001", 1}));
 
         ReplayIssueDomainProperties properties = new ReplayIssueDomainProperties();
         LinkedHashMap<String, ReplayIssueDomainProperties.EditorGroup> editors = new LinkedHashMap<>();
@@ -45,6 +46,8 @@ class ReplayIssueDomainServiceTest {
         editors.put("存款组", editorGroup("300001"));
         editors.put("迁移组", editorGroup("400001"));
         properties.setEditors(editors);
+        properties.setAdvancedEditors(new LinkedHashMap<>(
+                java.util.Map.of("迁移组", editorGroup("500001"))));
 
         dao = new ReplayIssueDao(jdbc);
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "domain")),
@@ -92,11 +95,34 @@ class ReplayIssueDomainServiceTest {
     }
 
     @Test
+    void advancedEditorAutomaticallyGetsCurrentDomainPermissionAndCanTransferAfterThreeChanges() {
+        var publicOperator = new ReplayIssueOperator("public-editor", "公共编辑人");
+        var platformOperator = new ReplayIssueOperator("platform-editor", "平台编辑人");
+        var depositOperator = new ReplayIssueOperator("deposit-editor", "存款编辑人");
+        var advancedOperator = new ReplayIssueOperator("advanced-editor", "高级迁移编辑人");
+
+        var permissions = service.permissions(advancedOperator);
+        assertEquals(List.of("迁移组"), permissions.editableDomains());
+        assertEquals(List.of("迁移组"), permissions.transferLimitBypassDomains());
+
+        service.update(issueId, "平台组", publicOperator);
+        service.update(issueId, "存款组", platformOperator);
+        service.update(issueId, "迁移组", depositOperator);
+        assertEquals(3, service.update(issueId, "迁移组", advancedOperator).transferCount());
+
+        var fourth = service.update(issueId, "贷款组", advancedOperator);
+        assertEquals("贷款组", fourth.issueDomain());
+        assertEquals(4, fourth.transferCount());
+        assertEquals(4, service.transfers(issueId).items().size());
+    }
+
+    @Test
     void defectRepairDateLocksTransferBeforePermissionCheck() {
         jdbc.update("UPDATE dii_replay_issue SET defect_repair_date='2026-08-31' WHERE id=?", issueId);
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.update(issueId, "平台组", new ReplayIssueOperator("nobody", "无权限")));
+                () -> service.update(issueId, "平台组",
+                        new ReplayIssueOperator("advanced-editor", "高级迁移编辑人")));
 
         assertEquals("问题已有缺陷修复日期，不可转组", error.getMessage());
     }

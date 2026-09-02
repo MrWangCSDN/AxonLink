@@ -126,12 +126,18 @@ class ReplayIssueControllerTest {
         ReplayIssuePlanDateProperties.EditorGroup publicEditors = new ReplayIssuePlanDateProperties.EditorGroup();
         publicEditors.setEmpNos(List.of("100001"));
         planDateProperties.setEditors(new LinkedHashMap<>(Map.of("公共组", publicEditors)));
+        ReplayIssuePlanDateProperties.EditorGroup publicAdvancedEditors = new ReplayIssuePlanDateProperties.EditorGroup();
+        publicAdvancedEditors.setEmpNos(List.of("100001"));
+        planDateProperties.setAdvancedEditors(new LinkedHashMap<>(Map.of("公共组", publicAdvancedEditors)));
         ReflectionTestUtils.setField(controller, "planDateService",
                 new ReplayIssuePlanDateService(dao, userDao, new ReplayTransactionPersonDao(jdbc), planDateProperties));
         ReplayIssueDomainProperties domainProperties = new ReplayIssueDomainProperties();
         ReplayIssueDomainProperties.EditorGroup publicDomainEditors = new ReplayIssueDomainProperties.EditorGroup();
         publicDomainEditors.setEmpNos(List.of("100001"));
         domainProperties.setEditors(new LinkedHashMap<>(Map.of("公共组", publicDomainEditors)));
+        ReplayIssueDomainProperties.EditorGroup publicAdvancedDomainEditors = new ReplayIssueDomainProperties.EditorGroup();
+        publicAdvancedDomainEditors.setEmpNos(List.of("100001"));
+        domainProperties.setAdvancedEditors(new LinkedHashMap<>(Map.of("公共组", publicAdvancedDomainEditors)));
         ReflectionTestUtils.setField(controller, "issueDomainService",
                 new ReplayIssueDomainService(dao, userDao, domainProperties));
         mvc = MockMvcBuilders.standaloneSetup(controller, new ReplayIssueUserController(userDao)).build();
@@ -145,7 +151,8 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/issue-domain-permissions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.editableDomains[0]").value("公共组"));
+                .andExpect(jsonPath("$.data.editableDomains[0]").value("公共组"))
+                .andExpect(jsonPath("$.data.transferLimitBypassDomains[0]").value("公共组"));
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/issue-domain", issueId)
                         .contentType("application/json")
@@ -171,6 +178,7 @@ class ReplayIssueControllerTest {
         mvc.perform(get("/api/ai/parallel-replay/issues/plan-date-permissions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.editableGroups[0]").value("公共组"))
+                .andExpect(jsonPath("$.data.dateLimitBypassGroups[0]").value("公共组"))
                 .andExpect(jsonPath("$.data.editableTransactionCodes.length()").value(0));
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", issueId)
@@ -185,6 +193,13 @@ class ReplayIssueControllerTest {
                 .andExpect(jsonPath("$.data.changeCount").value(1))
                 .andExpect(jsonPath("$.data.items[0].plannedCompletionDate").value("2026-08-26"))
                 .andExpect(jsonPath("$.data.items[0].operatorUsername").value("sunhy1"));
+
+        mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", issueId)
+                        .contentType("application/json")
+                        .content("{\"plannedCompletionDate\":\"2026-09-30\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.plannedCompletionDate").value("2026-09-30"))
+                .andExpect(jsonPath("$.data.changeCount").value(2));
 
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}/planned-completion-date", issueId)
                         .contentType("application/json")
@@ -227,15 +242,15 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/date-points"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.datePoints.length()").value(2))
-                .andExpect(jsonPath("$.data.defaultStartDate").value("2026-08-27"))
-                .andExpect(jsonPath("$.data.defaultEndDate").value("2026-08-27"));
+                .andExpect(jsonPath("$.data.datePoints.length()").value(4))
+                .andExpect(jsonPath("$.data.defaultStartDate").value("2026-08-26"))
+                .andExpect(jsonPath("$.data.defaultEndDate").value("2026-08-28"));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.effectiveStartDate").value("2026-08-27"))
-                .andExpect(jsonPath("$.data.effectiveEndDate").value("2026-08-27"))
-                .andExpect(jsonPath("$.data.summary.plannedTotal").value(0));
+                .andExpect(jsonPath("$.data.effectiveStartDate").value("2026-08-26"))
+                .andExpect(jsonPath("$.data.effectiveEndDate").value("2026-08-28"))
+                .andExpect(jsonPath("$.data.summary.plannedTotal").value(1));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
                         .param("startDate", "2026-08-22")
@@ -282,6 +297,50 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void supportsReplayTypeForPlannedCompletionEndpoints() throws Exception {
+        dao.replaceAll(List.of(
+                        ReplayIssueTestFixtures.row("公共组", false, 1, "RPT-ONLY", "rpt"),
+                        ReplayIssueTestFixtures.row("公共组", false, 2, "DZ-ONLY", "dz")),
+                LocalDateTime.of(2026, 8, 27, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-27'");
+        jdbc.update("DELETE FROM dii_replay_issue_occurrence_batch");
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'RPT20260827-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='RPT-ONLY'",
+                LocalDateTime.of(2026, 8, 27, 9, 0), LocalDateTime.of(2026, 8, 27, 9, 0),
+                LocalDateTime.of(2026, 8, 27, 9, 0), LocalDateTime.of(2026, 8, 27, 9, 0));
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'DZ20260827-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='DZ-ONLY'",
+                LocalDateTime.of(2026, 8, 27, 9, 0), LocalDateTime.of(2026, 8, 27, 9, 0),
+                LocalDateTime.of(2026, 8, 27, 9, 0), LocalDateTime.of(2026, 8, 27, 9, 0));
+        ReflectionTestUtils.setField(controller, "completionStatsService",
+                new ReplayIssueCompletionStatsService(new ReplayIssueCompletionStatsDao(jdbc),
+                        Clock.fixed(Instant.parse("2026-08-27T02:00:00Z"), ZoneId.of("Asia/Shanghai"))));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/date-points")
+                        .param("replayType", "DZ"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.datePoints[1].plannedCount").value(2));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
+                        .param("startDate", "2026-08-27").param("endDate", "2026-08-27")
+                        .param("replayType", "QUERY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.summary.plannedTotal").value(1));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/issues")
+                        .param("startDate", "2026-08-27").param("endDate", "2026-08-27")
+                        .param("groupName", "公共组").param("category", "UNFINISHED")
+                        .param("replayType", "DZ"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].transactionCode").value("DZ-ONLY"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/date-points")
+                        .param("replayType", "OTHER"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("回放交易类型不合法"));
+    }
+
+    @Test
     void plannedCompletionStatisticsUseTheSelectedGroupingForDashboardAndDrillDown() throws Exception {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6201", "所属领域统计")),
                 LocalDateTime.of(2026, 8, 27, 9, 0));
@@ -292,11 +351,13 @@ class ReplayIssueControllerTest {
                         Clock.fixed(Instant.parse("2026-08-27T02:00:00Z"), ZoneId.of("Asia/Shanghai"))));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion")
+                        .param("startDate", "2026-08-22").param("endDate", "2026-08-22")
                         .param("groupBy", "issueDomain"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.groups[0].groupName").value("平台组"));
 
         mvc.perform(get("/api/ai/parallel-replay/issues/stats/planned-completion/issues")
+                        .param("startDate", "2026-08-22").param("endDate", "2026-08-22")
                         .param("groupBy", "issueDomain")
                         .param("groupName", "平台组")
                         .param("category", "OVERDUE_UNFINISHED"))
@@ -714,14 +775,14 @@ class ReplayIssueControllerTest {
         mvc.perform(get("/api/ai/parallel-replay/issues/weekly-task"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.batchNames.length()").value(0))
-                .andExpect(jsonPath("$.data.availableBatchNames[0]").value("BATCH-1"));
+                .andExpect(jsonPath("$.data.availableBatchNames[0]").value("RPT20260820-142055-0001"));
 
         mvc.perform(put("/api/ai/parallel-replay/issues/weekly-task")
                         .header("X-DII-Trigger-Token", "secret")
                         .contentType("application/json")
-                        .content("{\"batchNames\":[\"BATCH-2\",\"BATCH-1\"]}"))
+                        .content("{\"batchNames\":[\"RPT20260820-142055-0002\",\"RPT20260820-142055-0001\"]}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.batchNames[0]").value("BATCH-1"))
+                .andExpect(jsonPath("$.data.batchNames[0]").value("RPT20260820-142055-0001"))
                 .andExpect(jsonPath("$.data.issueCount").value(2));
 
         mvc.perform(get("/api/ai/parallel-replay/issues").param("weeklyTask", "true"))
@@ -1169,6 +1230,77 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void acceptsReplayTypeAcrossListOptionsAndExport() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "RPT-ONLY", "rpt"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "DZ-ONLY", "dz")),
+                LocalDateTime.of(2026, 9, 2, 9, 0));
+        jdbc.update("DELETE FROM dii_replay_issue_occurrence_batch");
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'RPT20260902-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='RPT-ONLY'",
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0),
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0));
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'DZ20260902-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='DZ-ONLY'",
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0),
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues").param("replayType", "DZ"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("DZ-ONLY"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .param("field", "occurrenceBatch").param("replayType", "QUERY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].value").value("RPT20260902-001"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/export").param("replayType", "DZ"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rejectsInvalidReplayType() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues").param("replayType", "OTHER"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("回放交易类型不合法"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats").param("replayType", "OTHER"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("回放交易类型不合法"));
+    }
+
+    @Test
+    void filtersAllStatisticsEndpointsByReplayType() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "RPT-ONLY", "rpt"),
+                ReplayIssueTestFixtures.row("贷款组", false, 2, "DZ-ONLY", "dz")),
+                LocalDateTime.of(2026, 9, 2, 9, 0));
+        jdbc.update("DELETE FROM dii_replay_issue_occurrence_batch");
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'RPT20260902-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='RPT-ONLY'",
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0),
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0));
+        jdbc.update("INSERT INTO dii_replay_issue_occurrence_batch"
+                        + "(replay_issue_id,issue_key,batch_name,first_occurred_at,last_occurred_at,created_at,updated_at) "
+                        + "SELECT id,issue_key,'DZ20260902-001',?,?,?,? FROM dii_replay_issue WHERE transaction_code='DZ-ONLY'",
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0),
+                LocalDateTime.of(2026, 9, 2, 9, 0), LocalDateTime.of(2026, 9, 2, 9, 0));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats").param("replayType", "QUERY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/groups").param("replayType", "QUERY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].groupName").value("公共组"));
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/person-ranking").param("replayType", "DZ"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].groupName").value("贷款组"));
+    }
+
+    @Test
     void personRankingEndpointKeepsDeveloperCombinationAsOneRankingRow() throws Exception {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("贷款组", false, 1, "T-COMBINATION", "one"),
@@ -1249,7 +1381,7 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk());
 
         mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
-                        .file(ReplayIssueTestFixtures.validWorkbook(1))
+                        .file(validWorkbookForBatch("RPT20260821-142055-0001"))
                         .header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isOk());
         mvc.perform(patch("/api/ai/parallel-replay/issues/{id}", id)
@@ -1283,13 +1415,13 @@ class ReplayIssueControllerTest {
                 "代码问题", "人工分析", "人工方案", "alice", "艾丽丝", "人工备注", id);
 
         mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
-                        .file(ReplayIssueTestFixtures.validWorkbook(1))
+                        .file(validWorkbookForBatch("RPT20260821-142055-0001"))
                         .header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isOk());
 
         mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].actionType").value("覆盖并继承人工内容"))
+                .andExpect(jsonPath("$.data[0].actionType").value("基础数据覆盖，人工内容继承"))
                 .andExpect(jsonPath("$.data[0].manualChangeCount").value(0))
                 .andExpect(jsonPath("$.data[0].manualEvents.length()").value(0))
                 .andExpect(jsonPath("$.data[0].inheritedEvents.length()").value(1))
@@ -1298,6 +1430,8 @@ class ReplayIssueControllerTest {
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].issueType").value("代码问题"))
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].initialAnalysis").value("人工分析"))
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].finalSolution").value("人工方案"))
+                .andExpect(jsonPath("$.data[0].inheritedEvents[0].changes[0].field").value("批次号"))
+                .andExpect(jsonPath("$.data[0].originalData[0].field").value("交易码"))
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].cooperationPersonUsername").value("alice"))
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].cooperationPersonRealName").value("艾丽丝"))
                 .andExpect(jsonPath("$.data[0].inheritedEvents[0].remark").value("人工备注"))
@@ -1307,7 +1441,7 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void roundTrackingShowsMissingOpenIssueAsAutoRepaired() throws Exception {
+    void roundTrackingShowsAutoRepairInTheIssueBatchHistory() throws Exception {
         dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 99, "MISSING-TX", "原基础数据")),
                 LocalDateTime.of(2026, 8, 10, 9, 0));
         Map<String, Object> seeded = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(
@@ -1325,11 +1459,11 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].appeared").value(false))
-                .andExpect(jsonPath("$.data[0].statusBefore").value("打开"))
-                .andExpect(jsonPath("$.data[0].statusAfter").value("已修复"))
-                .andExpect(jsonPath("$.data[0].actionType").value("自动修复"))
-                .andExpect(jsonPath("$.data[0].finalStatus").value("已修复"))
+                .andExpect(jsonPath("$.data[0].appeared").value(true))
+                .andExpect(jsonPath("$.data[0].statusBefore").doesNotExist())
+                .andExpect(jsonPath("$.data[0].statusAfter").doesNotExist())
+                .andExpect(jsonPath("$.data[0].actionType").value("导入"))
+                .andExpect(jsonPath("$.data[0].finalStatus").doesNotExist())
                 .andExpect(jsonPath("$.data[0].manualChangeCount").value(0));
 
         var history = dao.findHistoryByIssueId(id, 10).get(0);
@@ -1447,6 +1581,12 @@ class ReplayIssueControllerTest {
         } catch (IOException exception) {
             throw new IllegalStateException("Could not create legacy test workbook", exception);
         }
+    }
+
+    private static MockMultipartFile validWorkbookForBatch(String batchNo) {
+        return ReplayIssueTestFixtures.workbook(
+                ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of("批次", batchNo)),
+                ReplayIssueTestFixtures.HEADERS, true);
     }
 
     private MockMultipartFile validFullRefreshWorkbook() {

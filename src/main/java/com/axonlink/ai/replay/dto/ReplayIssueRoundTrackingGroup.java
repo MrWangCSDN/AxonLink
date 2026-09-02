@@ -18,10 +18,22 @@ public record ReplayIssueRoundTrackingGroup(
         int manualChangeCount,
         ReplayIssueStatus finalStatus,
         List<ReplayIssueHistoryEntry> inheritedEvents,
-        List<ReplayIssueHistoryEntry> manualEvents) {
+        List<ReplayIssueHistoryEntry> manualEvents,
+        List<ReplayIssueOriginalDataItem> originalData) {
+
+    public ReplayIssueRoundTrackingGroup(Long roundId, String roundCode, LocalDateTime importedAt,
+                                         Boolean appeared, ReplayIssueStatus statusBefore,
+                                         ReplayIssueStatus statusAfter, String actionType, String sourceSheet,
+                                         Integer sourceRow, int manualChangeCount, ReplayIssueStatus finalStatus,
+                                         List<ReplayIssueHistoryEntry> inheritedEvents,
+                                         List<ReplayIssueHistoryEntry> manualEvents) {
+        this(roundId, roundCode, importedAt, appeared, statusBefore, statusAfter, actionType, sourceSheet,
+                sourceRow, manualChangeCount, finalStatus, inheritedEvents, manualEvents, List.of());
+    }
 
     public ReplayIssueRoundTrackingGroup {
         inheritedEvents = List.copyOf(inheritedEvents);
         manualEvents = List.copyOf(manualEvents);
+        originalData = originalData == null ? List.of() : List.copyOf(originalData);
     }
 }

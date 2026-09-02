@@ -56,19 +56,35 @@ class ReplayIssueMergeServiceTest {
                 LocalDate.of(2026, 8, 10), ReplayIssueOperator.system(), "20260810-001");
 
         ReplayIssueQuery query = new ReplayIssueQuery(50, 0, null, null, null, null,
-                null, null, null, null, null, null, null, null, "20260810-001");
+                null, null, null, null, null, null, null, null, "RPT20260805-000000-0000");
         assertEquals(2, result.totalRows());
         assertEquals(1, result.createdRows());
         assertEquals(1, result.updatedRows());
         assertEquals(0, result.ignoredRows());
         assertEquals("20260810-001", result.coverageRound());
         assertEquals(2, dao.count(query));
-        assertEquals(List.of("20260810-001"), dao.options().coverageRounds());
+        assertEquals(List.of("RPT20260805-000000-0000"), dao.options().coverageRounds());
         assertEquals(1, dao.listImportRounds().size());
         assertEquals(2, dao.listImportRounds().get(0).inputRows());
-        assertEquals("覆盖并继承人工内容", dao.findIssueRounds(((Number) dao.list(query).stream()
+        assertEquals("数据继承", dao.findIssueRounds(((Number) dao.list(query).stream()
                 .filter(item -> "EXISTING".equals(item.get("issue_key"))).findFirst().orElseThrow().get("id")).longValue())
                 .get(0).actionType());
+    }
+
+    @Test
+    void unchangedImportKeepsBatchMembershipAndIncomingDataWithoutHistory() {
+        long id = dao.insertCurrent(lifecycle(row("UNCHANGED", "same"), ReplayIssueStatus.OPEN,
+                "代码问题", "初步分析", "处理方案", "alice"));
+        dao.upsertOccurrenceBatch(id, "UNCHANGED", "RPT20260805-000000-0000",
+                LocalDateTime.of(2026, 8, 5, 1, 0), ReplayIssueStatus.OPEN);
+
+        ReplayIssueImportResult result = merge.merge(workbook(row("UNCHANGED", "same")),
+                LocalDate.of(2026, 8, 5), ReplayIssueOperator.system(), "20260805-unchanged");
+
+        assertEquals(1, result.updatedRows());
+        assertEquals(0, dao.findHistoryByIssueId(id, 10).size());
+        assertEquals(1, dao.findIssueRounds(id).size());
+        assertTrue(dao.findIssueRounds(id).get(0).incomingSnapshot().contains("same"));
     }
 
     @Test
@@ -174,13 +190,13 @@ class ReplayIssueMergeServiceTest {
         Map<String, Object> fixed = rows.stream().filter(r -> "FIXED".equals(r.get("issue_key"))).findFirst().orElseThrow();
         assertEquals("已修复", missing.get("issue_status"));
         assertEquals("2026-08-05", missing.get("defect_repair_date").toString());
-        assertEquals("打开", fixed.get("issue_status"));
+        assertEquals("新建", fixed.get("issue_status"));
         assertEquals("new", fixed.get("issue_description"));
         assertEquals(1L, dao.countHistory("FIXED"));
     }
 
     @Test
-    void fixesMissingDeferredIssueButKeepsDeferredIssueWhenItReappears() {
+    void fixesMissingDeferredIssueButRefreshesReappearingDeferredIssue() {
         dao.insertCurrent(lifecycle(row("DEFERRED-MISSING", "old"), ReplayIssueStatus.DEFERRED, "代码问题", "a", "s", "alice"));
         dao.insertCurrent(lifecycle(row("DEFERRED-PRESENT", "old"), ReplayIssueStatus.DEFERRED, "代码问题", "a", "s", "alice"));
 
@@ -191,7 +207,7 @@ class ReplayIssueMergeServiceTest {
         Map<String, Object> present = rows.stream().filter(r -> "DEFERRED-PRESENT".equals(r.get("issue_key"))).findFirst().orElseThrow();
         assertEquals("已修复", missing.get("issue_status"));
         assertEquals("延后修复", present.get("issue_status"));
-        assertEquals("old", present.get("issue_description"));
+        assertEquals("new", present.get("issue_description"));
     }
 
     @Test
@@ -380,7 +396,7 @@ class ReplayIssueMergeServiceTest {
                 LocalDate.of(2026, 8, 11), ReplayIssueOperator.system(), "20260811-001");
 
         ReplayIssueQuery query = new ReplayIssueQuery(50, 0, null, null, null, null,
-                null, null, null, null, null, null, null, null, "20260811-001");
+                null, null, null, null, null, null, null, null, "RPT20260805-000000-0000");
         Map<String, Object> current = dao.list(query).get(0);
         assertEquals("new source", current.get("issue_description"));
         assertEquals("打开", current.get("issue_status"));
@@ -398,21 +414,20 @@ class ReplayIssueMergeServiceTest {
         assertTrue(event.afterSnapshot().contains("new source"));
         assertTrue(event.afterSnapshot().contains("人工备注"));
         assertTrue(event.incomingSnapshot().contains("new source"));
-        assertEquals("覆盖并继承人工内容", dao.findIssueRounds(id).get(0).actionType());
+        assertEquals("数据继承", dao.findIssueRounds(id).get(0).actionType());
     }
 
     @Test
-    void analyzingAndDeferredDuplicatesAreIgnoredWithoutHistory() {
-        for (ReplayIssueStatus status : List.of(ReplayIssueStatus.ANALYZING, ReplayIssueStatus.DEFERRED)) {
-            ReplayIssueDao localDao = daoForSchema();
-            localDao.insertCurrent(lifecycle(row("K-" + status, "old"), status, "代码问题", "a", "s", "alice"));
-            ReplayIssueMergeService localMerge = new ReplayIssueMergeService(localDao);
-            var result = localMerge.merge(workbook(row("K-" + status, "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
-            Map<String, Object> current = localDao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
-            assertEquals(1, result.ignoredRows());
-            assertEquals("old", current.get("issue_description"));
-            assertEquals(0L, localDao.countHistory("K-" + status));
-        }
+    void analyzingDuplicateIsIgnoredWithoutHistory() {
+        ReplayIssueStatus status = ReplayIssueStatus.ANALYZING;
+        ReplayIssueDao localDao = daoForSchema();
+        localDao.insertCurrent(lifecycle(row("K-" + status, "old"), status, "代码问题", "a", "s", "alice"));
+        ReplayIssueMergeService localMerge = new ReplayIssueMergeService(localDao);
+        var result = localMerge.merge(workbook(row("K-" + status, "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
+        Map<String, Object> current = localDao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
+        assertEquals(1, result.ignoredRows());
+        assertEquals("old", current.get("issue_description"));
+        assertEquals(0L, localDao.countHistory("K-" + status));
     }
 
     @Test

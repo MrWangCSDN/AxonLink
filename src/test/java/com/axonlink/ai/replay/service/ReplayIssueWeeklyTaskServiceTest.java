@@ -45,7 +45,8 @@ class ReplayIssueWeeklyTaskServiceTest {
         ReplayIssueWeeklyTaskConfig result = service.replace(List.of(" BATCH-B ", "BATCH-A", "BATCH-B"));
 
         assertEquals(List.of("BATCH-A", "BATCH-B"), result.batchNames());
-        assertEquals(List.of("BATCH-1", "BATCH-2", "BATCH-3", "BATCH-A", "BATCH-B"), result.availableBatchNames());
+        assertEquals(List.of("BATCH-A", "BATCH-B", "RPT20260820-142055-0001",
+                "RPT20260820-142055-0002", "RPT20260820-142055-0003"), result.availableBatchNames());
         assertEquals(3L, result.issueCount());
         assertEquals(List.of("BATCH-A", "BATCH-B"), service.current().batchNames());
     }

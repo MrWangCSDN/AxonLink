@@ -21,7 +21,8 @@ import java.util.Set;
 /** Atomically updates the six page-managed fields and appends one audit snapshot. */
 @Service
 public class ReplayIssueEditService {
-    private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "外围问题", "其他问题");
+    private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "规则性差异问题", "外围问题", "其他问题");
+    private static final Set<String> NO_ACTION_ISSUE_TYPES = Set.of("合理差异", "规则性差异问题", "外围问题");
 
     private final ReplayIssueDao dao;
     private final SysUserDao userDao;
@@ -82,9 +83,13 @@ public class ReplayIssueEditService {
             } else if (!issueStatus.isManuallySelectable()) {
                 throw new IllegalArgumentException("该问题状态不能手工选择");
             }
+            validateStatusType(issueStatus, request.issueType());
             SysUser collaborator = resolveCollaborator(request.cooperationPersonUsername());
             LocalDateTime operationAt = LocalDateTime.now(clock);
             ReplayIssueRow after = edited(before, request, collaborator, issueStatus, operator, operationAt);
+            if (before.equals(after)) {
+                return before;
+            }
             currentDao.updateCurrent(after);
             currentDao.insertHistoryForRound(after.id(), after.issueKey(), "人工保存", operationAt, operator,
                     after.importDate(), null, null, null, snapshot(before), snapshot(after), null,
@@ -116,6 +121,13 @@ public class ReplayIssueEditService {
         return user;
     }
 
+    private static void validateStatusType(ReplayIssueStatus issueStatus, String issueType) {
+        String normalizedType = issueType == null ? "" : issueType.trim();
+        if (issueStatus == ReplayIssueStatus.NO_ACTION && !NO_ACTION_ISSUE_TYPES.contains(normalizedType)) {
+            throw new IllegalArgumentException("无需处理的问题类型只能选择：合理差异、规则性差异问题、外围问题");
+        }
+    }
+
     private ReplayIssueRow edited(ReplayIssueRow row, ReplayIssueUpdateRequest request, SysUser collaborator,
                                   ReplayIssueStatus issueStatus, ReplayIssueOperator operator,
                                   LocalDateTime operationAt) {
@@ -126,7 +138,6 @@ public class ReplayIssueEditService {
         LocalDateTime reviewedAt = null;
         LocalDate defectRepairDate = row.defectRepairDate();
         if (issueStatus == ReplayIssueStatus.NO_ACTION) {
-            issueType = "合理差异";
             if (row.issueStatus() == ReplayIssueStatus.NO_ACTION
                     && row.reviewStatus() == ReplayIssueReviewStatus.APPROVED) {
                 reviewStatus = row.reviewStatus();

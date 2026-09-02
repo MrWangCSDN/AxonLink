@@ -78,7 +78,8 @@ public class ReplayIssueMergeService {
                     currentDao.updateCoverageRound(id, coverageRound);
                     ReplayIssueRow after = withId(createdRow, id);
                     currentDao.insertIssueRound(roundId, id, key, true, null, ReplayIssueStatus.NEW,
-                            "导入新增", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                            "导入新增", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
+                            snapshot(incoming), incoming.batchNo());
                     currentDao.upsertOccurrenceBatch(id, key, incoming.batchNo(), operationAt, ReplayIssueStatus.NEW);
                     currentDao.insertHistoryForRound(id, key, "导入新增", operationAt, effectiveOperator, effectiveDate,
                             coverageRound, incoming.sourceSheet(), incoming.rowOrder() + 1,
@@ -94,20 +95,26 @@ public class ReplayIssueMergeService {
                     currentDao.updateCurrent(refreshed);
                     currentDao.updateCoverageRound(current.id(), coverageRound);
                     currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
-                            "数据继承", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                            "数据继承", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
+                            snapshot(incoming), incoming.batchNo());
                     currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, status);
-                    if (!batchAlreadyKnown) currentDao.insertHistoryForRound(current.id(), key, "基础数据覆盖，人工内容继承",
-                            operationAt, effectiveOperator, effectiveDate, coverageRound,
-                            incoming.sourceSheet(), incoming.rowOrder() + 1,
-                            snapshot(current), snapshot(refreshed), snapshot(incoming), roundId);
-                    if (!batchAlreadyKnown) currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
+                    String beforeSnapshot = snapshot(current);
+                    String afterSnapshot = snapshot(refreshed);
+                    if (!batchAlreadyKnown && ReplayIssueTrackingProjection.hasFieldChanges(beforeSnapshot, afterSnapshot)) {
+                        currentDao.insertHistoryForRound(current.id(), key, "基础数据覆盖，人工内容继承",
+                                operationAt, effectiveOperator, effectiveDate, coverageRound,
+                                incoming.sourceSheet(), incoming.rowOrder() + 1,
+                                beforeSnapshot, afterSnapshot, snapshot(incoming), roundId);
+                        currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
+                    }
                     updated++;
                     continue;
                 }
                 if (status == ReplayIssueStatus.ANALYZING) {
                     currentDao.updateCoverageRound(current.id(), coverageRound);
                     if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
-                            "保持", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                            "保持", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
+                            snapshot(incoming), incoming.batchNo());
                     currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, status);
                     ignored++;
                     continue;
@@ -123,16 +130,21 @@ public class ReplayIssueMergeService {
                 currentDao.updateCoverageRound(current.id(), coverageRound);
                 String actionType = pendingVerificationNeedsReopen ? "重新打开并继承" : "数据继承";
                 if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, nextStatus,
-                        actionType, incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt);
+                        actionType, incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
+                        snapshot(incoming), incoming.batchNo());
                 currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, nextStatus);
-                if (!batchAlreadyKnown) currentDao.insertHistoryForRound(current.id(), key,
-                        pendingVerificationNeedsReopen ? "修复待验证问题重新打开"
-                                : status == ReplayIssueStatus.FIXED ? "已修复问题重新新建"
-                                : status == ReplayIssueStatus.NO_ACTION ? "基础数据覆盖，人工内容继承" : "数据继承",
-                        operationAt, effectiveOperator, effectiveDate, coverageRound,
-                        incoming.sourceSheet(), incoming.rowOrder() + 1,
-                        snapshot(current), snapshot(refreshed), snapshot(incoming), roundId);
-                if (!batchAlreadyKnown) currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
+                String beforeSnapshot = snapshot(current);
+                String afterSnapshot = snapshot(refreshed);
+                if (!batchAlreadyKnown && ReplayIssueTrackingProjection.hasFieldChanges(beforeSnapshot, afterSnapshot)) {
+                    currentDao.insertHistoryForRound(current.id(), key,
+                            pendingVerificationNeedsReopen ? "修复待验证问题重新打开"
+                                    : status == ReplayIssueStatus.FIXED ? "已修复问题重新新建"
+                                    : status == ReplayIssueStatus.NO_ACTION ? "基础数据覆盖，人工内容继承" : "数据继承",
+                            operationAt, effectiveOperator, effectiveDate, coverageRound,
+                            incoming.sourceSheet(), incoming.rowOrder() + 1,
+                            beforeSnapshot, afterSnapshot, snapshot(incoming), roundId);
+                    currentDao.updateLatestHistoryOccurrenceBatch(current.id(), operationAt, incoming.batchNo());
+                }
                 updated++;
             }
             int autoRepaired = 0;

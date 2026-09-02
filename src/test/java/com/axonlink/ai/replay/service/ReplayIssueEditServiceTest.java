@@ -10,6 +10,8 @@ import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.LocalDateTime;
@@ -73,6 +75,20 @@ class ReplayIssueEditServiceTest {
     }
 
     @Test
+    void doesNotWriteHistoryWhenSavingWithoutAnyBusinessChanges() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_type = ?, initial_analysis = ?, final_solution = ?, remark = ? WHERE id = ?",
+                "代码问题", "初步分析", "处理方案", "", issueId);
+        ReplayIssueRow before = dao.findCurrentByIdForUpdate(issueId);
+
+        ReplayIssueRow after = service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "代码问题", "初步分析", "处理方案", null, ""),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(before, after);
+        assertEquals(0L, dao.countHistory(before.issueKey()));
+    }
+
+    @Test
     void preservesCurrentStatusWhenSavingOnlyTheRemark() {
         ReplayIssueRow updated = service.update(issueId,
                 new ReplayIssueUpdateRequest(null, "代码问题", "", "", null, "111"),
@@ -96,25 +112,39 @@ class ReplayIssueEditServiceTest {
         assertEquals(1L, dao.countHistory(updated.issueKey()));
     }
 
-    @Test
-    void ordinaryUserSelectingNoActionForcesReasonableDifferenceAndPendingReview() {
+    @ParameterizedTest
+    @ValueSource(strings = {"合理差异", "规则性差异问题", "外围问题"})
+    void ordinaryUserSelectingNoActionPreservesEachAllowedTypeAndCreatesPendingReview(String issueType) {
         ReplayIssueRow updated = service.update(issueId,
-                new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, "代码问题", "analysis", "solution", null),
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, issueType,
+                        "analysis", "solution", null),
                 new ReplayIssueOperator("editor", "编辑人"));
 
         assertEquals(ReplayIssueStatus.NO_ACTION, updated.issueStatus());
-        assertEquals("合理差异", updated.issueType());
+        assertEquals(issueType, updated.issueType());
         assertEquals(ReplayIssueReviewStatus.PENDING, updated.reviewStatus());
         assertEquals(null, updated.reviewerUsername());
         assertEquals(null, updated.defectRepairDate());
     }
 
     @Test
+    void rejectsNoActionWithDisallowedTypeWithoutUpdatingOrWritingHistory() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, "代码问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人")));
+
+        assertEquals("无需处理的问题类型只能选择：合理差异、规则性差异问题、外围问题", error.getMessage());
+        assertEquals(ReplayIssueStatus.OPEN, dao.findCurrentByIdForUpdate(issueId).issueStatus());
+        assertEquals(0L, dao.countHistory("key-1"));
+    }
+
+    @Test
     void reviewerSelectingNoActionAutoApprovesAndWritesOperationDate() throws Exception {
         ReplayIssueRow updated = service.update(issueId,
-                new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, "代码问题", "analysis", "solution", null),
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, "外围问题", "analysis", "solution", null),
                 new ReplayIssueOperator("reviewer", "审核人"));
 
+        assertEquals("外围问题", updated.issueType());
         assertEquals(ReplayIssueReviewStatus.APPROVED, updated.reviewStatus());
         assertEquals(LocalDate.of(2026, 8, 27), updated.defectRepairDate());
         var history = dao.findHistoryByIssueId(issueId, 10).get(0);

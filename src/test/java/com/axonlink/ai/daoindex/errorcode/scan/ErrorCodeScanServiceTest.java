@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.*;
 
-/** detectModule 静态方法测试 + 物化门控测试（明细总重建、物化按 materialize 开关）。 */
+/** detectModule 静态方法测试 + 空源码根保护测试。 */
 class ErrorCodeScanServiceTest {
 
     /**
@@ -24,27 +24,27 @@ class ErrorCodeScanServiceTest {
     }
 
     @Test
-    void onReadyPathRebuildsThrowsButSkipsMaterialize() {
+    void onReadyPathKeepsExistingDataWhenSourceRootsAreEmpty() {
         DiiErrorCodeDao dao = mock(DiiErrorCodeDao.class);
         ErrorCodeAttributionService attr = mock(ErrorCodeAttributionService.class);
         ErrorCodeScanService svc = newServiceWithEmptyRoots(dao, attr);
 
         svc.runSafely(false, false);   // 启动路径：materialize=false
 
-        verify(dao).rebuildThrows(anyList());                          // 明细必重建
-        verify(attr, never()).materializeTransactionErrorCodes();     // 不物化（图未就绪）
+        verify(dao, never()).rebuildThrows(anyList());
+        verify(attr, never()).materializeTransactionErrorCodes();
     }
 
     @Test
-    void graphBuiltPathRebuildsThrowsAndMaterializes() {
+    void graphBuiltPathKeepsExistingDataWhenSourceRootsAreEmpty() {
         DiiErrorCodeDao dao = mock(DiiErrorCodeDao.class);
         ErrorCodeAttributionService attr = mock(ErrorCodeAttributionService.class);
         ErrorCodeScanService svc = newServiceWithEmptyRoots(dao, attr);
 
         svc.runSafely(false, true);    // 图构建完成路径：materialize=true
 
-        verify(dao).rebuildThrows(anyList());                         // 明细重建
-        verify(attr).materializeTransactionErrorCodes();              // 且物化交易维度
+        verify(dao, never()).rebuildThrows(anyList());
+        verify(attr, never()).materializeTransactionErrorCodes();
     }
 
     @Test

@@ -14,10 +14,11 @@ class ReplayIssueCompletionCountsTest {
 
     @Test
     void calculatesCompletedRateFromOnTimeAndLateFixedCounts() {
-        ReplayIssueCompletionCounts counts = ReplayIssueCompletionCounts.of(13, 4, 10, 5);
+        ReplayIssueCompletionCounts counts = ReplayIssueCompletionCounts.of(13, 4, 10, 5, 6);
 
         assertEquals(32, counts.plannedTotal());
         assertEquals(new BigDecimal("53.13"), counts.completionRate());
+        assertEquals(6, counts.pendingVerificationCount());
     }
 
     @Test
@@ -27,7 +28,7 @@ class ReplayIssueCompletionCountsTest {
 
     @Test
     void groupAndDeveloperJsonExposeCountsAtTheDocumentedLevel() throws Exception {
-        ReplayIssueCompletionCounts counts = ReplayIssueCompletionCounts.of(1, 2, 3, 4);
+        ReplayIssueCompletionCounts counts = ReplayIssueCompletionCounts.of(1, 2, 3, 4, 5);
         ReplayIssueCompletionDeveloperRow developer =
                 new ReplayIssueCompletionDeveloperRow("张三、李四", counts);
         ReplayIssueCompletionGroupRow group =
@@ -39,8 +40,10 @@ class ReplayIssueCompletionCountsTest {
         assertEquals("公共组", json.path("groupName").asText());
         assertEquals(10, json.path("plannedTotal").asLong());
         assertEquals(1, json.path("onTimeFixedCount").asLong());
+        assertEquals(5, json.path("pendingVerificationCount").asLong());
         assertFalse(json.has("counts"));
         assertEquals("张三、李四", json.path("developers").get(0).path("matchedDeveloper").asText());
         assertEquals(2, json.path("developers").get(0).path("lateFixedCount").asLong());
+        assertEquals(5, json.path("developers").get(0).path("pendingVerificationCount").asLong());
     }
 }

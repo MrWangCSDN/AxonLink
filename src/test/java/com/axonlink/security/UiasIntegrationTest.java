@@ -2,6 +2,7 @@ package com.axonlink.security;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.common.R;
+import com.axonlink.config.AiAnalysisConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.unboundid.ldap.listener.InMemoryDirectoryServer;
@@ -139,6 +140,9 @@ class UiasIntegrationTest {
 
     @MockBean
     private UserService userService;
+
+    @MockBean
+    private AiAnalysisConfig aiAnalysisConfig;
 
     @Autowired
     private WebApplicationContext context;

@@ -44,6 +44,7 @@ class ReplayIssuePlanDateServiceTest {
                 new Object[]{"loan-editor", "贷款编辑人", "200001", 1},
                 new Object[]{"username-editor", "无工号编辑人", null, 1},
                 new Object[]{"developer-owner", "开发负责人", "300001", 1},
+                new Object[]{"advanced-editor", "高级编辑人", "400001", 1},
                 new Object[]{"inactive", "停用人员", "100002", 0}));
 
         ReplayIssuePlanDateProperties properties = new ReplayIssuePlanDateProperties();
@@ -51,6 +52,8 @@ class ReplayIssuePlanDateServiceTest {
         editors.put("公共组", editorGroup("100001", "100002", "username-editor"));
         editors.put("贷款组", editorGroup("200001", "public-editor"));
         properties.setEditors(editors);
+        properties.setAdvancedEditors(new LinkedHashMap<>(
+                java.util.Map.of("公共组", editorGroup("400001", "100001"))));
 
         issueDao = new ReplayIssueDao(jdbc);
         issueDao.replaceAll(List.of(
@@ -77,11 +80,42 @@ class ReplayIssuePlanDateServiceTest {
                 new ReplayIssueOperator("public-editor", "公共编辑人"));
 
         assertEquals(List.of("公共组"), permissions.editableGroups());
+        assertEquals(List.of("公共组"), permissions.dateLimitBypassGroups());
         assertEquals(List.of(), permissions.editableTransactionCodes());
         assertThrows(ReplayIssuePlanDateForbiddenException.class, () -> service.update(loanIssueId,
                 "2026-08-26", new ReplayIssueOperator("public-editor", "公共编辑人")));
         assertThrows(ReplayIssuePlanDateForbiddenException.class, () -> service.update(publicIssueId,
                 "2026-08-26", new ReplayIssueOperator("inactive", "停用人员")));
+    }
+
+    @Test
+    void advancedEditorAutomaticallyGetsGroupEditPermissionAndBypassesOccurrenceBoundary() {
+        ReplayIssueOperator advanced = new ReplayIssueOperator("advanced-editor", "高级编辑人");
+
+        ReplayIssuePlanDatePermissions permissions = service.permissions(advanced);
+        assertEquals(List.of("公共组"), permissions.editableGroups());
+        assertEquals(List.of("公共组"), permissions.dateLimitBypassGroups());
+        assertEquals(List.of(), permissions.editableTransactionCodes());
+
+        assertEquals(LocalDate.of(2026, 9, 30),
+                service.update(publicIssueId, "2026-09-30", advanced).plannedCompletionDate());
+        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date=NULL WHERE id=?", publicIssueId);
+        assertEquals(LocalDate.of(2026, 10, 1),
+                service.update(publicIssueId, "2026-10-01", advanced).plannedCompletionDate());
+    }
+
+    @Test
+    void ordinaryEditorAndDeveloperOwnerStillCannotBypassSevenDayBoundary() {
+        ReplayIssueOperator ordinary = new ReplayIssueOperator("loan-editor", "贷款编辑人");
+        assertEquals(List.of(), service.permissions(ordinary).dateLimitBypassGroups());
+        IllegalArgumentException ordinaryError = assertThrows(IllegalArgumentException.class,
+                () -> service.update(loanIssueId, "2026-08-28", ordinary));
+        assertEquals("计划验证日期不能超过首次出现日期后 7 个自然日", ordinaryError.getMessage());
+
+        ReplayIssueOperator developer = new ReplayIssueOperator("developer-owner", "开发负责人");
+        IllegalArgumentException developerError = assertThrows(IllegalArgumentException.class,
+                () -> service.update(publicIssueId, "2026-08-28", developer));
+        assertEquals("计划验证日期不能超过首次出现日期后 7 个自然日", developerError.getMessage());
     }
 
     @Test
@@ -166,12 +200,14 @@ class ReplayIssuePlanDateServiceTest {
     void defectRepairDateLocksPlanDateRegardlessOfEditorPermission() {
         jdbc.update("UPDATE dii_replay_issue SET planned_completion_date = ?, defect_repair_date = ? WHERE id = ?",
                 LocalDate.of(2026, 8, 25), LocalDate.of(2026, 8, 26), publicIssueId);
-        ReplayIssueOperator authorizedEditor = new ReplayIssueOperator("public-editor", "公共编辑人");
-
-        for (String value : new String[]{"2026-08-27", null}) {
-            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                    () -> service.update(publicIssueId, value, authorizedEditor));
-            assertEquals("问题已有缺陷修复日期，计划验证日期不可修改", error.getMessage());
+        for (ReplayIssueOperator authorizedEditor : List.of(
+                new ReplayIssueOperator("public-editor", "公共编辑人"),
+                new ReplayIssueOperator("advanced-editor", "高级编辑人"))) {
+            for (String value : new String[]{"2026-08-27", null}) {
+                IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                        () -> service.update(publicIssueId, value, authorizedEditor));
+                assertEquals("问题已有缺陷修复日期，计划验证日期不可修改", error.getMessage());
+            }
         }
 
         var unchanged = issueDao.findCurrentByIdForUpdate(publicIssueId);
@@ -181,27 +217,27 @@ class ReplayIssuePlanDateServiceTest {
 
     @Test
     void plannedDateAllowsExactlySevenNaturalDaysAndRejectsTheEighthDay() {
-        ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
+        ReplayIssueOperator operator = new ReplayIssueOperator("loan-editor", "贷款编辑人");
 
         assertEquals(LocalDate.of(2026, 8, 27),
-                service.update(publicIssueId, "2026-08-27", operator).plannedCompletionDate());
+                service.update(loanIssueId, "2026-08-27", operator).plannedCompletionDate());
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.update(publicIssueId, "2026-08-28", operator));
+                () -> service.update(loanIssueId, "2026-08-28", operator));
         assertEquals("计划验证日期不能超过首次出现日期后 7 个自然日", error.getMessage());
     }
 
     @Test
     void nonEmptyPlanDateRequiresAValidFirstOccurrenceDateButCanStillBeCleared() {
-        ReplayIssueOperator operator = new ReplayIssueOperator("public-editor", "公共编辑人");
-        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='not-a-date' WHERE id=?", publicIssueId);
+        ReplayIssueOperator operator = new ReplayIssueOperator("loan-editor", "贷款编辑人");
+        jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date='not-a-date' WHERE id=?", loanIssueId);
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> service.update(publicIssueId, "2026-08-26", operator));
+                () -> service.update(loanIssueId, "2026-08-26", operator));
         assertEquals("首次出现日期无效，无法填写计划验证日期", error.getMessage());
 
-        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-26' WHERE id=?", publicIssueId);
-        assertNull(service.update(publicIssueId, null, operator).plannedCompletionDate());
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-26' WHERE id=?", loanIssueId);
+        assertNull(service.update(loanIssueId, null, operator).plannedCompletionDate());
     }
 
     @Test
