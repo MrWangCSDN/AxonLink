@@ -52,19 +52,40 @@ public class ReplayIssueMergeService {
 
     public ReplayIssueImportResult merge(ReplayIssueExcelParser.ParsedWorkbook workbook,
                                          LocalDate importDate, ReplayIssueOperator operator, String coverageRound) {
-        if (workbook == null || workbook.rows().isEmpty()) {
+        return dao.inTransaction(currentDao ->
+                mergeWithinTransaction(currentDao, workbook, importDate, operator, coverageRound));
+    }
+
+    public ReplayIssueImportResult mergeWithinTransaction(ReplayIssueDao transactionDao,
+                                                           ReplayIssueExcelParser.ParsedWorkbook workbook,
+                                                           LocalDate importDate, ReplayIssueOperator operator,
+                                                           String coverageRound) {
+        return mergeWithinTransaction(transactionDao, workbook, importDate, operator, coverageRound, null);
+    }
+
+    public ReplayIssueImportResult mergeWithinTransaction(ReplayIssueDao transactionDao,
+                                                           ReplayIssueExcelParser.ParsedWorkbook workbook,
+                                                           LocalDate importDate, ReplayIssueOperator operator,
+                                                           String coverageRound, String fallbackBatchName) {
+        if (workbook == null) {
+            throw new IllegalArgumentException("目标页签中没有可导入数据");
+        }
+        String incomingBatchName = incomingBatchName(workbook.rows());
+        String occurrenceBatchName = (incomingBatchName == null || incomingBatchName.isBlank())
+                && fallbackBatchName != null && !fallbackBatchName.isBlank()
+                ? fallbackBatchName.trim() : incomingBatchName;
+        if (workbook.rows().isEmpty() && (occurrenceBatchName == null || occurrenceBatchName.isBlank())) {
             throw new IllegalArgumentException("目标页签中没有可导入数据");
         }
         validateKeys(workbook);
         LocalDate effectiveDate = importDate == null ? LocalDate.now(clock) : importDate;
-        LocalDate repairDate = batchDate(workbook.rows());
-        String occurrenceBatchName = incomingBatchName(workbook.rows());
+        LocalDate repairDate = batchDate(workbook.rows(), occurrenceBatchName);
         String batchFamily = batchFamily(occurrenceBatchName);
         ReplayIssueOperator effectiveOperator = operator == null ? ReplayIssueOperator.system() : operator;
         LocalDateTime operationAt = LocalDateTime.now(clock);
         Set<String> incomingKeys = workbook.rows().stream().map(row -> row.issueKey().trim()).collect(java.util.stream.Collectors.toSet());
 
-        int[] counts = dao.inTransaction(currentDao -> {
+        java.util.function.Function<ReplayIssueDao, int[]> mergeOperation = currentDao -> {
             long roundId = currentDao.insertImportRound(coverageRound, operationAt, effectiveOperator, workbook.rows().size());
             int created = 0;
             int updated = 0;
@@ -112,7 +133,7 @@ public class ReplayIssueMergeService {
                 }
                 if (status == ReplayIssueStatus.ANALYZING) {
                     currentDao.updateCoverageRound(current.id(), coverageRound);
-                    if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
+                    currentDao.insertIssueRound(roundId, current.id(), key, true, status, status,
                             "保持", incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
                             snapshot(incoming), incoming.batchNo());
                     currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, status);
@@ -129,7 +150,7 @@ public class ReplayIssueMergeService {
                 currentDao.updateCurrent(refreshed);
                 currentDao.updateCoverageRound(current.id(), coverageRound);
                 String actionType = pendingVerificationNeedsReopen ? "重新打开并继承" : "数据继承";
-                if (!batchAlreadyKnown) currentDao.insertIssueRound(roundId, current.id(), key, true, status, nextStatus,
+                currentDao.insertIssueRound(roundId, current.id(), key, true, status, nextStatus,
                         actionType, incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
                         snapshot(incoming), incoming.batchNo());
                 currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, nextStatus);
@@ -152,7 +173,8 @@ public class ReplayIssueMergeService {
                 ReplayIssueRow fixed = withStatusAndDefectDate(current, ReplayIssueStatus.FIXED, repairDate);
                 currentDao.updateCurrent(fixed);
                 currentDao.insertIssueRound(roundId, current.id(), current.issueKey(), false,
-                        current.issueStatus(), ReplayIssueStatus.FIXED, "自动修复", null, null, operationAt);
+                        current.issueStatus(), ReplayIssueStatus.FIXED, "自动修复", null, null, operationAt,
+                        null, occurrenceBatchName);
                 currentDao.insertHistoryForRound(current.id(), current.issueKey(), "问题自动修复", operationAt,
                         effectiveOperator, effectiveDate, coverageRound, null, null,
                         snapshot(current), snapshot(fixed), null, roundId);
@@ -161,7 +183,8 @@ public class ReplayIssueMergeService {
             }
             currentDao.updateImportRoundStats(roundId, created, updated, ignored, autoRepaired);
             return new int[] {created, updated, ignored, autoRepaired};
-        });
+        };
+        int[] counts = mergeOperation.apply(transactionDao);
         return new ReplayIssueImportResult(workbook.rows().size(), workbook.rowsBySheet(), workbook.sandboxRows(),
                 workbook.nonSandboxRows(), operationAt, counts[0], counts[1], counts[2], counts[3], 0, coverageRound);
     }
@@ -184,7 +207,7 @@ public class ReplayIssueMergeService {
         return lastManualSaveAt == null || lastManualSaveAt.toLocalDate().isBefore(batchRegisteredDate);
     }
 
-    private LocalDate batchDate(List<ReplayIssueRow> rows) {
+    private LocalDate batchDate(List<ReplayIssueRow> rows, String fallbackBatchName) {
         SortedSet<LocalDate> dates = new TreeSet<>();
         for (ReplayIssueRow row : rows) {
             String batchNo = row.batchNo() == null ? "" : row.batchNo().trim();
@@ -196,6 +219,17 @@ public class ReplayIssueMergeService {
                 dates.add(LocalDate.parse(matcher.group(1), DateTimeFormatter.BASIC_ISO_DATE));
             } catch (DateTimeParseException exception) {
                 throw invalidBatchDate(row, batchNo);
+            }
+        }
+        if (dates.isEmpty()) {
+            java.util.regex.Matcher matcher = BATCH_DATE_PATTERN.matcher(fallbackBatchName);
+            if (!matcher.matches()) {
+                throw new IllegalArgumentException("日报批次号日期格式不合法：" + fallbackBatchName);
+            }
+            try {
+                dates.add(LocalDate.parse(matcher.group(1), DateTimeFormatter.BASIC_ISO_DATE));
+            } catch (DateTimeParseException exception) {
+                throw new IllegalArgumentException("日报批次号日期格式不合法：" + fallbackBatchName);
             }
         }
         if (dates.size() > 1) {

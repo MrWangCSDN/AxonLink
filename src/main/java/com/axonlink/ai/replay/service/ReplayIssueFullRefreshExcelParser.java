@@ -135,7 +135,7 @@ public class ReplayIssueFullRefreshExcelParser {
         return new ReplayIssueRow(null, sheetName, domain, sandbox, rowIndex,
                 domain, "", values.get("批次"), values.get("交易码"), values.get("交易名称"),
                 values.get("问题级别"), values.get("登记日期"), values.get("字段名"), values.get("问题描述"),
-                values.get("交易负责人"), values.get("问题类型"), values.get("初步问题分析"),
+                values.get("交易负责人"), ReplayIssueTypeNormalizer.normalize(values.get("问题类型")), values.get("初步问题分析"),
                 values.get("最终处理方案"), values.get("解决日期"), values.get("需协同组"), "",
                 values.get("流水号"), null, values.get("备注"), values.get("该问题出现过的交易笔数"),
                 issueId, issueKey, values.get("历史出现次数"), values.get("首次出现日期"),

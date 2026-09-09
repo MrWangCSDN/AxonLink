@@ -54,14 +54,18 @@ public class ReplayIssueExcelParser {
         try (InputStream input = file.getInputStream(); Workbook workbook = WorkbookFactory.create(input)) {
             DataFormatter formatter = new DataFormatter();
             FormulaEvaluator evaluator = workbook.getCreationHelper().createFormulaEvaluator();
-            validateTargetSheets(workbook);
-
             List<ReplayIssueRow> rows = new ArrayList<>();
             Map<String, Integer> rowsBySheet = new LinkedHashMap<>();
             int sandboxRows = 0;
+            boolean hasIssueSheets = false;
 
             for (SheetMetadata metadata : TARGET_SHEETS) {
                 Sheet sheet = workbook.getSheet(metadata.name());
+                if (sheet == null) {
+                    rowsBySheet.put(metadata.name(), 0);
+                    continue;
+                }
+                hasIssueSheets = true;
                 HeaderMapping headerMapping = findHeaderMapping(sheet, formatter, evaluator);
                 int sheetRows = 0;
                 for (int rowIndex = headerMapping.rowIndex() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
@@ -79,20 +83,7 @@ public class ReplayIssueExcelParser {
                 }
             }
 
-            if (rows.isEmpty()) {
-                throw new IllegalArgumentException("目标页签中没有可导入数据");
-            }
-            return new ParsedWorkbook(rows, rowsBySheet, sandboxRows, rows.size() - sandboxRows);
-        }
-    }
-
-    private void validateTargetSheets(Workbook workbook) {
-        List<String> missing = TARGET_SHEETS.stream()
-                .map(SheetMetadata::name)
-                .filter(name -> workbook.getSheet(name) == null)
-                .toList();
-        if (!missing.isEmpty()) {
-            throw new IllegalArgumentException("缺少目标页签：" + String.join("、", missing));
+            return new ParsedWorkbook(rows, rowsBySheet, sandboxRows, rows.size() - sandboxRows, hasIssueSheets);
         }
     }
 
@@ -157,7 +148,7 @@ public class ReplayIssueExcelParser {
                                              ReplayIssueImportMode mode) {
         return new ReplayIssueRow(null, metadata.name(), metadata.groupName(), metadata.sandbox(), rowIndex,
                 metadata.groupName(), values.get(1), mode.normalizeBatch(values.get(2)), values.get(3), values.get(4), values.get(5),
-                values.get(6), values.get(7), values.get(8), values.get(9), values.get(10), values.get(11),
+                values.get(6), values.get(7), values.get(8), values.get(9), ReplayIssueTypeNormalizer.normalize(values.get(10)), values.get(11),
                 values.get(12), values.get(13), values.get(14), values.get(15), values.get(16), "",
                 values.get(19), values.get(20), values.get(21), values.get(22), values.get(23), values.get(24),
                 values.get(25), null, ReplayIssueStatus.OPEN, null, null, null, null, values.get(17));
@@ -192,7 +183,12 @@ public class ReplayIssueExcelParser {
     }
 
     public record ParsedWorkbook(List<ReplayIssueRow> rows, Map<String, Integer> rowsBySheet,
-                                 int sandboxRows, int nonSandboxRows) {
+                                 int sandboxRows, int nonSandboxRows, boolean hasIssueSheets) {
+        public ParsedWorkbook(List<ReplayIssueRow> rows, Map<String, Integer> rowsBySheet,
+                              int sandboxRows, int nonSandboxRows) {
+            this(rows, rowsBySheet, sandboxRows, nonSandboxRows, true);
+        }
+
         public ParsedWorkbook {
             rows = List.copyOf(rows);
             rowsBySheet = Collections.unmodifiableMap(new LinkedHashMap<>(rowsBySheet));

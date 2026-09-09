@@ -63,6 +63,16 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
+    void normalizesLegacyRuleDifferenceIssueType() throws Exception {
+        ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(
+                ReplayIssueTestFixtures.workbook(
+                        ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of("问题类型", "规则差异问题")),
+                        ReplayIssueTestFixtures.HEADERS, false));
+
+        assertTrue(parsed.rows().stream().allMatch(row -> "规则性差异问题".equals(row.issueType())));
+    }
+
+    @Test
     void dzModeNormalizesRptBatchWhileQueryAndExistingDzStayUnchanged() throws Exception {
         MockMultipartFile rpt = ReplayIssueTestFixtures.workbook(
                 ReplayIssueTestFixtures.oneRowPerTargetSheet(
@@ -120,14 +130,28 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
-    void rejectsMissingTargetSheetWithItsName() {
+    void treatsMissingTargetSheetAsAnEmptyIssueList() throws Exception {
         Map<String, List<Map<String, String>>> sheets = ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of());
         sheets.remove("沙箱-结算组");
 
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> parser.parse(ReplayIssueTestFixtures.workbook(sheets, ReplayIssueTestFixtures.HEADERS, false)));
+        ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(
+                ReplayIssueTestFixtures.workbook(sheets, ReplayIssueTestFixtures.HEADERS, false));
 
-        assertTrue(exception.getMessage().contains("沙箱-结算组"));
+        assertEquals(7, parsed.rows().size());
+        assertEquals(8, parsed.rowsBySheet().size());
+        assertEquals(0, parsed.rowsBySheet().get("沙箱-结算组"));
+        assertTrue(parsed.hasIssueSheets());
+    }
+
+    @Test
+    void reportsWhenAllIssueSheetsAreAbsent() throws Exception {
+        ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(ReplayIssueTestFixtures.workbook(
+                Map.of("辅助页", List.of()), ReplayIssueTestFixtures.HEADERS, false));
+
+        assertTrue(parsed.rows().isEmpty());
+        assertEquals(8, parsed.rowsBySheet().size());
+        assertTrue(parsed.rowsBySheet().values().stream().allMatch(count -> count == 0));
+        assertFalse(parsed.hasIssueSheets());
     }
 
     @Test
@@ -181,17 +205,19 @@ class ReplayIssueExcelParserTest {
     }
 
     @Test
-    void rejectsAllEmptyTargetSheets() {
+    void acceptsAllEmptyTargetSheetsAsAnEmptySnapshot() throws Exception {
         Map<String, List<Map<String, String>>> emptySheets = new LinkedHashMap<>();
         for (String sheet : ReplayIssueTestFixtures.TARGET_SHEETS) {
             emptySheets.put(sheet, List.of());
         }
 
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> parser.parse(ReplayIssueTestFixtures.workbook(
-                        emptySheets, ReplayIssueTestFixtures.HEADERS, false)));
+        ReplayIssueExcelParser.ParsedWorkbook parsed = parser.parse(ReplayIssueTestFixtures.workbook(
+                emptySheets, ReplayIssueTestFixtures.HEADERS, false));
 
-        assertTrue(exception.getMessage().contains("没有可导入数据"));
+        assertTrue(parsed.rows().isEmpty());
+        assertEquals(8, parsed.rowsBySheet().size());
+        assertTrue(parsed.rowsBySheet().values().stream().allMatch(count -> count == 0));
+        assertTrue(parsed.hasIssueSheets());
     }
 
     private MockMultipartFile workbookWithFormula() throws IOException {

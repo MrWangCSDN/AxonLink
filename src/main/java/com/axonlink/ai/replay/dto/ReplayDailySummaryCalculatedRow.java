@@ -1,0 +1,41 @@
+package com.axonlink.ai.replay.dto;
+
+import java.math.BigDecimal;
+
+public record ReplayDailySummaryCalculatedRow(
+        String batchNo,
+        String domain,
+        Long coveredInterfaceCount,
+        Long sentTransactionCount,
+        long c528SuccessCcbsFail,
+        long c528FailCcbsSuccess,
+        Long bothFailSameCode,
+        long bothFailDiffCode,
+        Long bothSuccess,
+        long noAction,
+        Long codeIgnored,
+        long bothSuccessNoFieldDifference,
+        BigDecimal successRate,
+        BigDecimal matchPassRate,
+        Long issueTotal,
+        long codeIssueCount,
+        long parameterIssueCount,
+        long reasonableDifferenceIssueCount,
+        long peripheralIssueCount,
+        long platformIssueCount,
+        long newCoreOfflineIssueCount,
+        long ruleDifferenceIssueCount,
+        long migrationIssueCount,
+        long antiCorrosionIssueCount,
+        long otherIssueCount,
+        BigDecimal investigationProgress,
+        long unanalyzed,
+        long analyzedPendingFix,
+        long notFullyFixed,
+        long dataMigrationIssue,
+        long codeNotReleased,
+        long previousUnresolvedTotal,
+        BigDecimal previousResolutionRate,
+        int sourceRow,
+        String rawJson) {
+}

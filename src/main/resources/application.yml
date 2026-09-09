@@ -70,7 +70,6 @@ axon-link:
   # 邮件自定义配置：发件人地址（缺省回退到 spring.mail.username）
   mail:
     from: ${MAIL_FROM:noreply@example.com}
-
     # AD（Active Directory）标准认证配置（增强 v3）
     # 用 Spring 标准 ActiveDirectoryLdapAuthenticationProvider；默认值=原自研 Spdb 硬编码值，
     # 默认部署零行为变化，但现在可经 ENV 覆盖（改地址不用重新打包）。
@@ -88,12 +87,20 @@ axon-link:
       sdk-url: ${AXON_UIAS_SDK_URL:}
       sso-target: ${AXON_UIAS_SSO_TARGET:}
       session-empno-key: ${AXON_UIAS_SESSION_EMPNO_KEY:uiasEmpNo}
-
-# 回放问题日报：导入后落盘 .xlsx（快照语义，状态修改不影响日报数据）。
-# 目录相对工作目录；线上建议改为 /home/cbs/logs/replay-daily-reports 等持久化目录。
-replay:
-  daily-report:
-    directory: ${REPLAY_DAILY_REPORT_DIR:daily-reports}
+  # 回放日报邮件默认值。收件人和抄送人使用列表配置，每个邮箱独占一行；
+  # 环境变量仍兼容使用逗号、分号或换行分隔多个邮箱。
+  replay:
+    daily-report-mail:
+      subject-prefix: ${REPLAY_DAILY_REPORT_MAIL_SUBJECT_PREFIX:对公分布式核心回放问题日报-}
+      to:
+        - ${REPLAY_DAILY_REPORT_MAIL_TO:}
+        # - recipient@example.com
+      cc:
+        - ${REPLAY_DAILY_REPORT_MAIL_CC:}
+        # - copy@example.com
+      body: ${REPLAY_DAILY_REPORT_MAIL_BODY:各位好，附件为本批次回放问题日报，请查收。}
+      weekly-subject-prefix: ${REPLAY_WEEKLY_REPORT_MAIL_SUBJECT_PREFIX:对公分布式核心回放问题周报-}
+      weekly-body: ${REPLAY_WEEKLY_REPORT_MAIL_BODY:各位好，附件为本周期回放问题周报，请查收。}
 
 # 回放问题“无需处理”审核人员：按领域配置员工工号，沙箱与非沙箱共用。
 dii:

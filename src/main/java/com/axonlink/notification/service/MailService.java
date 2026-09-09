@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -129,6 +130,30 @@ public class MailService {
      */
     public void sendTextSync(List<String> to, String subject, String body) {
         sendTextSync(to, null, null, subject, body);
+    }
+
+    public void sendTextWithAttachmentSync(List<String> to, List<String> cc,
+                                           String subject, String body,
+                                           String fileName, byte[] content, String contentType) {
+        if (to == null || to.isEmpty()) {
+            throw new IllegalArgumentException("收件人不能为空");
+        }
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
+            helper.setFrom(resolveFrom());
+            helper.setTo(to.toArray(new String[0]));
+            if (cc != null && !cc.isEmpty()) helper.setCc(cc.toArray(new String[0]));
+            helper.setSubject(subject);
+            helper.setText(body == null ? "" : body, false);
+            helper.setSentDate(new Date());
+            helper.addAttachment(fileName, new ByteArrayResource(content), contentType);
+            mailSender.send(message);
+            log.info("[mail] 附件邮件已发送 subject={} to={} cc={} attachment={}",
+                    subject, to, cc, fileName);
+        } catch (Exception exception) {
+            throw new IllegalStateException("邮件发送失败：" + exception.getMessage(), exception);
+        }
     }
 
     public String configuredFrom() {

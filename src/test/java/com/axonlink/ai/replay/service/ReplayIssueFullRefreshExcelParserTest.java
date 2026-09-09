@@ -83,6 +83,17 @@ class ReplayIssueFullRefreshExcelParserTest {
     }
 
     @Test
+    void normalizesLegacyRuleDifferenceIssueType() throws Exception {
+        Map<String, List<Map<String, String>>> sheets = new LinkedHashMap<>();
+        sheets.put("基础数据", List.of(
+                row("贷款组", "I-1", "K-1", "打开", "否", "规则差异问题", "", "", "")));
+
+        ReplayIssueRow parsed = parser.parse(ReplayIssueTestFixtures.fullRefreshWorkbook(sheets)).rows().get(0);
+
+        assertEquals("规则性差异问题", parsed.issueType());
+    }
+
+    @Test
     void reportsMissingKeyHeaderWithSheetAndHeaderName() {
         List<String> headers = new ArrayList<>(ReplayIssueTestFixtures.FULL_REFRESH_HEADERS);
         headers.remove("issue_key");

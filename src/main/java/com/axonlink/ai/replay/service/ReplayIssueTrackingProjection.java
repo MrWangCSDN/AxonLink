@@ -13,21 +13,29 @@ public final class ReplayIssueTrackingProjection {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper().findAndRegisterModules();
 
     private static final List<FieldDefinition> IMPORT_FIELDS = List.of(
+            new FieldDefinition("issueId", "issue_id"),
+            new FieldDefinition("isSandbox", "是否沙箱"),
             new FieldDefinition("transactionCode", "交易码"),
             new FieldDefinition("transactionName", "交易名称"),
             new FieldDefinition("issueLevel", "问题级别"),
-            new FieldDefinition("issueDescription", "问题描述"),
             new FieldDefinition("fieldName", "字段名"),
-            new FieldDefinition("transactionOwner", "交易负责人"),
-            new FieldDefinition("resolvedDate", "解决日期"),
-            new FieldDefinition("cooperationGroup", "协同组"),
-            new FieldDefinition("resolver", "处理人"),
             new FieldDefinition("serialNo", "流水号"),
-            new FieldDefinition("dataRepairDate", "数据修复日期"),
-            new FieldDefinition("affectedTransactionCount", "影响交易数"),
-            new FieldDefinition("batchNo", "批次号"));
+            new FieldDefinition("globalSerialNo", "全局流水号"),
+            new FieldDefinition("issueDescription", "问题描述"),
+            new FieldDefinition("domain", "领域"),
+            new FieldDefinition("affectedTransactionCount", "出现笔数"),
+            new FieldDefinition("issueKey", "issue_key"),
+            new FieldDefinition("firstOccurrenceDate", "首次出现日期"));
 
     private static final List<FieldDefinition> CHANGE_FIELDS = List.of(
+            new FieldDefinition("issueStatus", "问题状态"),
+            new FieldDefinition("issueType", "问题类型"),
+            new FieldDefinition("cooperationPerson", "需协同人"),
+            new FieldDefinition("initialAnalysis", "初步问题分析"),
+            new FieldDefinition("finalSolution", "最终处理方案"),
+            new FieldDefinition("remark", "备注"));
+
+    private static final List<FieldDefinition> HISTORY_FIELDS = List.of(
             new FieldDefinition("issueStatus", "问题状态"),
             new FieldDefinition("issueType", "问题类型"),
             new FieldDefinition("initialAnalysis", "初步问题分析"),
@@ -49,17 +57,21 @@ public final class ReplayIssueTrackingProjection {
             new FieldDefinition("resolver", "处理人"),
             new FieldDefinition("serialNo", "流水号"),
             new FieldDefinition("dataRepairDate", "数据修复日期"),
-            new FieldDefinition("affectedTransactionCount", "影响交易数"),
-            new FieldDefinition("batchNo", "批次号"));
+            new FieldDefinition("affectedTransactionCount", "影响交易数"));
 
     private ReplayIssueTrackingProjection() {
     }
 
     public static List<ReplayIssueFieldChange> fieldChanges(String beforeSnapshot, String afterSnapshot) {
+        return fieldChanges(beforeSnapshot, afterSnapshot, CHANGE_FIELDS);
+    }
+
+    private static List<ReplayIssueFieldChange> fieldChanges(String beforeSnapshot, String afterSnapshot,
+                                                              List<FieldDefinition> fields) {
         JsonNode before = parse(beforeSnapshot);
         JsonNode after = parse(afterSnapshot);
         List<ReplayIssueFieldChange> changes = new ArrayList<>();
-        for (FieldDefinition field : CHANGE_FIELDS) {
+        for (FieldDefinition field : fields) {
             String beforeValue = value(before, field.key());
             String afterValue = value(after, field.key());
             if (!normalize(beforeValue).equals(normalize(afterValue))) {
@@ -70,19 +82,20 @@ public final class ReplayIssueTrackingProjection {
     }
 
     public static List<ReplayIssueOriginalDataItem> originalData(String incomingSnapshot) {
+        if (incomingSnapshot == null || incomingSnapshot.isBlank()) {
+            return List.of();
+        }
         JsonNode incoming = parse(incomingSnapshot);
         List<ReplayIssueOriginalDataItem> items = new ArrayList<>();
         for (FieldDefinition field : IMPORT_FIELDS) {
             String value = value(incoming, field.key());
-            if (!normalize(value).isEmpty()) {
-                items.add(new ReplayIssueOriginalDataItem(field.label(), display(value)));
-            }
+            items.add(new ReplayIssueOriginalDataItem(field.label(), display(value)));
         }
         return List.copyOf(items);
     }
 
     public static boolean hasFieldChanges(String beforeSnapshot, String afterSnapshot) {
-        return !fieldChanges(beforeSnapshot, afterSnapshot).isEmpty();
+        return !fieldChanges(beforeSnapshot, afterSnapshot, HISTORY_FIELDS).isEmpty();
     }
 
     private static JsonNode parse(String snapshot) {
@@ -102,6 +115,10 @@ public final class ReplayIssueTrackingProjection {
         }
         if ("reviewer".equals(key)) {
             return person(node, "reviewerRealName", "reviewerUsername");
+        }
+        if ("isSandbox".equals(key)) {
+            JsonNode sandbox = node == null ? null : node.get("sandbox");
+            return sandbox == null || sandbox.isNull() ? null : sandbox.asBoolean() ? "是" : "否";
         }
         JsonNode value = node == null ? null : node.get(key);
         return value == null || value.isNull() ? null : value.asText();

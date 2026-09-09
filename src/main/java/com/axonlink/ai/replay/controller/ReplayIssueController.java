@@ -3,6 +3,13 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
+import com.axonlink.ai.replay.dto.ReplayDailyBatch;
+import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.dto.ReplayIssueFullRefreshResult;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
@@ -15,7 +22,10 @@ import com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry;
 import com.axonlink.ai.replay.dto.ReplayImportRound;
 import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
+import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterSearchRequest;
+import com.axonlink.ai.replay.dto.ReplayIssueListSearchRequest;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
+import com.axonlink.ai.replay.dto.ReplayIssuePersonSchedule;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundTrackingGroup;
 import com.axonlink.ai.replay.dto.ReplayIssueOriginalDataItem;
@@ -37,6 +47,9 @@ import com.axonlink.ai.replay.service.ReplayIssueFullRefreshService;
 import com.axonlink.ai.replay.service.ReplayIssueEditService;
 import com.axonlink.ai.replay.service.ReplayIssueMailService;
 import com.axonlink.ai.replay.service.ReplayIssueDailyReportService;
+import com.axonlink.ai.replay.service.ReplayDailyReportMailService;
+import com.axonlink.ai.replay.service.ReplayWeeklyReportMailService;
+import com.axonlink.ai.replay.service.ReplayWeeklyReportService;
 import com.axonlink.ai.replay.service.ReplayIssueWeeklyTaskService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewForbiddenException;
@@ -75,6 +88,7 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 
 import java.util.Locale;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
@@ -108,6 +122,15 @@ public class ReplayIssueController {
 
     @org.springframework.beans.factory.annotation.Autowired
     private ReplayIssuePlanDateService planDateService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ReplayDailyReportMailService dailyReportMailService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ReplayWeeklyReportService weeklyReportService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ReplayWeeklyReportMailService weeklyReportMailService;
 
     @org.springframework.beans.factory.annotation.Autowired
     private ReplayIssueCompletionStatsService completionStatsService;
@@ -427,6 +450,19 @@ public class ReplayIssueController {
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
+        return executeList(query, affectedTransactionCountOrder);
+    }
+
+    @PostMapping
+    public R<Map<String, Object>> search(@RequestBody ReplayIssueListSearchRequest request) {
+        ReplayIssueListSearchRequest safeRequest = request == null
+                ? new ReplayIssueListSearchRequest(null, null)
+                : request;
+        return executeList(safeRequest.normalizedQuery(), safeRequest.affectedTransactionCountOrder());
+    }
+
+    private R<Map<String, Object>> executeList(
+            ReplayIssueQuery query, ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
         List<Map<String, Object>> items = dao.list(query, affectedTransactionCountOrder).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
@@ -532,6 +568,21 @@ public class ReplayIssueController {
                 safe(plannedCompletionDates), safe(issueIds), safe(serialNos), safe(globalSerialNos),
                 safe(defectRepairDates), safe(transactionNames), safe(fieldNames), safe(issueDescriptions),
                 safe(issueKeys), safe(issueDomains), ReplayIssueReplayType.parse(replayType));
+        return executeHeaderFilterOptionCounts(field, keyword, query);
+    }
+
+    @PostMapping("/header-filter-option-counts")
+    public R<ReplayIssueHeaderFilterOptionResult> searchHeaderFilterOptionCounts(
+            @RequestBody ReplayIssueHeaderFilterSearchRequest request) {
+        ReplayIssueHeaderFilterSearchRequest safeRequest = request == null
+                ? new ReplayIssueHeaderFilterSearchRequest(null, null, null)
+                : request;
+        return executeHeaderFilterOptionCounts(
+                safeRequest.field(), safeRequest.keyword(), safeRequest.normalizedQuery());
+    }
+
+    private R<ReplayIssueHeaderFilterOptionResult> executeHeaderFilterOptionCounts(
+            String field, String keyword, ReplayIssueQuery query) {
         return R.ok(dao.headerFilterOptionCounts(field, query, keyword));
     }
 
@@ -574,6 +625,20 @@ public class ReplayIssueController {
         try {
             return ResponseEntity.ok(R.ok(dao.personIssueRankings(
                     groupBy, ReplayIssueReplayType.parse(replayType))));
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
+    }
+
+    @GetMapping("/stats/person-ranking/schedule")
+    public ResponseEntity<R<ReplayIssuePersonSchedule>> personSchedule(
+            @RequestParam(defaultValue = "domain") String groupBy,
+            @RequestParam(required = false) String replayType,
+            @RequestParam(required = false) String groupName,
+            @RequestParam(required = false) String developer) {
+        try {
+            return ResponseEntity.ok(R.ok(dao.personSchedule(groupBy, ReplayIssueReplayType.parse(replayType),
+                    groupName, developer)));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -627,7 +692,10 @@ public class ReplayIssueController {
     @GetMapping("/{id}/round-tracking")
     public R<List<ReplayIssueRoundTrackingGroup>> roundTracking(@PathVariable long id) {
         List<ReplayIssueHistoryEntry> history = dao.findHistoryByIssueId(id, 200).stream()
+                .filter(event -> !"修改问题所属领域".equals(event.operationType()))
+                .filter(event -> !"修改计划验证日期".equals(event.operationType()))
                 .map(this::projectHistory)
+                .filter(event -> !event.changes().isEmpty())
                 .toList();
         Map<String, List<ReplayIssueHistoryEntry>> inheritedByBatch = new LinkedHashMap<>();
         Map<String, List<ReplayIssueHistoryEntry>> manualByBatch = new LinkedHashMap<>();
@@ -648,8 +716,10 @@ public class ReplayIssueController {
                 roundEntryByBatch.putIfAbsent(round.batchName(), round);
             }
         }
+        LinkedHashSet<String> batches = new LinkedHashSet<>(roundEntryByBatch.keySet());
+        batches.addAll(dao.occurrenceBatchNames(id));
         List<ReplayIssueRoundTrackingGroup> result = new ArrayList<>();
-        for (String batch : dao.occurrenceBatchNames(id)) {
+        for (String batch : batches) {
             List<ReplayIssueHistoryEntry> manual = manualByBatch.getOrDefault(batch, List.of());
             List<ReplayIssueHistoryEntry> inherited = inheritedByBatch.getOrDefault(batch, List.of());
             ReplayIssueHistoryEntry latest = history.stream().filter(event -> batch.equals(event.occurrenceBatchName())).findFirst().orElse(null);
@@ -657,9 +727,10 @@ public class ReplayIssueController {
             ReplayIssueRoundEntry round = roundEntryByBatch.get(batch);
             List<ReplayIssueOriginalDataItem> originalData = round == null
                     ? importEvent == null ? List.of() : importEvent.originalData()
-                    : ReplayIssueTrackingProjection.originalData(round.incomingSnapshot());
+                    : round.appeared() ? ReplayIssueTrackingProjection.originalData(round.incomingSnapshot()) : List.of();
             result.add(new ReplayIssueRoundTrackingGroup(round == null ? null : round.roundId(), batch,
-                    round == null ? latest == null ? null : latest.operationAt() : round.importedAt(), true,
+                    round == null ? latest == null ? null : latest.operationAt() : round.importedAt(),
+                    round == null ? true : round.appeared(),
                     round == null ? null : round.statusBefore(),
                     round == null ? importEvent == null ? null : importEvent.issueStatus() : round.statusAfter(),
                     importEvent == null ? round == null ? "导入" : round.actionType() : importEvent.operationType(),
@@ -796,42 +867,147 @@ public class ReplayIssueController {
         return R.ok(dao.findHistoryByIssueId(id, limit));
     }
 
-    /**
-     * 列出可下载的日报批次号（按最近出现时间倒序）。
-     * 同时返回每个批次对应的快照文件是否存在，供前端决定哪些批次可下载。
-     */
     @GetMapping("/daily-report/batches")
-    public R<List<Map<String, Object>>> dailyReportBatches() {
-        List<String> batches = dao.occurrenceBatchNamesRecentFirst();
-        List<Map<String, Object>> result = new ArrayList<>(batches.size());
-        for (String batch : batches) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("batchNo", batch);
-            row.put("available", dailyReportService.locateReport(batch) != null
-                    && dailyReportService.locateReport(batch).toFile().exists());
-            result.add(row);
-        }
-        return R.ok(result);
+    public R<List<ReplayDailyBatch>> dailyReportBatches() {
+        return R.ok(dailyReportService.listBatches());
     }
 
-    /**
-     * 下载指定批次的日报 .xlsx（导入时落盘的快照）。
-     * <p>快照语义：状态修改不影响日报数据。
-     */
     @GetMapping("/daily-report")
-    public ResponseEntity<byte[]> downloadDailyReport(@RequestParam("batchNo") String batchNo) {
-        java.nio.file.Path path = dailyReportService.locateReport(batchNo);
-        if (path == null || !path.toFile().exists()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        }
+    public ResponseEntity<?> downloadDailyReport(
+            @RequestParam(value = "batchNo", required = false) String batchNo) {
         try {
-            byte[] bytes = java.nio.file.Files.readAllBytes(path);
+            byte[] bytes = dailyReportService.generate(batchNo);
             String filename = URLEncoder.encode(batchNo + "日报.xlsx", StandardCharsets.UTF_8);
             return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header("Content-Disposition", "attachment; filename*=UTF-8''" + filename).body(bytes);
-        } catch (java.io.IOException e) {
-            log.error("[replay-issue] 日报下载失败 batchNo={}", batchNo, e);
-            return ResponseEntity.internalServerError().build();
+        } catch (ReplayIssueDailyReportService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayIssueDailyReportService.BatchNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "批次数据不存在");
+        } catch (ReplayIssueDailyReportService.PreviousBatchNotFoundException exception) {
+            return error(HttpStatus.CONFLICT, "没有上批次数据");
+        } catch (RuntimeException exception) {
+            log.error("[replay-issue] daily report generation failed batchNo={}", batchNo, exception);
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "日报生成失败");
+        }
+    }
+
+    @GetMapping("/daily-report/mail-config")
+    public ResponseEntity<R<ReplayDailyReportMailView>> dailyReportMailConfiguration(
+            @RequestParam(value = "batchNo", required = false) String batchNo) {
+        try {
+            return ResponseEntity.ok(R.ok(dailyReportMailService.configuration(batchNo)));
+        } catch (ReplayDailyReportMailService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayDailyReportMailService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "日报尚未生成");
+        } catch (ReplayDailyReportMailService.ConfigurationException exception) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "日报邮件配置不完整");
+        }
+    }
+
+    @PostMapping("/daily-report/mail-send")
+    public ResponseEntity<R<ReplayDailyReportMailView>> sendDailyReportMail(
+            @RequestBody(required = false) ReplayDailyReportMailSendRequest body,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        String expected = properties.getBatchTrigger().getToken();
+        if (expected != null && !expected.trim().isEmpty()
+                && (token == null || !expected.equals(token))) {
+            log.warn("[replay-issue] daily report mail token rejected remoteAddr={} hasToken={}",
+                    request.getRemoteAddr(), token != null);
+            return error(HttpStatus.UNAUTHORIZED, "口令错误");
+        }
+        try {
+            return ResponseEntity.ok(R.ok(dailyReportMailService.send(body)));
+        } catch (ReplayDailyReportMailService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayDailyReportMailService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "日报尚未生成");
+        } catch (ReplayDailyReportMailService.ConfigurationException exception) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "日报邮件配置不完整");
+        } catch (ReplayDailyReportMailService.MailSendException exception) {
+            log.error("[replay-issue] daily report mail failed batchNo={}",
+                    body == null ? null : body.batchNo(), exception);
+            return error(HttpStatus.BAD_GATEWAY, "邮件发送失败");
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
+    }
+
+    @GetMapping("/weekly-report/options")
+    public R<ReplayWeeklyReportOptions> weeklyReportOptions() {
+        return R.ok(weeklyReportService.options());
+    }
+
+    @GetMapping("/weekly-report")
+    public ResponseEntity<?> downloadWeeklyReport(
+            @RequestParam(value = "startBatchNo", required = false) String startBatchNo,
+            @RequestParam(value = "endBatchNo", required = false) String endBatchNo) {
+        try {
+            ReplayWeeklyReportSnapshot snapshot = weeklyReportService.generate(startBatchNo, endBatchNo);
+            String filename = URLEncoder.encode(snapshot.fileName(), StandardCharsets.UTF_8);
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(snapshot.contentType()))
+                    .header("Content-Disposition", "attachment; filename*=UTF-8''" + filename)
+                    .body(snapshot.content());
+        } catch (ReplayWeeklyReportService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayWeeklyReportService.InvalidRangeException exception) {
+            return error(HttpStatus.BAD_REQUEST, "周报起止批次范围错误");
+        } catch (ReplayWeeklyReportService.EndBatchAlreadyGeneratedException exception) {
+            return error(HttpStatus.CONFLICT, "结束批次周报已生成");
+        } catch (ReplayWeeklyReportService.DailyReportNotGeneratedException exception) {
+            return error(HttpStatus.CONFLICT, "所选批次日报尚未生成");
+        } catch (ReplayWeeklyReportService.BatchDataNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "所选批次数据不存在");
+        } catch (RuntimeException exception) {
+            log.error("[replay-issue] weekly report generation failed startBatchNo={} endBatchNo={}",
+                    startBatchNo, endBatchNo, exception);
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "周报生成失败");
+        }
+    }
+
+    @GetMapping("/weekly-report/mail-config")
+    public ResponseEntity<R<ReplayWeeklyReportMailView>> weeklyReportMailConfiguration(
+            @RequestParam(value = "startBatchNo", required = false) String startBatchNo,
+            @RequestParam(value = "endBatchNo", required = false) String endBatchNo) {
+        try {
+            return ResponseEntity.ok(R.ok(weeklyReportMailService.configuration(startBatchNo, endBatchNo)));
+        } catch (ReplayWeeklyReportMailService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayWeeklyReportMailService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "周报尚未生成");
+        } catch (ReplayWeeklyReportMailService.ConfigurationException exception) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "周报邮件配置不完整");
+        }
+    }
+
+    @PostMapping("/weekly-report/mail-send")
+    public ResponseEntity<R<ReplayWeeklyReportMailView>> sendWeeklyReportMail(
+            @RequestBody(required = false) ReplayWeeklyReportMailSendRequest body,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        String expected = properties.getBatchTrigger().getToken();
+        if (expected != null && !expected.trim().isEmpty()
+                && (token == null || !expected.equals(token))) {
+            log.warn("[replay-issue] weekly report mail token rejected remoteAddr={} hasToken={}",
+                    request.getRemoteAddr(), token != null);
+            return error(HttpStatus.UNAUTHORIZED, "口令错误");
+        }
+        try {
+            return ResponseEntity.ok(R.ok(weeklyReportMailService.send(body)));
+        } catch (ReplayWeeklyReportMailService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayWeeklyReportMailService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "周报尚未生成");
+        } catch (ReplayWeeklyReportMailService.ConfigurationException exception) {
+            return error(HttpStatus.SERVICE_UNAVAILABLE, "周报邮件配置不完整");
+        } catch (ReplayWeeklyReportMailService.MailSendException exception) {
+            log.error("[replay-issue] weekly report mail failed startBatchNo={} endBatchNo={}",
+                    body == null ? null : body.startBatchNo(), body == null ? null : body.endBatchNo(), exception);
+            return error(HttpStatus.BAD_GATEWAY, "邮件发送失败");
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
     }
 

@@ -4,10 +4,13 @@ import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.mock.web.MockMultipartFile;
 
 import javax.sql.DataSource;
@@ -94,6 +97,18 @@ public final class ReplayIssueTestFixtures {
                 + "review_status VARCHAR(16), reviewer_username VARCHAR(128), reviewer_real_name VARCHAR(128), reviewed_at DATETIME,"
                 + "INDEX idx_replay_history_key_time (issue_key, operation_at, id),"
                 + "INDEX idx_replay_history_issue_time (replay_issue_id, operation_at, id))");
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V56__dii_replay_daily_import_data.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V57__dii_replay_daily_report_snapshot.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V58__dii_replay_daily_report_mail.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V60__dii_replay_weekly_report.sql"))
+                .execute(jdbc.getDataSource());
     }
 
     public static ReplayIssueRow row(String groupName, boolean sandbox, int rowOrder,
@@ -121,6 +136,138 @@ public final class ReplayIssueTestFixtures {
         }
         MockMultipartFile file = workbook(rows, HEADERS, true);
         return withAuxiliarySheet ? appendAuxiliarySheet(file) : file;
+    }
+
+    public static MockMultipartFile dailyWorkbook() {
+        try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            for (String targetSheet : TARGET_SHEETS) {
+                Map<String, String> issue = defaultWorkbookRow(targetSheet, 1);
+                issue.put("批次", "RPT20260904-094201-5355");
+                writeSheet(workbook, targetSheet, HEADERS, List.of(issue));
+            }
+            writeDailySummary(workbook);
+            writeInterfaceComparison(workbook);
+            writeCoverage(workbook);
+            workbook.write(out);
+            return new MockMultipartFile("file", "replay-daily.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", out.toByteArray());
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not create daily workbook", e);
+        }
+    }
+
+    private static void writeDailySummary(Workbook workbook) {
+        Sheet sheet = workbook.createSheet("汇总信息");
+        writeSummarySection(sheet, 0, "RPT20260903-112141-8783", false);
+        writeSummarySection(sheet, 7, "RPT20260904-094201-5355", true);
+    }
+
+    private static void writeSummarySection(Sheet sheet, int startRow, String batch, boolean includeIssueTotal) {
+        Row title = sheet.createRow(startRow);
+        title.createCell(0).setCellValue("批次号：" + batch);
+        Row parent = sheet.createRow(startRow + 1);
+        String[] headers = {"批次", "领域", "覆盖528接口", "发送交易量", "交易核对分类统计",
+                "", "", "响应码忽略", "成功率", "比对通过率", "问题总数"};
+        for (int index = 0; index < headers.length; index++) {
+            parent.createCell(index).setCellValue(headers[index]);
+        }
+        Row child = sheet.createRow(startRow + 2);
+        child.createCell(4).setCellValue("二者均失败响应码一致");
+        child.createCell(5).setCellValue("二者均失败响应码不一致");
+        child.createCell(6).setCellValue("二者均成功");
+        String[] domains = {"公共组", "存款组", "沙箱-公共组", "沙箱-存款组"};
+        for (int index = 0; index < domains.length; index++) {
+            Row row = sheet.createRow(startRow + 3 + index);
+            row.createCell(0).setCellValue(batch);
+            row.createCell(1).setCellValue(domains[index]);
+            row.createCell(2).setCellValue(60 + index);
+            row.createCell(3).setCellValue(8000 + index);
+            row.createCell(4).setCellValue(500 + index);
+            row.createCell(5).setCellValue(20 + index);
+            row.createCell(6).setCellValue(5000 + index);
+            row.createCell(7).setCellValue(100 + index);
+            row.createCell(8).setCellValue("90.1%");
+            row.createCell(9).setCellValue("84.2%");
+            if (includeIssueTotal) {
+                row.createCell(10).setCellValue(80 + index);
+            }
+        }
+        Row total = sheet.createRow(startRow + 7);
+        total.createCell(0).setCellValue("合计");
+    }
+
+    private static void writeInterfaceComparison(Workbook workbook) {
+        Sheet sheet = workbook.createSheet("接口比对明细");
+        String[] headers = {"批次号", "交易码", "S码", "交易描述", "开发负责人", "行内负责人", "领域",
+                "发送交易量", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致",
+                "二者均失败响应码不一致", "二者均成功", "响应码忽略", "交易成功率", "接口比对通过率",
+                "528平均耗时", "CCBS平均耗时"};
+        writeHeader(sheet.createRow(0), headers);
+        Row detail = sheet.createRow(1);
+        String[] dimensions = {"RPT20260904-094201-5355", "6208", "S120033800", "查询交易", "张三", "李四", "公共组"};
+        for (int index = 0; index < dimensions.length; index++) {
+            detail.createCell(index).setCellValue(dimensions[index]);
+        }
+        for (int index = 7; index <= 13; index++) {
+            detail.createCell(index).setCellValue(index * 10L);
+        }
+        detail.createCell(14).setCellValue("91.2%");
+        detail.createCell(15).setCellValue("84.3%");
+        detail.createCell(16).setCellValue(12.345);
+        detail.createCell(17).setCellValue(23.456);
+        Row total = sheet.createRow(2);
+        total.createCell(0).setCellValue("合计");
+        for (int index = 7; index <= 13; index++) {
+            total.createCell(index).setCellValue(index * 100L);
+        }
+        total.createCell(14).setCellValue("92.2%");
+        total.createCell(15).setCellValue("85.3%");
+        total.createCell(16).setCellValue(13.345);
+        total.createCell(17).setCellValue(24.456);
+    }
+
+    private static void writeCoverage(Workbook workbook) {
+        Sheet sheet = workbook.createSheet("回放交易覆盖情况");
+        String[] summaryHeaders = {"按业务领域汇总", "全量需发送数", "本次已发送", "本次未发送", "不回放",
+                "近期无交易", "待分析", "覆盖率"};
+        writeHeader(sheet.createRow(0), summaryHeaders);
+        Row summary = sheet.createRow(1);
+        summary.createCell(0).setCellValue("公共组");
+        long[] summaryValues = {126, 114, 3, 9, 55, 138};
+        for (int index = 0; index < summaryValues.length; index++) {
+            summary.createCell(index + 1).setCellValue(summaryValues[index]);
+        }
+        summary.createCell(7).setCellValue("85.62%");
+        Row total = sheet.createRow(2);
+        total.createCell(0).setCellValue("合计");
+        long[] totalValues = {714, 390, 324, 72, 114, 138};
+        for (int index = 0; index < totalValues.length; index++) {
+            total.createCell(index + 1).setCellValue(totalValues[index]);
+        }
+        total.createCell(7).setCellValue("54.62%");
+        String[] detailHeaders = {"交易码", "交易描述", "业务领域", "S码", "关联码", "是否需要回放",
+                "最近交易日期", "本次发送交易量", "覆盖状态", "未发送原因", "开发负责人", "行内负责人"};
+        writeHeader(sheet.createRow(5), detailHeaders);
+        Row detail = sheet.createRow(6);
+        String[] detailValues = {"0126", "客户号账号查询", "公共组", "S120033822", "", "是"};
+        for (int index = 0; index < detailValues.length; index++) {
+            detail.createCell(index).setCellValue(detailValues[index]);
+        }
+        CellStyle dateStyle = workbook.createCellStyle();
+        dateStyle.setDataFormat(workbook.createDataFormat().getFormat("yyyyMMdd"));
+        detail.createCell(6).setCellValue(java.sql.Date.valueOf("2026-08-02"));
+        detail.getCell(6).setCellStyle(dateStyle);
+        detail.createCell(7).setCellValue(100);
+        detail.createCell(8).setCellValue("已发送");
+        detail.createCell(9).setCellValue("");
+        detail.createCell(10).setCellValue("许威");
+        detail.createCell(11).setCellValue("常硕");
+    }
+
+    private static void writeHeader(Row row, String[] headers) {
+        for (int index = 0; index < headers.length; index++) {
+            row.createCell(index).setCellValue(headers[index]);
+        }
     }
 
     public static Map<String, List<Map<String, String>>> oneRowPerTargetSheet(Map<String, String> values) {

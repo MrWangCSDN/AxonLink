@@ -8,6 +8,8 @@ public record ReplayIssuePersonRanking(
         long newCount,
         long openCount,
         long reopenedCount,
+        long schedulePlannedCount,
+        long scheduleTotalCount,
         long deferredCount,
         long pendingVerificationCount,
         long pendingTotalCount,

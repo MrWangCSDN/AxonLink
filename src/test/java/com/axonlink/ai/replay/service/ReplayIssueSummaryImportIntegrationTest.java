@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
+import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueSummaryDao;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,8 +14,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -38,8 +37,7 @@ class ReplayIssueSummaryImportIntegrationTest {
         ReplayIssueTestFixtures.createSchema(jdbc);
         dao = new ReplayIssueDao(jdbc);
         summaryDao = new ReplayIssueSummaryDao(jdbc);
-        ReplayIssueSummaryParser summaryParser = new ReplayIssueSummaryParser();
-        service = new ReplayIssueImportService(new ReplayIssueExcelParser(), dao, summaryParser, null,
+        service = new ReplayIssueImportService(new ReplayIssueExcelParser(), dao,
                 new ReplayIssueImportGate(new Semaphore(1)));
     }
 
@@ -73,59 +71,41 @@ class ReplayIssueSummaryImportIntegrationTest {
     }
 
     @Test
-    void formalImportReadsDetailsAndSummaryThenGeneratesDailyReport() throws Exception {
-        Path reportDirectory = Files.createTempDirectory("formal-import-daily-report-");
-        ReplayIssueDailyReportService dailyReportService = new ReplayIssueDailyReportService(
-                dao, reportDirectory.toString());
+    void formalImportPersistsElevenSheetsWithoutLegacySummaryRows() throws Exception {
+        ReplayDailyDataDao dailyDataDao = new ReplayDailyDataDao(jdbc);
         service = new ReplayIssueImportService(new ReplayIssueExcelParser(), dao,
-                new ReplayIssueSummaryParser(), dailyReportService,
+                new ReplayDailyWorkbookParser(), dailyDataDao,
+                Clock.fixed(Instant.parse("2026-09-05T02:00:00Z"), ZoneOffset.UTC),
                 new ReplayIssueImportGate(new Semaphore(1)));
-        MockMultipartFile file = workbookWithDetailsAndTwoSectionSummary();
 
-        ReplayIssueImportResult result = service.importFile(file);
+        ReplayIssueImportResult result = service.importFile(ReplayIssueTestFixtures.dailyWorkbook());
 
         assertEquals(8, result.totalRows(), "八个问题明细 Sheet 应同时入库");
         assertEquals(8, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_issue", Integer.class));
         assertTrue(summaryDao.findByRound(result.coverageRound()).isEmpty(),
-                "正式导入生成日报不应继续写入遗留汇总表");
-        Path report = reportDirectory.resolve("RPT20260820-142055-0002日报.xlsx");
-        assertTrue(Files.exists(report), () -> "正式导入应自动生成日报: " + report);
-
-        try (XSSFWorkbook workbook = new XSSFWorkbook(report.toFile())) {
-            Sheet sheet = workbook.getSheet("汇总信息");
-            List<Row> totalRows = new java.util.ArrayList<>();
-            for (Row row : sheet) {
-                if (row.getCell(1) != null && "合计".equals(row.getCell(1).getStringCellValue())) {
-                    totalRows.add(row);
-                }
-            }
-            assertEquals(1, totalRows.size(), "首次导入没有上一批次，上半区不得生成合计数据");
-            assertEquals(0.3750, totalRows.get(0).getCell(11).getNumericCellValue(), 0.0001);
-            assertEquals(0.3750, totalRows.get(0).getCell(12).getNumericCellValue(), 0.0001);
-        }
+                "正式导入不应继续写入遗留汇总表");
+        assertEquals(4, dailyDataDao.findSummaries("RPT20260904-094201-5355").size());
     }
 
     @Test
-    void dzImportNormalizesDetailsOccurrencesSummaryAndReportNameTogether() throws Exception {
-        Path reportDirectory = Files.createTempDirectory("formal-dz-import-daily-report-");
-        ReplayIssueDailyReportService dailyReportService = new ReplayIssueDailyReportService(
-                dao, reportDirectory.toString());
+    void dzImportNormalizesDetailsOccurrencesAndStoredDailyRowsTogether() throws Exception {
+        ReplayDailyDataDao dailyDataDao = new ReplayDailyDataDao(jdbc);
         service = new ReplayIssueImportService(new ReplayIssueExcelParser(), dao,
-                new ReplayIssueSummaryParser(), dailyReportService,
+                new ReplayDailyWorkbookParser(), dailyDataDao,
+                Clock.fixed(Instant.parse("2026-09-05T02:00:00Z"), ZoneOffset.UTC),
                 new ReplayIssueImportGate(new Semaphore(1)));
-        MockMultipartFile file = workbookWithDetailsAndTwoSectionSummary(
-                "RPT20260819-100000-0001", "RPT20260820-142055-9860");
 
-        ReplayIssueImportResult result = service.importFile(file, ReplayIssueImportMode.DZ);
+        ReplayIssueImportResult result = service.importFile(
+                ReplayIssueTestFixtures.dailyWorkbook(), ReplayIssueImportMode.DZ);
 
         assertEquals(8, result.totalRows());
         assertEquals(8, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_issue WHERE batch_no=?",
-                Integer.class, "DZ20260820-142055-9860"));
+                Integer.class, "DZ20260904-094201-5355"));
         assertEquals(8, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_issue_occurrence_batch WHERE batch_name=?",
-                Integer.class, "DZ20260820-142055-9860"));
-        assertTrue(Files.exists(reportDirectory.resolve("DZ20260820-142055-9860日报.xlsx")));
+                Integer.class, "DZ20260904-094201-5355"));
+        assertEquals(4, dailyDataDao.findSummaries("DZ20260904-094201-5355").size());
     }
 
     private MockMultipartFile workbookWithDetailsAndTwoSectionSummary() throws Exception {

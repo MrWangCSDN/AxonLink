@@ -6,6 +6,8 @@ import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueUpdateRequest;
+import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ReplayIssueEditServiceTest {
     private JdbcTemplate jdbc;
     private ReplayIssueDao dao;
+    private ReplayDailyDataDao dailyDataDao;
     private ReplayIssueEditService service;
     private long issueId;
 
@@ -36,12 +39,13 @@ class ReplayIssueEditServiceTest {
         ReplayIssueTestFixtures.createSchema(jdbc);
         createUsers(jdbc);
         dao = new ReplayIssueDao(jdbc);
+        dailyDataDao = new ReplayDailyDataDao(jdbc);
         issueId = seedCurrent(dao);
         jdbc.update("INSERT INTO dii_replay_transaction_person " +
                         "(domain,old_transaction_code,old_transaction_name,bank_owner,bank_owner_emp_nos,imported_at) " +
                         "VALUES (?,?,?,?,?,?)", "公共组", "6208", "测试交易", "科技审核人", "300001",
                 LocalDateTime.of(2026, 8, 21, 8, 0));
-        service = editService(dao, jdbc);
+        service = editService(dao, dailyDataDao, jdbc);
     }
 
     @Test
@@ -90,6 +94,8 @@ class ReplayIssueEditServiceTest {
 
     @Test
     void preservesCurrentStatusWhenSavingOnlyTheRemark() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_type = '代码问题' WHERE id = ?", issueId);
+        saveSnapshot();
         ReplayIssueRow updated = service.update(issueId,
                 new ReplayIssueUpdateRequest(null, "代码问题", "", "", null, "111"),
                 new ReplayIssueOperator("editor", "编辑人"));
@@ -97,6 +103,43 @@ class ReplayIssueEditServiceTest {
         assertEquals(ReplayIssueStatus.OPEN, updated.issueStatus());
         assertEquals("111", updated.remark());
         assertEquals(1L, dao.countHistory(updated.issueKey()));
+        assertEquals(true, dailyDataDao.findReportSnapshot("RPT20260904-01").isPresent());
+    }
+
+    @Test
+    void statusChangeRetainsGeneratedReports() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_type = '代码问题' WHERE id = ?", issueId);
+        saveSnapshot();
+
+        service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION, "代码问题", "", "", null),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(true, dailyDataDao.findReportSnapshot("RPT20260904-01").isPresent());
+    }
+
+    @Test
+    void issueTypeChangeRetainsGeneratedReports() {
+        saveSnapshot();
+
+        service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "代码问题", "", "", null),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(true, dailyDataDao.findReportSnapshot("RPT20260904-01").isPresent());
+    }
+
+    @Test
+    void noOpSaveRetainsGeneratedReports() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_type = ?, initial_analysis = ?, final_solution = ?, remark = ? WHERE id = ?",
+                "代码问题", "初步分析", "处理方案", "", issueId);
+        saveSnapshot();
+
+        service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "代码问题", "初步分析", "处理方案", null, ""),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(true, dailyDataDao.findReportSnapshot("RPT20260904-01").isPresent());
     }
 
     @Test
@@ -110,6 +153,40 @@ class ReplayIssueEditServiceTest {
         assertEquals(ReplayIssueStatus.OPEN, updated.issueStatus());
         assertEquals("合理差异", updated.issueType());
         assertEquals(1L, dao.countHistory(updated.issueKey()));
+    }
+
+    @Test
+    void rejectsChangingAReopenedIssueBackToOpenWithoutWritingHistory() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_status = '重新打开' WHERE id = ?", issueId);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "代码问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人")));
+
+        assertEquals("重新打开的问题不能改回打开状态", error.getMessage());
+        assertEquals(ReplayIssueStatus.REOPENED, dao.findCurrentByIdForUpdate(issueId).issueStatus());
+        assertEquals(0L, dao.countHistory("key-1"));
+    }
+
+    @Test
+    void allowsChangingAReopenedIssueToPendingVerification() {
+        jdbc.update("UPDATE dii_replay_issue SET issue_status = '重新打开' WHERE id = ?", issueId);
+
+        ReplayIssueRow updated = service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.PENDING_VERIFICATION, "代码问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals(ReplayIssueStatus.PENDING_VERIFICATION, updated.issueStatus());
+        assertEquals(1L, dao.countHistory(updated.issueKey()));
+    }
+
+    @Test
+    void rejectsLegacyRuleDifferenceIssueType() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "规则差异问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人")));
+
+        assertEquals("未知问题类型：规则差异问题", error.getMessage());
     }
 
     @ParameterizedTest
@@ -341,7 +418,8 @@ class ReplayIssueEditServiceTest {
         jdbc.update("INSERT INTO ccbs_ai_sys_user (username, real_name, emp_no, status) VALUES (?,?,?,?)", "tech", "科技审核人", "300001", 1);
     }
 
-    private static ReplayIssueEditService editService(ReplayIssueDao dao, JdbcTemplate jdbc) {
+    private static ReplayIssueEditService editService(ReplayIssueDao dao, ReplayDailyDataDao dailyDataDao,
+                                                      JdbcTemplate jdbc) {
         SysUserDao userDao = new SysUserDao(jdbc);
         ReplayIssueReviewProperties properties = new ReplayIssueReviewProperties();
         ReplayIssueReviewProperties.ReviewerGroup group = new ReplayIssueReviewProperties.ReviewerGroup();
@@ -351,6 +429,12 @@ class ReplayIssueEditServiceTest {
         ReplayIssueReviewService reviewService = new ReplayIssueReviewService(dao, userDao, properties, clock);
         return new ReplayIssueEditService(dao, userDao, null, reviewService, clock,
                 new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
+    }
+
+    private void saveSnapshot() {
+        dailyDataDao.saveReportSnapshot(new ReplayDailyReportSnapshot("RPT20260904-01", "report.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                new byte[]{1, 2, 3}, 3L, LocalDateTime.of(2026, 9, 4, 10, 30)));
     }
 
     private static long seedCurrent(ReplayIssueDao targetDao) {

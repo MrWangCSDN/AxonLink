@@ -21,7 +21,7 @@ import java.util.Set;
 /** Atomically updates the six page-managed fields and appends one audit snapshot. */
 @Service
 public class ReplayIssueEditService {
-    private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "规则性差异问题", "外围问题", "其他问题");
+    private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题");
     private static final Set<String> NO_ACTION_ISSUE_TYPES = Set.of("合理差异", "规则性差异问题", "外围问题");
 
     private final ReplayIssueDao dao;
@@ -82,6 +82,9 @@ public class ReplayIssueEditService {
                 issueStatus = before.issueStatus() == null ? ReplayIssueStatus.OPEN : before.issueStatus();
             } else if (!issueStatus.isManuallySelectable()) {
                 throw new IllegalArgumentException("该问题状态不能手工选择");
+            }
+            if (before.issueStatus() == ReplayIssueStatus.REOPENED && issueStatus == ReplayIssueStatus.OPEN) {
+                throw new IllegalArgumentException("重新打开的问题不能改回打开状态");
             }
             validateStatusType(issueStatus, request.issueType());
             SysUser collaborator = resolveCollaborator(request.cooperationPersonUsername());

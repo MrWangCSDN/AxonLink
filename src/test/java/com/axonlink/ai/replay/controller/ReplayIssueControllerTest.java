@@ -2,10 +2,23 @@ package com.axonlink.ai.replay.controller;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dto.ReplayCoverageDetailRow;
+import com.axonlink.ai.replay.dto.ReplayCoverageSummaryRow;
+import com.axonlink.ai.replay.dto.ReplayDailyRowType;
+import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
+import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
+import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
+import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
+import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueMailStatus;
-import com.axonlink.ai.replay.dto.ReplayIssueSummaryRow;
+import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueCompletionStatsDao;
 import com.axonlink.ai.replay.persistence.ReplayTransactionPersonDao;
@@ -16,8 +29,12 @@ import com.axonlink.ai.replay.service.ReplayIssueFullRefreshService;
 import com.axonlink.ai.replay.service.ReplayIssueImportGate;
 import com.axonlink.ai.replay.service.ReplayIssueImportService;
 import com.axonlink.ai.replay.service.ReplayIssueMailService;
+import com.axonlink.ai.replay.service.ReplayDailyReportCalculator;
+import com.axonlink.ai.replay.service.ReplayDailyReportWorkbookWriter;
 import com.axonlink.ai.replay.service.ReplayIssueDailyReportService;
-import com.axonlink.ai.replay.service.ReplayIssueSummaryParser;
+import com.axonlink.ai.replay.service.ReplayDailyReportMailService;
+import com.axonlink.ai.replay.service.ReplayWeeklyReportMailService;
+import com.axonlink.ai.replay.service.ReplayWeeklyReportService;
 import com.axonlink.ai.replay.persistence.ReplayIssueWeeklyTaskDao;
 import com.axonlink.ai.replay.service.ReplayIssueWeeklyTaskService;
 import com.axonlink.ai.replay.service.ReplayIssueReviewProperties;
@@ -45,7 +62,7 @@ import com.axonlink.security.UserPrincipalResolver;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.file.Files;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.Clock;
@@ -60,6 +77,7 @@ import java.util.concurrent.Semaphore;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -87,7 +105,11 @@ class ReplayIssueControllerTest {
     private ReplayIssueImportGate importGate;
     private DaoIndexAnalysisProperties properties;
     private UserPrincipalResolver.Resolved resolvedUser;
+    private ReplayDailyDataDao dailyDataDao;
     private ReplayIssueDailyReportService dailyReportService;
+    private ReplayDailyReportMailService dailyReportMailService;
+    private ReplayWeeklyReportService weeklyReportService;
+    private ReplayWeeklyReportMailService weeklyReportMailService;
     private ReplayIssueController controller;
 
     @BeforeEach
@@ -112,7 +134,12 @@ class ReplayIssueControllerTest {
                 return resolvedUser;
             }
         };
-        dailyReportService = new ReplayIssueDailyReportService(dao, Files.createTempDirectory("daily-").toString());
+        dailyDataDao = new ReplayDailyDataDao(jdbc);
+        dailyReportService = new ReplayIssueDailyReportService(dailyDataDao, dao,
+                new ReplayDailyReportCalculator(), new ReplayDailyReportWorkbookWriter(), jdbc);
+        dailyReportMailService = mock(ReplayDailyReportMailService.class);
+        weeklyReportService = mock(ReplayWeeklyReportService.class);
+        weeklyReportMailService = mock(ReplayWeeklyReportMailService.class);
         controller = new ReplayIssueController(importService, fullRefreshService, dao,
                 properties, editService, resolver, dailyReportService,
                 new ReplayIssueWeeklyTaskService(new ReplayIssueWeeklyTaskDao(jdbc)));
@@ -140,6 +167,9 @@ class ReplayIssueControllerTest {
         domainProperties.setAdvancedEditors(new LinkedHashMap<>(Map.of("公共组", publicAdvancedDomainEditors)));
         ReflectionTestUtils.setField(controller, "issueDomainService",
                 new ReplayIssueDomainService(dao, userDao, domainProperties));
+        ReflectionTestUtils.setField(controller, "dailyReportMailService", dailyReportMailService);
+        ReflectionTestUtils.setField(controller, "weeklyReportService", weeklyReportService);
+        ReflectionTestUtils.setField(controller, "weeklyReportMailService", weeklyReportMailService);
         mvc = MockMvcBuilders.standaloneSetup(controller, new ReplayIssueUserController(userDao)).build();
     }
 
@@ -699,6 +729,26 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void postSearchEndpointsAcceptLongIssueDescriptionFiltersInJson() throws Exception {
+        String longDescription = "超长问题描述".repeat(2000);
+
+        mvc.perform(post("/api/ai/parallel-replay/issues")
+                        .contentType("application/json")
+                        .content("{\"query\":{\"limit\":50,\"offset\":0,\"issueDescriptions\":[\""
+                                + longDescription + "\"]}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .contentType("application/json")
+                        .content("{\"field\":\"issueDescription\",\"keyword\":\"错误码\",\"query\":{"
+                                + "\"issueDescriptions\":[\"" + longDescription + "\"]}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(0))
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(0));
+    }
+
+    @Test
     void countedHeaderFilterEndpointPreservesLegacyCandidateResponse() throws Exception {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("公共组", false, 1, "T-1", "first"),
@@ -916,21 +966,265 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void downloadsDailyReportWithBatchDailyFilename() throws Exception {
-        ReplayIssueSummaryRow upper = new ReplayIssueSummaryRow(
-                "BATCH-PREV", "存款组", 100L, 1000L, 1L, 2L, 3L, 4L, 5L, 6L, 7L,
-                90.0, 80.0, ReplayIssueSummaryRow.Part.UPPER, null);
-        ReplayIssueSummaryRow lower = new ReplayIssueSummaryRow(
-                "BATCH-CURR", "存款组", 200L, 2000L, 1L, 2L, 3L, 4L, 5L, 6L, 7L,
-                91.0, 81.0, ReplayIssueSummaryRow.Part.LOWER, null);
-        dailyReportService.generateNext("BATCH-CURR", LocalDateTime.now(),
-                new ReplayIssueSummaryParser.ParsedSummary(List.of(upper), List.of(lower), true));
+    void listsDatabaseBackedDailyReportBatches() throws Exception {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch("DZ20260901-01", LocalDateTime.of(2026, 9, 1, 10, 0), "DZ-FIRST");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "SELECTED");
+        dailyDataDao.saveReportSnapshot(new ReplayDailyReportSnapshot("RPT20260902-01", "日报.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[]{1}, 1L,
+                LocalDateTime.of(2026, 9, 2, 10, 30)));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report/batches"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].batchNo").value("RPT20260902-01"))
+                .andExpect(jsonPath("$.data[0].family").value("RPT"))
+                .andExpect(jsonPath("$.data[0].importedAt").exists())
+                .andExpect(jsonPath("$.data[0].previousBatchNo").value("RPT20260901-01"))
+                .andExpect(jsonPath("$.data[0].canGenerate").value(true))
+                .andExpect(jsonPath("$.data[0].generated").value(true))
+                .andExpect(jsonPath("$.data[0].generatedAt").value("2026-09-02T10:30:00"))
+                .andExpect(jsonPath("$.data[1].batchNo").value("DZ20260901-01"))
+                .andExpect(jsonPath("$.data[1].canGenerate").value(false))
+                .andExpect(jsonPath("$.data[1].generated").value(false))
+                .andExpect(jsonPath("$.data[1].generatedAt").value(nullValue()));
+    }
+
+    @Test
+    void generatesDailyReportWithBatchDailyFilename() throws Exception {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "SELECTED");
 
         mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
-                        .param("batchNo", "BATCH-CURR"))
+                        .param("batchNo", "RPT20260902-01"))
                 .andExpect(status().isOk())
+                .andExpect(content().contentType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .andExpect(header().string("Content-Disposition",
-                        containsString("BATCH-CURR%E6%97%A5%E6%8A%A5.xlsx")));
+                        containsString("RPT20260902-01%E6%97%A5%E6%8A%A5.xlsx")));
+    }
+
+    @Test
+    void dailyReportReturnsBadRequestForMalformedBatch() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+                        .param("batchNo", "BATCH-01"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("批次号格式错误"));
+    }
+
+    @Test
+    void dailyReportReturnsNotFoundForMissingBatch() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+                        .param("batchNo", "RPT20260909-01"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("批次数据不存在"));
+    }
+
+    @Test
+    void dailyReportMailConfigReturnsFixedRecipientsAndStatus() throws Exception {
+        when(dailyReportMailService.configuration("RPT20260908-01"))
+                .thenReturn(new ReplayDailyReportMailView("RPT20260908-01",
+                        "对公分布式核心回放问题日报-20260908", List.of("to@example.com"),
+                        List.of("cc@example.com"), "默认正文", "SENT", LocalDateTime.of(2026, 9, 8, 10, 30), null));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report/mail-config")
+                        .param("batchNo", "RPT20260908-01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.subject").value("对公分布式核心回放问题日报-20260908"))
+                .andExpect(jsonPath("$.data.toEmails[0]").value("to@example.com"))
+                .andExpect(jsonPath("$.data.body").value("默认正文"))
+                .andExpect(jsonPath("$.data.status").value("SENT"));
+    }
+
+    @Test
+    void dailyReportMailSendRequiresTokenAndReturnsLatestStatus() throws Exception {
+        ReplayDailyReportMailView sent = new ReplayDailyReportMailView("RPT20260908-01",
+                "对公分布式核心回放问题日报-20260908", List.of("to@example.com"),
+                List.of(), "请查收", "SENT", LocalDateTime.of(2026, 9, 8, 10, 30), null);
+        when(dailyReportMailService.send(new ReplayDailyReportMailSendRequest(
+                "RPT20260908-01", "自定义标题", List.of("to@example.com"), List.of(), "请查收")))
+                .thenReturn(sent);
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "wrong")
+                        .content("{\"batchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("口令错误"));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "secret")
+                        .content("{\"batchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SENT"));
+        verify(dailyReportMailService).send(new ReplayDailyReportMailSendRequest(
+                "RPT20260908-01", "自定义标题", List.of("to@example.com"), List.of(), "请查收"));
+    }
+
+    @Test
+    void dailyReportMailMapsBusinessFailures() throws Exception {
+        when(dailyReportMailService.configuration("RPT20260908-01"))
+                .thenThrow(new ReplayDailyReportMailService.SnapshotNotFoundException());
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report/mail-config")
+                        .param("batchNo", "RPT20260908-01"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("日报尚未生成"));
+
+        when(dailyReportMailService.configuration("RPT20260909-01"))
+                .thenThrow(new ReplayDailyReportMailService.ConfigurationException());
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report/mail-config")
+                        .param("batchNo", "RPT20260909-01"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.message").value("日报邮件配置不完整"));
+
+        when(dailyReportMailService.send(new ReplayDailyReportMailSendRequest(
+                "RPT20260910-01", "标题", List.of("to@example.com"), List.of(), "正文")))
+                .thenThrow(new ReplayDailyReportMailService.MailSendException(new IllegalStateException("SMTP")));
+        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "secret")
+                        .content("{\"batchNo\":\"RPT20260910-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.message").value("邮件发送失败"));
+    }
+
+    @Test
+    void weeklyReportOptionsAndDownloadAreExposed() throws Exception {
+        when(weeklyReportService.options()).thenReturn(new ReplayWeeklyReportOptions(List.of(), List.of()));
+        byte[] content = new byte[]{1, 2, 3};
+        when(weeklyReportService.generate("RPT20260901-01", "RPT20260908-01"))
+                .thenReturn(new ReplayWeeklyReportSnapshot(
+                        "RPT20260901-01", "RPT20260908-01", "RPT20260908-01周报.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        content, content.length, LocalDateTime.of(2026, 9, 8, 10, 0)));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report/options"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.dailyBatches").isArray())
+                .andExpect(jsonPath("$.data.weeklyReports").isArray());
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report")
+                        .param("startBatchNo", "RPT20260901-01")
+                        .param("endBatchNo", "RPT20260908-01"))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(content))
+                .andExpect(header().string("Content-Disposition",
+                        containsString("RPT20260908-01%E5%91%A8%E6%8A%A5.xlsx")));
+    }
+
+    @Test
+    void weeklyReportMailConfigAndSendAreExposed() throws Exception {
+        ReplayWeeklyReportMailView view = new ReplayWeeklyReportMailView(
+                "RPT20260901-01", "RPT20260908-01",
+                "对公分布式核心回放问题周报-20260908", List.of("to@example.com"),
+                List.of("cc@example.com"), "默认正文", "SENT",
+                LocalDateTime.of(2026, 9, 8, 10, 30), null);
+        when(weeklyReportMailService.configuration("RPT20260901-01", "RPT20260908-01"))
+                .thenReturn(view);
+        ReplayWeeklyReportMailSendRequest request = new ReplayWeeklyReportMailSendRequest(
+                "RPT20260901-01", "RPT20260908-01", "自定义标题",
+                List.of("to@example.com"), List.of(), "请查收");
+        when(weeklyReportMailService.send(request)).thenReturn(view);
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report/mail-config")
+                        .param("startBatchNo", "RPT20260901-01")
+                        .param("endBatchNo", "RPT20260908-01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.subject").value("对公分布式核心回放问题周报-20260908"));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "secret")
+                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("SENT"));
+        verify(weeklyReportMailService).send(request);
+    }
+
+    @Test
+    void weeklyReportMapsRangeSnapshotTokenAndSmtpFailures() throws Exception {
+        when(weeklyReportService.generate("RPT20260908-01", "RPT20260901-01"))
+                .thenThrow(new ReplayWeeklyReportService.InvalidRangeException());
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report")
+                        .param("startBatchNo", "RPT20260908-01")
+                        .param("endBatchNo", "RPT20260901-01"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("周报起止批次范围错误"));
+
+        when(weeklyReportService.generate("RPT20260903-01", "RPT20260908-01"))
+                .thenThrow(new ReplayWeeklyReportService.EndBatchAlreadyGeneratedException());
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report")
+                        .param("startBatchNo", "RPT20260903-01")
+                        .param("endBatchNo", "RPT20260908-01"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("结束批次周报已生成"));
+
+        when(weeklyReportMailService.configuration("RPT20260901-01", "RPT20260908-01"))
+                .thenThrow(new ReplayWeeklyReportMailService.SnapshotNotFoundException());
+        mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report/mail-config")
+                        .param("startBatchNo", "RPT20260901-01")
+                        .param("endBatchNo", "RPT20260908-01"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("周报尚未生成"));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "wrong")
+                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("口令错误"));
+
+        ReplayWeeklyReportMailSendRequest request = new ReplayWeeklyReportMailSendRequest(
+                "RPT20260901-01", "RPT20260908-01", "标题",
+                List.of("to@example.com"), List.of(), "正文");
+        when(weeklyReportMailService.send(request))
+                .thenThrow(new ReplayWeeklyReportMailService.MailSendException(new IllegalStateException("SMTP")));
+        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .contentType("application/json")
+                        .header("X-DII-Trigger-Token", "secret")
+                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\"}"))
+                .andExpect(status().isBadGateway())
+                .andExpect(jsonPath("$.message").value("邮件发送失败"));
+    }
+
+    @Test
+    void dailyReportReturnsConflictWithoutPreviousBatch() throws Exception {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "FIRST");
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+                        .param("batchNo", "RPT20260901-01"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("没有上批次数据"));
+    }
+
+    @Test
+    void dailyReportReturnsUnifiedMessageForUnexpectedFailure() throws Exception {
+        ReplayIssueDailyReportService failingService = mock(ReplayIssueDailyReportService.class);
+        when(failingService.generate("RPT20260902-01"))
+                .thenThrow(new IllegalStateException("sensitive database detail"));
+        ReflectionTestUtils.setField(controller, "dailyReportService", failingService);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+                        .param("batchNo", "RPT20260902-01"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("日报生成失败"))
+                .andExpect(content().string(not(containsString("sensitive database detail"))));
+    }
+
+    @Test
+    void dailyReportTreatsDownstreamIllegalArgumentAsUnexpectedFailure() throws Exception {
+        ReplayIssueDailyReportService failingService = mock(ReplayIssueDailyReportService.class);
+        when(failingService.generate("RPT20260902-01"))
+                .thenThrow(new IllegalArgumentException("invalid persisted row type"));
+        ReflectionTestUtils.setField(controller, "dailyReportService", failingService);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+                        .param("batchNo", "RPT20260902-01"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("日报生成失败"))
+                .andExpect(content().string(not(containsString("invalid persisted row type"))));
     }
 
     @Test
@@ -1101,7 +1395,7 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void parserValidationReturnsBadRequest() throws Exception {
+    void importWithoutDailyContextOrIssueRowsReturnsBadRequest() throws Exception {
         MockMultipartFile missingSheets = ReplayIssueTestFixtures.workbook(
                 Map.of("公共组", List.of()), ReplayIssueTestFixtures.HEADERS, false);
 
@@ -1110,7 +1404,7 @@ class ReplayIssueControllerTest {
                         .header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400))
-                .andExpect(jsonPath("$.message", containsString("缺少目标页签")));
+                .andExpect(jsonPath("$.message", containsString("没有可导入数据")));
     }
 
     @Test
@@ -1330,6 +1624,39 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void personScheduleEndpointReturnsThreeStatusDateSummaryAndRejectsMissingDeveloper() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("存款组", false, 1, "S-NEW", "schedule-new"),
+                ReplayIssueTestFixtures.row("存款组", false, 2, "S-OPEN", "schedule-open"),
+                ReplayIssueTestFixtures.row("存款组", false, 3, "S-REOPENED", "schedule-reopened")),
+                LocalDateTime.of(2026, 8, 11, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='新建', planned_completion_date='2026-07-02' WHERE transaction_code='S-NEW'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='重新打开', planned_completion_date='2026-07-01' WHERE transaction_code='S-REOPENED'");
+        jdbc.batchUpdate("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,old_transaction_name,developer,imported_at) VALUES (?,?,?,?,?)",
+                List.of(
+                        new Object[]{"存款组", "S-NEW", "新建交易", "张三(c-zhangs3)", LocalDateTime.of(2026, 8, 11, 8, 0)},
+                        new Object[]{"存款组", "S-OPEN", "打开交易", "张三(c-zhangs3)", LocalDateTime.of(2026, 8, 11, 8, 0)},
+                        new Object[]{"存款组", "S-REOPENED", "重新打开交易", "张三(c-zhangs3)", LocalDateTime.of(2026, 8, 11, 8, 0)}));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/person-ranking/schedule")
+                        .param("groupBy", "domain")
+                        .param("replayType", "ALL")
+                        .param("groupName", "存款组")
+                        .param("developer", "张三(c-zhangs3)"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.scheduleTotalCount").value(3))
+                .andExpect(jsonPath("$.data.schedulePlannedCount").value(2))
+                .andExpect(jsonPath("$.data.scheduleUnplannedCount").value(1))
+                .andExpect(jsonPath("$.data.dateCounts[0].plannedCompletionDate").value("2026-07-01"))
+                .andExpect(jsonPath("$.data.dateCounts[0].count").value(1))
+                .andExpect(jsonPath("$.data.dateCounts[1].plannedCompletionDate").value("2026-07-02"));
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/stats/person-ranking/schedule")
+                        .param("groupName", "存款组"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void roundEndpointsGroupImportResultAndAllManualChanges() throws Exception {
         mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
                         .file(ReplayIssueTestFixtures.validWorkbook(1))
@@ -1401,7 +1728,7 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void roundTrackingShowsInheritedContentSeparatelyFromManualChanges() throws Exception {
+    void roundTrackingKeepsOriginalDataWhenOnlyExcludedFieldsChange() throws Exception {
         mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
                         .file(ReplayIssueTestFixtures.validWorkbook(1))
                         .header("X-DII-Trigger-Token", "secret"))
@@ -1410,9 +1737,9 @@ class ReplayIssueControllerTest {
                         50, 0, null, null, null, null, "TRAN|6208|响应码|公共组|1"))
                 .get(0);
         long id = ((Number) issue.get("id")).longValue();
-        jdbc.update("UPDATE dii_replay_issue SET issue_type=?,initial_analysis=?,final_solution=?,"
+        jdbc.update("UPDATE dii_replay_issue SET issue_description=?,issue_type=?,initial_analysis=?,final_solution=?,"
                         + "cooperation_person_username=?,cooperation_person_real_name=?,remark=? WHERE id=?",
-                "代码问题", "人工分析", "人工方案", "alice", "艾丽丝", "人工备注", id);
+                "待导入覆盖的旧问题描述", "代码问题", "人工分析", "人工方案", "alice", "艾丽丝", "人工备注", id);
 
         mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
                         .file(validWorkbookForBatch("RPT20260821-142055-0001"))
@@ -1421,23 +1748,81 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].actionType").value("基础数据覆盖，人工内容继承"))
+                .andExpect(jsonPath("$.data[0].actionType").value("数据继承"))
                 .andExpect(jsonPath("$.data[0].manualChangeCount").value(0))
                 .andExpect(jsonPath("$.data[0].manualEvents.length()").value(0))
-                .andExpect(jsonPath("$.data[0].inheritedEvents.length()").value(1))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].operationType")
-                        .value("基础数据覆盖，人工内容继承"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].issueType").value("代码问题"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].initialAnalysis").value("人工分析"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].finalSolution").value("人工方案"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].changes[0].field").value("批次号"))
-                .andExpect(jsonPath("$.data[0].originalData[0].field").value("交易码"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].cooperationPersonUsername").value("alice"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].cooperationPersonRealName").value("艾丽丝"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].remark").value("人工备注"))
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].beforeSnapshot").isNotEmpty())
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].afterSnapshot").isNotEmpty())
-                .andExpect(jsonPath("$.data[0].inheritedEvents[0].incomingSnapshot").isNotEmpty());
+                .andExpect(jsonPath("$.data[0].inheritedEvents.length()").value(0))
+                .andExpect(jsonPath("$.data[0].originalData[2].field").value("交易码"))
+                .andExpect(jsonPath("$.data[0].originalData.length()").value(13));
+    }
+
+    @Test
+    void roundTrackingHidesOperationsAlreadyShownByDedicatedViews() throws Exception {
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                        .file(ReplayIssueTestFixtures.validWorkbook(1))
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isOk());
+        Map<String, Object> issue = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(
+                        50, 0, null, null, null, null, "TRAN|6208|响应码|公共组|1"))
+                .get(0);
+        long id = ((Number) issue.get("id")).longValue();
+        String issueKey = String.valueOf(issue.get("issue_key"));
+        String batch = String.valueOf(issue.get("batch_no"));
+        Long roundId = dao.findLatestIssueRoundId(id);
+        ReplayIssueOperator operator = new ReplayIssueOperator("sunhy1", "孙海英");
+        LocalDateTime baseTime = LocalDateTime.of(2026, 8, 20, 10, 0);
+
+        dao.insertHistoryForRound(id, issueKey, "人工保存", baseTime.plusMinutes(1), operator,
+                baseTime.toLocalDate(), null, null, null,
+                "{\"issueStatus\":\"打开\"}", "{\"issueStatus\":\"修复待验证\"}", null, roundId, batch);
+        dao.insertHistoryForRound(id, issueKey, "修改问题所属领域", baseTime.plusMinutes(2), operator,
+                baseTime.toLocalDate(), null, null, null,
+                "{\"domain\":\"公共组\"}", "{\"domain\":\"贷款组\"}", null, roundId, batch);
+        dao.insertHistoryForRound(id, issueKey, "修改计划验证日期", baseTime.plusMinutes(3), operator,
+                baseTime.toLocalDate(), null, null, null,
+                "{\"plannedCompletionDate\":\"2026-08-20\"}",
+                "{\"plannedCompletionDate\":\"2026-08-21\"}", null, roundId, batch);
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].manualChangeCount").value(1))
+                .andExpect(jsonPath("$.data[0].manualEvents.length()").value(1))
+                .andExpect(jsonPath("$.data[0].manualEvents[0].operationType").value("人工保存"))
+                .andExpect(jsonPath("$.data[0].inheritedEvents[?(@.operationType == '修改问题所属领域')]").isEmpty())
+                .andExpect(jsonPath("$.data[0].inheritedEvents[?(@.operationType == '修改计划验证日期')]").isEmpty());
+    }
+
+    @Test
+    void roundTrackingHidesEventsWithoutTrackedFieldChanges() throws Exception {
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                        .file(ReplayIssueTestFixtures.validWorkbook(1))
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isOk());
+        Map<String, Object> issue = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(
+                        50, 0, null, null, null, null, "TRAN|6208|响应码|公共组|1"))
+                .get(0);
+        long id = ((Number) issue.get("id")).longValue();
+        String issueKey = String.valueOf(issue.get("issue_key"));
+        String batch = String.valueOf(issue.get("batch_no"));
+        Long roundId = dao.findLatestIssueRoundId(id);
+        ReplayIssueOperator operator = new ReplayIssueOperator("sunhy1", "孙海英");
+        LocalDateTime baseTime = LocalDateTime.of(2026, 8, 20, 10, 0);
+
+        dao.insertHistoryForRound(id, issueKey, "人工保存", baseTime.plusMinutes(1), operator,
+                baseTime.toLocalDate(), null, null, null,
+                "{\"issueDescription\":\"旧描述\"}", "{\"issueDescription\":\"新描述\"}", null, roundId, batch);
+        dao.insertHistoryForRound(id, issueKey, "人工保存", baseTime.plusMinutes(2), operator,
+                baseTime.toLocalDate(), null, null, null,
+                "{\"issueStatus\":\"打开\",\"issueDescription\":\"旧描述\"}",
+                "{\"issueStatus\":\"修复待验证\",\"issueDescription\":\"新描述\"}", null, roundId, batch);
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].manualChangeCount").value(1))
+                .andExpect(jsonPath("$.data[0].manualEvents.length()").value(1))
+                .andExpect(jsonPath("$.data[0].manualEvents[0].operationType").value("人工保存"))
+                .andExpect(jsonPath("$.data[0].manualEvents[0].changes.length()").value(1))
+                .andExpect(jsonPath("$.data[0].manualEvents[0].changes[0].field").value("问题状态"));
     }
 
     @Test
@@ -1459,12 +1844,11 @@ class ReplayIssueControllerTest {
 
         mvc.perform(get("/api/ai/parallel-replay/issues/{id}/round-tracking", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].appeared").value(true))
-                .andExpect(jsonPath("$.data[0].statusBefore").doesNotExist())
-                .andExpect(jsonPath("$.data[0].statusAfter").doesNotExist())
-                .andExpect(jsonPath("$.data[0].actionType").value("导入"))
-                .andExpect(jsonPath("$.data[0].finalStatus").doesNotExist())
-                .andExpect(jsonPath("$.data[0].manualChangeCount").value(0));
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].appeared").value(false))
+                .andExpect(jsonPath("$.data[0].actionType").value("问题自动修复"))
+                .andExpect(jsonPath("$.data[0].originalData.length()").value(0))
+                .andExpect(jsonPath("$.data[1].appeared").value(true));
 
         var history = dao.findHistoryByIssueId(id, 10).get(0);
         assertEquals("问题自动修复", history.operationType());
@@ -1633,6 +2017,23 @@ class ReplayIssueControllerTest {
             case "issue_key" -> "TRAN|6208|响应码|" + sheetName;
             default -> "value";
         };
+    }
+
+    private void seedDailyBatch(String batchNo, LocalDateTime importedAt, String marker) {
+        dailyDataDao.replaceBatch(new ReplayDailyWorkbookData(batchNo,
+                List.of(new ReplayDailySummaryRow(batchNo, "公共组", 10L, 100L,
+                        2L, 80L, 1L, new BigDecimal("0.80"), 3L, 1, marker)),
+                List.of(new ReplayInterfaceComparisonRow(batchNo, ReplayDailyRowType.DETAIL,
+                        marker + "-IFACE", "S1", "交易", "开发", "行内", "公共组",
+                        100L, 1L, 2L, 3L, 4L, 80L, 1L,
+                        new BigDecimal("0.90"), new BigDecimal("0.80"),
+                        new BigDecimal("1.25"), new BigDecimal("2.50"), 1, marker)),
+                List.of(new ReplayCoverageSummaryRow(batchNo, ReplayDailyRowType.DETAIL,
+                        marker + "-COVERAGE", 100L, 90L, 10L, 0L, 0L, 0L,
+                        new BigDecimal("0.90"), 1, marker)),
+                List.of(new ReplayCoverageDetailRow(batchNo, marker + "-COVERAGE", "交易", "公共组",
+                        "S1", "", "是", LocalDate.of(2026, 9, 1), 90L,
+                        "已发送", "", "开发", "行内", 1, marker))), importedAt);
     }
 
     private long seedIssue() {

@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.persistence;
 
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
+import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayIssueDomainTransferEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
@@ -14,6 +15,8 @@ import com.axonlink.ai.replay.dto.ReplayIssueGroupSummary;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOption;
 import com.axonlink.ai.replay.dto.ReplayIssueHeaderFilterOptionResult;
 import com.axonlink.ai.replay.dto.ReplayIssuePersonRanking;
+import com.axonlink.ai.replay.dto.ReplayIssuePersonSchedule;
+import com.axonlink.ai.replay.dto.ReplayIssueScheduleDateCount;
 import com.axonlink.ai.replay.dto.ReplayIssuePlanDateChangeEntry;
 import com.axonlink.ai.replay.dto.ReplayImportRound;
 import com.axonlink.ai.replay.dto.ReplayIssueRoundEntry;
@@ -638,7 +641,7 @@ public class ReplayIssueDao {
                 jdbc.queryForList("SELECT DISTINCT group_name FROM dii_replay_issue "
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
-                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "规则差异问题", "合理差异", "规则性差异问题", "外围问题", "其他问题"),
+                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题"),
                 List.of("新建", "打开", "无需处理", "延后修复", "修复待验证", "重新打开", "已修复"),
                 coverageRounds(), List.of("待审核", "已审核"));
     }
@@ -856,6 +859,42 @@ public class ReplayIssueDao {
                 rs.getString("current_status")), batchName.trim());
     }
 
+    public List<ReplayDailyIssueStatisticRow> findDailyReportIssueStatistics(String occurrenceBatchNo) {
+        return jdbc.query("""
+                SELECT i.id, i.group_name, i.is_sandbox, i.issue_type, i.issue_level,
+                       i.field_name, i.issue_status,
+                       COALESCE(i.affected_transaction_count, 0) AS affected_transaction_count,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM dii_replay_issue_history h
+                            WHERE h.replay_issue_id=i.id
+                              AND h.operation_type='已修复问题重新新建'
+                       ) THEN 1 ELSE 0 END AS reopened_after_fixed
+                  FROM dii_replay_issue_occurrence_batch ob
+                  JOIN dii_replay_issue i ON i.id=ob.replay_issue_id
+                 WHERE ob.batch_name=?
+                 ORDER BY i.id
+                """, (rs, rowNum) -> new ReplayDailyIssueStatisticRow(
+                rs.getLong("id"), rs.getString("group_name"), rs.getBoolean("is_sandbox"),
+                rs.getString("issue_type"), rs.getString("issue_level"), rs.getString("field_name"),
+                rs.getString("issue_status"), parseAffectedTransactionCount(rs.getString("affected_transaction_count")),
+                rs.getBoolean("reopened_after_fixed")), occurrenceBatchNo);
+    }
+
+    private static long parseAffectedTransactionCount(String value) {
+        if (value == null || value.isBlank()) {
+            return 0L;
+        }
+        try {
+            long count = Long.parseLong(value.trim());
+            if (count < 0) {
+                throw new IllegalStateException("问题影响交易笔数不能为负数: " + value);
+            }
+            return count;
+        } catch (NumberFormatException exception) {
+            throw new IllegalStateException("问题影响交易笔数不是有效整数: " + value, exception);
+        }
+    }
+
 
     public Map<String, Object> stats() {
         return stats("domain", ReplayIssueReplayType.ALL);
@@ -986,6 +1025,9 @@ public class ReplayIssueDao {
                        SUM(CASE WHEN i.issue_status = '新建' THEN 1 ELSE 0 END) AS new_count,
                        SUM(CASE WHEN i.issue_status = '打开' THEN 1 ELSE 0 END) AS open_count,
                        SUM(CASE WHEN i.issue_status = '重新打开' THEN 1 ELSE 0 END) AS reopened_count,
+                       SUM(CASE WHEN i.issue_status IN ('新建','打开','重新打开')
+                                     AND i.planned_completion_date IS NOT NULL THEN 1 ELSE 0 END) AS schedule_planned_count,
+                       SUM(CASE WHEN i.issue_status IN ('新建','打开','重新打开') THEN 1 ELSE 0 END) AS schedule_total_count,
                        SUM(CASE WHEN i.issue_status = '延后修复' THEN 1 ELSE 0 END) AS deferred_count,
                        SUM(CASE WHEN i.issue_status = '修复待验证' THEN 1 ELSE 0 END) AS pending_verification_count,
                        SUM(CASE WHEN i.issue_status IN ('新建','打开','重新打开','延后修复','修复待验证') THEN 1 ELSE 0 END) AS pending_total_count,
@@ -1011,12 +1053,56 @@ public class ReplayIssueDao {
             previousGroup = groupName;
             result.add(new ReplayIssuePersonRanking(rank, groupName, String.valueOf(row.get("developer")),
                     number(row.get("new_count")), number(row.get("open_count")), number(row.get("reopened_count")),
+                    number(row.get("schedule_planned_count")), number(row.get("schedule_total_count")),
                     number(row.get("deferred_count")), number(row.get("pending_verification_count")),
                     number(row.get("pending_total_count")), number(row.get("no_action_count")),
                     number(row.get("fixed_count")), number(row.get("fixed_total_count")),
                     number(row.get("total_count"))));
         }
         return result;
+    }
+
+    public ReplayIssuePersonSchedule personSchedule(String groupBy, ReplayIssueReplayType replayType,
+                                                     String groupName, String developer) {
+        if (groupName == null || groupName.isBlank()) {
+            throw new IllegalArgumentException("统计分组不能为空");
+        }
+        if (developer == null || developer.isBlank()) {
+            throw new IllegalArgumentException("开发负责人不能为空");
+        }
+        String groupExpression = statisticsGroupExpression(groupBy);
+        String replayPredicate = statisticsReplayTypePredicate(replayType);
+        List<Object> args = new ArrayList<>();
+        args.add(groupName.trim());
+        args.add(developer.trim());
+        for (Object replayTypeArg : statisticsReplayTypeArgs(replayType)) {
+            args.add(replayTypeArg);
+        }
+        List<ReplayIssueScheduleDateCount> rows = jdbc.query("""
+                SELECT i.planned_completion_date, COUNT(*) AS issue_count
+                  FROM dii_replay_issue i
+                  LEFT JOIN dii_replay_transaction_person p ON i.transaction_code = p.old_transaction_code
+                 WHERE i.issue_status IN ('新建','打开','重新打开')
+                   AND %1$s = ?
+                   AND COALESCE(NULLIF(TRIM(p.developer), ''), '未匹配负责人') = ?
+                   %2$s
+                 GROUP BY i.planned_completion_date
+                 ORDER BY i.planned_completion_date
+                """.formatted(groupExpression, replayPredicate), (resultSet, rowNum) -> {
+            java.sql.Date plannedDate = resultSet.getDate("planned_completion_date");
+            return new ReplayIssueScheduleDateCount(plannedDate == null ? null : plannedDate.toLocalDate(),
+                    resultSet.getLong("issue_count"));
+        }, args.toArray());
+        long scheduleTotalCount = rows.stream().mapToLong(ReplayIssueScheduleDateCount::count).sum();
+        long scheduleUnplannedCount = rows.stream()
+                .filter(row -> row.plannedCompletionDate() == null)
+                .mapToLong(ReplayIssueScheduleDateCount::count)
+                .sum();
+        List<ReplayIssueScheduleDateCount> dateCounts = rows.stream()
+                .filter(row -> row.plannedCompletionDate() != null)
+                .toList();
+        return new ReplayIssuePersonSchedule(groupName.trim(), developer.trim(), scheduleTotalCount,
+                scheduleTotalCount - scheduleUnplannedCount, scheduleUnplannedCount, dateCounts);
     }
 
     private static String statisticsGroupExpression(String groupBy) {
