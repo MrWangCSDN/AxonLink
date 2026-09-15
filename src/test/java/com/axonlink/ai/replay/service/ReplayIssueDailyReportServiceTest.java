@@ -12,6 +12,7 @@ import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
+import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
@@ -59,6 +60,7 @@ class ReplayIssueDailyReportServiceTest {
     private JdbcTemplate jdbc;
     private ReplayIssueDao issueDao;
     private ReplayDailyDataDao dailyDataDao;
+    private ReplayDailyReportMailDao dailyReportMailDao;
     private ReplayIssueDailyReportService service;
 
     @BeforeEach
@@ -67,6 +69,7 @@ class ReplayIssueDailyReportServiceTest {
         ReplayIssueTestFixtures.createSchema(jdbc);
         issueDao = new ReplayIssueDao(jdbc);
         dailyDataDao = new ReplayDailyDataDao(jdbc);
+        dailyReportMailDao = new ReplayDailyReportMailDao(jdbc);
         service = new ReplayIssueDailyReportService(dailyDataDao, issueDao,
                 new ReplayDailyReportCalculator(), new ReplayDailyReportWorkbookWriter(), jdbc);
     }
@@ -277,6 +280,49 @@ class ReplayIssueDailyReportServiceTest {
         verify(dataDao, never()).findBatchesRecentFirst();
         verifyNoInteractions(projectionDao, calculator, writer);
         verify(dataDao, never()).saveReportSnapshot(any());
+    }
+
+    @Test
+    void regenerateRebuildsExistingSnapshotAndClearsMailStatus() {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        byte[] oldBytes = service.generate("RPT20260902-01");
+        dailyReportMailDao.markSending("RPT20260902-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of());
+        dailyReportMailDao.markSent("RPT20260902-01");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 10, 0), "UPDATED");
+
+        byte[] newBytes = service.regenerate("RPT20260902-01");
+
+        assertFalse(java.util.Arrays.equals(oldBytes, newBytes));
+        assertArrayEquals(newBytes, dailyDataDao.findReportSnapshot("RPT20260902-01").orElseThrow().content());
+        assertTrue(dailyReportMailDao.find("RPT20260902-01").isEmpty());
+    }
+
+    @Test
+    void regenerateRejectsMissingSnapshot() {
+        assertThrows(ReplayIssueDailyReportService.SnapshotNotFoundException.class,
+                () -> service.regenerate("RPT20260902-01"));
+    }
+
+    @Test
+    void regenerateWriterFailurePreservesOldSnapshotAndMailStatus() {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        byte[] oldBytes = service.generate("RPT20260902-01");
+        dailyReportMailDao.markSending("RPT20260902-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of());
+        dailyReportMailDao.markSent("RPT20260902-01");
+        ReplayDailyReportWorkbookWriter failingWriter = mock(ReplayDailyReportWorkbookWriter.class);
+        when(failingWriter.write(any(), any(), any(), any())).thenThrow(new IllegalStateException("write failed"));
+        ReplayIssueDailyReportService failingService = new ReplayIssueDailyReportService(
+                dailyDataDao, issueDao, new ReplayDailyReportCalculator(), failingWriter, jdbc);
+
+        assertThrows(IllegalStateException.class,
+                () -> failingService.regenerate("RPT20260902-01"));
+
+        assertArrayEquals(oldBytes, dailyDataDao.findReportSnapshot("RPT20260902-01").orElseThrow().content());
+        assertEquals("SENT", dailyReportMailDao.find("RPT20260902-01").orElseThrow().status());
     }
 
     @Test

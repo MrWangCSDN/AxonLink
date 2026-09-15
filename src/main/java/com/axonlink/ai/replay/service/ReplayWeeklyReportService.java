@@ -11,6 +11,7 @@ import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
+import com.axonlink.ai.replay.persistence.ReplayWeeklyReportMailDao;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -33,9 +34,11 @@ public class ReplayWeeklyReportService {
     private final ReplayDailyDataDao dailyDataDao;
     private final ReplayIssueDao issueDao;
     private final ReplayWeeklyReportDao weeklyReportDao;
+    private final ReplayWeeklyReportMailDao weeklyReportMailDao;
     private final ReplayDailyReportCalculator calculator;
     private final ReplayDailyReportWorkbookWriter workbookWriter;
     private final TransactionTemplate readSnapshotTransaction;
+    private final TransactionTemplate writeTransaction;
     private final Clock clock;
 
     @Autowired
@@ -59,6 +62,7 @@ public class ReplayWeeklyReportService {
         this.dailyDataDao = dailyDataDao;
         this.issueDao = issueDao;
         this.weeklyReportDao = weeklyReportDao;
+        this.weeklyReportMailDao = new ReplayWeeklyReportMailDao(diiResultJdbcTemplate);
         this.calculator = calculator;
         this.workbookWriter = workbookWriter;
         this.clock = clock;
@@ -69,11 +73,13 @@ public class ReplayWeeklyReportService {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
         this.readSnapshotTransaction.setReadOnly(true);
         this.readSnapshotTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        this.writeTransaction = new TransactionTemplate(
+                new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
     public ReplayWeeklyReportOptions options() {
         return new ReplayWeeklyReportOptions(
-                dailyDataDao.findGeneratedBatchesInFamilyOrder(), weeklyReportDao.findGeneratedReports());
+                dailyDataDao.findBatchesWithDataInFamilyOrder(), weeklyReportDao.findGeneratedReports());
     }
 
     public ReplayWeeklyReportSnapshot generate(String startBatchNo, String endBatchNo) {
@@ -88,17 +94,8 @@ public class ReplayWeeklyReportService {
         if (weeklyReportDao.findSnapshotByEndBatchNo(normalizedEnd).isPresent()) {
             throw new EndBatchAlreadyGeneratedException();
         }
-        validateRange(normalizedStart, normalizedEnd, dailyDataDao.findGeneratedBatchesInFamilyOrder());
-        ReportSnapshot snapshot = Objects.requireNonNull(readSnapshotTransaction.execute(
-                status -> loadSnapshot(normalizedStart, normalizedEnd)));
-        var calculated = calculator.calculate(
-                snapshot.startSummaries(), snapshot.startIssues(),
-                snapshot.endSummaries(), snapshot.endIssues());
-        byte[] bytes = workbookWriter.write(calculated, snapshot.comparisons(),
-                snapshot.coverageSummaries(), snapshot.coverageDetails());
-        ReplayWeeklyReportSnapshot generated = new ReplayWeeklyReportSnapshot(
-                normalizedStart, normalizedEnd, normalizedEnd + "周报.xlsx", XLSX_CONTENT_TYPE,
-                bytes, bytes.length, LocalDateTime.now(clock));
+        validateRange(normalizedStart, normalizedEnd, dailyDataDao.findBatchesWithDataInFamilyOrder());
+        ReplayWeeklyReportSnapshot generated = buildReport(normalizedStart, normalizedEnd);
         try {
             weeklyReportDao.saveSnapshot(generated);
         } catch (DataIntegrityViolationException exception) {
@@ -108,6 +105,38 @@ public class ReplayWeeklyReportService {
             throw exception;
         }
         return generated;
+    }
+
+    public ReplayWeeklyReportSnapshot regenerate(String startBatchNo, String endBatchNo) {
+        validateBatchNo(startBatchNo);
+        validateBatchNo(endBatchNo);
+        String normalizedStart = startBatchNo.trim();
+        String normalizedEnd = endBatchNo.trim();
+        if (weeklyReportDao.findSnapshot(normalizedStart, normalizedEnd).isEmpty()) {
+            throw new SnapshotNotFoundException();
+        }
+        validateRange(normalizedStart, normalizedEnd, dailyDataDao.findBatchesWithDataInFamilyOrder());
+        ReplayWeeklyReportSnapshot regenerated = buildReport(normalizedStart, normalizedEnd);
+        writeTransaction.executeWithoutResult(status -> {
+            if (weeklyReportDao.replaceSnapshot(regenerated) == 0) {
+                throw new SnapshotNotFoundException();
+            }
+            weeklyReportMailDao.delete(normalizedStart, normalizedEnd);
+        });
+        return regenerated;
+    }
+
+    private ReplayWeeklyReportSnapshot buildReport(String startBatchNo, String endBatchNo) {
+        ReportSnapshot snapshot = Objects.requireNonNull(readSnapshotTransaction.execute(
+                status -> loadSnapshot(startBatchNo, endBatchNo)));
+        var calculated = calculator.calculate(
+                snapshot.startSummaries(), snapshot.startIssues(),
+                snapshot.endSummaries(), snapshot.endIssues());
+        byte[] bytes = workbookWriter.write(calculated, snapshot.comparisons(),
+                snapshot.coverageSummaries(), snapshot.coverageDetails());
+        return new ReplayWeeklyReportSnapshot(
+                startBatchNo, endBatchNo, endBatchNo + "周报.xlsx", XLSX_CONTENT_TYPE,
+                bytes, bytes.length, LocalDateTime.now(clock));
     }
 
     private ReportSnapshot loadSnapshot(String startBatchNo, String endBatchNo) {
@@ -131,11 +160,11 @@ public class ReplayWeeklyReportService {
         ReplayDailyBatch start = candidates.stream()
                 .filter(batch -> startBatchNo.equals(batch.batchNo()))
                 .findFirst()
-                .orElseThrow(DailyReportNotGeneratedException::new);
+                .orElseThrow(BatchDataNotFoundException::new);
         ReplayDailyBatch end = candidates.stream()
                 .filter(batch -> endBatchNo.equals(batch.batchNo()))
                 .findFirst()
-                .orElseThrow(DailyReportNotGeneratedException::new);
+                .orElseThrow(BatchDataNotFoundException::new);
         if (!start.family().equals(end.family()) || startBatchNo.equals(endBatchNo)
                 || candidates.indexOf(start) >= candidates.indexOf(end)) {
             throw new InvalidRangeException();
@@ -154,12 +183,6 @@ public class ReplayWeeklyReportService {
         }
     }
 
-    public static final class DailyReportNotGeneratedException extends RuntimeException {
-        public DailyReportNotGeneratedException() {
-            super("所选批次日报尚未生成");
-        }
-    }
-
     public static final class InvalidRangeException extends RuntimeException {
         public InvalidRangeException() {
             super("周报起止批次范围错误");
@@ -172,9 +195,15 @@ public class ReplayWeeklyReportService {
         }
     }
 
+    public static final class SnapshotNotFoundException extends RuntimeException {
+        public SnapshotNotFoundException() {
+            super("周报尚未生成");
+        }
+    }
+
     public static final class BatchDataNotFoundException extends RuntimeException {
         public BatchDataNotFoundException() {
-            super("所选批次数据不存在");
+            super("所选批次没有日报数据");
         }
     }
 

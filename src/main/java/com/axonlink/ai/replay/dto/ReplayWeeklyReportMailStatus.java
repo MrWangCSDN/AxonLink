@@ -14,6 +14,7 @@ public record ReplayWeeklyReportMailStatus(
         String senderEmail,
         List<String> toEmails,
         List<String> ccEmails,
+        List<ReplayMailAttachmentMetadata> attachments,
         @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")
         LocalDateTime sentAt,
         String failureMessage,
@@ -23,5 +24,6 @@ public record ReplayWeeklyReportMailStatus(
     public ReplayWeeklyReportMailStatus {
         toEmails = toEmails == null ? List.of() : List.copyOf(toEmails);
         ccEmails = ccEmails == null ? List.of() : List.copyOf(ccEmails);
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
     }
 }

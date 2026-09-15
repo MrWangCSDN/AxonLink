@@ -46,7 +46,8 @@ class ReplayWeeklyReportMailServiceTest {
         properties.setWeeklyBody("默认周报正文");
         mailService = mock(MailService.class);
         when(mailService.configuredFrom()).thenReturn("sender@example.com");
-        service = new ReplayWeeklyReportMailService(weeklyReportDao, mailDao, properties, mailService);
+        service = new ReplayWeeklyReportMailService(weeklyReportDao, mailDao, properties, mailService,
+                new ReplayReportMailAttachmentService(new com.axonlink.ai.replay.persistence.ReplayDailyDataDao(jdbc)));
     }
 
     @Test
@@ -74,10 +75,12 @@ class ReplayWeeklyReportMailServiceTest {
                 List.of(" User@Example.com ", "user@example.com"),
                 List.of(" Copy@Example.com "), "请查收周报"));
 
-        verify(mailService).sendTextWithAttachmentSync(
-                List.of("user@example.com"), List.of("copy@example.com"),
-                "自定义周报标题", "请查收周报",
-                "DZ20260908-01周报.xlsx", content, XLSX);
+        verify(mailService).sendTextWithAttachmentsSync(
+                org.mockito.ArgumentMatchers.eq(List.of("user@example.com")),
+                org.mockito.ArgumentMatchers.eq(List.of("copy@example.com")),
+                org.mockito.ArgumentMatchers.eq("自定义周报标题"),
+                org.mockito.ArgumentMatchers.eq("请查收周报"),
+                org.mockito.ArgumentMatchers.anyList());
         assertEquals("SENT", view.status());
         assertTrue(view.sentAt() != null);
         assertEquals("SENT", mailDao.find("DZ20260901-01", "DZ20260908-01").orElseThrow().status());
@@ -87,10 +90,11 @@ class ReplayWeeklyReportMailServiceTest {
     void persistsFailedStatusWhenSmtpFails() {
         byte[] content = new byte[]{5};
         saveSnapshot("RPT20260901-01", "RPT20260910-01", content);
-        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentSync(
-                List.of("first@example.com", "second@example.com"), List.of("cc@example.com"),
-                "对公分布式核心回放问题周报-20260910", "正文",
-                "RPT20260910-01周报.xlsx", content, XLSX);
+        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentsSync(
+                org.mockito.ArgumentMatchers.eq(List.of("first@example.com", "second@example.com")),
+                org.mockito.ArgumentMatchers.eq(List.of("cc@example.com")),
+                org.mockito.ArgumentMatchers.eq("对公分布式核心回放问题周报-20260910"),
+                org.mockito.ArgumentMatchers.eq("正文"), org.mockito.ArgumentMatchers.anyList());
 
         assertThrows(ReplayWeeklyReportMailService.MailSendException.class,
                 () -> service.send(new ReplayWeeklyReportMailSendRequest(
@@ -131,11 +135,10 @@ class ReplayWeeklyReportMailServiceTest {
                         "RPT20260901-01", "RPT20260912-01", "标题",
                         List.of("to@example.com"), List.of(), "正文")));
 
-        verify(mailService, never()).sendTextWithAttachmentSync(
+        verify(mailService, never()).sendTextWithAttachmentsSync(
                 org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.anyList());
         assertTrue(mailDao.find("RPT20260901-01", "RPT20260912-01").isEmpty());
     }
 

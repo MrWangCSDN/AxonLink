@@ -10,6 +10,8 @@ import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
@@ -33,6 +35,7 @@ import com.axonlink.ai.replay.service.ReplayDailyReportCalculator;
 import com.axonlink.ai.replay.service.ReplayDailyReportWorkbookWriter;
 import com.axonlink.ai.replay.service.ReplayIssueDailyReportService;
 import com.axonlink.ai.replay.service.ReplayDailyReportMailService;
+import com.axonlink.ai.replay.service.ReplayReportMailAttachmentService;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportMailService;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportService;
 import com.axonlink.ai.replay.persistence.ReplayIssueWeeklyTaskDao;
@@ -91,6 +94,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -1040,25 +1044,45 @@ class ReplayIssueControllerTest {
         ReplayDailyReportMailView sent = new ReplayDailyReportMailView("RPT20260908-01",
                 "对公分布式核心回放问题日报-20260908", List.of("to@example.com"),
                 List.of(), "请查收", "SENT", LocalDateTime.of(2026, 9, 8, 10, 30), null);
-        when(dailyReportMailService.send(new ReplayDailyReportMailSendRequest(
-                "RPT20260908-01", "自定义标题", List.of("to@example.com"), List.of(), "请查收")))
+        ReplayDailyReportMailSendRequest request = new ReplayDailyReportMailSendRequest(
+                "RPT20260908-01", "自定义标题", List.of("to@example.com"), List.of(), "请查收",
+                List.of("DZ20260907-01"));
+        when(dailyReportMailService.send(eq(request), anyList()))
                 .thenReturn(sent);
+        MockMultipartFile mail = new MockMultipartFile("mail", "", "application/json",
+                "{\"batchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\",\"reportBatchNos\":[\"DZ20260907-01\"]}".getBytes());
+        MockMultipartFile local = new MockMultipartFile("files", "补充.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", new byte[]{1, 2});
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "wrong")
-                        .content("{\"batchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .file(mail).file(local).header("X-DII-Trigger-Token", "wrong"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("口令错误"));
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "secret")
-                        .content("{\"batchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .file(mail).file(local).header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SENT"));
-        verify(dailyReportMailService).send(new ReplayDailyReportMailSendRequest(
-                "RPT20260908-01", "自定义标题", List.of("to@example.com"), List.of(), "请查收"));
+        verify(dailyReportMailService).send(eq(request), eq(List.of(local)));
+    }
+
+    @Test
+    void dailyReportAttachmentOptionsArePagedThroughService() throws Exception {
+        ReplayIssueDailyReportService mockedService = mock(ReplayIssueDailyReportService.class);
+        ReplayReportAttachmentOptionPage page = new ReplayReportAttachmentOptionPage(List.of(
+                new ReplayReportAttachmentOption("DZ20260908-01", "DZ", "DZ日报.xlsx", 2048,
+                        LocalDateTime.of(2026, 9, 8, 10, 0))), 1, 10, 21);
+        when(mockedService.searchAttachmentOptions("日报", "DZ", 1, 10)).thenReturn(page);
+        ReflectionTestUtils.setField(controller, "dailyReportService", mockedService);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report/attachment-options")
+                        .param("keyword", "日报").param("family", "DZ")
+                        .param("page", "1").param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].batchNo").value("DZ20260908-01"))
+                .andExpect(jsonPath("$.data.total").value(21));
+        verify(mockedService).searchAttachmentOptions("日报", "DZ", 1, 10);
     }
 
     @Test
@@ -1077,15 +1101,21 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.message").value("日报邮件配置不完整"));
 
-        when(dailyReportMailService.send(new ReplayDailyReportMailSendRequest(
-                "RPT20260910-01", "标题", List.of("to@example.com"), List.of(), "正文")))
+        when(dailyReportMailService.send(any(ReplayDailyReportMailSendRequest.class), anyList()))
                 .thenThrow(new ReplayDailyReportMailService.MailSendException(new IllegalStateException("SMTP")));
-        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "secret")
-                        .content("{\"batchNo\":\"RPT20260910-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\"}"))
+        MockMultipartFile mail = new MockMultipartFile("mail", "", "application/json",
+                "{\"batchNo\":\"RPT20260910-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\"}".getBytes());
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .file(mail).header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.message").value("邮件发送失败"));
+
+        when(dailyReportMailService.send(any(ReplayDailyReportMailSendRequest.class), anyList()))
+                .thenThrow(new ReplayReportMailAttachmentService.AttachmentTooLargeException("超大.xlsx"));
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/daily-report/mail-send")
+                        .file(mail).header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.message").value("单个附件不能超过20MB：超大.xlsx"));
     }
 
     @Test
@@ -1124,7 +1154,7 @@ class ReplayIssueControllerTest {
         ReplayWeeklyReportMailSendRequest request = new ReplayWeeklyReportMailSendRequest(
                 "RPT20260901-01", "RPT20260908-01", "自定义标题",
                 List.of("to@example.com"), List.of(), "请查收");
-        when(weeklyReportMailService.send(request)).thenReturn(view);
+        when(weeklyReportMailService.send(eq(request), anyList())).thenReturn(view);
 
         mvc.perform(get("/api/ai/parallel-replay/issues/weekly-report/mail-config")
                         .param("startBatchNo", "RPT20260901-01")
@@ -1132,13 +1162,62 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.subject").value("对公分布式核心回放问题周报-20260908"));
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "secret")
-                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\"}"))
+        MockMultipartFile mail = new MockMultipartFile("mail", "", "application/json",
+                "{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"自定义标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"请查收\",\"reportBatchNos\":[]}".getBytes());
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .file(mail).header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("SENT"));
-        verify(weeklyReportMailService).send(request);
+        verify(weeklyReportMailService).send(request, List.of());
+    }
+
+    @Test
+    void dailyReportRegenerationRequiresTokenAndReturnsWorkbook() throws Exception {
+        ReplayIssueDailyReportService mockedService = mock(ReplayIssueDailyReportService.class);
+        when(mockedService.regenerate("RPT20260908-01")).thenReturn(new byte[]{7, 8, 9});
+        ReflectionTestUtils.setField(controller, "dailyReportService", mockedService);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/regenerate")
+                        .param("batchNo", "RPT20260908-01")
+                        .header("X-DII-Trigger-Token", "wrong"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("口令错误"));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/daily-report/regenerate")
+                        .param("batchNo", "RPT20260908-01")
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(new byte[]{7, 8, 9}))
+                .andExpect(header().string("Content-Disposition",
+                        containsString("RPT20260908-01%E6%97%A5%E6%8A%A5.xlsx")));
+        verify(mockedService).regenerate("RPT20260908-01");
+    }
+
+    @Test
+    void weeklyReportRegenerationRequiresTokenAndMapsMissingSnapshot() throws Exception {
+        ReplayWeeklyReportSnapshot snapshot = new ReplayWeeklyReportSnapshot(
+                "RPT20260901-01", "RPT20260908-01", "RPT20260908-01周报.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                new byte[]{4, 5, 6}, 3, LocalDateTime.of(2026, 9, 9, 10, 0));
+        when(weeklyReportService.regenerate("RPT20260901-01", "RPT20260908-01"))
+                .thenReturn(snapshot);
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/regenerate")
+                        .param("startBatchNo", "RPT20260901-01")
+                        .param("endBatchNo", "RPT20260908-01")
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(new byte[]{4, 5, 6}));
+
+        when(weeklyReportService.regenerate("RPT20260902-01", "RPT20260909-01"))
+                .thenThrow(new ReplayWeeklyReportService.SnapshotNotFoundException());
+        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/regenerate")
+                        .param("startBatchNo", "RPT20260902-01")
+                        .param("endBatchNo", "RPT20260909-01")
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("周报尚未生成"));
     }
 
     @Test
@@ -1167,22 +1246,22 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("周报尚未生成"));
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "wrong")
-                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\"}"))
+        MockMultipartFile tokenMail = new MockMultipartFile("mail", "", "application/json",
+                "{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\"}".getBytes());
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .file(tokenMail).header("X-DII-Trigger-Token", "wrong"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("口令错误"));
 
         ReplayWeeklyReportMailSendRequest request = new ReplayWeeklyReportMailSendRequest(
                 "RPT20260901-01", "RPT20260908-01", "标题",
                 List.of("to@example.com"), List.of(), "正文");
-        when(weeklyReportMailService.send(request))
+        when(weeklyReportMailService.send(eq(request), anyList()))
                 .thenThrow(new ReplayWeeklyReportMailService.MailSendException(new IllegalStateException("SMTP")));
-        mvc.perform(post("/api/ai/parallel-replay/issues/weekly-report/mail-send")
-                        .contentType("application/json")
-                        .header("X-DII-Trigger-Token", "secret")
-                        .content("{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\"}"))
+        MockMultipartFile mail = new MockMultipartFile("mail", "", "application/json",
+                "{\"startBatchNo\":\"RPT20260901-01\",\"endBatchNo\":\"RPT20260908-01\",\"subject\":\"标题\",\"toEmails\":[\"to@example.com\"],\"ccEmails\":[],\"body\":\"正文\",\"reportBatchNos\":[]}".getBytes());
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/weekly-report/mail-send")
+                        .file(mail).header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.message").value("邮件发送失败"));
     }

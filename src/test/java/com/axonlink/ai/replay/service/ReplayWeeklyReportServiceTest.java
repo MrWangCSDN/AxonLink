@@ -11,6 +11,7 @@ import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
+import com.axonlink.ai.replay.persistence.ReplayWeeklyReportMailDao;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,7 +59,7 @@ class ReplayWeeklyReportServiceTest {
     @Test
     void generatesAcrossIntermediateBatchesWithStartAsPreviousAndEndDetailsOnly() throws Exception {
         when(weeklyReportDao.findSnapshot("RPT20260901-01", "RPT20260908-01")).thenReturn(Optional.empty());
-        when(dailyDataDao.findGeneratedBatchesInFamilyOrder()).thenReturn(List.of(
+        when(dailyDataDao.findBatchesWithDataInFamilyOrder()).thenReturn(List.of(
                 batch("RPT20260901-01", 1), batch("RPT20260903-01", 3), batch("RPT20260908-01", 8)));
         when(dailyDataDao.findSummaries("RPT20260901-01")).thenReturn(List.of(summary(
                 "RPT20260901-01", "START-SUMMARY")));
@@ -141,7 +142,7 @@ class ReplayWeeklyReportServiceTest {
                 .thenReturn(Optional.empty());
         when(weeklyReportDao.findSnapshotByEndBatchNo("RPT20260908-01"))
                 .thenReturn(Optional.empty(), Optional.of(existing));
-        when(dailyDataDao.findGeneratedBatchesInFamilyOrder()).thenReturn(List.of(
+        when(dailyDataDao.findBatchesWithDataInFamilyOrder()).thenReturn(List.of(
                 batch("RPT20260901-01", 1), batch("RPT20260903-01", 3),
                 batch("RPT20260908-01", 8)));
         when(dailyDataDao.findSummaries("RPT20260903-01")).thenReturn(List.of(summary(
@@ -162,15 +163,15 @@ class ReplayWeeklyReportServiceTest {
     }
 
     @Test
-    void rejectsMissingDailySnapshotCrossFamilySameOrReverseRanges() {
+    void rejectsMissingDailyDataCrossFamilySameOrReverseRanges() {
         when(weeklyReportDao.findSnapshot(any(), any())).thenReturn(Optional.empty());
-        when(dailyDataDao.findGeneratedBatchesInFamilyOrder()).thenReturn(List.of(
+        when(dailyDataDao.findBatchesWithDataInFamilyOrder()).thenReturn(List.of(
                 batch("DZ20260901-01", 1), batch("DZ20260908-01", 8),
                 batch("RPT20260901-01", 1), batch("RPT20260908-01", 8)));
         ReplayWeeklyReportService service = service(new ReplayDailyReportCalculator(),
                 new ReplayDailyReportWorkbookWriter());
 
-        assertThrows(ReplayWeeklyReportService.DailyReportNotGeneratedException.class,
+        assertThrows(ReplayWeeklyReportService.BatchDataNotFoundException.class,
                 () -> service.generate("RPT20260831-01", "RPT20260908-01"));
         assertThrows(ReplayWeeklyReportService.InvalidRangeException.class,
                 () -> service.generate("RPT20260901-01", "DZ20260908-01"));
@@ -185,7 +186,7 @@ class ReplayWeeklyReportServiceTest {
     @Test
     void rejectsMissingRawSummaryWithoutSavingPartialSnapshot() {
         when(weeklyReportDao.findSnapshot("DZ20260901-01", "DZ20260908-01")).thenReturn(Optional.empty());
-        when(dailyDataDao.findGeneratedBatchesInFamilyOrder()).thenReturn(List.of(
+        when(dailyDataDao.findBatchesWithDataInFamilyOrder()).thenReturn(List.of(
                 batch("DZ20260901-01", 1), batch("DZ20260908-01", 8)));
         when(dailyDataDao.findSummaries("DZ20260901-01")).thenReturn(List.of());
         when(dailyDataDao.findSummaries("DZ20260908-01")).thenReturn(List.of(summary(
@@ -201,6 +202,53 @@ class ReplayWeeklyReportServiceTest {
                 () -> service.generate("DZ20260901-01", "DZ20260908-01"));
 
         verify(weeklyReportDao, never()).saveSnapshot(any());
+    }
+
+    @Test
+    void regenerateReplacesExactSnapshotAndClearsMailStatus() {
+        ReplayWeeklyReportDao realReportDao = new ReplayWeeklyReportDao(jdbc);
+        ReplayWeeklyReportMailDao mailDao = new ReplayWeeklyReportMailDao(jdbc);
+        ReplayIssueTestFixtures.createSchema(jdbc);
+        ReplayWeeklyReportSnapshot old = new ReplayWeeklyReportSnapshot(
+                "RPT20260901-01", "RPT20260908-01", "RPT20260908-01周报.xlsx", "xlsx",
+                new byte[]{1}, 1, LocalDateTime.of(2026, 9, 8, 18, 0));
+        realReportDao.saveSnapshot(old);
+        mailDao.markSending(old.startBatchNo(), old.endBatchNo(), "标题", "正文",
+                "sender@example.com", List.of("to@example.com"), List.of());
+        mailDao.markSent(old.startBatchNo(), old.endBatchNo());
+        when(dailyDataDao.findBatchesWithDataInFamilyOrder()).thenReturn(List.of(
+                batch("RPT20260901-01", 1), batch("RPT20260908-01", 8)));
+        when(dailyDataDao.findSummaries("RPT20260901-01")).thenReturn(List.of(summary(
+                "RPT20260901-01", "START")));
+        when(dailyDataDao.findSummaries("RPT20260908-01")).thenReturn(List.of(summary(
+                "RPT20260908-01", "END")));
+        when(issueDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
+        when(dailyDataDao.findComparisons(any())).thenReturn(List.of());
+        when(dailyDataDao.findCoverageSummaries(any())).thenReturn(List.of());
+        when(dailyDataDao.findCoverageDetails(any())).thenReturn(List.of());
+        ReplayDailyReportWorkbookWriter writer = mock(ReplayDailyReportWorkbookWriter.class);
+        when(writer.write(any(), any(), any(), any())).thenReturn(new byte[]{7, 8, 9});
+        ReplayWeeklyReportService realService = new ReplayWeeklyReportService(
+                dailyDataDao, issueDao, realReportDao, new ReplayDailyReportCalculator(), writer, jdbc,
+                Clock.fixed(LocalDateTime.of(2026, 9, 9, 10, 0).toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
+
+        ReplayWeeklyReportSnapshot regenerated = realService.regenerate(
+                "RPT20260901-01", "RPT20260908-01");
+
+        assertArrayEquals(new byte[]{7, 8, 9}, regenerated.content());
+        assertArrayEquals(new byte[]{7, 8, 9}, realReportDao.findSnapshot(
+                old.startBatchNo(), old.endBatchNo()).orElseThrow().content());
+        assertTrue(mailDao.find(old.startBatchNo(), old.endBatchNo()).isEmpty());
+    }
+
+    @Test
+    void regenerateRejectsMissingExactSnapshot() {
+        ReplayWeeklyReportService service = service(new ReplayDailyReportCalculator(),
+                new ReplayDailyReportWorkbookWriter());
+
+        assertThrows(ReplayWeeklyReportService.SnapshotNotFoundException.class,
+                () -> service.regenerate("RPT20260901-01", "RPT20260908-01"));
+        verifyNoInteractions(dailyDataDao, issueDao);
     }
 
     private ReplayWeeklyReportService service(ReplayDailyReportCalculator calculator,

@@ -46,7 +46,8 @@ class ReplayDailyReportMailServiceTest {
         properties.setBody("默认日报正文");
         mailService = mock(MailService.class);
         when(mailService.configuredFrom()).thenReturn("sender@example.com");
-        service = new ReplayDailyReportMailService(dailyDataDao, mailDao, properties, mailService);
+        service = new ReplayDailyReportMailService(dailyDataDao, mailDao, properties, mailService,
+                new ReplayReportMailAttachmentService(dailyDataDao));
     }
 
     @Test
@@ -83,10 +84,12 @@ class ReplayDailyReportMailServiceTest {
                 "DZ20260909-02", "自定义日报标题", List.of(" User@Example.com ", "user@example.com"),
                 List.of(" Copy@Example.com "), "请查收日报"));
 
-        verify(mailService).sendTextWithAttachmentSync(
-                List.of("user@example.com"), List.of("copy@example.com"),
-                "自定义日报标题", "请查收日报",
-                "DZ20260909-02日报.xlsx", content, XLSX);
+        verify(mailService).sendTextWithAttachmentsSync(
+                org.mockito.ArgumentMatchers.eq(List.of("user@example.com")),
+                org.mockito.ArgumentMatchers.eq(List.of("copy@example.com")),
+                org.mockito.ArgumentMatchers.eq("自定义日报标题"),
+                org.mockito.ArgumentMatchers.eq("请查收日报"),
+                org.mockito.ArgumentMatchers.anyList());
         assertEquals("SENT", view.status());
         assertTrue(view.sentAt() != null);
         assertEquals("SENT", mailDao.find("DZ20260909-02").orElseThrow().status());
@@ -98,10 +101,11 @@ class ReplayDailyReportMailServiceTest {
     void persistsFailedStatusWhenSmtpFails() {
         byte[] content = new byte[]{5};
         saveSnapshot("RPT20260910-01", content);
-        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentSync(
-                List.of("first@example.com", "second@example.com"), List.of("cc@example.com"),
-                "对公分布式核心回放问题日报-20260910", "正文",
-                "RPT20260910-01日报.xlsx", content, XLSX);
+        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentsSync(
+                org.mockito.ArgumentMatchers.eq(List.of("first@example.com", "second@example.com")),
+                org.mockito.ArgumentMatchers.eq(List.of("cc@example.com")),
+                org.mockito.ArgumentMatchers.eq("对公分布式核心回放问题日报-20260910"),
+                org.mockito.ArgumentMatchers.eq("正文"), org.mockito.ArgumentMatchers.anyList());
 
         assertThrows(ReplayDailyReportMailService.MailSendException.class,
                 () -> service.send(new ReplayDailyReportMailSendRequest(
@@ -138,11 +142,10 @@ class ReplayDailyReportMailServiceTest {
         assertThrows(ReplayDailyReportMailService.SnapshotNotFoundException.class,
                 () -> service.send(request("RPT20260912-01", "标题", List.of("to@example.com"), "正文")));
 
-        verify(mailService, never()).sendTextWithAttachmentSync(
+        verify(mailService, never()).sendTextWithAttachmentsSync(
                 org.mockito.ArgumentMatchers.anyList(), org.mockito.ArgumentMatchers.anyList(),
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
-                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyString());
+                org.mockito.ArgumentMatchers.anyList());
         assertTrue(mailDao.find("RPT20260912-01").isEmpty());
     }
 

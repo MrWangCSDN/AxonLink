@@ -5,9 +5,13 @@ import com.axonlink.ai.replay.dto.ReplayDailyReportMailStatus;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.notification.service.MailService;
+import com.axonlink.notification.service.MailAttachment;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -28,15 +32,18 @@ public class ReplayDailyReportMailService {
     private final ReplayDailyReportMailDao mailDao;
     private final ReplayDailyReportMailProperties properties;
     private final MailService mailService;
+    private final ReplayReportMailAttachmentService attachmentService;
 
     public ReplayDailyReportMailService(ReplayDailyDataDao dailyDataDao,
                                         ReplayDailyReportMailDao mailDao,
                                         ReplayDailyReportMailProperties properties,
-                                        MailService mailService) {
+                                        MailService mailService,
+                                        ReplayReportMailAttachmentService attachmentService) {
         this.dailyDataDao = dailyDataDao;
         this.mailDao = mailDao;
         this.properties = properties;
         this.mailService = mailService;
+        this.attachmentService = attachmentService;
     }
 
     public ReplayDailyReportMailView configuration(String batchNo) {
@@ -45,6 +52,10 @@ public class ReplayDailyReportMailService {
     }
 
     public ReplayDailyReportMailView send(ReplayDailyReportMailSendRequest request) {
+        return send(request, List.of());
+    }
+
+    public ReplayDailyReportMailView send(ReplayDailyReportMailSendRequest request, List<MultipartFile> files) {
         if (request == null) {
             throw new IllegalArgumentException("邮件请求不能为空");
         }
@@ -74,11 +85,15 @@ public class ReplayDailyReportMailService {
         }
         MailContext context = new MailContext(currentSnapshot, subject, defaults.sender(), toEmails, ccEmails, body);
         ReplayDailyReportSnapshot snapshot = context.snapshot();
+        ReplayMailAttachmentMetadata currentMetadata = currentAttachment(snapshot);
+        var resolved = attachmentService.resolve(
+                new MailAttachment(snapshot.fileName(), snapshot.content(), snapshot.contentType()), currentMetadata,
+                request.reportBatchNos(), files, snapshot.batchNo());
         mailDao.markSending(snapshot.batchNo(), context.subject(), context.body(), context.sender(),
-                context.toEmails(), context.ccEmails());
+                context.toEmails(), context.ccEmails(), resolved.metadata());
         try {
-            mailService.sendTextWithAttachmentSync(context.toEmails(), context.ccEmails(),
-                    context.subject(), context.body(), snapshot.fileName(), snapshot.content(), snapshot.contentType());
+            mailService.sendTextWithAttachmentsSync(context.toEmails(), context.ccEmails(),
+                    context.subject(), context.body(), resolved.mailAttachments());
         } catch (RuntimeException exception) {
             String reason = exception.getMessage() == null ? "邮件发送失败" : exception.getMessage();
             mailDao.markFailed(snapshot.batchNo(), reason);
@@ -110,9 +125,16 @@ public class ReplayDailyReportMailService {
     }
 
     private ReplayDailyReportMailView view(MailContext context, ReplayDailyReportMailStatus status) {
+        ReplayMailAttachmentMetadata current = currentAttachment(context.snapshot());
         return new ReplayDailyReportMailView(context.snapshot().batchNo(), context.subject(),
-                context.toEmails(), context.ccEmails(), context.body(), status == null ? "UNSENT" : status.status(),
+                context.toEmails(), context.ccEmails(), context.body(), current,
+                status == null ? List.of(current) : status.attachments(), status == null ? "UNSENT" : status.status(),
                 status == null ? null : status.sentAt(), status == null ? null : status.failureMessage());
+    }
+
+    private ReplayMailAttachmentMetadata currentAttachment(ReplayDailyReportSnapshot snapshot) {
+        return new ReplayMailAttachmentMetadata(snapshot.fileName(), snapshot.fileSize(),
+                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.batchNo());
     }
 
     private List<String> validateEmails(List<String> values) {

@@ -10,6 +10,8 @@ import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -21,6 +23,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -272,6 +275,14 @@ public class ReplayDailyDataDao {
                 .toList();
     }
 
+    public List<ReplayDailyBatch> findBatchesWithDataInFamilyOrder() {
+        return findBatchesRecentFirst().stream()
+                .sorted(Comparator.comparing(ReplayDailyBatch::family)
+                        .thenComparing(ReplayDailyBatch::importedAt)
+                        .thenComparing(ReplayDailyBatch::batchNo))
+                .toList();
+    }
+
     public Optional<ReplayDailyReportSnapshot> findReportSnapshot(String batchNo) {
         if (batchNo == null || batchNo.isBlank()) {
             return Optional.empty();
@@ -288,6 +299,66 @@ public class ReplayDailyDataDao {
                 resultSet.getLong("file_size"),
                 resultSet.getTimestamp("generated_at").toLocalDateTime()), batchNo.trim());
         return snapshots.stream().findFirst();
+    }
+
+    public ReplayReportAttachmentOptionPage searchReportAttachmentOptions(
+            String keyword, String family, int page, int size) {
+        String normalizedFamily = family == null ? "ALL" : family.trim().toUpperCase();
+        if (!List.of("ALL", "RPT", "DZ").contains(normalizedFamily)) {
+            throw new IllegalArgumentException("日报类型错误");
+        }
+        int normalizedPage = Math.max(0, page);
+        int normalizedSize = Math.max(1, Math.min(100, size));
+        String like = "%" + (keyword == null ? "" : keyword.trim().toLowerCase()) + "%";
+        String familySql = "ALL".equals(normalizedFamily) ? "" : " AND batch_no LIKE ?";
+        List<Object> args = new ArrayList<>();
+        args.add(like);
+        args.add(like);
+        if (!familySql.isEmpty()) args.add(normalizedFamily + "%");
+        Long total = jdbc.queryForObject("""
+                        SELECT COUNT(*) FROM dii_replay_daily_report_snapshot
+                         WHERE file_content IS NOT NULL AND file_size > 0
+                           AND (LOWER(batch_no) LIKE ? OR LOWER(file_name) LIKE ?)
+                        """ + familySql, Long.class, args.toArray());
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(normalizedSize);
+        pageArgs.add((long) normalizedPage * normalizedSize);
+        List<ReplayReportAttachmentOption> items = jdbc.query("""
+                        SELECT batch_no,file_name,file_size,generated_at
+                          FROM dii_replay_daily_report_snapshot
+                         WHERE file_content IS NOT NULL AND file_size > 0
+                           AND (LOWER(batch_no) LIKE ? OR LOWER(file_name) LIKE ?)
+                        """ + familySql + " ORDER BY generated_at DESC,batch_no DESC LIMIT ? OFFSET ?",
+                (resultSet, ignored) -> new ReplayReportAttachmentOption(
+                        resultSet.getString("batch_no"), batchFamily(resultSet.getString("batch_no")),
+                        resultSet.getString("file_name"), resultSet.getLong("file_size"),
+                        resultSet.getTimestamp("generated_at").toLocalDateTime()), pageArgs.toArray());
+        return new ReplayReportAttachmentOptionPage(items, normalizedPage, normalizedSize, total == null ? 0 : total);
+    }
+
+    public Map<String, ReplayDailyReportSnapshot> findReportSnapshots(List<String> batchNos) {
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        if (batchNos != null) {
+            batchNos.stream().filter(value -> value != null && !value.isBlank())
+                    .map(String::trim).forEach(normalized::add);
+        }
+        if (normalized.isEmpty()) return Map.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(normalized.size(), "?"));
+        Map<String, ReplayDailyReportSnapshot> found = new HashMap<>();
+        jdbc.query("SELECT batch_no,file_name,content_type,file_content,file_size,generated_at "
+                        + "FROM dii_replay_daily_report_snapshot WHERE batch_no IN (" + placeholders + ")",
+                resultSet -> {
+                    ReplayDailyReportSnapshot snapshot = new ReplayDailyReportSnapshot(
+                            resultSet.getString("batch_no"), resultSet.getString("file_name"),
+                            resultSet.getString("content_type"), resultSet.getBytes("file_content"),
+                            resultSet.getLong("file_size"), resultSet.getTimestamp("generated_at").toLocalDateTime());
+                    found.put(snapshot.batchNo(), snapshot);
+                }, normalized.toArray());
+        Map<String, ReplayDailyReportSnapshot> ordered = new LinkedHashMap<>();
+        normalized.forEach(batchNo -> {
+            if (found.containsKey(batchNo)) ordered.put(batchNo, found.get(batchNo));
+        });
+        return ordered;
     }
 
     public void saveReportSnapshot(ReplayDailyReportSnapshot snapshot) {

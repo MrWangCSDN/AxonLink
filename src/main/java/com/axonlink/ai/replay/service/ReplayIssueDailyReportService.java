@@ -7,7 +7,9 @@ import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
+import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -31,7 +33,9 @@ public class ReplayIssueDailyReportService {
     private final ReplayIssueDao issueDao;
     private final ReplayDailyReportCalculator calculator;
     private final ReplayDailyReportWorkbookWriter workbookWriter;
+    private final ReplayDailyReportMailDao dailyReportMailDao;
     private final TransactionTemplate readSnapshotTransaction;
+    private final TransactionTemplate writeTransaction;
     private final Clock clock;
 
     @Autowired
@@ -54,6 +58,7 @@ public class ReplayIssueDailyReportService {
         this.issueDao = issueDao;
         this.calculator = calculator;
         this.workbookWriter = workbookWriter;
+        this.dailyReportMailDao = new ReplayDailyReportMailDao(diiResultJdbcTemplate);
         this.clock = clock;
         if (diiResultJdbcTemplate.getDataSource() == null) {
             throw new IllegalArgumentException("Replay daily report requires a result DataSource");
@@ -62,29 +67,58 @@ public class ReplayIssueDailyReportService {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
         this.readSnapshotTransaction.setReadOnly(true);
         this.readSnapshotTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        this.writeTransaction = new TransactionTemplate(
+                new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
     public List<ReplayDailyBatch> listBatches() {
         return dailyDataDao.findBatchesRecentFirst();
     }
 
+    public ReplayReportAttachmentOptionPage searchAttachmentOptions(
+            String keyword, String family, int page, int size) {
+        return dailyDataDao.searchReportAttachmentOptions(keyword, family, page, size);
+    }
+
     public byte[] generate(String batchNo) {
         validateBatchNo(batchNo);
-        var cached = dailyDataDao.findReportSnapshot(batchNo);
+        String normalizedBatchNo = batchNo.trim();
+        var cached = dailyDataDao.findReportSnapshot(normalizedBatchNo);
         if (cached.isPresent()) {
             return cached.get().content();
         }
+        byte[] bytes = buildWorkbook(normalizedBatchNo);
+        dailyDataDao.saveReportSnapshot(snapshot(normalizedBatchNo, bytes));
+        return bytes;
+    }
+
+    public byte[] regenerate(String batchNo) {
+        validateBatchNo(batchNo);
+        String normalizedBatchNo = batchNo.trim();
+        if (dailyDataDao.findReportSnapshot(normalizedBatchNo).isEmpty()) {
+            throw new SnapshotNotFoundException();
+        }
+        byte[] bytes = buildWorkbook(normalizedBatchNo);
+        writeTransaction.executeWithoutResult(status -> {
+            dailyDataDao.saveReportSnapshot(snapshot(normalizedBatchNo, bytes));
+            dailyReportMailDao.delete(normalizedBatchNo);
+        });
+        return bytes;
+    }
+
+    private byte[] buildWorkbook(String batchNo) {
         ReportSnapshot snapshot = Objects.requireNonNull(readSnapshotTransaction.execute(
                 status -> loadSnapshot(batchNo)));
         var calculated = calculator.calculate(
                 snapshot.previousSummaries(), snapshot.previousIssues(),
                 snapshot.currentSummaries(), snapshot.currentIssues());
-        byte[] bytes = workbookWriter.write(calculated, snapshot.comparisons(),
+        return workbookWriter.write(calculated, snapshot.comparisons(),
                 snapshot.coverageSummaries(), snapshot.coverageDetails());
-        dailyDataDao.saveReportSnapshot(new ReplayDailyReportSnapshot(
-                batchNo, batchNo + "日报.xlsx", XLSX_CONTENT_TYPE, bytes, bytes.length,
-                LocalDateTime.now(clock)));
-        return bytes;
+    }
+
+    private ReplayDailyReportSnapshot snapshot(String batchNo, byte[] bytes) {
+        return new ReplayDailyReportSnapshot(batchNo, batchNo + "日报.xlsx", XLSX_CONTENT_TYPE,
+                bytes, bytes.length, LocalDateTime.now(clock));
     }
 
     private ReportSnapshot loadSnapshot(String batchNo) {
@@ -128,6 +162,12 @@ public class ReplayIssueDailyReportService {
     public static final class PreviousBatchNotFoundException extends RuntimeException {
         public PreviousBatchNotFoundException() {
             super("没有上批次数据");
+        }
+    }
+
+    public static final class SnapshotNotFoundException extends RuntimeException {
+        public SnapshotNotFoundException() {
+            super("日报尚未生成");
         }
     }
 

@@ -7,5 +7,10 @@ public record ReplayDailyReportMailSendRequest(
         String subject,
         List<String> toEmails,
         List<String> ccEmails,
-        String body) {
+        String body,
+        List<String> reportBatchNos) {
+    public ReplayDailyReportMailSendRequest(String batchNo, String subject, List<String> toEmails,
+                                            List<String> ccEmails, String body) {
+        this(batchNo, subject, toEmails, ccEmails, body, List.of());
+    }
 }
