@@ -5,6 +5,10 @@ import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailStatus;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
+import com.axonlink.notification.service.MailAttachment;
+import org.springframework.web.multipart.MultipartFile;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportMailDao;
 import com.axonlink.notification.service.MailService;
@@ -28,15 +32,18 @@ public class ReplayWeeklyReportMailService {
     private final ReplayWeeklyReportMailDao mailDao;
     private final ReplayDailyReportMailProperties properties;
     private final MailService mailService;
+    private final ReplayReportMailAttachmentService attachmentService;
 
     public ReplayWeeklyReportMailService(ReplayWeeklyReportDao weeklyReportDao,
                                          ReplayWeeklyReportMailDao mailDao,
                                          ReplayDailyReportMailProperties properties,
-                                         MailService mailService) {
+                                         MailService mailService,
+                                         ReplayReportMailAttachmentService attachmentService) {
         this.weeklyReportDao = weeklyReportDao;
         this.mailDao = mailDao;
         this.properties = properties;
         this.mailService = mailService;
+        this.attachmentService = attachmentService;
     }
 
     public ReplayWeeklyReportMailView configuration(String startBatchNo, String endBatchNo) {
@@ -46,6 +53,10 @@ public class ReplayWeeklyReportMailService {
     }
 
     public ReplayWeeklyReportMailView send(ReplayWeeklyReportMailSendRequest request) {
+        return send(request, List.of());
+    }
+
+    public ReplayWeeklyReportMailView send(ReplayWeeklyReportMailSendRequest request, List<MultipartFile> files) {
         if (request == null) {
             throw new IllegalArgumentException("邮件请求不能为空");
         }
@@ -74,11 +85,14 @@ public class ReplayWeeklyReportMailService {
             throw new SnapshotNotFoundException();
         }
         MailContext context = new MailContext(snapshot, subject, defaults.sender(), toEmails, ccEmails, body);
+        ReplayMailAttachmentMetadata currentMetadata = currentAttachment(snapshot);
+        var resolved = attachmentService.resolve(
+                new MailAttachment(snapshot.fileName(), snapshot.content(), snapshot.contentType()), currentMetadata,
+                request.reportBatchNos(), files, null);
         mailDao.markSending(snapshot.startBatchNo(), snapshot.endBatchNo(), subject, body,
-                context.sender(), toEmails, ccEmails);
+                context.sender(), toEmails, ccEmails, resolved.metadata());
         try {
-            mailService.sendTextWithAttachmentSync(toEmails, ccEmails, subject, body,
-                    snapshot.fileName(), snapshot.content(), snapshot.contentType());
+            mailService.sendTextWithAttachmentsSync(toEmails, ccEmails, subject, body, resolved.mailAttachments());
         } catch (RuntimeException exception) {
             String reason = exception.getMessage() == null ? "邮件发送失败" : exception.getMessage();
             mailDao.markFailed(snapshot.startBatchNo(), snapshot.endBatchNo(), reason);
@@ -120,10 +134,17 @@ public class ReplayWeeklyReportMailService {
 
     private ReplayWeeklyReportMailView view(MailContext context, ReplayWeeklyReportMailStatus status) {
         ReplayWeeklyReportSnapshot snapshot = context.snapshot();
+        ReplayMailAttachmentMetadata current = currentAttachment(snapshot);
         return new ReplayWeeklyReportMailView(snapshot.startBatchNo(), snapshot.endBatchNo(), context.subject(),
-                context.toEmails(), context.ccEmails(), context.body(),
+                context.toEmails(), context.ccEmails(), context.body(), current,
+                status == null ? List.of(current) : status.attachments(),
                 status == null ? "UNSENT" : status.status(), status == null ? null : status.sentAt(),
                 status == null ? null : status.failureMessage());
+    }
+
+    private ReplayMailAttachmentMetadata currentAttachment(ReplayWeeklyReportSnapshot snapshot) {
+        return new ReplayMailAttachmentMetadata(snapshot.fileName(), snapshot.fileSize(),
+                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.endBatchNo());
     }
 
     private List<String> validateEmails(List<String> values) {

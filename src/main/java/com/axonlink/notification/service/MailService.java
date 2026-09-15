@@ -135,6 +135,13 @@ public class MailService {
     public void sendTextWithAttachmentSync(List<String> to, List<String> cc,
                                            String subject, String body,
                                            String fileName, byte[] content, String contentType) {
+        sendTextWithAttachmentsSync(to, cc, subject, body,
+                List.of(new MailAttachment(fileName, content, contentType)));
+    }
+
+    public void sendTextWithAttachmentsSync(List<String> to, List<String> cc,
+                                            String subject, String body,
+                                            List<MailAttachment> attachments) {
         if (to == null || to.isEmpty()) {
             throw new IllegalArgumentException("收件人不能为空");
         }
@@ -147,10 +154,13 @@ public class MailService {
             helper.setSubject(subject);
             helper.setText(body == null ? "" : body, false);
             helper.setSentDate(new Date());
-            helper.addAttachment(fileName, new ByteArrayResource(content), contentType);
+            for (MailAttachment attachment : attachments) {
+                helper.addAttachment(attachment.fileName(), new ByteArrayResource(attachment.content()),
+                        attachment.contentType());
+            }
             mailSender.send(message);
-            log.info("[mail] 附件邮件已发送 subject={} to={} cc={} attachment={}",
-                    subject, to, cc, fileName);
+            log.info("[mail] 附件邮件已发送 subject={} to={} cc={} attachmentCount={}",
+                    subject, to, cc, attachments.size());
         } catch (Exception exception) {
             throw new IllegalStateException("邮件发送失败：" + exception.getMessage(), exception);
         }

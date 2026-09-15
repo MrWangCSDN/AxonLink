@@ -2,6 +2,8 @@ package com.axonlink.ai.replay.persistence;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailStatus;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
@@ -25,7 +27,9 @@ class ReplayDailyReportMailDaoTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V57__dii_replay_daily_report_snapshot.sql"),
-                new ClassPathResource("db/daoindex/V58__dii_replay_daily_report_mail.sql"))
+                new ClassPathResource("db/daoindex/V58__dii_replay_daily_report_mail.sql"),
+                new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
+                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDailyReportMailDao(jdbc);
         jdbc.update("INSERT INTO dii_replay_daily_report_snapshot "
@@ -64,5 +68,32 @@ class ReplayDailyReportMailDaoTest {
 
         jdbc.update("DELETE FROM dii_replay_daily_report_snapshot WHERE batch_no=?", "RPT20260908-01");
         assertTrue(dao.find("RPT20260908-01").isEmpty());
+    }
+
+    @Test
+    void deletesLatestStatusWithoutDeletingSnapshot() {
+        dao.markSending("RPT20260908-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of());
+        dao.markSent("RPT20260908-01");
+
+        assertEquals(1, dao.delete("RPT20260908-01"));
+
+        assertTrue(dao.find("RPT20260908-01").isEmpty());
+        assertEquals(1L, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_daily_report_snapshot WHERE batch_no=?",
+                Long.class, "RPT20260908-01"));
+    }
+
+    @Test
+    void storesAttachmentManifestInOrder() {
+        List<ReplayMailAttachmentMetadata> attachments = List.of(
+                new ReplayMailAttachmentMetadata("current.xlsx", 3, ReplayMailAttachmentSource.CURRENT_REPORT, "RPT20260908-01"),
+                new ReplayMailAttachmentMetadata("extra.xlsx", 5, ReplayMailAttachmentSource.GENERATED_DAILY, "DZ20260907-01"),
+                new ReplayMailAttachmentMetadata("local.xls", 7, ReplayMailAttachmentSource.LOCAL_EXCEL, null));
+
+        dao.markSending("RPT20260908-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of(), attachments);
+
+        assertEquals(attachments, dao.find("RPT20260908-01").orElseThrow().attachments());
     }
 }

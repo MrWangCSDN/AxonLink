@@ -63,6 +63,22 @@ class ReplayWeeklyReportDaoTest {
         assertEquals(1, dao.findGeneratedReports().size());
     }
 
+    @Test
+    void replacesOnlyTheExactExistingRange() {
+        dao.saveSnapshot(snapshot("RPT20260901-01", "RPT20260908-01", new byte[]{1}, 9));
+
+        assertEquals(1, dao.replaceSnapshot(snapshot(
+                "RPT20260901-01", "RPT20260908-01", new byte[]{7, 8}, 12)));
+        assertEquals(0, dao.replaceSnapshot(snapshot(
+                "RPT20260902-01", "RPT20260909-01", new byte[]{9}, 13)));
+
+        ReplayWeeklyReportSnapshot replaced = dao.findSnapshot(
+                "RPT20260901-01", "RPT20260908-01").orElseThrow();
+        assertArrayEquals(new byte[]{7, 8}, replaced.content());
+        assertEquals(2L, replaced.fileSize());
+        assertEquals(LocalDateTime.of(2026, 9, 8, 12, 0), replaced.generatedAt());
+    }
+
     private static ReplayWeeklyReportSnapshot snapshot(String startBatchNo, String endBatchNo,
                                                         byte[] content, int hour) {
         return new ReplayWeeklyReportSnapshot(startBatchNo, endBatchNo, endBatchNo + "周报.xlsx",

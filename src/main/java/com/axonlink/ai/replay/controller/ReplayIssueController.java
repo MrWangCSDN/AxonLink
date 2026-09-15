@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayDailyBatch;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
@@ -48,6 +49,7 @@ import com.axonlink.ai.replay.service.ReplayIssueEditService;
 import com.axonlink.ai.replay.service.ReplayIssueMailService;
 import com.axonlink.ai.replay.service.ReplayIssueDailyReportService;
 import com.axonlink.ai.replay.service.ReplayDailyReportMailService;
+import com.axonlink.ai.replay.service.ReplayReportMailAttachmentService;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportMailService;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportService;
 import com.axonlink.ai.replay.service.ReplayIssueWeeklyTaskService;
@@ -906,20 +908,63 @@ public class ReplayIssueController {
         }
     }
 
-    @PostMapping("/daily-report/mail-send")
-    public ResponseEntity<R<ReplayDailyReportMailView>> sendDailyReportMail(
-            @RequestBody(required = false) ReplayDailyReportMailSendRequest body,
+    @GetMapping("/daily-report/attachment-options")
+    public ResponseEntity<R<ReplayReportAttachmentOptionPage>> reportAttachmentOptions(
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(defaultValue = "ALL") String family,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        try {
+            return ResponseEntity.ok(R.ok(
+                    dailyReportService.searchAttachmentOptions(keyword, family, page, size)));
+        } catch (IllegalArgumentException exception) {
+            return error(HttpStatus.BAD_REQUEST, exception.getMessage());
+        }
+    }
+
+    @PostMapping("/daily-report/regenerate")
+    public ResponseEntity<?> regenerateDailyReport(
+            @RequestParam(value = "batchNo", required = false) String batchNo,
             @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
             HttpServletRequest request) {
-        String expected = properties.getBatchTrigger().getToken();
-        if (expected != null && !expected.trim().isEmpty()
-                && (token == null || !expected.equals(token))) {
+        if (invalidTriggerToken(token)) {
+            log.warn("[replay-issue] daily report regeneration token rejected remoteAddr={} hasToken={}",
+                    request.getRemoteAddr(), token != null);
+            return error(HttpStatus.UNAUTHORIZED, "口令错误");
+        }
+        try {
+            byte[] bytes = dailyReportService.regenerate(batchNo);
+            String filename = URLEncoder.encode(batchNo + "日报.xlsx", StandardCharsets.UTF_8);
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .header("Content-Disposition", "attachment; filename*=UTF-8''" + filename).body(bytes);
+        } catch (ReplayIssueDailyReportService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayIssueDailyReportService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "日报尚未生成");
+        } catch (ReplayIssueDailyReportService.BatchNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "批次数据不存在");
+        } catch (ReplayIssueDailyReportService.PreviousBatchNotFoundException exception) {
+            return error(HttpStatus.CONFLICT, "没有上批次数据");
+        } catch (RuntimeException exception) {
+            log.error("[replay-issue] daily report regeneration failed batchNo={}", batchNo, exception);
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "日报重新生成失败");
+        }
+    }
+
+    @PostMapping(value = "/daily-report/mail-send", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<R<ReplayDailyReportMailView>> sendDailyReportMail(
+            @RequestPart(value = "mail", required = false) ReplayDailyReportMailSendRequest body,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        if (invalidTriggerToken(token)) {
             log.warn("[replay-issue] daily report mail token rejected remoteAddr={} hasToken={}",
                     request.getRemoteAddr(), token != null);
             return error(HttpStatus.UNAUTHORIZED, "口令错误");
         }
         try {
-            return ResponseEntity.ok(R.ok(dailyReportMailService.send(body)));
+            return ResponseEntity.ok(R.ok(dailyReportMailService.send(body, files == null ? List.of() : files)));
         } catch (ReplayDailyReportMailService.MalformedBatchException exception) {
             return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
         } catch (ReplayDailyReportMailService.SnapshotNotFoundException exception) {
@@ -930,6 +975,11 @@ public class ReplayIssueController {
             log.error("[replay-issue] daily report mail failed batchNo={}",
                     body == null ? null : body.batchNo(), exception);
             return error(HttpStatus.BAD_GATEWAY, "邮件发送失败");
+        } catch (ReplayReportMailAttachmentService.MissingReportSnapshotsException exception) {
+            return error(HttpStatus.NOT_FOUND, exception.getMessage());
+        } catch (ReplayReportMailAttachmentService.AttachmentTooLargeException
+                 | ReplayReportMailAttachmentService.AttachmentTotalSizeException exception) {
+            return error(HttpStatus.PAYLOAD_TOO_LARGE, exception.getMessage());
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
@@ -956,10 +1006,8 @@ public class ReplayIssueController {
             return error(HttpStatus.BAD_REQUEST, "周报起止批次范围错误");
         } catch (ReplayWeeklyReportService.EndBatchAlreadyGeneratedException exception) {
             return error(HttpStatus.CONFLICT, "结束批次周报已生成");
-        } catch (ReplayWeeklyReportService.DailyReportNotGeneratedException exception) {
-            return error(HttpStatus.CONFLICT, "所选批次日报尚未生成");
         } catch (ReplayWeeklyReportService.BatchDataNotFoundException exception) {
-            return error(HttpStatus.NOT_FOUND, "所选批次数据不存在");
+            return error(HttpStatus.NOT_FOUND, "所选批次没有日报数据");
         } catch (RuntimeException exception) {
             log.error("[replay-issue] weekly report generation failed startBatchNo={} endBatchNo={}",
                     startBatchNo, endBatchNo, exception);
@@ -982,20 +1030,51 @@ public class ReplayIssueController {
         }
     }
 
-    @PostMapping("/weekly-report/mail-send")
-    public ResponseEntity<R<ReplayWeeklyReportMailView>> sendWeeklyReportMail(
-            @RequestBody(required = false) ReplayWeeklyReportMailSendRequest body,
+    @PostMapping("/weekly-report/regenerate")
+    public ResponseEntity<?> regenerateWeeklyReport(
+            @RequestParam(value = "startBatchNo", required = false) String startBatchNo,
+            @RequestParam(value = "endBatchNo", required = false) String endBatchNo,
             @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
             HttpServletRequest request) {
-        String expected = properties.getBatchTrigger().getToken();
-        if (expected != null && !expected.trim().isEmpty()
-                && (token == null || !expected.equals(token))) {
+        if (invalidTriggerToken(token)) {
+            log.warn("[replay-issue] weekly report regeneration token rejected remoteAddr={} hasToken={}",
+                    request.getRemoteAddr(), token != null);
+            return error(HttpStatus.UNAUTHORIZED, "口令错误");
+        }
+        try {
+            ReplayWeeklyReportSnapshot snapshot = weeklyReportService.regenerate(startBatchNo, endBatchNo);
+            String filename = URLEncoder.encode(snapshot.fileName(), StandardCharsets.UTF_8);
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(snapshot.contentType()))
+                    .header("Content-Disposition", "attachment; filename*=UTF-8''" + filename)
+                    .body(snapshot.content());
+        } catch (ReplayWeeklyReportService.MalformedBatchException exception) {
+            return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
+        } catch (ReplayWeeklyReportService.InvalidRangeException exception) {
+            return error(HttpStatus.BAD_REQUEST, "周报起止批次范围错误");
+        } catch (ReplayWeeklyReportService.SnapshotNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "周报尚未生成");
+        } catch (ReplayWeeklyReportService.BatchDataNotFoundException exception) {
+            return error(HttpStatus.NOT_FOUND, "所选批次没有日报数据");
+        } catch (RuntimeException exception) {
+            log.error("[replay-issue] weekly report regeneration failed startBatchNo={} endBatchNo={}",
+                    startBatchNo, endBatchNo, exception);
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, "周报重新生成失败");
+        }
+    }
+
+    @PostMapping(value = "/weekly-report/mail-send", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<R<ReplayWeeklyReportMailView>> sendWeeklyReportMail(
+            @RequestPart(value = "mail", required = false) ReplayWeeklyReportMailSendRequest body,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files,
+            @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
+            HttpServletRequest request) {
+        if (invalidTriggerToken(token)) {
             log.warn("[replay-issue] weekly report mail token rejected remoteAddr={} hasToken={}",
                     request.getRemoteAddr(), token != null);
             return error(HttpStatus.UNAUTHORIZED, "口令错误");
         }
         try {
-            return ResponseEntity.ok(R.ok(weeklyReportMailService.send(body)));
+            return ResponseEntity.ok(R.ok(weeklyReportMailService.send(body, files == null ? List.of() : files)));
         } catch (ReplayWeeklyReportMailService.MalformedBatchException exception) {
             return error(HttpStatus.BAD_REQUEST, "批次号格式错误");
         } catch (ReplayWeeklyReportMailService.SnapshotNotFoundException exception) {
@@ -1006,9 +1085,20 @@ public class ReplayIssueController {
             log.error("[replay-issue] weekly report mail failed startBatchNo={} endBatchNo={}",
                     body == null ? null : body.startBatchNo(), body == null ? null : body.endBatchNo(), exception);
             return error(HttpStatus.BAD_GATEWAY, "邮件发送失败");
+        } catch (ReplayReportMailAttachmentService.MissingReportSnapshotsException exception) {
+            return error(HttpStatus.NOT_FOUND, exception.getMessage());
+        } catch (ReplayReportMailAttachmentService.AttachmentTooLargeException
+                 | ReplayReportMailAttachmentService.AttachmentTotalSizeException exception) {
+            return error(HttpStatus.PAYLOAD_TOO_LARGE, exception.getMessage());
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         }
+    }
+
+    private boolean invalidTriggerToken(String token) {
+        String expected = properties.getBatchTrigger().getToken();
+        return expected != null && !expected.trim().isEmpty()
+                && (token == null || !expected.equals(token));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

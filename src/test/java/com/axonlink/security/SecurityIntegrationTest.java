@@ -294,6 +294,38 @@ class SecurityIntegrationTest {
         assertEquals(401, wrongStatus, "token 错误应该和未登录一样 401");
     }
 
+    @Test
+    void humanSessionRemainsCwangsh8AfterAnOperationTokenRequest() throws Exception {
+        var session = new org.springframework.mock.web.MockHttpSession();
+        var loginContext = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
+        loginContext.setAuthentication(new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                "c-wangsh8", "N/A", java.util.List.of()));
+        session.setAttribute("SPRING_SECURITY_CONTEXT", loginContext);
+        session.setAttribute(AuthController.SessionKeys.AUTH_METHOD, "LDAP");
+
+        var during = mvc().perform(get("/api/auth/me").session(session)
+                        .header(DiiTokenBypassFilter.HEADER, "test-token")).andReturn();
+        assertEquals(200, during.getResponse().getStatus());
+        assertEquals("c-wangsh8", new ObjectMapper().readTree(during.getResponse().getContentAsString())
+                .path("data").path("username").asText());
+        var after = mvc().perform(get("/api/auth/me").session(session)).andReturn();
+        assertEquals(200, after.getResponse().getStatus());
+        assertEquals("c-wangsh8", new ObjectMapper().readTree(after.getResponse().getContentAsString())
+                .path("data").path("username").asText());
+        assertEquals("c-wangsh8", loginContext.getAuthentication().getName());
+    }
+
+    @Test
+    void tokenRequestDoesNotTurnAnAnonymousSessionIntoALoggedInSession() throws Exception {
+        var session = new org.springframework.mock.web.MockHttpSession();
+        var loginContext = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
+        session.setAttribute("SPRING_SECURITY_CONTEXT", loginContext);
+        assertEquals(200, mvc().perform(get("/api/test/protected").session(session)
+                .header(DiiTokenBypassFilter.HEADER, "test-token")).andReturn().getResponse().getStatus());
+        assertEquals(401, mvc().perform(get("/api/auth/me").session(session))
+                .andReturn().getResponse().getStatus());
+    }
+
     // ───────────────────────── 用例 5：放行清单 ─────────────────────────
 
     @Test

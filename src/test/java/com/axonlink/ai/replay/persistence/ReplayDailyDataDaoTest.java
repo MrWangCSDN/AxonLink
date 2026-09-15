@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayCoverageDetailRow;
 import com.axonlink.ai.replay.dto.ReplayCoverageSummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyBatch;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
 import com.axonlink.ai.replay.dto.ReplayDailyRowType;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
@@ -47,6 +48,10 @@ class ReplayDailyDataDaoTest {
                 .execute(jdbc.getDataSource());
         new ResourceDatabasePopulator(new ClassPathResource(
                 "db/daoindex/V58__dii_replay_daily_report_mail.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
+                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDailyDataDao(jdbc);
     }
@@ -127,7 +132,7 @@ class ReplayDailyDataDaoTest {
     }
 
     @Test
-    void listsOnlyGeneratedBatchesInStableFamilyOrderForWeeklyReports() {
+    void listsBatchesWithImportedDataRegardlessOfGeneratedSnapshot() {
         dao.replaceBatch(data("RPT20260901-01", 1), LocalDateTime.of(2026, 9, 1, 9, 0));
         dao.replaceBatch(data("DZ20260901-01", 2), LocalDateTime.of(2026, 9, 1, 10, 0));
         dao.replaceBatch(data("RPT20260903-01", 3), LocalDateTime.of(2026, 9, 3, 9, 0));
@@ -136,12 +141,12 @@ class ReplayDailyDataDaoTest {
         dao.saveReportSnapshot(snapshot("RPT20260908-01", LocalDateTime.of(2026, 9, 8, 18, 0), new byte[]{8}));
         dao.saveReportSnapshot(snapshot("DZ20260901-01", LocalDateTime.of(2026, 9, 1, 19, 0), new byte[]{9}));
 
-        List<ReplayDailyBatch> generated = dao.findGeneratedBatchesInFamilyOrder();
+        List<ReplayDailyBatch> generated = dao.findBatchesWithDataInFamilyOrder();
 
-        assertEquals(List.of("DZ20260901-01", "RPT20260901-01", "RPT20260908-01"),
+        assertEquals(List.of("DZ20260901-01", "RPT20260901-01", "RPT20260903-01", "RPT20260908-01"),
                 generated.stream().map(ReplayDailyBatch::batchNo).toList());
-        assertTrue(generated.stream().allMatch(ReplayDailyBatch::generated));
-        assertFalse(generated.stream().anyMatch(batch -> "RPT20260903-01".equals(batch.batchNo())));
+        assertTrue(generated.stream().anyMatch(batch -> !batch.generated()
+                && "RPT20260903-01".equals(batch.batchNo())));
     }
 
     @Test
@@ -176,6 +181,22 @@ class ReplayDailyDataDaoTest {
         assertEquals(2, dao.deleteAllReportSnapshots());
         assertTrue(dao.findReportSnapshot("RPT20260907-02").isEmpty());
         assertTrue(dao.findReportSnapshot("DZ20260907-02").isEmpty());
+    }
+
+    @Test
+    void searchesGeneratedAttachmentOptionsAndLoadsSnapshotsInRequestedOrder() {
+        dao.saveReportSnapshot(snapshot("RPT20260915-02", LocalDateTime.of(2026, 9, 15, 12, 0), new byte[]{1}));
+        dao.saveReportSnapshot(snapshot("DZ20260915-01", LocalDateTime.of(2026, 9, 15, 11, 0), new byte[]{2}));
+        dao.saveReportSnapshot(snapshot("RPT20260914-01", LocalDateTime.of(2026, 9, 14, 11, 0), new byte[]{3}));
+
+        var page = dao.searchReportAttachmentOptions("20260915", "ALL", 0, 20);
+
+        assertEquals(List.of("RPT20260915-02", "DZ20260915-01"),
+                page.items().stream().map(ReplayReportAttachmentOption::batchNo).toList());
+        assertEquals(2, page.total());
+        assertEquals(List.of("DZ20260915-01", "RPT20260915-02"),
+                new ArrayList<>(dao.findReportSnapshots(List.of("DZ20260915-01", "RPT20260915-02"))
+                        .keySet()));
     }
 
     private static ReplayDailyReportSnapshot snapshot(String batchNo, LocalDateTime generatedAt, byte[] content) {

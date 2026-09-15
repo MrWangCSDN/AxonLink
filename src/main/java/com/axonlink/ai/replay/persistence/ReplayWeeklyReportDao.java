@@ -60,6 +60,15 @@ public class ReplayWeeklyReportDao {
                 snapshot.contentType(), snapshot.content(), snapshot.fileSize(), Timestamp.valueOf(snapshot.generatedAt()));
     }
 
+    public int replaceSnapshot(ReplayWeeklyReportSnapshot snapshot) {
+        return jdbc.update("""
+                        UPDATE dii_replay_weekly_report_snapshot
+                           SET file_name=?,content_type=?,file_content=?,file_size=?,generated_at=?
+                         WHERE start_batch_no=? AND end_batch_no=?
+                        """, snapshot.fileName(), snapshot.contentType(), snapshot.content(), snapshot.fileSize(),
+                Timestamp.valueOf(snapshot.generatedAt()), snapshot.startBatchNo(), snapshot.endBatchNo());
+    }
+
     public List<ReplayWeeklyReportOption> findGeneratedReports() {
         return jdbc.query("""
                         SELECT snapshot.start_batch_no,snapshot.end_batch_no,snapshot.generated_at,
