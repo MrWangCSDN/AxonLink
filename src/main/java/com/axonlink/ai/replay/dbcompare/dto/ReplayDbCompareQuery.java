@@ -7,23 +7,38 @@ public record ReplayDbCompareQuery(
         String tableKeyword,
         String fieldKeyword,
         List<String> domains,
-        List<String> ownerEmpNos,
-        List<String> groups,
+        List<String> reviserEmpNos,
+        List<String> groupOwnerEmpNos,
         LocalDate registeredDateFrom,
         LocalDate registeredDateTo,
-        boolean deleted,
         int page,
-        int size) {
+        int size,
+        List<ReplayDbCompareMetadataStatus> metadataStatuses) {
 
     public ReplayDbCompareQuery {
         domains = copy(domains);
-        ownerEmpNos = copy(ownerEmpNos);
-        groups = copy(groups);
+        reviserEmpNos = copy(reviserEmpNos);
+        groupOwnerEmpNos = copy(groupOwnerEmpNos);
+        metadataStatuses = metadataStatuses == null ? List.of() : List.copyOf(metadataStatuses);
+    }
+
+    public ReplayDbCompareQuery(
+            String tableKeyword,
+            String fieldKeyword,
+            List<String> domains,
+            List<String> reviserEmpNos,
+            List<String> groupOwnerEmpNos,
+            LocalDate registeredDateFrom,
+            LocalDate registeredDateTo,
+            int page,
+            int size) {
+        this(tableKeyword, fieldKeyword, domains, reviserEmpNos, groupOwnerEmpNos,
+                registeredDateFrom, registeredDateTo, page, size, List.of());
     }
 
     public static ReplayDbCompareQuery empty(int page, int size) {
         return new ReplayDbCompareQuery(null, null, List.of(), List.of(), List.of(),
-                null, null, false, page, size);
+                null, null, page, size, List.of());
     }
 
     private static List<String> copy(List<String> values) {

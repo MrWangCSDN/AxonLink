@@ -346,6 +346,13 @@ dao-index-analysis:
 
   # 目标库（被巡检的 GaussDB/OpenGauss，多环境）
   targets:
+    base:
+      url: ${REPLAY_BASE_DB_URL:}
+      username: ${REPLAY_BASE_DB_USERNAME:}
+      password: ${REPLAY_BASE_DB_PASSWORD:}
+      maximum-pool-size: ${REPLAY_BASE_DB_POOL_SIZE:3}
+      minimum-idle: ${REPLAY_BASE_DB_MIN_IDLE:1}
+      connection-timeout-ms: ${REPLAY_BASE_DB_TIMEOUT_MS:10000}
     dev:
       url: ${DII_TARGET_DEV_URL:jdbc:opengauss://localhost:5432/database_dev}
       username: ${DII_TARGET_DEV_USERNAME:gaussdb_user}
@@ -420,14 +427,6 @@ code-analysis:
   enabled: true
 
 replay-database-comparison:
-  base-datasource:
-    url: ${REPLAY_BASE_DB_URL:}
-    username: ${REPLAY_BASE_DB_USERNAME:}
-    password: ${REPLAY_BASE_DB_PASSWORD:}
-    driver-class-name: ${REPLAY_BASE_DB_DRIVER:}
-    schema: ${REPLAY_BASE_DB_SCHEMA:}
-    maximum-pool-size: ${REPLAY_BASE_DB_POOL_SIZE:3}
-    connection-timeout-ms: ${REPLAY_BASE_DB_TIMEOUT_MS:5000}
-  admin-employee-nos: ${REPLAY_DB_COMPARE_ADMINS:}
-  group-options: ${REPLAY_DB_COMPARE_GROUPS:公共组,贷款组,结算组,存款组}
+  base-target-env: ${REPLAY_BASE_TARGET_ENV:base}
+  base-schema: ${REPLAY_BASE_DB_SCHEMA:}
   import-enabled: ${REPLAY_DB_COMPARE_IMPORT_ENABLED:true}

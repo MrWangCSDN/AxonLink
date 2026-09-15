@@ -80,7 +80,18 @@ public class DiiTokenBypassFilter extends OncePerRequestFilter {
                     DII_PRINCIPAL,
                     "N/A",
                     List.of(new SimpleGrantedAuthority(DII_ROLE)));
-            SecurityContextHolder.getContext().setAuthentication(auth);
+            // The context loaded from HttpSession may be shared by concurrent requests.
+            // Never mutate it with an operation-token identity or persist that identity.
+            var previousContext = SecurityContextHolder.getContext();
+            var tokenContext = SecurityContextHolder.createEmptyContext();
+            tokenContext.setAuthentication(auth);
+            SecurityContextHolder.setContext(tokenContext);
+            try {
+                chain.doFilter(request, response);
+            } finally {
+                SecurityContextHolder.setContext(previousContext);
+            }
+            return;
         }
         // 总是放行，让下游 SecurityFilterChain 决定最终访问权限
         chain.doFilter(request, response);

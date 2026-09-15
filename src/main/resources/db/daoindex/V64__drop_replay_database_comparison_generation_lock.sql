@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS dii_replay_db_compare_generation_lock;

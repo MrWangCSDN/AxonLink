@@ -1,68 +1,81 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
+import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.service.ReplayBaseDatabaseUnavailableException;
-import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class ReplayBaseDataSourceRegistryTest {
 
     @Test
-    void createsLazyReadOnlyPoolFromConfiguredBaseConnection() {
+    void selectsBaseFromSharedTargetRegistryByDefault() {
+        TargetDataSourceRegistry targets = mock(TargetDataSourceRegistry.class);
+        DataSource base = mock(DataSource.class);
+        when(targets.getByEnv("base")).thenReturn(base);
         ReplayDatabaseComparisonProperties properties = configuredProperties();
 
-        try (ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(properties)) {
-            DataSource dataSource = registry.requireDataSource();
+        ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(targets, properties);
 
-            assertThat(dataSource).isInstanceOf(HikariDataSource.class);
-            HikariDataSource hikari = (HikariDataSource) dataSource;
-            assertThat(hikari.isReadOnly()).isTrue();
-            assertThat(hikari.getMaximumPoolSize()).isEqualTo(3);
-            assertThat(hikari.getConnectionTimeout()).isEqualTo(5000);
-            assertThat(hikari.getPoolName()).isEqualTo("replay-base-metadata-pool");
-            assertThat(registry.requireDataSource()).isSameAs(dataSource);
-        }
+        assertThat(registry.requireDataSource()).isSameAs(base);
+        verify(targets).getByEnv("base");
     }
 
     @Test
-    void unconfiguredRegistryFailsOnlyWhenDataSourceIsRequested() {
-        ReplayDatabaseComparisonProperties properties = new ReplayDatabaseComparisonProperties();
-        ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(properties);
+    void supportsConfiguredBaseTargetName() {
+        TargetDataSourceRegistry targets = mock(TargetDataSourceRegistry.class);
+        DataSource base = mock(DataSource.class);
+        when(targets.getByEnv("base-metadata")).thenReturn(base);
+        ReplayDatabaseComparisonProperties properties = configuredProperties();
+        properties.setBaseTargetEnv("base-metadata");
+
+        ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(targets, properties);
+
+        assertThat(registry.requireDataSource()).isSameAs(base);
+        verify(targets).getByEnv("base-metadata");
+    }
+
+    @Test
+    void missingSharedTargetIsReportedWithoutLeakingRegistryDetails() {
+        TargetDataSourceRegistry targets = mock(TargetDataSourceRegistry.class);
+        when(targets.getByEnv("base")).thenThrow(new IllegalArgumentException(
+                "未配置目标库 env：base；已配置环境：[dev, sit]"));
+
+        ReplayBaseDataSourceRegistry registry =
+                new ReplayBaseDataSourceRegistry(targets, configuredProperties());
 
         assertThatThrownBy(registry::requireDataSource)
                 .isInstanceOf(ReplayBaseDatabaseUnavailableException.class)
                 .hasMessage("BASE 母库未配置或暂不可用")
-                .hasMessageNotContaining("jdbc:");
+                .hasMessageNotContaining("dev")
+                .hasMessageNotContaining("sit");
     }
 
     @Test
-    void rejectsUnsafeConfiguredSchemaWithoutExposingConnectionDetails() {
+    void rejectsUnsafeSchemaBeforeAccessingSharedTarget() {
+        TargetDataSourceRegistry targets = mock(TargetDataSourceRegistry.class);
         ReplayDatabaseComparisonProperties properties = configuredProperties();
-        properties.getBaseDatasource().setSchema("base_schema; drop table users");
-        ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(properties);
+        properties.setBaseSchema("base_schema; drop table users");
+        ReplayBaseDataSourceRegistry registry = new ReplayBaseDataSourceRegistry(targets, properties);
 
         assertThatThrownBy(registry::requireDataSource)
                 .isInstanceOf(ReplayBaseDatabaseUnavailableException.class)
                 .hasMessage("BASE 母库配置无效")
-                .hasMessageNotContaining("drop table")
-                .hasMessageNotContaining("jdbc:");
+                .hasMessageNotContaining("drop table");
+        verifyNoInteractions(targets);
     }
 
     private ReplayDatabaseComparisonProperties configuredProperties() {
         ReplayDatabaseComparisonProperties properties = new ReplayDatabaseComparisonProperties();
-        ReplayDatabaseComparisonProperties.BaseDatasource base = properties.getBaseDatasource();
-        base.setUrl("jdbc:h2:mem:replay_base_registry;DB_CLOSE_DELAY=-1");
-        base.setUsername("sa");
-        base.setPassword("");
-        base.setDriverClassName("org.h2.Driver");
-        base.setSchema("base_schema");
-        base.setMaximumPoolSize(3);
-        base.setConnectionTimeoutMs(5000);
+        properties.setBaseSchema("base_schema");
         return properties;
     }
 }
