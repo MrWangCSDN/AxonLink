@@ -49,4 +49,18 @@ public class ReplayConfigServiceCodeResolver {
         }
         return result;
     }
+
+    /**
+     * 按内部核心交易码查询原始 esf_service_code 列表（未去点号、未追加后缀）。
+     *
+     * @return 无映射时返回空列表
+     */
+    public List<String> findEsfServiceCodes(String internalTransactionCode) {
+        if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
+            return List.of();
+        }
+        return jdbc.queryForList(
+                "SELECT esf_service_code FROM znzx_service WHERE tran_code = ?",
+                String.class, internalTransactionCode.trim());
+    }
 }

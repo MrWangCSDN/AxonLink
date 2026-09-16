@@ -62,7 +62,7 @@ public class ReplayConditionalRmoveDao {
         filter.args.add(offset);
         return jdbc.query(
                 "SELECT " + SELECT_COLUMNS + " FROM dii_replay_conditional_rmove WHERE 1=1"
-                        + filter.sql + " ORDER BY orig_trcd ASC, field_file_indx ASC LIMIT ? OFFSET ?",
+                        + filter.sql + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 this::mapRow, filter.args.toArray());
     }
 

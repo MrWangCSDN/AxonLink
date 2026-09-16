@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
+import com.axonlink.ai.replay.dto.ReplaySortFieldDraft;
 import com.axonlink.ai.replay.dto.ReplaySortFieldRow;
 import com.axonlink.ai.replay.service.ReplayConfigConflictException;
 import com.axonlink.ai.replay.service.ReplayConfigNotFoundException;
@@ -62,7 +63,7 @@ public class ReplaySortFieldDao {
         return jdbc.query(
                 "SELECT " + SELECT_COLUMNS + " FROM dii_replay_sort_field WHERE 1=1"
                         + filter.sql
-                        + " ORDER BY orig_trcd ASC, orig_arry_name ASC, orig_field_name ASC LIMIT ? OFFSET ?",
+                        + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 this::mapRow, filter.args.toArray());
     }
 
@@ -79,6 +80,21 @@ public class ReplaySortFieldDao {
             long id = insertConfig(origTrcd, origArryName, origFieldName, now);
             insertOperation(id, "CREATE", null, null, null, origTrcd, origArryName, origFieldName, operator, now);
             return findById(id);
+        });
+    }
+
+    /** 一个事务内批量新增（排序字段一次新增会展开为三条），并逐条写入 CREATE 审计。 */
+    public List<ReplaySortFieldRow> createAll(List<ReplaySortFieldDraft> drafts, ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            List<ReplaySortFieldRow> created = new ArrayList<>();
+            for (ReplaySortFieldDraft draft : drafts) {
+                long id = insertConfig(draft.origTrcd(), draft.origArryName(), draft.origFieldName(), now);
+                insertOperation(id, "CREATE", null, null, null, draft.origTrcd(), draft.origArryName(),
+                        draft.origFieldName(), operator, now);
+                created.add(findById(id));
+            }
+            return created;
         });
     }
 

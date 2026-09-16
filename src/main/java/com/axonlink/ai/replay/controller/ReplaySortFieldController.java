@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -46,8 +47,8 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
     }
 
     @PostMapping
-    public R<ReplaySortFieldRow> create(@RequestBody(required = false) ReplaySortFieldCreateRequest body,
-                                        HttpServletRequest request) {
+    public R<List<ReplaySortFieldRow>> create(@RequestBody(required = false) ReplaySortFieldCreateRequest body,
+                                              HttpServletRequest request) {
         return R.ok(service.create(body, resolveOperator(request)));
     }
 

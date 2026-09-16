@@ -119,4 +119,14 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals(2, deleted);
         assertEquals(1, service.list(10, 0, null, null, null).total());
     }
+
+    @Test
+    void defaultsToTenPerPage() {
+        for (int index = 0; index < 12; index++) {
+            service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "field" + index), OPERATOR);
+        }
+        ReplayConfigPage<ReplayUnconditionalIgnoreRow> page = service.list(null, 0, null, null, null);
+        assertEquals(12, page.total());
+        assertEquals(10, page.items().size());
+    }
 }

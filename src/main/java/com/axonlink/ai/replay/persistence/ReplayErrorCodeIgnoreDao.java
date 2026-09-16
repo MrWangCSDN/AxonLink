@@ -62,7 +62,7 @@ public class ReplayErrorCodeIgnoreDao {
         return jdbc.query(
                 "SELECT " + SELECT_COLUMNS + " FROM dii_replay_error_code_ignore_config WHERE 1=1"
                         + filter.sql
-                        + " ORDER BY service_code ASC, old_resp_code ASC, new_resp_code ASC LIMIT ? OFFSET ?",
+                        + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 this::mapRow, filter.args.toArray());
     }
 

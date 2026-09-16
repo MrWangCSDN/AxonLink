@@ -61,7 +61,7 @@ public class ReplayUnconditionalIgnoreDao {
         filter.args.add(offset);
         return jdbc.query(
                 "SELECT " + SELECT_COLUMNS + " FROM dii_replay_unconditional_ignore WHERE 1=1"
-                        + filter.sql + " ORDER BY tran_code ASC, field_name ASC LIMIT ? OFFSET ?",
+                        + filter.sql + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 this::mapRow, filter.args.toArray());
     }
 

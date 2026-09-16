@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS dii_replay_unconditional_ignore (
     tran_code VARCHAR(192) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '最终服务码',
     field_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '忽略字段',
     enable_flag TINYINT NOT NULL DEFAULT 1 COMMENT '固定启用标识',
-    created_at DATETIME(6) NOT NULL,
-    updated_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
     PRIMARY KEY (id),
     UNIQUE KEY uk_replay_unconditional_code_field (tran_code, field_name)
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS dii_replay_unconditional_ignore_operation (
     operator_username VARCHAR(128) NULL,
     operator_real_name VARCHAR(128) NULL,
     operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL/EXCEL',
-    created_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     KEY idx_replay_unconditional_operation (config_id, created_at DESC, id DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='无条件忽略操作审计';
@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS dii_replay_conditional_rmove (
     field_file_flag TINYINT NOT NULL COMMENT '1=普通字段，2=对象或数组',
     orig_field_cond TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '主系统字段忽略条件',
     dest_field_cond TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '备系统字段忽略条件',
-    created_at DATETIME(6) NOT NULL,
-    updated_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
     PRIMARY KEY (id),
     UNIQUE KEY uk_replay_conditional_required (orig_trcd, field_rmove_name, field_file_indx),
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS dii_replay_conditional_rmove_operation (
     operator_username VARCHAR(128) NULL,
     operator_real_name VARCHAR(128) NULL,
     operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL/EXCEL',
-    created_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     KEY idx_replay_conditional_operation (config_id, created_at DESC, id DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有条件忽略操作审计';
@@ -98,8 +98,8 @@ CREATE TABLE IF NOT EXISTS dii_replay_error_code_ignore_config (
     old_resp_code VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '老核心错误码',
     new_resp_code VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '新核心错误码',
     enabled TINYINT NOT NULL DEFAULT 1 COMMENT '固定启用标识',
-    created_at DATETIME(6) NOT NULL,
-    updated_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
     PRIMARY KEY (id),
     UNIQUE KEY uk_replay_error_code (service_code, old_resp_code, new_resp_code)
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS dii_replay_error_code_ignore_config_operation (
     operator_username VARCHAR(128) NULL,
     operator_real_name VARCHAR(128) NULL,
     operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL/EXCEL',
-    created_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     KEY idx_replay_error_code_operation (config_id, created_at DESC, id DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='错误码忽略操作审计';
@@ -130,8 +130,8 @@ CREATE TABLE IF NOT EXISTS dii_replay_sort_field (
     orig_arry_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '对象或数组节点名称',
     orig_field_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '排序字段',
     tran_mode TINYINT NOT NULL DEFAULT 1 COMMENT '固定交易模式',
-    created_at DATETIME(6) NOT NULL,
-    updated_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
     PRIMARY KEY (id),
     UNIQUE KEY uk_replay_sort_field (orig_trcd, orig_arry_name, orig_field_name)
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS dii_replay_sort_field_operation (
     operator_username VARCHAR(128) NULL,
     operator_real_name VARCHAR(128) NULL,
     operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL/EXCEL',
-    created_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
     KEY idx_replay_sort_field_operation (config_id, created_at DESC, id DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='排序字段操作审计';

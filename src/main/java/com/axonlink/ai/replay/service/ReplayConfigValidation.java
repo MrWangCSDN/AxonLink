@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 /** 回放配置字段与分页参数校验。集中在此处避免四类配置口径漂移。 */
 public final class ReplayConfigValidation {
 
-    public static final int DEFAULT_LIMIT = 30;
+    public static final int DEFAULT_LIMIT = 10;
     public static final int MAX_BATCH_DELETE = 100;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
     private static final Pattern SERVICE_CODE_PATTERN = Pattern.compile("^[0-9A-Za-z]+&(sop|soap|bzjson)$");
