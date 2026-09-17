@@ -16,7 +16,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayUnconditionalIgnoreServiceTest {
 
@@ -33,8 +35,54 @@ class ReplayUnconditionalIgnoreServiceTest {
                         + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
                         + "VALUES (?,?,?,?,?,?)",
                 "app", "S1", "flow", "Y444", "描述", "公共组");
+        jdbc.update("INSERT INTO dii_replay_transaction_person "
+                        + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
+                        + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+                "公共组", "Y444", "客户信息查询", "张三", "c-zhangs", "李四", "c-lisi", java.sql.Timestamp.valueOf(java.time.LocalDateTime.now()));
         service = new ReplayUnconditionalIgnoreService(
-                new ReplayUnconditionalIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc));
+                new ReplayUnconditionalIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
+                new ReplayConfigPersonResolver(jdbc));
+    }
+
+    @Test
+    void reviewFlowEnforcesBankOwnerAndResetsOnUpdate() {
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
+        assertEquals(0, created.reviewStatus());
+        assertEquals("Y444", created.oldTransactionCode());
+        assertEquals("张三", created.developer());
+        assertEquals("李四", created.bankOwner());
+        assertFalse(created.canReview());
+        assertEquals("仅行方负责人可审核", created.reviewDisabledReason());
+
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
+        assertThrows(ReplayConfigReviewForbiddenException.class,
+                () -> service.review(created.id(), created.version(), stranger));
+
+        ReplayUnconditionalIgnoreRow reviewed = service.review(created.id(), created.version(), reviewer);
+        assertEquals(1, reviewed.reviewStatus());
+        assertFalse(reviewed.canReview());
+        assertEquals("已审核", reviewed.reviewDisabledReason());
+        assertEquals("REVIEW", service.operations(created.id(), 10, 0).items().get(0).operationType());
+        assertThrows(ReplayConfigConflictException.class,
+                () -> service.review(created.id(), reviewed.version(), reviewer));
+
+        ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", reviewed.version()),
+                reviewer);
+        assertEquals(0, updated.reviewStatus());
+        assertTrue(updated.canReview());
+    }
+
+    @Test
+    void reviewRejectedWhenNoMappedBankOwner() {
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "accountNo"), OPERATOR);
+        assertEquals("无审核人", created.reviewDisabledReason());
+        assertThrows(ReplayConfigReviewForbiddenException.class,
+                () -> service.review(created.id(), created.version(),
+                        new ReplayConfigOperator("lisi", "李四", "c-lisi")));
     }
 
     @Test

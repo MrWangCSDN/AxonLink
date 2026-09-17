@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigPersonInfo;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplaySortFieldCreateRequest;
 import com.axonlink.ai.replay.dto.ReplaySortFieldDraft;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -27,15 +29,25 @@ public class ReplaySortFieldService {
 
     private final ReplaySortFieldDao dao;
     private final ReplayConfigServiceCodeResolver resolver;
+    private final ReplayConfigPersonResolver personResolver;
 
-    public ReplaySortFieldService(ReplaySortFieldDao dao, ReplayConfigServiceCodeResolver resolver) {
+    public ReplaySortFieldService(ReplaySortFieldDao dao, ReplayConfigServiceCodeResolver resolver,
+                                  ReplayConfigPersonResolver personResolver) {
         this.dao = dao;
         this.resolver = resolver;
+        this.personResolver = personResolver;
     }
 
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName) {
+        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null);
+    }
+
+    public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
+                                                     String internalTransactionCode, String origTrcd,
+                                                     String origArryName, String origFieldName,
+                                                     ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
@@ -43,8 +55,9 @@ public class ReplaySortFieldService {
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
-        return new ReplayConfigPage<>(total,
-                dao.list(origTrcd, origArryName, origFieldName, serviceCodes, resolvedLimit, resolvedOffset));
+        List<ReplaySortFieldRow> rows = dao.list(origTrcd, origArryName, origFieldName, serviceCodes,
+                resolvedLimit, resolvedOffset);
+        return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
     public List<ReplaySortFieldRow> create(ReplaySortFieldCreateRequest request, ReplayConfigOperator operator) {
@@ -77,10 +90,88 @@ public class ReplaySortFieldService {
             throw new IllegalArgumentException("交易码无映射：" + tranCode);
         }
         try {
-            return dao.createAll(drafts, operator);
+            return enrich(dao.createAll(drafts, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码、对象/数组名称与排序字段重复）");
         }
+    }
+
+    public ReplaySortFieldRow update(long id, ReplaySortFieldUpdateRequest request, ReplayConfigOperator operator) {
+        ReplayConfigValidation.requirePositiveId(id);
+        String origTrcd = ReplayConfigValidation.requireServiceCode(request == null ? null : request.origTrcd());
+        String origArryName = ReplayConfigValidation.requireText(
+                request == null ? null : request.origArryName(), "对象/数组名称");
+        String origFieldName = ReplayConfigValidation.requireText(
+                request == null ? null : request.origFieldName(), "排序字段");
+        int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
+        ReplaySortFieldRow current = dao.findById(id);
+        if (current == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        if (current.version() != version) {
+            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+        }
+        if (Objects.equals(current.origTrcd(), origTrcd)
+                && Objects.equals(current.origArryName(), origArryName)
+                && Objects.equals(current.origFieldName(), origFieldName)) {
+            return enrich(current, operator);
+        }
+        try {
+            return enrich(dao.update(current, origTrcd, origArryName, origFieldName, operator), operator);
+        } catch (DuplicateKeyException exception) {
+            throw new ReplayConfigConflictException("配置已存在（服务码、对象/数组名称与排序字段重复）");
+        }
+    }
+
+    public ReplaySortFieldRow review(long id, Integer version, ReplayConfigOperator operator) {
+        ReplayConfigValidation.requirePositiveId(id);
+        int resolvedVersion = ReplayConfigValidation.requireVersion(version);
+        ReplaySortFieldRow current = dao.findById(id);
+        if (current == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        if (current.version() != resolvedVersion) {
+            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+        }
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.origTrcd()))
+                .get(current.origTrcd());
+        if (info == null) {
+            throw new ReplayConfigReviewForbiddenException("无审核人");
+        }
+        if (current.reviewStatus() == 1) {
+            throw new ReplayConfigConflictException("该记录已审核");
+        }
+        if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
+            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+        }
+        return enrich(dao.review(current, operator), operator);
+    }
+
+    public void delete(long id, Integer version, ReplayConfigOperator operator) {
+        ReplayConfigValidation.requirePositiveId(id);
+        int resolvedVersion = ReplayConfigValidation.requireVersion(version);
+        ReplaySortFieldRow current = dao.findById(id);
+        if (current == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        if (current.version() != resolvedVersion) {
+            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+        }
+        dao.delete(current, operator);
+    }
+
+    public int batchDelete(List<ReplayConfigVersionedId> items, ReplayConfigOperator operator) {
+        return dao.batchDelete(items, operator);
+    }
+
+    public ReplayConfigPage<ReplayConfigOperationView> operations(long id, Integer limit, Integer offset) {
+        ReplayConfigValidation.requirePositiveId(id);
+        int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
+        int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
+        if (dao.findById(id) == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        return dao.operations(id, resolvedLimit, resolvedOffset);
     }
 
     private static void addDraft(List<ReplaySortFieldDraft> drafts, Set<String> seen, String origTrcd,
@@ -114,60 +205,34 @@ public class ReplaySortFieldService {
         throw new IllegalArgumentException(label + "格式不正确，应为 A.B 或 A(B,C)");
     }
 
+    private List<ReplaySortFieldRow> enrich(List<ReplaySortFieldRow> rows, ReplayConfigOperator operator) {
+        if (rows.isEmpty()) {
+            return rows;
+        }
+        Map<String, ReplayConfigPersonInfo> infoMap = personResolver.resolveByServiceCodes(
+                rows.stream().map(ReplaySortFieldRow::origTrcd).toList());
+        return rows.stream()
+                .map(row -> enrich(row, infoMap.get(row.origTrcd()), operator))
+                .toList();
+    }
+
+    private ReplaySortFieldRow enrich(ReplaySortFieldRow row, ReplayConfigOperator operator) {
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(row.origTrcd()))
+                .get(row.origTrcd());
+        return enrich(row, info, operator);
+    }
+
+    private ReplaySortFieldRow enrich(ReplaySortFieldRow row, ReplayConfigPersonInfo info,
+                                      ReplayConfigOperator operator) {
+        String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
+        return new ReplaySortFieldRow(row.id(), row.origTrcd(), row.origArryName(), row.origFieldName(),
+                row.tranMode(), row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
+                info == null ? null : info.oldTransactionCode(),
+                info == null ? null : info.developer(),
+                info == null ? null : info.bankOwner(),
+                reason == null, reason);
+    }
+
     private record ParsedSortField(String arryName, String fieldName) {
-    }
-
-    public ReplaySortFieldRow update(long id, ReplaySortFieldUpdateRequest request, ReplayConfigOperator operator) {
-        ReplayConfigValidation.requirePositiveId(id);
-        String origTrcd = ReplayConfigValidation.requireServiceCode(request == null ? null : request.origTrcd());
-        String origArryName = ReplayConfigValidation.requireText(
-                request == null ? null : request.origArryName(), "对象/数组名称");
-        String origFieldName = ReplayConfigValidation.requireText(
-                request == null ? null : request.origFieldName(), "排序字段");
-        int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
-        ReplaySortFieldRow current = dao.findById(id);
-        if (current == null) {
-            throw new ReplayConfigNotFoundException("记录不存在");
-        }
-        if (current.version() != version) {
-            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
-        }
-        if (Objects.equals(current.origTrcd(), origTrcd)
-                && Objects.equals(current.origArryName(), origArryName)
-                && Objects.equals(current.origFieldName(), origFieldName)) {
-            return current;
-        }
-        try {
-            return dao.update(current, origTrcd, origArryName, origFieldName, operator);
-        } catch (DuplicateKeyException exception) {
-            throw new ReplayConfigConflictException("配置已存在（服务码、对象/数组名称与排序字段重复）");
-        }
-    }
-
-    public void delete(long id, Integer version, ReplayConfigOperator operator) {
-        ReplayConfigValidation.requirePositiveId(id);
-        int resolvedVersion = ReplayConfigValidation.requireVersion(version);
-        ReplaySortFieldRow current = dao.findById(id);
-        if (current == null) {
-            throw new ReplayConfigNotFoundException("记录不存在");
-        }
-        if (current.version() != resolvedVersion) {
-            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
-        }
-        dao.delete(current, operator);
-    }
-
-    public int batchDelete(List<ReplayConfigVersionedId> items, ReplayConfigOperator operator) {
-        return dao.batchDelete(items, operator);
-    }
-
-    public ReplayConfigPage<ReplayConfigOperationView> operations(long id, Integer limit, Integer offset) {
-        ReplayConfigValidation.requirePositiveId(id);
-        int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
-        int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
-        if (dao.findById(id) == null) {
-            throw new ReplayConfigNotFoundException("记录不存在");
-        }
-        return dao.operations(id, resolvedLimit, resolvedOffset);
     }
 }

@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.service.ReplayConfigConflictException;
 import com.axonlink.ai.replay.service.ReplayConfigNotFoundException;
+import com.axonlink.ai.replay.service.ReplayConfigReviewForbiddenException;
 import com.axonlink.common.R;
 import com.axonlink.security.UserPrincipalResolver;
 import jakarta.servlet.http.HttpServletRequest;
@@ -45,6 +46,11 @@ public abstract class AbstractReplayConfigController {
     @ExceptionHandler(ReplayConfigConflictException.class)
     public ResponseEntity<R<Void>> handleConflict(ReplayConfigConflictException exception) {
         return error(HttpStatus.CONFLICT, exception.getMessage());
+    }
+
+    @ExceptionHandler(ReplayConfigReviewForbiddenException.class)
+    public ResponseEntity<R<Void>> handleReviewForbidden(ReplayConfigReviewForbiddenException exception) {
+        return error(HttpStatus.FORBIDDEN, exception.getMessage());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

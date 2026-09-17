@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.controller;
 
 import com.axonlink.ai.replay.ReplayConfigTestFixtures;
 import com.axonlink.ai.replay.persistence.ReplayUnconditionalIgnoreDao;
+import com.axonlink.ai.replay.service.ReplayConfigPersonResolver;
 import com.axonlink.ai.replay.service.ReplayConfigServiceCodeResolver;
 import com.axonlink.ai.replay.service.ReplayUnconditionalIgnoreService;
 import com.axonlink.security.UserPrincipalResolver;
@@ -32,7 +33,8 @@ class ReplayConfigControllerTest {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         ReplayUnconditionalIgnoreService service = new ReplayUnconditionalIgnoreService(
-                new ReplayUnconditionalIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc));
+                new ReplayUnconditionalIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
+                new ReplayConfigPersonResolver(jdbc));
         ReplayUnconditionalIgnoreController controller =
                 new ReplayUnconditionalIgnoreController(service, anonymousResolver());
         mvc = MockMvcBuilders.standaloneSetup(controller).build();

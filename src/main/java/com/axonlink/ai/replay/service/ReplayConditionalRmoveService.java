@@ -1,17 +1,19 @@
 package com.axonlink.ai.replay.service;
 
-import com.axonlink.ai.replay.dto.ReplayConfigOperator;
-import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
-import com.axonlink.ai.replay.dto.ReplayConfigPage;
-import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveRow;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveUpdateRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigOperator;
+import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
+import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigPersonInfo;
+import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.persistence.ReplayConditionalRmoveDao;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -23,16 +25,26 @@ public class ReplayConditionalRmoveService {
 
     private final ReplayConditionalRmoveDao dao;
     private final ReplayConfigServiceCodeResolver resolver;
+    private final ReplayConfigPersonResolver personResolver;
 
     public ReplayConditionalRmoveService(ReplayConditionalRmoveDao dao,
-                                         ReplayConfigServiceCodeResolver resolver) {
+                                         ReplayConfigServiceCodeResolver resolver,
+                                         ReplayConfigPersonResolver personResolver) {
         this.dao = dao;
         this.resolver = resolver;
+        this.personResolver = personResolver;
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag) {
+        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null);
+    }
+
+    public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
+                                                            String internalTransactionCode, String origTrcd,
+                                                            String fieldRmoveName, Integer fieldFileFlag,
+                                                            ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
@@ -40,8 +52,9 @@ public class ReplayConditionalRmoveService {
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
-        return new ReplayConfigPage<>(total,
-                dao.list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, resolvedLimit, resolvedOffset));
+        List<ReplayConditionalRmoveRow> rows = dao.list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes,
+                resolvedLimit, resolvedOffset);
+        return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
     public ReplayConditionalRmoveRow create(ReplayConditionalRmoveCreateRequest request,
@@ -55,8 +68,8 @@ public class ReplayConditionalRmoveService {
                 request == null ? null : request.origFieldCond());
         String destFieldCond = ReplayConfigValidation.normalizeNullableText(
                 request == null ? null : request.destFieldCond());
-        return withIndexRetry(() -> dao.create(origTrcd, fieldRmoveName, fieldFileFlag, origFieldCond,
-                destFieldCond, operator));
+        return enrich(withIndexRetry(() -> dao.create(origTrcd, fieldRmoveName, fieldFileFlag, origFieldCond,
+                destFieldCond, operator)), operator);
     }
 
     public ReplayConditionalRmoveRow update(long id, ReplayConditionalRmoveUpdateRequest request,
@@ -85,10 +98,34 @@ public class ReplayConditionalRmoveService {
                 && Objects.equals(current.origFieldCond(), origFieldCond)
                 && Objects.equals(current.destFieldCond(), destFieldCond);
         if (unchanged) {
-            return current;
+            return enrich(current, operator);
         }
-        return withIndexRetry(() -> dao.update(current, origTrcd, fieldRmoveName, fieldFileFlag, origFieldCond,
-                destFieldCond, operator));
+        return enrich(withIndexRetry(() -> dao.update(current, origTrcd, fieldRmoveName, fieldFileFlag,
+                origFieldCond, destFieldCond, operator)), operator);
+    }
+
+    public ReplayConditionalRmoveRow review(long id, Integer version, ReplayConfigOperator operator) {
+        ReplayConfigValidation.requirePositiveId(id);
+        int resolvedVersion = ReplayConfigValidation.requireVersion(version);
+        ReplayConditionalRmoveRow current = dao.findById(id);
+        if (current == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        if (current.version() != resolvedVersion) {
+            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+        }
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.origTrcd()))
+                .get(current.origTrcd());
+        if (info == null) {
+            throw new ReplayConfigReviewForbiddenException("无审核人");
+        }
+        if (current.reviewStatus() == 1) {
+            throw new ReplayConfigConflictException("该记录已审核");
+        }
+        if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
+            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+        }
+        return enrich(dao.review(current, operator), operator);
     }
 
     public void delete(long id, Integer version, ReplayConfigOperator operator) {
@@ -129,5 +166,35 @@ public class ReplayConditionalRmoveService {
             }
         }
         throw new ReplayConfigConflictException("字段索引分配冲突，请重试");
+    }
+
+    private List<ReplayConditionalRmoveRow> enrich(List<ReplayConditionalRmoveRow> rows,
+                                                   ReplayConfigOperator operator) {
+        if (rows.isEmpty()) {
+            return rows;
+        }
+        Map<String, ReplayConfigPersonInfo> infoMap = personResolver.resolveByServiceCodes(
+                rows.stream().map(ReplayConditionalRmoveRow::origTrcd).toList());
+        return rows.stream()
+                .map(row -> enrich(row, infoMap.get(row.origTrcd()), operator))
+                .toList();
+    }
+
+    private ReplayConditionalRmoveRow enrich(ReplayConditionalRmoveRow row, ReplayConfigOperator operator) {
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(row.origTrcd()))
+                .get(row.origTrcd());
+        return enrich(row, info, operator);
+    }
+
+    private ReplayConditionalRmoveRow enrich(ReplayConditionalRmoveRow row, ReplayConfigPersonInfo info,
+                                             ReplayConfigOperator operator) {
+        String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
+        return new ReplayConditionalRmoveRow(row.id(), row.origTrcd(), row.fieldRmoveName(), row.fieldFielState(),
+                row.fieldFileIndx(), row.fieldFileFlag(), row.origFieldCond(), row.destFieldCond(),
+                row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
+                info == null ? null : info.oldTransactionCode(),
+                info == null ? null : info.developer(),
+                info == null ? null : info.bankOwner(),
+                reason == null, reason);
     }
 }

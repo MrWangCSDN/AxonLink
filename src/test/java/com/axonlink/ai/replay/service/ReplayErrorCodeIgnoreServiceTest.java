@@ -26,7 +26,8 @@ class ReplayErrorCodeIgnoreServiceTest {
         JdbcTemplate jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         service = new ReplayErrorCodeIgnoreService(
-                new ReplayErrorCodeIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc));
+                new ReplayErrorCodeIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
+                new ReplayConfigPersonResolver(jdbc));
     }
 
     @Test

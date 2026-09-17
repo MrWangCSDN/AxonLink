@@ -29,7 +29,7 @@ import java.util.Objects;
 public class ReplayUnconditionalIgnoreDao {
 
     private static final String SELECT_COLUMNS =
-            "id,tran_code,field_name,enable_flag,created_at,updated_at,version";
+            "id,tran_code,field_name,enable_flag,review_status,created_at,updated_at,version";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -76,7 +76,7 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             long id = insertConfig(tranCode, fieldName, now);
-            insertOperation(id, "CREATE", null, null, tranCode, fieldName, operator, now);
+            insertOperation(id, "CREATE", null, null, tranCode, fieldName, null, 0, operator, now);
             return findById(id);
         });
     }
@@ -86,17 +86,35 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int rows = jdbc.update(
-                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,updated_at=?,"
-                            + "version=version+1 WHERE id=? AND version=?",
+                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,review_status=0,"
+                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newTranCode, newFieldName, Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
             boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
             boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     tranChanged ? current.tranCode() : null, fieldChanged ? current.fieldName() : null,
-                    tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null, operator, now);
+                    tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null,
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
+            return findById(current.id());
+        });
+    }
+
+    public ReplayUnconditionalIgnoreRow review(ReplayUnconditionalIgnoreRow current, ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            int rows = jdbc.update(
+                    "UPDATE dii_replay_unconditional_ignore SET review_status=1,updated_at=?,"
+                            + "version=version+1 WHERE id=? AND version=?",
+                    Timestamp.valueOf(now), current.id(), current.version());
+            if (rows == 0) {
+                throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+            }
+            insertOperation(current.id(), "REVIEW", null, null, null, null,
+                    current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
     }
@@ -105,7 +123,7 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         tx.executeWithoutResult(status -> {
             insertOperation(current.id(), "DELETE", current.tranCode(), current.fieldName(),
-                    null, null, operator, now);
+                    null, null, current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_unconditional_ignore WHERE id=? AND version=?",
                     current.id(), current.version());
             if (rows == 0) {
@@ -127,7 +145,7 @@ public class ReplayUnconditionalIgnoreDao {
                     throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
                 }
                 insertOperation(current.id(), "DELETE", current.tranCode(), current.fieldName(),
-                        null, null, operator, now);
+                        null, null, current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_unconditional_ignore WHERE id=? AND version=?",
                         current.id(), current.version());
                 if (rows == 0) {
@@ -155,8 +173,8 @@ public class ReplayUnconditionalIgnoreDao {
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_unconditional_ignore "
-                            + "(tran_code,field_name,enable_flag,created_at,updated_at,version) "
-                            + "VALUES (?,?,1,?,?,0)",
+                            + "(tran_code,field_name,enable_flag,review_status,created_at,updated_at,version) "
+                            + "VALUES (?,?,1,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, tranCode);
             statement.setString(2, fieldName);
@@ -172,12 +190,14 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     private void insertOperation(long configId, String operationType, String tranCode, String fieldName,
-                                 String newTranCode, String newFieldName, ReplayConfigOperator operator,
-                                 LocalDateTime now) {
+                                 String newTranCode, String newFieldName, Integer reviewStatus,
+                                 Integer newReviewStatus, ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_unconditional_ignore_operation "
                         + "(config_id,operation_type,tran_code,field_name,new_tran_code,new_field_name,"
-                        + "operator_username,operator_real_name,operation_source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        + "review_status,new_review_status,operator_username,operator_real_name,operation_source,"
+                        + "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 configId, operationType, tranCode, fieldName, newTranCode, newFieldName,
+                reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
@@ -203,22 +223,27 @@ public class ReplayUnconditionalIgnoreDao {
         return new ReplayUnconditionalIgnoreRow(rs.getLong("id"), rs.getString("tran_code"),
                 rs.getString("field_name"), rs.getInt("enable_flag"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
-                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"));
+                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
+                rs.getInt("review_status"), null, null, null, false, null);
     }
 
     private ReplayConfigOperationView mapOperation(ResultSet rs, int rowNum) throws SQLException {
         List<ReplayConfigFieldChange> changes = new ArrayList<>();
         addChange(changes, "tran_code", "服务码", rs.getString("tran_code"), rs.getString("new_tran_code"));
         addChange(changes, "field_name", "忽略字段", rs.getString("field_name"), rs.getString("new_field_name"));
+        addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
+                rs.getObject("new_review_status"));
         return new ReplayConfigOperationView(rs.getLong("id"), rs.getString("operation_type"),
                 rs.getString("operator_username"), rs.getString("operator_real_name"),
                 rs.getString("operation_source"), ReplayConfigSqlSupport.localDateTime(rs, "created_at"), changes);
     }
 
     private static void addChange(List<ReplayConfigFieldChange> changes, String field, String label,
-                                  String oldValue, String newValue) {
+                                  Object oldValue, Object newValue) {
         if (oldValue != null || newValue != null) {
-            changes.add(new ReplayConfigFieldChange(field, label, oldValue, newValue));
+            changes.add(new ReplayConfigFieldChange(field, label,
+                    oldValue == null ? null : String.valueOf(oldValue),
+                    newValue == null ? null : String.valueOf(newValue)));
         }
     }
 

@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
 import com.axonlink.ai.replay.dto.ReplaySortFieldCreateRequest;
 import com.axonlink.ai.replay.dto.ReplaySortFieldRow;
 import com.axonlink.ai.replay.dto.ReplaySortFieldUpdateRequest;
@@ -42,8 +43,10 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
             @RequestParam(required = false) String internalTransactionCode,
             @RequestParam(required = false) String origTrcd,
             @RequestParam(required = false) String origArryName,
-            @RequestParam(required = false) String origFieldName) {
-        return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName));
+            @RequestParam(required = false) String origFieldName,
+            HttpServletRequest request) {
+        return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, origArryName,
+                origFieldName, resolveOperator(request)));
     }
 
     @PostMapping
@@ -57,6 +60,13 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
                                         @RequestBody(required = false) ReplaySortFieldUpdateRequest body,
                                         HttpServletRequest request) {
         return R.ok(service.update(id, body, resolveOperator(request)));
+    }
+
+    @PostMapping("/{id}/review")
+    public R<ReplaySortFieldRow> review(@PathVariable("id") long id,
+                                        @RequestBody(required = false) ReplayConfigReviewRequest body,
+                                        HttpServletRequest request) {
+        return R.ok(service.review(id, body == null ? null : body.version(), resolveOperator(request)));
     }
 
     @DeleteMapping("/{id}")

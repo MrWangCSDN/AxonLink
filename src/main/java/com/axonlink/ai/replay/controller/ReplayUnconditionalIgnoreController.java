@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreUpdateRequest;
@@ -41,8 +42,10 @@ public class ReplayUnconditionalIgnoreController extends AbstractReplayConfigCon
             @RequestParam(required = false) Integer offset,
             @RequestParam(required = false) String internalTransactionCode,
             @RequestParam(required = false) String tranCode,
-            @RequestParam(required = false) String fieldName) {
-        return R.ok(service.list(limit, offset, internalTransactionCode, tranCode, fieldName));
+            @RequestParam(required = false) String fieldName,
+            HttpServletRequest request) {
+        return R.ok(service.list(limit, offset, internalTransactionCode, tranCode, fieldName,
+                resolveOperator(request)));
     }
 
     @PostMapping
@@ -57,6 +60,13 @@ public class ReplayUnconditionalIgnoreController extends AbstractReplayConfigCon
                                                   @RequestBody(required = false) ReplayUnconditionalIgnoreUpdateRequest body,
                                                   HttpServletRequest request) {
         return R.ok(service.update(id, body, resolveOperator(request)));
+    }
+
+    @PostMapping("/{id}/review")
+    public R<ReplayUnconditionalIgnoreRow> review(@PathVariable("id") long id,
+                                                  @RequestBody(required = false) ReplayConfigReviewRequest body,
+                                                  HttpServletRequest request) {
+        return R.ok(service.review(id, body == null ? null : body.version(), resolveOperator(request)));
     }
 
     @DeleteMapping("/{id}")

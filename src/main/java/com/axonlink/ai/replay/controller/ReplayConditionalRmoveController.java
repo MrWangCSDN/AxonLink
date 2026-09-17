@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dto.ReplayConditionalRmoveUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
 import com.axonlink.ai.replay.service.ReplayConditionalRmoveService;
 import com.axonlink.ai.replay.service.ReplayConfigValidation;
 import com.axonlink.common.R;
@@ -42,8 +43,10 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
             @RequestParam(required = false) String internalTransactionCode,
             @RequestParam(required = false) String origTrcd,
             @RequestParam(required = false) String fieldRmoveName,
-            @RequestParam(required = false) Integer fieldFileFlag) {
-        return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag));
+            @RequestParam(required = false) Integer fieldFileFlag,
+            HttpServletRequest request) {
+        return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName,
+                fieldFileFlag, resolveOperator(request)));
     }
 
     @PostMapping
@@ -58,6 +61,13 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
                                                @RequestBody(required = false) ReplayConditionalRmoveUpdateRequest body,
                                                HttpServletRequest request) {
         return R.ok(service.update(id, body, resolveOperator(request)));
+    }
+
+    @PostMapping("/{id}/review")
+    public R<ReplayConditionalRmoveRow> review(@PathVariable("id") long id,
+                                               @RequestBody(required = false) ReplayConfigReviewRequest body,
+                                               HttpServletRequest request) {
+        return R.ok(service.review(id, body == null ? null : body.version(), resolveOperator(request)));
     }
 
     @DeleteMapping("/{id}")

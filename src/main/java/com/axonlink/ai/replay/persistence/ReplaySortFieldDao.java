@@ -30,7 +30,7 @@ import java.util.Objects;
 public class ReplaySortFieldDao {
 
     private static final String SELECT_COLUMNS =
-            "id,orig_trcd,orig_arry_name,orig_field_name,tran_mode,created_at,updated_at,version";
+            "id,orig_trcd,orig_arry_name,orig_field_name,tran_mode,review_status,created_at,updated_at,version";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -78,7 +78,8 @@ public class ReplaySortFieldDao {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             long id = insertConfig(origTrcd, origArryName, origFieldName, now);
-            insertOperation(id, "CREATE", null, null, null, origTrcd, origArryName, origFieldName, operator, now);
+            insertOperation(id, "CREATE", null, null, null, origTrcd, origArryName, origFieldName,
+                    null, 0, operator, now);
             return findById(id);
         });
     }
@@ -91,7 +92,7 @@ public class ReplaySortFieldDao {
             for (ReplaySortFieldDraft draft : drafts) {
                 long id = insertConfig(draft.origTrcd(), draft.origArryName(), draft.origFieldName(), now);
                 insertOperation(id, "CREATE", null, null, null, draft.origTrcd(), draft.origArryName(),
-                        draft.origFieldName(), operator, now);
+                        draft.origFieldName(), null, 0, operator, now);
                 created.add(findById(id));
             }
             return created;
@@ -104,7 +105,7 @@ public class ReplaySortFieldDao {
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"
-                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newOrigTrcd, newOrigArryName, newOrigFieldName, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
@@ -113,13 +114,31 @@ public class ReplaySortFieldDao {
             boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
             boolean arryChanged = changed(current.origArryName(), newOrigArryName);
             boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     trcdChanged ? current.origTrcd() : null,
                     arryChanged ? current.origArryName() : null,
                     fieldChanged ? current.origFieldName() : null,
                     trcdChanged ? newOrigTrcd : null,
                     arryChanged ? newOrigArryName : null,
-                    fieldChanged ? newOrigFieldName : null, operator, now);
+                    fieldChanged ? newOrigFieldName : null,
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
+            return findById(current.id());
+        });
+    }
+
+    public ReplaySortFieldRow review(ReplaySortFieldRow current, ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            int rows = jdbc.update(
+                    "UPDATE dii_replay_sort_field SET review_status=1,updated_at=?,version=version+1 "
+                            + "WHERE id=? AND version=?",
+                    Timestamp.valueOf(now), current.id(), current.version());
+            if (rows == 0) {
+                throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+            }
+            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null,
+                    current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
     }
@@ -128,7 +147,7 @@ public class ReplaySortFieldDao {
         LocalDateTime now = LocalDateTime.now();
         tx.executeWithoutResult(status -> {
             insertOperation(current.id(), "DELETE", current.origTrcd(), current.origArryName(),
-                    current.origFieldName(), null, null, null, operator, now);
+                    current.origFieldName(), null, null, null, current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_sort_field WHERE id=? AND version=?",
                     current.id(), current.version());
             if (rows == 0) {
@@ -150,7 +169,7 @@ public class ReplaySortFieldDao {
                     throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
                 }
                 insertOperation(current.id(), "DELETE", current.origTrcd(), current.origArryName(),
-                        current.origFieldName(), null, null, null, operator, now);
+                        current.origFieldName(), null, null, null, current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_sort_field WHERE id=? AND version=?",
                         current.id(), current.version());
                 if (rows == 0) {
@@ -178,8 +197,8 @@ public class ReplaySortFieldDao {
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_sort_field "
-                            + "(orig_trcd,orig_arry_name,orig_field_name,tran_mode,created_at,updated_at,version) "
-                            + "VALUES (?,?,?,1,?,?,0)",
+                            + "(orig_trcd,orig_arry_name,orig_field_name,tran_mode,review_status,created_at,"
+                            + "updated_at,version) VALUES (?,?,?,1,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, origTrcd);
             statement.setString(2, origArryName);
@@ -197,13 +216,15 @@ public class ReplaySortFieldDao {
 
     private void insertOperation(long configId, String operationType, String origTrcd, String origArryName,
                                  String origFieldName, String newOrigTrcd, String newOrigArryName,
-                                 String newOrigFieldName, ReplayConfigOperator operator, LocalDateTime now) {
+                                 String newOrigFieldName, Integer reviewStatus, Integer newReviewStatus,
+                                 ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_sort_field_operation "
                         + "(config_id,operation_type,orig_trcd,orig_arry_name,orig_field_name,new_orig_trcd,"
-                        + "new_orig_arry_name,new_orig_field_name,operator_username,operator_real_name,"
-                        + "operation_source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "new_orig_arry_name,new_orig_field_name,review_status,new_review_status,"
+                        + "operator_username,operator_real_name,operation_source,created_at) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 configId, operationType, origTrcd, origArryName, origFieldName, newOrigTrcd,
-                newOrigArryName, newOrigFieldName,
+                newOrigArryName, newOrigFieldName, reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
@@ -234,7 +255,8 @@ public class ReplaySortFieldDao {
         return new ReplaySortFieldRow(rs.getLong("id"), rs.getString("orig_trcd"),
                 rs.getString("orig_arry_name"), rs.getString("orig_field_name"), rs.getInt("tran_mode"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
-                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"));
+                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
+                rs.getInt("review_status"), null, null, null, false, null);
     }
 
     private ReplayConfigOperationView mapOperation(ResultSet rs, int rowNum) throws SQLException {
@@ -244,15 +266,19 @@ public class ReplaySortFieldDao {
                 rs.getString("new_orig_arry_name"));
         addChange(changes, "orig_field_name", "排序字段", rs.getString("orig_field_name"),
                 rs.getString("new_orig_field_name"));
+        addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
+                rs.getObject("new_review_status"));
         return new ReplayConfigOperationView(rs.getLong("id"), rs.getString("operation_type"),
                 rs.getString("operator_username"), rs.getString("operator_real_name"),
                 rs.getString("operation_source"), ReplayConfigSqlSupport.localDateTime(rs, "created_at"), changes);
     }
 
     private static void addChange(List<ReplayConfigFieldChange> changes, String field, String label,
-                                  String oldValue, String newValue) {
+                                  Object oldValue, Object newValue) {
         if (oldValue != null || newValue != null) {
-            changes.add(new ReplayConfigFieldChange(field, label, oldValue, newValue));
+            changes.add(new ReplayConfigFieldChange(field, label,
+                    oldValue == null ? null : String.valueOf(oldValue),
+                    newValue == null ? null : String.valueOf(newValue)));
         }
     }
 

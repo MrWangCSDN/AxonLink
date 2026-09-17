@@ -27,7 +27,8 @@ class ReplayConditionalRmoveServiceTest {
         JdbcTemplate jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         service = new ReplayConditionalRmoveService(
-                new ReplayConditionalRmoveDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc));
+                new ReplayConditionalRmoveDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
+                new ReplayConfigPersonResolver(jdbc));
     }
 
     @Test

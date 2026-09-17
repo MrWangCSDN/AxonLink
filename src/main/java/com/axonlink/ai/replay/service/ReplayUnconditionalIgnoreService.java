@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigPersonInfo;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
@@ -12,6 +13,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -20,16 +22,25 @@ public class ReplayUnconditionalIgnoreService {
 
     private final ReplayUnconditionalIgnoreDao dao;
     private final ReplayConfigServiceCodeResolver resolver;
+    private final ReplayConfigPersonResolver personResolver;
 
     public ReplayUnconditionalIgnoreService(ReplayUnconditionalIgnoreDao dao,
-                                            ReplayConfigServiceCodeResolver resolver) {
+                                            ReplayConfigServiceCodeResolver resolver,
+                                            ReplayConfigPersonResolver personResolver) {
         this.dao = dao;
         this.resolver = resolver;
+        this.personResolver = personResolver;
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
                                                                String internalTransactionCode, String tranCode,
                                                                String fieldName) {
+        return list(limit, offset, internalTransactionCode, tranCode, fieldName, null);
+    }
+
+    public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
+                                                               String internalTransactionCode, String tranCode,
+                                                               String fieldName, ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
@@ -37,7 +48,9 @@ public class ReplayUnconditionalIgnoreService {
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
-        return new ReplayConfigPage<>(total, dao.list(tranCode, fieldName, serviceCodes, resolvedLimit, resolvedOffset));
+        List<ReplayUnconditionalIgnoreRow> rows = dao.list(tranCode, fieldName, serviceCodes,
+                resolvedLimit, resolvedOffset);
+        return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
     public ReplayUnconditionalIgnoreRow create(ReplayUnconditionalIgnoreCreateRequest request,
@@ -45,7 +58,7 @@ public class ReplayUnconditionalIgnoreService {
         String tranCode = ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode());
         String fieldName = ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段");
         try {
-            return dao.create(tranCode, fieldName, operator);
+            return enrich(dao.create(tranCode, fieldName, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
@@ -65,13 +78,37 @@ public class ReplayUnconditionalIgnoreService {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
         if (Objects.equals(current.tranCode(), tranCode) && Objects.equals(current.fieldName(), fieldName)) {
-            return current;
+            return enrich(current, operator);
         }
         try {
-            return dao.update(current, tranCode, fieldName, operator);
+            return enrich(dao.update(current, tranCode, fieldName, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
+    }
+
+    public ReplayUnconditionalIgnoreRow review(long id, Integer version, ReplayConfigOperator operator) {
+        ReplayConfigValidation.requirePositiveId(id);
+        int resolvedVersion = ReplayConfigValidation.requireVersion(version);
+        ReplayUnconditionalIgnoreRow current = dao.findById(id);
+        if (current == null) {
+            throw new ReplayConfigNotFoundException("记录不存在");
+        }
+        if (current.version() != resolvedVersion) {
+            throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
+        }
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.tranCode()))
+                .get(current.tranCode());
+        if (info == null) {
+            throw new ReplayConfigReviewForbiddenException("无审核人");
+        }
+        if (current.reviewStatus() == 1) {
+            throw new ReplayConfigConflictException("该记录已审核");
+        }
+        if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
+            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+        }
+        return enrich(dao.review(current, operator), operator);
     }
 
     public void delete(long id, Integer version, ReplayConfigOperator operator) {
@@ -99,5 +136,34 @@ public class ReplayUnconditionalIgnoreService {
             throw new ReplayConfigNotFoundException("记录不存在");
         }
         return dao.operations(id, resolvedLimit, resolvedOffset);
+    }
+
+    private List<ReplayUnconditionalIgnoreRow> enrich(List<ReplayUnconditionalIgnoreRow> rows,
+                                                      ReplayConfigOperator operator) {
+        if (rows.isEmpty()) {
+            return rows;
+        }
+        Map<String, ReplayConfigPersonInfo> infoMap = personResolver.resolveByServiceCodes(
+                rows.stream().map(ReplayUnconditionalIgnoreRow::tranCode).toList());
+        return rows.stream()
+                .map(row -> enrich(row, infoMap.get(row.tranCode()), operator))
+                .toList();
+    }
+
+    private ReplayUnconditionalIgnoreRow enrich(ReplayUnconditionalIgnoreRow row, ReplayConfigOperator operator) {
+        ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(row.tranCode()))
+                .get(row.tranCode());
+        return enrich(row, info, operator);
+    }
+
+    private ReplayUnconditionalIgnoreRow enrich(ReplayUnconditionalIgnoreRow row, ReplayConfigPersonInfo info,
+                                                ReplayConfigOperator operator) {
+        String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
+        return new ReplayUnconditionalIgnoreRow(row.id(), row.tranCode(), row.fieldName(), row.enableFlag(),
+                row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
+                info == null ? null : info.oldTransactionCode(),
+                info == null ? null : info.developer(),
+                info == null ? null : info.bankOwner(),
+                reason == null, reason);
     }
 }

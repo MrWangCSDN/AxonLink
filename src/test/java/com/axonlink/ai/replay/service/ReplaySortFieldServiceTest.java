@@ -33,7 +33,8 @@ class ReplaySortFieldServiceTest {
                         + "VALUES (?,?,?,?,?,?)",
                 "app", "S120034071CorpInfo.QryTrdCrclr", "flow", "6208", "描述", "公共组");
         service = new ReplaySortFieldService(
-                new ReplaySortFieldDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc));
+                new ReplaySortFieldDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
+                new ReplayConfigPersonResolver(jdbc));
     }
 
     @Test

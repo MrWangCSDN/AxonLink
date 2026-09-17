@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
+import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreRow;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreUpdateRequest;
@@ -42,8 +43,10 @@ public class ReplayErrorCodeIgnoreController extends AbstractReplayConfigControl
             @RequestParam(required = false) String internalTransactionCode,
             @RequestParam(required = false) String serviceCode,
             @RequestParam(required = false) String oldRespCode,
-            @RequestParam(required = false) String newRespCode) {
-        return R.ok(service.list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode));
+            @RequestParam(required = false) String newRespCode,
+            HttpServletRequest request) {
+        return R.ok(service.list(limit, offset, internalTransactionCode, serviceCode, oldRespCode,
+                newRespCode, resolveOperator(request)));
     }
 
     @PostMapping
@@ -58,6 +61,13 @@ public class ReplayErrorCodeIgnoreController extends AbstractReplayConfigControl
                                               @RequestBody(required = false) ReplayErrorCodeIgnoreUpdateRequest body,
                                               HttpServletRequest request) {
         return R.ok(service.update(id, body, resolveOperator(request)));
+    }
+
+    @PostMapping("/{id}/review")
+    public R<ReplayErrorCodeIgnoreRow> review(@PathVariable("id") long id,
+                                              @RequestBody(required = false) ReplayConfigReviewRequest body,
+                                              HttpServletRequest request) {
+        return R.ok(service.review(id, body == null ? null : body.version(), resolveOperator(request)));
     }
 
     @DeleteMapping("/{id}")
