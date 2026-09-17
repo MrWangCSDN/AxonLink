@@ -77,6 +77,17 @@ public final class ReplayConfigValidation {
         return version;
     }
 
+    /** 审核状态筛选：null 表示不筛选，只允许 0 或 1。 */
+    public static Integer optionalReviewStatus(Integer value) {
+        if (value == null) {
+            return null;
+        }
+        if (value != 0 && value != 1) {
+            throw new IllegalArgumentException("审核状态只允许 0 或 1");
+        }
+        return value;
+    }
+
     public static int pageLimit(Integer limit) {
         if (limit == null) {
             return DEFAULT_LIMIT;

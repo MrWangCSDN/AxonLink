@@ -35,22 +35,30 @@ public class ReplayErrorCodeIgnoreService {
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode) {
-        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode, null);
+        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode, null, null);
     }
 
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode,
                                                            ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
+                                                           String internalTransactionCode, String serviceCode,
+                                                           String oldRespCode, String newRespCode,
+                                                           Integer reviewStatus, ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
+        Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
-        long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes);
+        long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, resolvedReviewStatus);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplayErrorCodeIgnoreRow> rows = dao.list(serviceCode, oldRespCode, newRespCode, serviceCodes,
-                resolvedLimit, resolvedOffset);
+                resolvedReviewStatus, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
@@ -86,6 +94,11 @@ public class ReplayErrorCodeIgnoreService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
+        if (current.reviewStatus() == 1 && !ReplayConfigPersonResolver.matchesBankOwner(
+                personResolver.resolveByServiceCodes(List.of(current.serviceCode())).get(current.serviceCode()),
+                operator)) {
+            throw new ReplayConfigReviewForbiddenException("该记录已审核，仅限审核人员修改");
+        }
         if (Objects.equals(current.serviceCode(), serviceCode)
                 && Objects.equals(current.oldRespCode(), oldRespCode)
                 && Objects.equals(current.newRespCode(), newRespCode)) {
@@ -110,14 +123,14 @@ public class ReplayErrorCodeIgnoreService {
         }
         ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.serviceCode()))
                 .get(current.serviceCode());
+        if (current.reviewStatus() == 1) {
+            return enrich(current, operator);
+        }
         if (info == null) {
             throw new ReplayConfigReviewForbiddenException("无审核人");
         }
-        if (current.reviewStatus() == 1) {
-            throw new ReplayConfigConflictException("该记录已审核");
-        }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
-            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+            throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         }
         return enrich(dao.review(current, operator), operator);
     }

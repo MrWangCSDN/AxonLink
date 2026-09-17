@@ -40,11 +40,11 @@ public class ReplayUnconditionalIgnoreDao {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
-    public long count(String tranCode, String fieldName, Collection<String> serviceCodes) {
+    public long count(String tranCode, String fieldName, Collection<String> serviceCodes, Integer reviewStatus) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(tranCode, fieldName, serviceCodes);
+        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_unconditional_ignore WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -52,11 +52,12 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     public List<ReplayUnconditionalIgnoreRow> list(String tranCode, String fieldName,
-                                                   Collection<String> serviceCodes, int limit, int offset) {
+                                                   Collection<String> serviceCodes, Integer reviewStatus,
+                                                   int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(tranCode, fieldName, serviceCodes);
+        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -86,7 +87,7 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int rows = jdbc.update(
-                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,review_status=0,"
+                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,"
                             + "updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newTranCode, newFieldName, Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
@@ -94,11 +95,10 @@ public class ReplayUnconditionalIgnoreDao {
             }
             boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
             boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
-            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     tranChanged ? current.tranCode() : null, fieldChanged ? current.fieldName() : null,
                     tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null,
-                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
+                    null, null, operator, now);
             return findById(current.id());
         });
     }
@@ -202,7 +202,7 @@ public class ReplayUnconditionalIgnoreDao {
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
 
-    private Filter filter(String tranCode, String fieldName, Collection<String> serviceCodes) {
+    private Filter filter(String tranCode, String fieldName, Collection<String> serviceCodes, Integer reviewStatus) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -215,6 +215,10 @@ public class ReplayUnconditionalIgnoreDao {
         if (fieldName != null && !fieldName.isBlank()) {
             sql.append(" AND field_name LIKE ?").append(ReplayConfigSqlSupport.LIKE_ESCAPE);
             args.add(ReplayConfigSqlSupport.likeContains(fieldName));
+        }
+        if (reviewStatus != null) {
+            sql.append(" AND review_status=?");
+            args.add(reviewStatus);
         }
         return new Filter(sql.toString(), args);
     }

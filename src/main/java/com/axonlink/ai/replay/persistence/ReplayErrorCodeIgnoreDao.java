@@ -40,11 +40,12 @@ public class ReplayErrorCodeIgnoreDao {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
-    public long count(String serviceCode, String oldRespCode, String newRespCode, Collection<String> serviceCodes) {
+    public long count(String serviceCode, String oldRespCode, String newRespCode, Collection<String> serviceCodes,
+                      Integer reviewStatus) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes);
+        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_error_code_ignore_config WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -52,11 +53,12 @@ public class ReplayErrorCodeIgnoreDao {
     }
 
     public List<ReplayErrorCodeIgnoreRow> list(String serviceCode, String oldRespCode, String newRespCode,
-                                               Collection<String> serviceCodes, int limit, int offset) {
+                                               Collection<String> serviceCodes, Integer reviewStatus,
+                                               int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes);
+        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -91,7 +93,7 @@ public class ReplayErrorCodeIgnoreDao {
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_error_code_ignore_config SET service_code=?,old_resp_code=?,"
-                            + "new_resp_code=?,review_status=0,updated_at=?,version=version+1 "
+                            + "new_resp_code=?,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
                     newServiceCode, newOldRespCode, newNewRespCode, Timestamp.valueOf(now),
                     current.id(), current.version());
@@ -101,7 +103,6 @@ public class ReplayErrorCodeIgnoreDao {
             boolean serviceChanged = changed(current.serviceCode(), newServiceCode);
             boolean oldChanged = changed(current.oldRespCode(), newOldRespCode);
             boolean newChanged = changed(current.newRespCode(), newNewRespCode);
-            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     serviceChanged ? current.serviceCode() : null,
                     oldChanged ? current.oldRespCode() : null,
@@ -109,7 +110,7 @@ public class ReplayErrorCodeIgnoreDao {
                     serviceChanged ? newServiceCode : null,
                     oldChanged ? newOldRespCode : null,
                     newChanged ? newNewRespCode : null,
-                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
+                    null, null, operator, now);
             return findById(current.id());
         });
     }
@@ -216,7 +217,7 @@ public class ReplayErrorCodeIgnoreDao {
     }
 
     private Filter filter(String serviceCode, String oldRespCode, String newRespCode,
-                          Collection<String> serviceCodes) {
+                          Collection<String> serviceCodes, Integer reviewStatus) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -233,6 +234,10 @@ public class ReplayErrorCodeIgnoreDao {
         if (newRespCode != null && !newRespCode.isBlank()) {
             sql.append(" AND new_resp_code LIKE ?").append(ReplayConfigSqlSupport.LIKE_ESCAPE);
             args.add(ReplayConfigSqlSupport.likeContains(newRespCode));
+        }
+        if (reviewStatus != null) {
+            sql.append(" AND review_status=?");
+            args.add(reviewStatus);
         }
         return new Filter(sql.toString(), args);
     }

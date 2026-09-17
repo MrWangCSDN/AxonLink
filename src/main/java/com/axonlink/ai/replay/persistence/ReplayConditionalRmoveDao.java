@@ -42,11 +42,11 @@ public class ReplayConditionalRmoveDao {
     }
 
     public long count(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
-                      Collection<String> serviceCodes) {
+                      Collection<String> serviceCodes, Integer reviewStatus) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes);
+        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_conditional_rmove WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -54,11 +54,12 @@ public class ReplayConditionalRmoveDao {
     }
 
     public List<ReplayConditionalRmoveRow> list(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
-                                                Collection<String> serviceCodes, int limit, int offset) {
+                                                Collection<String> serviceCodes, Integer reviewStatus,
+                                                int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes);
+        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -105,13 +106,12 @@ public class ReplayConditionalRmoveDao {
             int newIndex = codeChanged ? nextIndex(newOrigTrcd) : current.fieldFileIndx();
             int rows = jdbc.update("UPDATE dii_replay_conditional_rmove SET orig_trcd=?,field_rmove_name=?,"
                             + "field_file_indx=?,field_file_flag=?,orig_field_cond=?,dest_field_cond=?,"
-                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newOrigTrcd, newFieldRmoveName, newIndex, newFieldFileFlag, newOrigFieldCond, newDestFieldCond,
                     Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     changed(current.origTrcd(), newOrigTrcd) ? current.origTrcd() : null,
                     changed(current.fieldRmoveName(), newFieldRmoveName) ? current.fieldRmoveName() : null,
@@ -125,7 +125,7 @@ public class ReplayConditionalRmoveDao {
                     current.fieldFileFlag() != newFieldFileFlag ? newFieldFileFlag : null,
                     changed(current.origFieldCond(), newOrigFieldCond) ? newOrigFieldCond : null,
                     changed(current.destFieldCond(), newDestFieldCond) ? newDestFieldCond : null,
-                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null,
+                    null, null,
                     operator, now);
             return findById(current.id());
         });
@@ -252,7 +252,7 @@ public class ReplayConditionalRmoveDao {
     }
 
     private Filter filter(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
-                          Collection<String> serviceCodes) {
+                          Collection<String> serviceCodes, Integer reviewStatus) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -269,6 +269,10 @@ public class ReplayConditionalRmoveDao {
         if (fieldFileFlag != null) {
             sql.append(" AND field_file_flag=?");
             args.add(fieldFileFlag);
+        }
+        if (reviewStatus != null) {
+            sql.append(" AND review_status=?");
+            args.add(reviewStatus);
         }
         return new Filter(sql.toString(), args);
     }

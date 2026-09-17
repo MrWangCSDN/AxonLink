@@ -38,22 +38,30 @@ public class ReplayConditionalRmoveService {
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag) {
-        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null);
+        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null, null);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
+                                                            String internalTransactionCode, String origTrcd,
+                                                            String fieldRmoveName, Integer fieldFileFlag,
+                                                            Integer reviewStatus, ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
+        Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
-        long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes);
+        long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, resolvedReviewStatus);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplayConditionalRmoveRow> rows = dao.list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes,
-                resolvedLimit, resolvedOffset);
+                resolvedReviewStatus, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
@@ -92,6 +100,11 @@ public class ReplayConditionalRmoveService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
+        if (current.reviewStatus() == 1 && !ReplayConfigPersonResolver.matchesBankOwner(
+                personResolver.resolveByServiceCodes(List.of(current.origTrcd())).get(current.origTrcd()),
+                operator)) {
+            throw new ReplayConfigReviewForbiddenException("该记录已审核，仅限审核人员修改");
+        }
         boolean unchanged = Objects.equals(current.origTrcd(), origTrcd)
                 && Objects.equals(current.fieldRmoveName(), fieldRmoveName)
                 && current.fieldFileFlag() == fieldFileFlag
@@ -116,14 +129,14 @@ public class ReplayConditionalRmoveService {
         }
         ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.origTrcd()))
                 .get(current.origTrcd());
+        if (current.reviewStatus() == 1) {
+            return enrich(current, operator);
+        }
         if (info == null) {
             throw new ReplayConfigReviewForbiddenException("无审核人");
         }
-        if (current.reviewStatus() == 1) {
-            throw new ReplayConfigConflictException("该记录已审核");
-        }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
-            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+            throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         }
         return enrich(dao.review(current, operator), operator);
     }

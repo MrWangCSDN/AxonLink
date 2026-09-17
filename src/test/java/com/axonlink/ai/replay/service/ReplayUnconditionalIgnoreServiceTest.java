@@ -53,26 +53,48 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals("张三", created.developer());
         assertEquals("李四", created.bankOwner());
         assertFalse(created.canReview());
-        assertEquals("仅行方负责人可审核", created.reviewDisabledReason());
+        assertEquals("没有权限，请联系李四进行审核", created.reviewDisabledReason());
 
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
-        assertThrows(ReplayConfigReviewForbiddenException.class,
+        ReplayConfigReviewForbiddenException forbidden = assertThrows(
+                ReplayConfigReviewForbiddenException.class,
                 () -> service.review(created.id(), created.version(), stranger));
+        assertEquals("没有权限，请联系李四进行审核", forbidden.getMessage());
 
         ReplayUnconditionalIgnoreRow reviewed = service.review(created.id(), created.version(), reviewer);
         assertEquals(1, reviewed.reviewStatus());
         assertFalse(reviewed.canReview());
         assertEquals("已审核", reviewed.reviewDisabledReason());
         assertEquals("REVIEW", service.operations(created.id(), 10, 0).items().get(0).operationType());
-        assertThrows(ReplayConfigConflictException.class,
-                () -> service.review(created.id(), reviewed.version(), reviewer));
+
+        // 幂等：再次审核直接返回，不报错、不新增审计与版本
+        ReplayUnconditionalIgnoreRow again = service.review(created.id(), reviewed.version(), reviewer);
+        assertEquals(1, again.reviewStatus());
+        assertEquals(reviewed.version(), again.version());
+        assertEquals(2, service.operations(created.id(), 10, 0).total());
+    }
+
+    @Test
+    void approvedRowOnlyEditableByReviewerAndKeepsApproval() {
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
+        ReplayUnconditionalIgnoreRow reviewed = service.review(created.id(), created.version(), reviewer);
+
+        assertThrows(ReplayConfigReviewForbiddenException.class, () -> service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "hacked", reviewed.version()), stranger));
 
         ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
                 new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", reviewed.version()),
                 reviewer);
-        assertEquals(0, updated.reviewStatus());
-        assertTrue(updated.canReview());
+        assertEquals("accountNumber", updated.fieldName());
+        assertEquals(1, updated.reviewStatus(), "审核人修改后应保留已审核");
+
+        // 删除/批量删除不受审核限制
+        service.delete(updated.id(), updated.version(), stranger);
+        assertEquals(0, service.list(10, 0, null, null, null).total());
     }
 
     @Test
@@ -80,9 +102,24 @@ class ReplayUnconditionalIgnoreServiceTest {
         ReplayUnconditionalIgnoreRow created = service.create(
                 new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "accountNo"), OPERATOR);
         assertEquals("无审核人", created.reviewDisabledReason());
-        assertThrows(ReplayConfigReviewForbiddenException.class,
+        ReplayConfigReviewForbiddenException forbidden = assertThrows(ReplayConfigReviewForbiddenException.class,
                 () -> service.review(created.id(), created.version(),
                         new ReplayConfigOperator("lisi", "李四", "c-lisi")));
+        assertEquals("无审核人", forbidden.getMessage());
+    }
+
+    @Test
+    void filtersByReviewStatus() {
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        ReplayUnconditionalIgnoreRow first = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accA"), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accB"), OPERATOR);
+        service.review(first.id(), first.version(), reviewer);
+
+        assertEquals(1, service.list(10, 0, null, null, null, 0, null).total());
+        assertEquals(1, service.list(10, 0, null, null, null, 1, null).total());
+        assertEquals(2, service.list(10, 0, null, null, null, null, null).total());
+        assertThrows(IllegalArgumentException.class, () -> service.list(10, 0, null, null, null, 9, null));
     }
 
     @Test

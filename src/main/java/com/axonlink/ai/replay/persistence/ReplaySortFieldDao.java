@@ -41,11 +41,12 @@ public class ReplaySortFieldDao {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
-    public long count(String origTrcd, String origArryName, String origFieldName, Collection<String> serviceCodes) {
+    public long count(String origTrcd, String origArryName, String origFieldName, Collection<String> serviceCodes,
+                      Integer reviewStatus) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes);
+        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_sort_field WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -53,11 +54,12 @@ public class ReplaySortFieldDao {
     }
 
     public List<ReplaySortFieldRow> list(String origTrcd, String origArryName, String origFieldName,
-                                         Collection<String> serviceCodes, int limit, int offset) {
+                                         Collection<String> serviceCodes, Integer reviewStatus,
+                                         int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes);
+        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -105,7 +107,7 @@ public class ReplaySortFieldDao {
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"
-                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newOrigTrcd, newOrigArryName, newOrigFieldName, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
@@ -114,7 +116,6 @@ public class ReplaySortFieldDao {
             boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
             boolean arryChanged = changed(current.origArryName(), newOrigArryName);
             boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
-            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     trcdChanged ? current.origTrcd() : null,
                     arryChanged ? current.origArryName() : null,
@@ -122,7 +123,7 @@ public class ReplaySortFieldDao {
                     trcdChanged ? newOrigTrcd : null,
                     arryChanged ? newOrigArryName : null,
                     fieldChanged ? newOrigFieldName : null,
-                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
+                    null, null, operator, now);
             return findById(current.id());
         });
     }
@@ -230,7 +231,7 @@ public class ReplaySortFieldDao {
     }
 
     private Filter filter(String origTrcd, String origArryName, String origFieldName,
-                          Collection<String> serviceCodes) {
+                          Collection<String> serviceCodes, Integer reviewStatus) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -247,6 +248,10 @@ public class ReplaySortFieldDao {
         if (origFieldName != null && !origFieldName.isBlank()) {
             sql.append(" AND orig_field_name LIKE ?").append(ReplayConfigSqlSupport.LIKE_ESCAPE);
             args.add(ReplayConfigSqlSupport.likeContains(origFieldName));
+        }
+        if (reviewStatus != null) {
+            sql.append(" AND review_status=?");
+            args.add(reviewStatus);
         }
         return new Filter(sql.toString(), args);
     }

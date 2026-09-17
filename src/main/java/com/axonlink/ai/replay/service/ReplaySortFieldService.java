@@ -41,22 +41,30 @@ public class ReplaySortFieldService {
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName) {
-        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null);
+        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null, null);
     }
 
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName,
                                                      ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null, operator);
+    }
+
+    public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
+                                                     String internalTransactionCode, String origTrcd,
+                                                     String origArryName, String origFieldName,
+                                                     Integer reviewStatus, ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
+        Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
-        long total = dao.count(origTrcd, origArryName, origFieldName, serviceCodes);
+        long total = dao.count(origTrcd, origArryName, origFieldName, serviceCodes, resolvedReviewStatus);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplaySortFieldRow> rows = dao.list(origTrcd, origArryName, origFieldName, serviceCodes,
-                resolvedLimit, resolvedOffset);
+                resolvedReviewStatus, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
@@ -111,6 +119,11 @@ public class ReplaySortFieldService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
+        if (current.reviewStatus() == 1 && !ReplayConfigPersonResolver.matchesBankOwner(
+                personResolver.resolveByServiceCodes(List.of(current.origTrcd())).get(current.origTrcd()),
+                operator)) {
+            throw new ReplayConfigReviewForbiddenException("该记录已审核，仅限审核人员修改");
+        }
         if (Objects.equals(current.origTrcd(), origTrcd)
                 && Objects.equals(current.origArryName(), origArryName)
                 && Objects.equals(current.origFieldName(), origFieldName)) {
@@ -135,14 +148,14 @@ public class ReplaySortFieldService {
         }
         ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.origTrcd()))
                 .get(current.origTrcd());
+        if (current.reviewStatus() == 1) {
+            return enrich(current, operator);
+        }
         if (info == null) {
             throw new ReplayConfigReviewForbiddenException("无审核人");
         }
-        if (current.reviewStatus() == 1) {
-            throw new ReplayConfigConflictException("该记录已审核");
-        }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
-            throw new ReplayConfigReviewForbiddenException("仅行方负责人可审核");
+            throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         }
         return enrich(dao.review(current, operator), operator);
     }

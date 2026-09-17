@@ -35,7 +35,8 @@ public abstract class AbstractReplayConfigController {
             return new ReplayConfigOperator(resolved.principal, resolved.principal);
         }
         String username = firstNonBlank(resolved.user.getUsername(), resolved.principal);
-        return new ReplayConfigOperator(username, firstNonBlank(resolved.user.getRealName(), username));
+        return new ReplayConfigOperator(username, firstNonBlank(resolved.user.getRealName(), username),
+                resolved.user.getEmpNo());
     }
 
     @ExceptionHandler(ReplayConfigNotFoundException.class)

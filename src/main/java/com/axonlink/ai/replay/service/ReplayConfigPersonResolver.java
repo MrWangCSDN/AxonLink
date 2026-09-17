@@ -105,7 +105,28 @@ public class ReplayConfigPersonResolver {
         if (reviewStatus == 1) {
             return "已审核";
         }
-        return matchesBankOwner(info, operator) ? null : "仅行方负责人可审核";
+        return matchesBankOwner(info, operator) ? null : reviewForbiddenMessage(info);
+    }
+
+    /** 行方负责人姓名（去掉工号括号、按分隔符拆分去重），用于“请联系X进行审核”。 */
+    public static String reviewerContactNames(ReplayConfigPersonInfo info) {
+        if (info == null || info.bankOwner() == null || info.bankOwner().isBlank()) {
+            return "";
+        }
+        Set<String> names = new LinkedHashSet<>();
+        for (String part : info.bankOwner().split("[、,，;；]")) {
+            String name = part.replaceAll("[（(][^）)]*[）)]", "").trim();
+            if (!name.isEmpty()) {
+                names.add(name);
+            }
+        }
+        return String.join("、", names);
+    }
+
+    /** 无审核权限提示：带上行方负责人姓名。 */
+    public static String reviewForbiddenMessage(ReplayConfigPersonInfo info) {
+        String names = reviewerContactNames(info);
+        return names.isEmpty() ? "没有审核权限" : "没有权限，请联系" + names + "进行审核";
     }
 
     private static List<String> splitEmpNos(String value) {
