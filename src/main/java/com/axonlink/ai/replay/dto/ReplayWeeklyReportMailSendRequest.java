@@ -9,9 +9,29 @@ public record ReplayWeeklyReportMailSendRequest(
         List<String> toEmails,
         List<String> ccEmails,
         String body,
-        List<String> reportBatchNos) {
+        List<String> reportBatchNos,
+        List<ReplayGeneratedReportRef> generatedReports) {
+    public ReplayWeeklyReportMailSendRequest {
+        reportBatchNos = reportBatchNos == null ? List.of() : List.copyOf(reportBatchNos);
+        generatedReports = generatedReports == null ? List.of() : List.copyOf(generatedReports);
+    }
+
+    public ReplayWeeklyReportMailSendRequest(String startBatchNo, String endBatchNo, String subject,
+                                             List<String> toEmails, List<String> ccEmails, String body,
+                                             List<String> reportBatchNos) {
+        this(startBatchNo, endBatchNo, subject, toEmails, ccEmails, body, reportBatchNos, List.of());
+    }
+
     public ReplayWeeklyReportMailSendRequest(String startBatchNo, String endBatchNo, String subject,
                                              List<String> toEmails, List<String> ccEmails, String body) {
-        this(startBatchNo, endBatchNo, subject, toEmails, ccEmails, body, List.of());
+        this(startBatchNo, endBatchNo, subject, toEmails, ccEmails, body, List.of(), List.of());
+    }
+
+    public List<ReplayGeneratedReportRef> effectiveGeneratedReports() {
+        if (generatedReports != null && !generatedReports.isEmpty()) return List.copyOf(generatedReports);
+        if (reportBatchNos == null) return List.of();
+        return reportBatchNos.stream().filter(value -> value != null && !value.isBlank())
+                .map(value -> new ReplayGeneratedReportRef(ReplayReportPeriod.DAILY, null, value))
+                .toList();
     }
 }

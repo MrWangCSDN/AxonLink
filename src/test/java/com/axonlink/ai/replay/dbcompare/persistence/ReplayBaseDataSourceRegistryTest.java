@@ -1,6 +1,6 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.service.ReplayBaseDatabaseUnavailableException;
 import org.junit.jupiter.api.Test;

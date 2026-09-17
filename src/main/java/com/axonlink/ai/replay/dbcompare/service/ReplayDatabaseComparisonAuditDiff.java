@@ -43,6 +43,10 @@ public class ReplayDatabaseComparisonAuditDiff {
                 value(before.registeredDate()), value(after.registeredDate()));
         addModify(details, "deleted", "删除状态",
                 Boolean.toString(before.deleted()), Boolean.toString(after.deleted()));
+        addModify(details, "whereCondition", "WHERE 条件",
+                condition(before), condition(after));
+        addModify(details, "compareLimit", "比对条数",
+                limit(before.compareLimit()), limit(after.compareLimit()));
         addFieldDifferences(details, before.fields(), after.fields());
         return List.copyOf(details);
     }
@@ -57,6 +61,8 @@ public class ReplayDatabaseComparisonAuditDiff {
         addAdded(details, "groupOwner", "小组负责人", owner(after));
         addAdded(details, "registeredDate", "登记日期", value(after.registeredDate()));
         addAdded(details, "deleted", "删除状态", Boolean.toString(after.deleted()));
+        addAdded(details, "whereCondition", "WHERE 条件", condition(after));
+        addAdded(details, "compareLimit", "比对条数", limit(after.compareLimit()));
         fieldsByName(after.fields()).values().forEach(field ->
                 details.add(fieldDetail(ReplayDbCompareChangeType.ADD, field, null, fieldValue(field))));
         return List.copyOf(details);
@@ -167,6 +173,17 @@ public class ReplayDatabaseComparisonAuditDiff {
 
     private String value(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private String condition(ReplayDbCompareState state) {
+        if (state.whereCondition() == null || state.whereCondition().groups().isEmpty()) {
+            return "未配置";
+        }
+        return new ReplayDatabaseComparisonConditionCodec().encode(state.whereCondition());
+    }
+
+    private String limit(Long value) {
+        return value == null ? "全表" : value.toString();
     }
 
     private String text(String value) {

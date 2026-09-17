@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayCoverageDetailRow;
 import com.axonlink.ai.replay.dto.ReplayCoverageSummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyBatch;
+import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayDailyRowType;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
@@ -65,7 +66,14 @@ class ReplayWeeklyReportServiceTest {
                 "RPT20260901-01", "START-SUMMARY")));
         when(dailyDataDao.findSummaries("RPT20260908-01")).thenReturn(List.of(summary(
                 "RPT20260908-01", "END-SUMMARY")));
-        when(issueDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
+        when(issueDao.findDailyReportIssueStatistics("RPT20260901-01")).thenReturn(List.of(
+                issue(1L, "合理差异", "无需处理"),
+                issue(2L, "代码问题", "已修复"),
+                issue(3L, "参数问题", "打开")));
+        when(issueDao.findDailyReportIssueStatistics("RPT20260908-01")).thenReturn(List.of(
+                issue(4L, "合理差异", "无需处理"),
+                issue(5L, "外围问题", "已修复"),
+                issue(6L, "平台问题", "新建")));
         when(dailyDataDao.findComparisons("RPT20260908-01")).thenReturn(List.of(comparison(
                 "RPT20260908-01", "END-IFACE")));
         when(dailyDataDao.findCoverageSummaries("RPT20260908-01")).thenReturn(List.of(coverageSummary(
@@ -82,18 +90,29 @@ class ReplayWeeklyReportServiceTest {
             String summaryText = sheetText(workbook.getSheet("汇总信息"));
             assertTrue(summaryText.contains("批次号：RPT20260901-01（上批次）"), summaryText);
             assertTrue(summaryText.contains("批次号：RPT20260908-01（本批次）"), summaryText);
+            var previousRow = findSummaryRow(workbook.getSheet("汇总信息"), "RPT20260901-01");
+            var currentRow = findSummaryRow(workbook.getSheet("汇总信息"), "RPT20260908-01");
+            assertEquals(2d, previousRow.getCell(13).getNumericCellValue());
+            assertEquals(0d, previousRow.getCell(16).getNumericCellValue());
+            assertEquals(2d, currentRow.getCell(13).getNumericCellValue());
+            assertEquals(1d, currentRow.getCell(14).getNumericCellValue());
+            assertEquals(0.5d, currentRow.getCell(15).getNumericCellValue());
+            assertEquals(1d, currentRow.getCell(17).getNumericCellValue());
             String interfaceText = sheetText(workbook.getSheet("接口比对明细"));
             String coverageText = sheetText(workbook.getSheet("回放交易覆盖情况"));
             assertTrue(interfaceText.contains("END-IFACE"), interfaceText);
             assertTrue(coverageText.contains("END-COVERAGE-DETAIL"), coverageText);
             assertFalse(interfaceText.contains("START"), interfaceText);
         }
-        assertEquals("RPT20260908-01周报.xlsx", generated.fileName());
+        assertEquals("查询周报(20260901-20260908).xlsx", generated.fileName());
         verify(dailyDataDao, never()).findComparisons("RPT20260901-01");
         verify(dailyDataDao, never()).findCoverageDetails("RPT20260901-01");
         ArgumentCaptor<ReplayWeeklyReportSnapshot> saved = ArgumentCaptor.forClass(ReplayWeeklyReportSnapshot.class);
         verify(weeklyReportDao).saveSnapshot(saved.capture());
         assertArrayEquals(generated.content(), saved.getValue().content());
+        var summaryView = new ReplayReportSummaryCodec().decode(saved.getValue().summaryViewJson());
+        assertEquals("RPT20260901-01", summaryView.startBatchNo());
+        assertEquals("RPT20260908-01", summaryView.endBatchNo());
     }
 
     @Test
@@ -109,7 +128,10 @@ class ReplayWeeklyReportServiceTest {
 
         ReplayWeeklyReportSnapshot result = service.generate("RPT20260901-01", "RPT20260908-01");
 
+        assertEquals("查询周报(20260901-20260908).xlsx", result.fileName());
         assertArrayEquals(new byte[]{7, 8, 9}, result.content());
+        assertEquals("xlsx", result.contentType());
+        assertEquals(LocalDateTime.of(2026, 9, 8, 18, 0), result.generatedAt());
         verifyNoInteractions(dailyDataDao, issueDao, calculator, writer);
         verify(weeklyReportDao, never()).saveSnapshot(any());
     }
@@ -227,7 +249,7 @@ class ReplayWeeklyReportServiceTest {
         when(dailyDataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dailyDataDao.findCoverageDetails(any())).thenReturn(List.of());
         ReplayDailyReportWorkbookWriter writer = mock(ReplayDailyReportWorkbookWriter.class);
-        when(writer.write(any(), any(), any(), any())).thenReturn(new byte[]{7, 8, 9});
+        when(writer.write(any(), any(), any(), any(), any())).thenReturn(new byte[]{7, 8, 9});
         ReplayWeeklyReportService realService = new ReplayWeeklyReportService(
                 dailyDataDao, issueDao, realReportDao, new ReplayDailyReportCalculator(), writer, jdbc,
                 Clock.fixed(LocalDateTime.of(2026, 9, 9, 10, 0).toInstant(ZoneOffset.UTC), ZoneOffset.UTC));
@@ -285,6 +307,21 @@ class ReplayWeeklyReportServiceTest {
     private static ReplayCoverageDetailRow coverageDetail(String batchNo, String marker) {
         return new ReplayCoverageDetailRow(batchNo, marker, "交易", "公共组", "S1", "", "是",
                 LocalDate.of(2026, 9, 1), 90L, "已发送", "", "开发", "行内", 1, marker);
+    }
+
+    private static ReplayDailyIssueStatisticRow issue(long issueId, String issueType, String status) {
+        return new ReplayDailyIssueStatisticRow(issueId, "公共组", false, issueType, "字段级",
+                "任意", status, 1L, false);
+    }
+
+    private static org.apache.poi.ss.usermodel.Row findSummaryRow(
+            org.apache.poi.ss.usermodel.Sheet sheet, String batchNo) {
+        for (org.apache.poi.ss.usermodel.Row row : sheet) {
+            if (row.getCell(0) != null && batchNo.equals(row.getCell(0).getStringCellValue())) {
+                return row;
+            }
+        }
+        throw new AssertionError("Missing summary row for batch: " + batchNo);
     }
 
     private static String sheetText(org.apache.poi.ss.usermodel.Sheet sheet) {

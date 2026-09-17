@@ -4,6 +4,12 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionSummary;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionGateError;
@@ -57,7 +63,9 @@ class ReplayDatabaseComparisonVersionServiceTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
@@ -80,6 +88,51 @@ class ReplayDatabaseComparisonVersionServiceTest {
 
         assertEquals("INVALID_TRIGGER_TOKEN", error.errorCode());
         verify(metadataService, never()).inspectTables(any());
+    }
+
+    @Test
+    void versionQueryConditionOptionsUseReadableLabelsAndLabelKeywordSearch() {
+        long versionId = versionDao.insertVersion(
+                "20260914-121900", "h".repeat(64), 2, 2,
+                "100", "张三", LocalDateTime.now(CLOCK));
+        List<ReplayDbCompareField> fields = List.of(field("acct_no", "账号", 1, true, 1));
+        ReplayDbCompareRegistration fullTable = new ReplayDbCompareRegistration(
+                7L, "base_schema", "acct_full", "全表账户", "存款组",
+                "100", "zhangsan", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 1L,
+                "100", "张三", LocalDateTime.now(CLOCK), "100", "张三", LocalDateTime.now(CLOCK),
+                fields);
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "status_cd", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        ReplayDbCompareRegistration scoped = new ReplayDbCompareRegistration(
+                8L, "base_schema", "acct_scoped", "条件账户", "存款组",
+                "101", "lisi", "李四", "101", "赵经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 1L,
+                "100", "张三", LocalDateTime.now(CLOCK), "100", "张三", LocalDateTime.now(CLOCK),
+                fields, condition, null, null);
+        versionDao.insertVersionTable(versionId, fullTable);
+        versionDao.insertVersionTable(versionId, scoped);
+
+        var configured = service.versionHeaderFilterOptions(
+                "20260914-121900",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "whereCondition", "status_cd", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, configured.options().size());
+        assertEquals("(status_cd = '1')", configured.options().get(0).label());
+
+        var allRows = service.versionHeaderFilterOptions(
+                "20260914-121900",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "whereCondition", "全表", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, allRows.options().size());
+        assertEquals("__FULL_TABLE__", allRows.options().get(0).value());
+        assertEquals("全表", allRows.options().get(0).label());
     }
 
     @Test
@@ -126,6 +179,41 @@ class ReplayDatabaseComparisonVersionServiceTest {
     }
 
     @Test
+    void blocksLimitedComparisonWhenOrderedPrimaryKeySnapshotChanged() {
+        LocalDateTime now = LocalDateTime.now(CLOCK);
+        registrationDao.insertRegistration(new ReplayDbCompareRegistration(
+                null, "base_schema", "limited_acct", "限量账户表", "存款组",
+                "100", "zhangsan", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 0,
+                "100", "张三", now, "100", "张三", now,
+                List.of(
+                        field("acct_no", "账号", 1, true, 1),
+                        field("tenant_id", "租户", 2, true, 2)),
+                null, 1000L, List.of("acct_no", "tenant_id"), null));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                "limited_acct", new ReplayBaseMetadataSnapshot(
+                        true, "limited_acct", "限量账户表", List.of(
+                                new ReplayBaseColumnOption("acct_no", "账号", 1, true, 2),
+                                new ReplayBaseColumnOption("tenant_id", "租户", 2, true, 1)))));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals("VERSION_GATE_BLOCKED", error.errorCode());
+        @SuppressWarnings("unchecked")
+        List<ReplayDbCompareVersionGateError> errors =
+                (List<ReplayDbCompareVersionGateError>)
+                        ((Map<String, Object>) error.data()).get("errors");
+        assertEquals(1, errors.size());
+        assertEquals("ORDERING_PRIMARY_KEY_CHANGED", errors.get(0).status().name());
+        assertTrue(errors.get(0).reason().contains("原顺序：acct_no、tenant_id"));
+        assertTrue(errors.get(0).reason().contains("当前顺序：tenant_id、acct_no"));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_db_compare_version", Integer.class));
+    }
+
+    @Test
     void generatesAShanghaiVersionAndImmutableSnapshot() {
         insertRegistration("acct_master", "旧中文名", List.of(
                 field("acct_no", "旧账号", 1, true, 1),
@@ -149,6 +237,53 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals("leader-a", snapshot.items().get(0).groupOwnerUsername());
         assertEquals("账号", snapshot.items().get(0).fields().get(0).columnComment());
         assertTrue(snapshot.items().get(0).fields().get(0).primaryKey());
+        assertEquals(1, snapshot.items().get(0).fields().get(0).primaryKeyOrder());
+    }
+
+    @Test
+    void returnsAllScopeAndPrimaryKeyGateErrorsWithoutCreatingAPartialVersion() {
+        LocalDateTime now = LocalDateTime.now(CLOCK);
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(
+                                new ReplayDbCompareCondition(
+                                        "missing_status", ReplayDbCompareConditionOperator.EQ,
+                                        List.of("1")),
+                                new ReplayDbCompareCondition(
+                                        "amount", ReplayDbCompareConditionOperator.BETWEEN,
+                                        List.of("bad"))))));
+        registrationDao.insertRegistration(new ReplayDbCompareRegistration(
+                null, "base_schema", "acct_master", "账户主表", "存款组",
+                "100", "zhangsan", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 0,
+                "100", "张三", now, "100", "张三", now,
+                List.of(field("acct_no", "账号", 1, false, 1)),
+                condition, 1000L, null));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                "acct_master", new ReplayBaseMetadataSnapshot(
+                        true, "acct_master", "账户主表",
+                        List.of(
+                                new ReplayBaseColumnOption(
+                                        "acct_no", "账号", "character varying", 1, false, null),
+                                new ReplayBaseColumnOption(
+                                        "amount", "金额", "numeric", 2, false, null)))));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        @SuppressWarnings("unchecked")
+        List<ReplayDbCompareVersionGateError> errors =
+                (List<ReplayDbCompareVersionGateError>)
+                        ((Map<String, Object>) error.data()).get("errors");
+        assertEquals(4, errors.size());
+        assertTrue(errors.stream().anyMatch(item -> item.reason().contains("missing_status")));
+        assertTrue(errors.stream().anyMatch(item -> item.reason().contains("BETWEEN")));
+        assertTrue(errors.stream().anyMatch(item -> item.reason().contains("完整且有序的主键")));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_db_compare_version", Integer.class));
     }
 
     @Test

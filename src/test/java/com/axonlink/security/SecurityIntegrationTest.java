@@ -40,6 +40,7 @@ import com.axonlink.ai.user.service.UserService;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -292,6 +293,19 @@ class SecurityIntegrationTest {
                         .header(DiiTokenBypassFilter.HEADER, "wrong-token"))
                 .andReturn().getResponse().getStatus();
         assertEquals(401, wrongStatus, "token 错误应该和未登录一样 401");
+    }
+
+    @Test
+    void operationTokenBypassDoesNotCreateASessionOrReplaceTheBrowserLoginCookie() throws Exception {
+        MvcResult result = mvc().perform(get("/api/test/protected")
+                        .header(DiiTokenBypassFilter.HEADER, "test-token"))
+                .andReturn();
+
+        assertEquals(200, result.getResponse().getStatus());
+        assertNull(result.getRequest().getSession(false),
+                "口令旁路必须保持无状态，不能创建可能覆盖真人登录的 JSESSIONID");
+        assertNull(result.getResponse().getCookie("JSESSIONID"),
+                "口令旁路不能向浏览器下发新的 JSESSIONID");
     }
 
     @Test

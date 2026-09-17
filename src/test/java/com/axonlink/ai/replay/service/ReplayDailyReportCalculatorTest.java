@@ -40,6 +40,42 @@ class ReplayDailyReportCalculatorTest {
     }
 
     @Test
+    void excludesNoActionFromReportIssueTotalsClassificationsAndRates() {
+        ReplayDailySummaryRow previous = summary("RPT-PREVIOUS", "公共组",
+                20L, 1L, 10L, 0L, "0.55", 99L);
+        ReplayDailySummaryRow current = summary("RPT-CURRENT", "公共组",
+                20L, 1L, 10L, 0L, "0.55", 99L);
+        List<ReplayDailyIssueStatisticRow> previousIssues = List.of(
+                issue(1L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 7L, false),
+                issue(2L, "公共组", false, "代码问题", "字段级", "任意", "已修复", 1L, false),
+                issue(3L, "公共组", false, "参数问题", "字段级", "任意", "打开", 1L, false));
+        List<ReplayDailyIssueStatisticRow> currentIssues = List.of(
+                issue(4L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 9L, false),
+                issue(5L, "公共组", false, "外围问题", "字段级", "任意", "已修复", 1L, false),
+                issue(6L, "公共组", false, "平台问题", "字段级", "任意", "新建", 1L, false));
+
+        CalculatedReport report = calculator.calculate(
+                List.of(previous), previousIssues, List.of(current), currentIssues);
+        ReplayDailySummaryCalculatedRow previousRow = report.previousRows().get(0);
+        ReplayDailySummaryCalculatedRow currentRow = report.currentRows().get(0);
+
+        assertEquals(2L, previousRow.issueTotal());
+        assertEquals(2L, report.previousTotal().issueTotal());
+        assertEquals(1L, previousRow.codeIssueCount());
+        assertEquals(1L, previousRow.parameterIssueCount());
+        assertEquals(0L, previousRow.reasonableDifferenceIssueCount());
+        assertEquals(BigDecimal.ONE.setScale(8), previousRow.investigationProgress());
+        assertEquals(1L, report.previousUnresolved().total());
+        assertEquals(new BigDecimal("0.50000000"), report.previousUnresolved().resolutionRate());
+
+        assertEquals(2L, currentRow.issueTotal());
+        assertEquals(2L, report.currentTotal().issueTotal());
+        assertEquals(0L, currentRow.reasonableDifferenceIssueCount());
+        assertEquals(new BigDecimal("0.50000000"), currentRow.investigationProgress());
+        assertEquals(9L, currentRow.noAction(), "交易核对区域仍需保留无需处理交易数量");
+    }
+
+    @Test
     void recalculatesTransactionColumnsByAffectedCountAndExcludesNoAction() {
         ReplayDailySummaryRow currentSummary = summary("RPT-CURRENT", "沙箱-存款组",
                 111L, 10L, 80L, 0L, "0.83", 6L);

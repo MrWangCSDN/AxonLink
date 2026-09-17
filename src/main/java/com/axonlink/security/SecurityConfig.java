@@ -16,7 +16,7 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -37,8 +37,8 @@ import java.util.Map;
  *   <li>其它所有路径：需登录（B 档不分角色）</li>
  *   <li>CSRF 禁用（内部应用 + 同源 + SameSite=Lax + JSON POST 已闭合主流攻击面）</li>
  *   <li>401 → JSON {@code {code:401, message:"未登录"}}</li>
- *   <li>注册 {@link DiiTokenBypassFilter} 在 UsernamePasswordAuthenticationFilter 之前，
- *       支持 X-DII-Trigger-Token 双轨绕过登录</li>
+ *   <li>注册 {@link DiiTokenBypassFilter} 在 {@link AuthorizationFilter} 之前，
+ *       让口令身份只参与本次请求授权，不进入 Session 管理</li>
  * </ul>
  */
 @Configuration
@@ -148,8 +148,9 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 // ② 认证提供器：仅 LDAP（B 档无其它来源）
                 .authenticationProvider(ldapProvider)
-                // ③ 注册 DII token 双轨 filter 在用户名密码认证 filter 之前
-                .addFilterBefore(diiFilter, UsernamePasswordAuthenticationFilter.class)
+                // ③ Session 身份完成装载和管理后，再临时注入口令身份参与授权。
+                // 避免匿名口令请求创建 JSESSIONID，覆盖浏览器中已有的真人登录 Cookie。
+                .addFilterBefore(diiFilter, AuthorizationFilter.class)
                 // ④ 授权策略：放行清单 + 其它需登录
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_PATHS).permitAll()

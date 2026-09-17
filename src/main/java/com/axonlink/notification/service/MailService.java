@@ -142,6 +142,18 @@ public class MailService {
     public void sendTextWithAttachmentsSync(List<String> to, List<String> cc,
                                             String subject, String body,
                                             List<MailAttachment> attachments) {
+        sendWithAttachmentsSync(to, cc, subject, body, attachments, false);
+    }
+
+    public void sendHtmlWithAttachmentsSync(List<String> to, List<String> cc,
+                                            String subject, String htmlBody,
+                                            List<MailAttachment> attachments) {
+        sendWithAttachmentsSync(to, cc, subject, htmlBody, attachments, true);
+    }
+
+    private void sendWithAttachmentsSync(List<String> to, List<String> cc,
+                                         String subject, String body,
+                                         List<MailAttachment> attachments, boolean html) {
         if (to == null || to.isEmpty()) {
             throw new IllegalArgumentException("收件人不能为空");
         }
@@ -152,7 +164,7 @@ public class MailService {
             helper.setTo(to.toArray(new String[0]));
             if (cc != null && !cc.isEmpty()) helper.setCc(cc.toArray(new String[0]));
             helper.setSubject(subject);
-            helper.setText(body == null ? "" : body, false);
+            helper.setText(body == null ? "" : body, html);
             helper.setSentDate(new Date());
             for (MailAttachment attachment : attachments) {
                 helper.addAttachment(attachment.fileName(), new ByteArrayResource(attachment.content()),

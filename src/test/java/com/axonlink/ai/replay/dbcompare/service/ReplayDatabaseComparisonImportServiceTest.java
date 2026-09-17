@@ -54,7 +54,9 @@ class ReplayDatabaseComparisonImportServiceTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
@@ -134,6 +136,39 @@ class ReplayDatabaseComparisonImportServiceTest {
         assertEquals(List.of("SYSTEM", "SYSTEM"),
                 dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).items().stream()
                         .map(event -> event.operatorUsername()).toList());
+    }
+
+    @Test
+    void storesTheLastNonBlankReviserForRowsOfTheSameTable() throws Exception {
+        ReplayDbCompareImportResult result = service().importFile(
+                new ByteArrayInputStream(workbook(
+                        input("存款", "acct_master", "acct_no", "创建人"),
+                        input("存款", "acct_master", "customer_no", "编辑人（editor）"),
+                        input("存款", "acct_master", "currency", ""))),
+                new ReplayIssueOperator("creator", "创建人"));
+
+        ReplayDbCompareRegistration registration =
+                dao.findBySchemaAndTable("base_schema", "acct_master");
+        assertTrue(result.success());
+        assertEquals("200", registration.reviserEmpNo());
+        assertEquals("editor", registration.reviserUsername());
+        assertEquals("编辑人", registration.reviserName());
+    }
+
+    @Test
+    void rejectsAnInvalidEarlierReviserEvenWhenTheLastReviserIsValid() throws Exception {
+        ReplayDbCompareImportResult result = service().importFile(
+                new ByteArrayInputStream(workbook(
+                        input("存款", "acct_master", "acct_no", "不存在的人"),
+                        input("存款", "acct_master", "customer_no", "编辑人（editor）"))),
+                new ReplayIssueOperator("creator", "创建人"));
+
+        assertFalse(result.success());
+        assertTrue(result.errors().stream().anyMatch(error -> error.rowNumber() == 2
+                && error.reviserInput().equals("不存在的人")
+                && error.reason().equals("人员不存在或已停用")));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
     }
 
     @Test

@@ -8,11 +8,22 @@ public record ReplayBaseValidatedTable(
         String tableName,
         String tableComment,
         List<ReplayBaseColumnOption> columns,
-        List<ReplayBaseColumnOption> currentPrimaryKeys) {
+        List<ReplayBaseColumnOption> currentPrimaryKeys,
+        List<ReplayBaseColumnOption> allColumns) {
 
     public ReplayBaseValidatedTable {
         columns = List.copyOf(columns);
         currentPrimaryKeys = List.copyOf(currentPrimaryKeys);
+        allColumns = List.copyOf(allColumns);
+    }
+
+    public ReplayBaseValidatedTable(
+            String schemaName,
+            String tableName,
+            String tableComment,
+            List<ReplayBaseColumnOption> columns,
+            List<ReplayBaseColumnOption> currentPrimaryKeys) {
+        this(schemaName, tableName, tableComment, columns, currentPrimaryKeys, columns);
     }
 
     public ReplayBaseValidatedTable(
@@ -24,6 +35,6 @@ public record ReplayBaseValidatedTable(
                 columns.stream()
                         .filter(ReplayBaseColumnOption::primaryKey)
                         .sorted(Comparator.comparing(ReplayBaseColumnOption::primaryKeyOrder))
-                        .toList());
+                        .toList(), columns);
     }
 }

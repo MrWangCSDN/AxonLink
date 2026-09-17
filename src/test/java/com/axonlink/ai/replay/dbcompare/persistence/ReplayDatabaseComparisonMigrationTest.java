@@ -75,7 +75,9 @@ class ReplayDatabaseComparisonMigrationTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V64__drop_replay_database_comparison_generation_lock.sql"),
                 new ClassPathResource("db/daoindex/V65__dii_replay_database_comparison_version_script.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
 
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_AUDIT_EVENT", "OPERATOR_USERNAME");
@@ -87,10 +89,13 @@ class ReplayDatabaseComparisonMigrationTest {
                 "VERSION_ID", "SOURCE_REGISTRATION_ID", "SOURCE_REGISTRATION_VERSION",
                 "SCHEMA_NAME", "TABLE_NAME", "TABLE_COMMENT", "DOMAIN_NAME",
                 "REVISER_EMP_NO", "REVISER_USERNAME", "REVISER_NAME",
-                "GROUP_OWNER_EMP_NO", "GROUP_OWNER_USERNAME", "GROUP_OWNER_NAME", "REGISTERED_DATE");
+                "GROUP_OWNER_EMP_NO", "GROUP_OWNER_USERNAME", "GROUP_OWNER_NAME", "REGISTERED_DATE",
+                "WHERE_CONDITION_JSON", "WHERE_SQL", "COMPARE_LIMIT");
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_VERSION_FIELD",
                 "VERSION_TABLE_ID", "COLUMN_NAME", "COLUMN_COMMENT", "ORDINAL_POSITION",
-                "PRIMARY_KEY", "COMPARISON_ORDER");
+                "PRIMARY_KEY", "COMPARISON_ORDER", "PRIMARY_KEY_ORDER");
+        assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_REGISTRATION",
+                "WHERE_CONDITION_JSON", "COMPARE_LIMIT", "ORDER_BY_PRIMARY_KEYS_JSON");
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_VERSION_SCRIPT",
                 "VERSION_ID", "FILE_NAME", "COMPRESSION", "SCRIPT_CONTENT",
                 "SCRIPT_SHA256", "SCRIPT_SIZE", "COMPRESSED_SIZE",

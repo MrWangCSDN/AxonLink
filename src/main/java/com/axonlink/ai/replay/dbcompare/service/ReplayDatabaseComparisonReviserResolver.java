@@ -33,14 +33,6 @@ public class ReplayDatabaseComparisonReviserResolver {
                     ? Resolution.resolved(matches.get(0))
                     : Resolution.failed("姓名与账号不匹配");
         }
-        SysUser username = userDao.findActiveByUsername(normalized);
-        if (username != null) {
-            return Resolution.resolved(username);
-        }
-        SysUser employee = userDao.findActiveByEmpNo(normalized);
-        if (employee != null) {
-            return Resolution.resolved(employee);
-        }
         List<SysUser> names = userDao.findActiveByExactRealName(normalized);
         if (names.size() == 1) {
             return Resolution.resolved(names.get(0));

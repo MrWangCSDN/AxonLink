@@ -31,6 +31,7 @@ import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConfigSc
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionConflictException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonScopeException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayBaseMetadataService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayBasePrimaryKeyMissingException;
@@ -403,6 +404,16 @@ public class ReplayDatabaseComparisonController {
                         "errorCode", "BASE_PRIMARY_KEYS_REQUIRED",
                         "tableName", exception.tableName(),
                         "missingPrimaryKeyNames", exception.missingPrimaryKeyNames())));
+    }
+
+    @ExceptionHandler(ReplayDatabaseComparisonScopeException.class)
+    public ResponseEntity<R<Map<String, Object>>> handleScopeInvalid(
+            ReplayDatabaseComparisonScopeException exception) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("errorCode", "COMPARISON_SCOPE_INVALID");
+        data.put("errors", exception.errors());
+        return ResponseEntity.unprocessableEntity().body(R.fail(
+                HttpStatus.UNPROCESSABLE_ENTITY.value(), exception.getMessage(), data));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

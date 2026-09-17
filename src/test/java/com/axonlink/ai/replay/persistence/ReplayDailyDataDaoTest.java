@@ -51,7 +51,8 @@ class ReplayDailyDataDaoTest {
                 .execute(jdbc.getDataSource());
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
-                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"))
+                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"),
+                new ClassPathResource("db/daoindex/V69__replay_report_snapshot_summary_view.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDailyDataDao(jdbc);
     }
@@ -177,6 +178,7 @@ class ReplayDailyDataDaoTest {
         assertArrayEquals(new byte[]{9, 8}, saved.content());
         assertEquals(2L, saved.fileSize());
         assertEquals(secondGeneratedAt, saved.generatedAt());
+        assertEquals("{\"schemaVersion\":1}", saved.summaryViewJson());
 
         assertEquals(2, dao.deleteAllReportSnapshots());
         assertTrue(dao.findReportSnapshot("RPT20260907-02").isEmpty());
@@ -202,7 +204,7 @@ class ReplayDailyDataDaoTest {
     private static ReplayDailyReportSnapshot snapshot(String batchNo, LocalDateTime generatedAt, byte[] content) {
         return new ReplayDailyReportSnapshot(batchNo, batchNo + "日报.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                content, content.length, generatedAt);
+                content, content.length, "{\"schemaVersion\":1}", generatedAt);
     }
 
     private static ReplayDailyWorkbookData data(String batch, int seed) {

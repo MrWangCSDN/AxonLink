@@ -109,11 +109,22 @@ public class ReplayDatabaseComparisonImportService {
             ReplayDatabaseComparisonExcelParser.ParsedTable parsed,
             List<PreparedImport> prepared,
             List<ReplayDbCompareImportError> errors) {
-        ReplayDatabaseComparisonReviserResolver.Resolution reviser =
-                reviserResolver.resolve(parsed.reviserInput());
-        if (!reviser.valid()) {
-            parsed.rows().forEach(row -> errors.add(error(row, reviser.reason())));
+        Map<String, ReplayDatabaseComparisonReviserResolver.Resolution> revisers = new LinkedHashMap<>();
+        boolean revisersValid = true;
+        for (ReplayDatabaseComparisonExcelParser.ParsedRow row : parsed.rows()) {
+            if (row.reviserInput().isBlank()) {
+                continue;
+            }
+            ReplayDatabaseComparisonReviserResolver.Resolution resolution = revisers.computeIfAbsent(
+                    row.reviserInput(), reviserResolver::resolve);
+            if (!resolution.valid()) {
+                errors.add(error(row, resolution.reason()));
+                revisersValid = false;
+            }
         }
+        ReplayDatabaseComparisonReviserResolver.Resolution reviser = parsed.reviserInput().isBlank()
+                ? reviserResolver.resolve("")
+                : revisers.get(parsed.reviserInput());
 
         boolean metadataValid = true;
         for (ReplayDatabaseComparisonExcelParser.ParsedRow row : parsed.rows()) {
@@ -124,7 +135,7 @@ public class ReplayDatabaseComparisonImportService {
                 metadataValid = false;
             }
         }
-        if (!metadataValid || !reviser.valid()) {
+        if (!metadataValid || !revisersValid) {
             return;
         }
 
@@ -189,7 +200,8 @@ public class ReplayDatabaseComparisonImportService {
                 current.groupOwnerEmpNo(), current.groupOwnerName(), current.registeredDate(),
                 false, null, null, null, current.version() + 1,
                 current.createdBy(), current.createdName(), current.createdAt(),
-                SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields);
+                SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields,
+                current.whereCondition(), current.compareLimit(), null);
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.IMPORT);
         if (details.isEmpty()) {
@@ -268,7 +280,8 @@ public class ReplayDatabaseComparisonImportService {
         return new ReplayDbCompareState(
                 registration.tableComment(), registration.domainName(),
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
-                registration.registeredDate(), registration.deleted(), registration.fields());
+                registration.registeredDate(), registration.deleted(), registration.fields(),
+                registration.whereCondition(), registration.compareLimit());
     }
 
     private ReplayDbCompareImportError error(

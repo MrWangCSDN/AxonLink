@@ -115,6 +115,9 @@ public final class ReplayIssueTestFixtures {
         new ResourceDatabasePopulator(new ClassPathResource(
                 "db/daoindex/V67__replay_report_mail_attachment_manifest.sql"))
                 .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V69__replay_report_snapshot_summary_view.sql"))
+                .execute(jdbc.getDataSource());
     }
 
     public static ReplayIssueRow row(String groupName, boolean sandbox, int rowOrder,

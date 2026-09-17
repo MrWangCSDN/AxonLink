@@ -35,5 +35,10 @@ cd "${REPO_ROOT}"
 zip -qr "${OUTPUT}" "${SOURCE_PATHS[@]}" -x '.DS_Store' '*/.DS_Store'
 unzip -tq "${OUTPUT}"
 
-echo "源码包已生成: ${OUTPUT}"
+REQUIRED_REGISTRY='src/main/java/com/axonlink/ai/daoindex/datasource/TargetDataSourceRegistry.java'
+if [[ "$(unzip -Z1 "${OUTPUT}" "${REQUIRED_REGISTRY}")" != "${REQUIRED_REGISTRY}" ]]; then
+  echo "源码包缺少必要文件: ${REQUIRED_REGISTRY}" >&2
+  exit 1
+fi
 
+echo "源码包已生成: ${OUTPUT}"

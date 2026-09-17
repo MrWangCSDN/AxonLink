@@ -12,6 +12,7 @@ import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
 import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
+import com.axonlink.ai.replay.dto.ReplayReportMailBodyPreview;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
@@ -36,6 +37,8 @@ import com.axonlink.ai.replay.service.ReplayDailyReportWorkbookWriter;
 import com.axonlink.ai.replay.service.ReplayIssueDailyReportService;
 import com.axonlink.ai.replay.service.ReplayDailyReportMailService;
 import com.axonlink.ai.replay.service.ReplayReportMailAttachmentService;
+import com.axonlink.ai.replay.service.ReplayReportMailBodyService;
+import com.axonlink.ai.replay.service.ReplayReportMailBodyMetricExtractor;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportMailService;
 import com.axonlink.ai.replay.service.ReplayWeeklyReportService;
 import com.axonlink.ai.replay.persistence.ReplayIssueWeeklyTaskDao;
@@ -114,7 +117,46 @@ class ReplayIssueControllerTest {
     private ReplayDailyReportMailService dailyReportMailService;
     private ReplayWeeklyReportService weeklyReportService;
     private ReplayWeeklyReportMailService weeklyReportMailService;
+    private ReplayReportMailBodyService reportMailBodyService;
     private ReplayIssueController controller;
+
+    @Test
+    void previewsReportMailBodyFromSelectedGeneratedReports() throws Exception {
+        mvc.perform(post("/api/ai/parallel-replay/issues/report-mail/body-preview")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "currentReport": {
+                                    "period": "DAILY",
+                                    "endBatchNo": "RPT20260916-01"
+                                  },
+                                  "generatedReports": []
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.body").value(containsString("查询交易总交易")));
+    }
+
+    @Test
+    void returnsConflictWhenReportMailBodyMetricsAreUnavailable() throws Exception {
+        when(reportMailBodyService.preview(any())).thenThrow(
+                new ReplayReportMailBodyMetricExtractor.BodyMetricUnavailableException(
+                        "RPT20260916-01", "覆盖汇总合计不一致"));
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/report-mail/body-preview")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "currentReport": {
+                                    "period": "DAILY",
+                                    "endBatchNo": "RPT20260916-01"
+                                  },
+                                  "generatedReports": []
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(containsString("覆盖汇总合计不一致")));
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -144,6 +186,9 @@ class ReplayIssueControllerTest {
         dailyReportMailService = mock(ReplayDailyReportMailService.class);
         weeklyReportService = mock(ReplayWeeklyReportService.class);
         weeklyReportMailService = mock(ReplayWeeklyReportMailService.class);
+        reportMailBodyService = mock(ReplayReportMailBodyService.class);
+        when(reportMailBodyService.preview(any())).thenReturn(new ReplayReportMailBodyPreview(
+                "各位领导、老师：\n查询交易总交易10，本轮回放实发交易9，采集交易量100，实发交易量100。"));
         controller = new ReplayIssueController(importService, fullRefreshService, dao,
                 properties, editService, resolver, dailyReportService,
                 new ReplayIssueWeeklyTaskService(new ReplayIssueWeeklyTaskDao(jdbc)));
@@ -174,6 +219,7 @@ class ReplayIssueControllerTest {
         ReflectionTestUtils.setField(controller, "dailyReportMailService", dailyReportMailService);
         ReflectionTestUtils.setField(controller, "weeklyReportService", weeklyReportService);
         ReflectionTestUtils.setField(controller, "weeklyReportMailService", weeklyReportMailService);
+        ReflectionTestUtils.setField(controller, "reportMailBodyService", reportMailBodyService);
         mvc = MockMvcBuilders.standaloneSetup(controller, new ReplayIssueUserController(userDao)).build();
     }
 
@@ -994,7 +1040,7 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void generatesDailyReportWithBatchDailyFilename() throws Exception {
+    void generatesDailyReportWithBusinessTypeAndBatchDateFilename() throws Exception {
         seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
         seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "SELECTED");
 
@@ -1004,7 +1050,7 @@ class ReplayIssueControllerTest {
                 .andExpect(content().contentType(
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .andExpect(header().string("Content-Disposition",
-                        containsString("RPT20260902-01%E6%97%A5%E6%8A%A5.xlsx")));
+                        containsString("%E6%9F%A5%E8%AF%A2%E6%97%A5%E6%8A%A5-20260902.xlsx")));
     }
 
     @Test
@@ -1139,7 +1185,7 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(content))
                 .andExpect(header().string("Content-Disposition",
-                        containsString("RPT20260908-01%E5%91%A8%E6%8A%A5.xlsx")));
+                        containsString("%E6%9F%A5%E8%AF%A2%E5%91%A8%E6%8A%A5%2820260901-20260908%29.xlsx")));
     }
 
     @Test
@@ -1190,7 +1236,7 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().bytes(new byte[]{7, 8, 9}))
                 .andExpect(header().string("Content-Disposition",
-                        containsString("RPT20260908-01%E6%97%A5%E6%8A%A5.xlsx")));
+                        containsString("%E6%9F%A5%E8%AF%A2%E6%97%A5%E6%8A%A5-20260908.xlsx")));
         verify(mockedService).regenerate("RPT20260908-01");
     }
 
@@ -1208,7 +1254,9 @@ class ReplayIssueControllerTest {
                         .param("endBatchNo", "RPT20260908-01")
                         .header("X-DII-Trigger-Token", "secret"))
                 .andExpect(status().isOk())
-                .andExpect(content().bytes(new byte[]{4, 5, 6}));
+                .andExpect(content().bytes(new byte[]{4, 5, 6}))
+                .andExpect(header().string("Content-Disposition",
+                        containsString("%E6%9F%A5%E8%AF%A2%E5%91%A8%E6%8A%A5%2820260901-20260908%29.xlsx")));
 
         when(weeklyReportService.regenerate("RPT20260902-01", "RPT20260909-01"))
                 .thenThrow(new ReplayWeeklyReportService.SnapshotNotFoundException());

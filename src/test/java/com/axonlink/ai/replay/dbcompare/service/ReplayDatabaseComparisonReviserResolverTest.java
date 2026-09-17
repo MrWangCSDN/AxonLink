@@ -31,14 +31,18 @@ class ReplayDatabaseComparisonReviserResolverTest {
     }
 
     @Test
-    void acceptsBlankUsernameEmployeeNumberNameAndParenthesizedDisplay() {
+    void acceptsBlankNameAndParenthesizedDisplay() {
         assertTrue(resolver.resolve(" ").blank());
         assertNull(resolver.resolve(" ").user());
-        assertEquals("c-zhangs", resolver.resolve("c-zhangs").user().getUsername());
-        assertEquals("c-zhangs", resolver.resolve("10001").user().getUsername());
         assertEquals("c-zhangs", resolver.resolve("张三").user().getUsername());
         assertEquals("张三（c-zhangs）", resolver.resolve("张三（c-zhangs）").displayName());
         assertEquals("张三（c-zhangs）", resolver.resolve("张三(c-zhangs)").displayName());
+    }
+
+    @Test
+    void treatsPlainTextOnlyAsARealName() {
+        assertEquals("人员不存在或已停用", resolver.resolve("c-zhangs").reason());
+        assertEquals("人员不存在或已停用", resolver.resolve("10001").reason());
     }
 
     @Test

@@ -14,8 +14,6 @@ public class ReplayDailyReportMailProperties {
     private List<String> cc = new ArrayList<>();
     private String subjectPrefix = "对公分布式核心回放问题日报-";
     private String body = "各位好，附件为本批次回放问题日报，请查收。";
-    private String weeklySubjectPrefix = "对公分布式核心回放问题周报-";
-    private String weeklyBody = "各位好，附件为本周期回放问题周报，请查收。";
 
     public List<String> getTo() {
         return to;
@@ -49,19 +47,4 @@ public class ReplayDailyReportMailProperties {
         this.body = body;
     }
 
-    public String getWeeklySubjectPrefix() {
-        return weeklySubjectPrefix;
-    }
-
-    public void setWeeklySubjectPrefix(String weeklySubjectPrefix) {
-        this.weeklySubjectPrefix = weeklySubjectPrefix;
-    }
-
-    public String getWeeklyBody() {
-        return weeklyBody;
-    }
-
-    public void setWeeklyBody(String weeklyBody) {
-        this.weeklyBody = weeklyBody;
-    }
 }

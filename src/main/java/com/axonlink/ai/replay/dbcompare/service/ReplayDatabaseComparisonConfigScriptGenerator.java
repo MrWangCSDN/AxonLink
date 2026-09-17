@@ -90,6 +90,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     errors.add(error(tableName, field.columnName(), "比对顺序必须为不重复的正整数"));
                 }
             }
+            if (table.compareLimit() != null) {
+                validateLimitedTable(table, errors);
+            }
         }
         if (!errors.isEmpty()) {
             throw new ReplayDatabaseComparisonGenerationException(
@@ -97,6 +100,31 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     "CONFIG_SCRIPT_VALIDATION_FAILED",
                     errors.size() + " 项配置无法生成生产脚本",
                     Map.of("errors", List.copyOf(errors)));
+        }
+    }
+
+    private void validateLimitedTable(
+            ReplayDbCompareVersionTableItem table,
+            List<ReplayDbCompareConfigScriptValidationError> errors) {
+        if (table.compareLimit() < 1 || table.compareLimit() > 10_000_000L) {
+            errors.add(error(table.tableName(), null, "比对条数必须在 1 到 10000000 之间"));
+        }
+        List<ReplayDbCompareVersionField> primaryKeys = table.fields().stream()
+                .filter(ReplayDbCompareVersionField::primaryKey)
+                .toList();
+        Set<Integer> primaryKeyOrders = new HashSet<>();
+        boolean validOrders = !primaryKeys.isEmpty();
+        for (ReplayDbCompareVersionField field : primaryKeys) {
+            Integer order = field.primaryKeyOrder();
+            if (order == null || order <= 0 || !primaryKeyOrders.add(order)) {
+                validOrders = false;
+            }
+        }
+        for (int order = 1; order <= primaryKeys.size(); order++) {
+            validOrders &= primaryKeyOrders.contains(order);
+        }
+        if (!validOrders) {
+            errors.add(error(table.tableName(), null, "限制比对条数时必须包含完整且连续的主键顺序"));
         }
     }
 
@@ -186,7 +214,18 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String fields = String.join(",", orderedFields(table).stream()
                             .map(ReplayDbCompareVersionField::columnName).toList());
-                    String select = "(select " + fields + " from " + table.tableName() + ") ";
+                    StringBuilder select = new StringBuilder("(select ")
+                            .append(fields).append(" from ").append(table.tableName());
+                    if (hasText(table.whereSql())) {
+                        select.append(" where ").append(table.whereSql());
+                    }
+                    if (table.compareLimit() != null) {
+                        select.append(" order by ")
+                                .append(String.join(",", orderedPrimaryKeyFields(table).stream()
+                                        .map(ReplayDbCompareVersionField::columnName).toList()))
+                                .append(" limit ").append(table.compareLimit());
+                    }
+                    select.append(") ");
                     return "(" + (index + 1) + "," + quote(select + "orig") + ",1,"
                             + quote(select + "dest") + ",2)";
                 });
@@ -210,6 +249,14 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
     private List<ReplayDbCompareVersionField> orderedFields(ReplayDbCompareVersionTableItem table) {
         return table.fields().stream()
                 .sorted(Comparator.comparingInt(ReplayDbCompareVersionField::comparisonOrder))
+                .toList();
+    }
+
+    private List<ReplayDbCompareVersionField> orderedPrimaryKeyFields(
+            ReplayDbCompareVersionTableItem table) {
+        return table.fields().stream()
+                .filter(ReplayDbCompareVersionField::primaryKey)
+                .sorted(Comparator.comparingInt(ReplayDbCompareVersionField::primaryKeyOrder))
                 .toList();
     }
 

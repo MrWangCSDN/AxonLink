@@ -6,6 +6,8 @@ import com.axonlink.ai.replay.dto.ReplayDailyBatch;
 import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportOptions;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
@@ -37,6 +39,8 @@ public class ReplayWeeklyReportService {
     private final ReplayWeeklyReportMailDao weeklyReportMailDao;
     private final ReplayDailyReportCalculator calculator;
     private final ReplayDailyReportWorkbookWriter workbookWriter;
+    private final ReplayReportSummaryViewFactory summaryViewFactory;
+    private final ReplayReportSummaryCodec summaryCodec;
     private final TransactionTemplate readSnapshotTransaction;
     private final TransactionTemplate writeTransaction;
     private final Clock clock;
@@ -65,6 +69,8 @@ public class ReplayWeeklyReportService {
         this.weeklyReportMailDao = new ReplayWeeklyReportMailDao(diiResultJdbcTemplate);
         this.calculator = calculator;
         this.workbookWriter = workbookWriter;
+        this.summaryViewFactory = new ReplayReportSummaryViewFactory();
+        this.summaryCodec = new ReplayReportSummaryCodec();
         this.clock = clock;
         if (diiResultJdbcTemplate.getDataSource() == null) {
             throw new IllegalArgumentException("Replay weekly report requires a result DataSource");
@@ -89,7 +95,7 @@ public class ReplayWeeklyReportService {
         String normalizedEnd = endBatchNo.trim();
         var cached = weeklyReportDao.findSnapshot(normalizedStart, normalizedEnd);
         if (cached.isPresent()) {
-            return cached.get();
+            return canonicalSnapshot(cached.get());
         }
         if (weeklyReportDao.findSnapshotByEndBatchNo(normalizedEnd).isPresent()) {
             throw new EndBatchAlreadyGeneratedException();
@@ -132,11 +138,21 @@ public class ReplayWeeklyReportService {
         var calculated = calculator.calculate(
                 snapshot.startSummaries(), snapshot.startIssues(),
                 snapshot.endSummaries(), snapshot.endIssues());
-        byte[] bytes = workbookWriter.write(calculated, snapshot.comparisons(),
+        ReplayReportSummaryView summaryView = summaryViewFactory.create(
+                ReplayReportPeriod.WEEKLY, startBatchNo, endBatchNo, calculated);
+        byte[] bytes = workbookWriter.write(calculated, summaryView, snapshot.comparisons(),
                 snapshot.coverageSummaries(), snapshot.coverageDetails());
         return new ReplayWeeklyReportSnapshot(
-                startBatchNo, endBatchNo, endBatchNo + "周报.xlsx", XLSX_CONTENT_TYPE,
-                bytes, bytes.length, LocalDateTime.now(clock));
+                startBatchNo, endBatchNo, ReplayReportFileNames.weekly(startBatchNo, endBatchNo), XLSX_CONTENT_TYPE,
+                bytes, bytes.length, summaryCodec.encode(summaryView), LocalDateTime.now(clock));
+    }
+
+    private ReplayWeeklyReportSnapshot canonicalSnapshot(ReplayWeeklyReportSnapshot snapshot) {
+        return new ReplayWeeklyReportSnapshot(
+                snapshot.startBatchNo(), snapshot.endBatchNo(),
+                ReplayReportFileNames.weekly(snapshot.startBatchNo(), snapshot.endBatchNo()),
+                snapshot.contentType(), snapshot.content(), snapshot.fileSize(), snapshot.summaryViewJson(),
+                snapshot.generatedAt());
     }
 
     private ReportSnapshot loadSnapshot(String startBatchNo, String endBatchNo) {

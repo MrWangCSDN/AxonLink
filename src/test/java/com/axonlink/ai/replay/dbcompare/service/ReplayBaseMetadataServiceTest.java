@@ -91,15 +91,16 @@ class ReplayBaseMetadataServiceTest {
         when(columnRows.next()).thenReturn(true, true, true, false);
         when(columnRows.getString("column_name")).thenReturn("key_b", "customer_name", "key_a");
         when(columnRows.getString("column_comment")).thenReturn("联合主键B", "客户名称", "联合主键A");
+        when(columnRows.getString("data_type")).thenReturn("character varying", "numeric(20,2)", "bigint");
         when(columnRows.getString("primary_key_attnums")).thenReturn("3 1", "3 1", "3 1");
         when(columnRows.getInt("ordinal_position")).thenReturn(1, 2, 3);
 
         List<ReplayBaseColumnOption> result = service.listColumns("ACCT_INFO", "客户");
 
         assertThat(result).containsExactly(
-                new ReplayBaseColumnOption("key_b", "联合主键B", 1, true, 2),
-                new ReplayBaseColumnOption("customer_name", "客户名称", 2, false, null),
-                new ReplayBaseColumnOption("key_a", "联合主键A", 3, true, 1));
+                new ReplayBaseColumnOption("key_b", "联合主键B", "character varying", 1, true, 2),
+                new ReplayBaseColumnOption("customer_name", "客户名称", "numeric(20,2)", 2, false, null),
+                new ReplayBaseColumnOption("key_a", "联合主键A", "bigint", 3, true, 1));
         verify(columnStatement).setString(1, "base_schema");
         verify(columnStatement).setString(2, "acct_info");
         verify(columnStatement).setString(3, "%客户%");
@@ -229,6 +230,7 @@ class ReplayBaseMetadataServiceTest {
         when(columnRows.getString("table_name")).thenReturn("acct_master", "acct_master");
         when(columnRows.getString("column_name")).thenReturn("acct_no", "customer_name");
         when(columnRows.getString("column_comment")).thenReturn("账号", "客户名称");
+        when(columnRows.getString("data_type")).thenReturn("character varying", "text");
         when(columnRows.getString("primary_key_attnums")).thenReturn("3 1", "3 1");
         when(columnRows.getInt("ordinal_position")).thenReturn(1, 2);
 
@@ -239,8 +241,8 @@ class ReplayBaseMetadataServiceTest {
         assertThat(result.get("acct_master").tableExists()).isTrue();
         assertThat(result.get("acct_master").tableComment()).isEqualTo("账户主表");
         assertThat(result.get("acct_master").columns()).containsExactly(
-                new ReplayBaseColumnOption("acct_no", "账号", 1, true, 2),
-                new ReplayBaseColumnOption("customer_name", "客户名称", 2, false, null));
+                new ReplayBaseColumnOption("acct_no", "账号", "character varying", 1, true, 2),
+                new ReplayBaseColumnOption("customer_name", "客户名称", "text", 2, false, null));
         assertThat(result.get("removed_table").tableExists()).isFalse();
         assertThat(result.get("removed_table").columns()).isEmpty();
         verify(connection, times(2)).prepareStatement(anyString());

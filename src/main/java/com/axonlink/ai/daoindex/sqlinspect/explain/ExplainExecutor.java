@@ -7,7 +7,7 @@ import com.alibaba.druid.sql.visitor.SQLASTVisitorAdapter;
 import com.alibaba.druid.util.JdbcConstants;
 import com.axonlink.ai.daoindex.sqlinspect.dto.ExplainResult;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;

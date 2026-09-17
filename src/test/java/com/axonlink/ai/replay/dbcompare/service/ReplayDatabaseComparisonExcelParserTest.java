@@ -77,7 +77,7 @@ class ReplayDatabaseComparisonExcelParserTest {
     }
 
     @Test
-    void reportsEveryRowForCrossSheetAndConflictingReviserValues() throws Exception {
+    void reportsEveryRowOnlyForCrossSheetConflicts() throws Exception {
         XSSFWorkbook workbook = requiredWorkbook();
         fixedRow(workbook.getSheet("存款"), 1, "acct_master", "acct_no", "张三");
         fixedRow(workbook.getSheet("存款"), 2, "acct_master", "customer_no", "李四");
@@ -85,10 +85,22 @@ class ReplayDatabaseComparisonExcelParserTest {
 
         ReplayDatabaseComparisonExcelParser.ParsedImport result = parse(workbook);
 
-        assertEquals(6, result.errors().size());
+        assertEquals(3, result.errors().size());
         assertEquals(3, result.errors().stream().filter(error -> error.reason().equals("同一表出现在不同 Sheet")).count());
-        assertEquals(3, result.errors().stream().filter(error -> error.reason().equals("同一表的负责人不一致")).count());
         assertEquals(3, result.tables().get(0).rows().size());
+    }
+
+    @Test
+    void usesTheLastNonBlankReviserForOneTableWithoutTreatingChangesAsConflicts() throws Exception {
+        XSSFWorkbook workbook = requiredWorkbook();
+        fixedRow(workbook.getSheet("存款"), 1, "acct_master", "acct_no", "张三");
+        fixedRow(workbook.getSheet("存款"), 2, "acct_master", "customer_no", "李四（c-lisi）");
+        fixedRow(workbook.getSheet("存款"), 3, "acct_master", "currency", "");
+
+        ReplayDatabaseComparisonExcelParser.ParsedImport result = parse(workbook);
+
+        assertTrue(result.errors().isEmpty());
+        assertEquals("李四（c-lisi）", result.tables().get(0).reviserInput());
     }
 
     private static XSSFWorkbook requiredWorkbook() {

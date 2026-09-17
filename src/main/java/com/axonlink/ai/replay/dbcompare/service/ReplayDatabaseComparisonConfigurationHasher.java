@@ -15,6 +15,9 @@ import java.util.Locale;
 @Component
 public class ReplayDatabaseComparisonConfigurationHasher {
 
+    private final ReplayDatabaseComparisonConditionCodec conditionCodec =
+            new ReplayDatabaseComparisonConditionCodec();
+
     public String hash(List<ReplayDbCompareRegistration> registrations) {
         MessageDigest digest = sha256();
         List<ReplayDbCompareRegistration> ordered = registrations.stream()
@@ -37,6 +40,9 @@ public class ReplayDatabaseComparisonConfigurationHasher {
             putString(digest, registration.groupOwnerName());
             putString(digest, registration.registeredDate() == null
                     ? null : registration.registeredDate().toString());
+            putString(digest, conditionCodec.encode(registration.whereCondition()));
+            putString(digest, registration.compiledWhereSql());
+            putLong(digest, registration.compareLimit());
             List<ReplayDbCompareField> fields = registration.fields().stream()
                     .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder)
                             .thenComparing(field -> normalize(field.columnName())))
@@ -47,6 +53,7 @@ public class ReplayDatabaseComparisonConfigurationHasher {
                 putString(digest, field.columnComment());
                 putInt(digest, field.ordinalPosition());
                 putInt(digest, field.primaryKey() ? 1 : 0);
+                putNullableInt(digest, field.primaryKeyOrder());
                 putInt(digest, field.comparisonOrder());
             }
         }
@@ -82,6 +89,15 @@ public class ReplayDatabaseComparisonConfigurationHasher {
         }
         digest.update((byte) 1);
         digest.update(ByteBuffer.allocate(Long.BYTES).putLong(value).array());
+    }
+
+    private void putNullableInt(MessageDigest digest, Integer value) {
+        if (value == null) {
+            digest.update((byte) 0);
+            return;
+        }
+        digest.update((byte) 1);
+        putInt(digest, value);
     }
 
     private String normalize(String value) {

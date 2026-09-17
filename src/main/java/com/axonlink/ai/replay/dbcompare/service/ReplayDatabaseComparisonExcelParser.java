@@ -171,17 +171,17 @@ public class ReplayDatabaseComparisonExcelParser {
                         row.tableName(), row.fieldName(), row.reviserInput(),
                         "同一表出现在不同 Sheet")));
             }
-            if (rows.stream().map(ParsedRow::reviserInput).filter(value -> !value.isBlank()).distinct().count() > 1) {
-                rows.forEach(row -> errors.add(error(row.sheetName(), row.rowNumber(),
-                        row.tableName(), row.fieldName(), row.reviserInput(),
-                        "同一表的负责人不一致")));
-            }
         }
 
         private ParsedTable toParsed() {
             ParsedRow first = rows.get(0);
-            String reviserInput = rows.stream().map(ParsedRow::reviserInput)
-                    .filter(value -> !value.isBlank()).findFirst().orElse("");
+            String reviserInput = "";
+            for (int index = rows.size() - 1; index >= 0; index--) {
+                if (!rows.get(index).reviserInput().isBlank()) {
+                    reviserInput = rows.get(index).reviserInput();
+                    break;
+                }
+            }
             return new ParsedTable(first.sheetName(), tableName, first.domainName(),
                     reviserInput, List.copyOf(fieldNames), List.copyOf(rows));
         }

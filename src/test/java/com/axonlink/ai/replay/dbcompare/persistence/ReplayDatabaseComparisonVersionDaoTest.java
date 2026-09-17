@@ -4,10 +4,16 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTablePage;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConditionCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
@@ -36,7 +42,9 @@ class ReplayDatabaseComparisonVersionDaoTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);
@@ -109,10 +117,136 @@ class ReplayDatabaseComparisonVersionDaoTest {
 
         assertEquals(1, fieldOptions.options().size());
         assertEquals("acct_no", fieldOptions.options().get(0).value());
-        assertEquals("acct_no（账号）", fieldOptions.options().get(0).label());
+        assertEquals("acct_no(账号)", fieldOptions.options().get(0).label());
         assertEquals(1, fieldOptions.matchedRegistrationCount());
-        assertEquals("acct_master（账户主表）", tableOptions.options().get(0).label());
-        assertEquals("张三（zhangsan）", reviserOptions.options().get(0).label());
+        assertEquals("acct_master(账户主表)", tableOptions.options().get(0).label());
+        assertEquals("张三(zhangsan)", reviserOptions.options().get(0).label());
+    }
+
+    @Test
+    void supportsExactMultiSelectAndExplicitEmptyPeopleInVersionHistory() {
+        long versionId = dao.insertVersion(
+                "20260914-121500", "e".repeat(64), 2, 2,
+                "100", "张三", now);
+        ReplayDbCompareRegistration account = registration(
+                7L, 3L, "acct_master", "账户主表", "存款组", "100", "张三",
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration customer = new ReplayDbCompareRegistration(
+                8L, "base_schema", "customer_master", "客户主表", "存款组",
+                null, null, null, null, null,
+                LocalDate.of(2026, 9, 15), false, null, null, null, 1L,
+                "100", "张三", now, "100", "张三", now,
+                List.of(field("customer_no", "客户号", 1, true, 1)));
+        long accountTableId = dao.insertVersionTable(versionId, account, "li-manager");
+        long customerTableId = dao.insertVersionTable(versionId, customer, null);
+        dao.insertVersionFields(accountTableId, account.fields());
+        dao.insertVersionFields(customerTableId, customer.fields());
+
+        ReplayDbCompareVersionTablePage selected = dao.searchVersion(
+                "20260914-121500",
+                new ReplayDbCompareVersionQuery(
+                        0, 50, null, null, List.of(), List.of("__EMPTY__"),
+                        List.of("__EMPTY__"), null, null,
+                        List.of("acct_master", "customer_master"),
+                        List.of("customer_no"), List.of(LocalDate.of(2026, 9, 15))));
+        var reviserOptions = dao.versionHeaderFilterOptions(
+                "20260914-121500",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "reviser", "", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null,
+                        List.of(), List.of(), List.of()));
+        var ownerOptions = dao.versionHeaderFilterOptions(
+                "20260914-121500",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "groupOwner", "", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null,
+                        List.of(), List.of(), List.of()));
+
+        assertEquals(List.of("customer_master"), selected.items().stream()
+                .map(item -> item.tableName()).toList());
+        assertTrue(reviserOptions.options().stream().anyMatch(option ->
+                option.value().equals("__EMPTY__") && option.label().equals("空")));
+        assertTrue(ownerOptions.options().stream().anyMatch(option ->
+                option.value().equals("__EMPTY__") && option.label().equals("空")));
+    }
+
+    @Test
+    void filtersAndGroupsVersionQueryConditionsIncludingFullTable() {
+        long versionId = dao.insertVersion(
+                "20260914-121700", "g".repeat(64), 2, 2,
+                "100", "张三", now);
+        ReplayDbCompareRegistration fullTable = registration(
+                7L, 3L, "acct_full", "全表账户", "存款组", "100", "张三",
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "status_cd", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        ReplayDbCompareRegistration scoped = new ReplayDbCompareRegistration(
+                8L, "base_schema", "acct_scoped", "条件账户", "存款组",
+                "101", "lisi", "李四", "200", "李经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 3L,
+                "100", "张三", now, "100", "张三", now,
+                List.of(field("acct_no", "账号", 1, true, 1)), condition, null, null);
+        dao.insertVersionTable(versionId, fullTable);
+        dao.insertVersionTable(versionId, scoped);
+        String conditionKey = new ReplayDatabaseComparisonConditionCodec().encode(condition);
+
+        ReplayDbCompareVersionTablePage selected = dao.searchVersion(
+                "20260914-121700",
+                new ReplayDbCompareVersionQuery(
+                        0, 50, null, null, List.of(), List.of(), List.of(), null, null,
+                        List.of(), List.of(), List.of(), List.of("__FULL_TABLE__", conditionKey)));
+        assertEquals(List.of("acct_full", "acct_scoped"), selected.items().stream()
+                .map(item -> item.tableName()).toList());
+
+        var options = dao.versionHeaderFilterOptions(
+                "20260914-121700",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "whereCondition", "ignored-by-dao", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null,
+                        List.of(), List.of(), List.of(), List.of()));
+        assertEquals(List.of("__FULL_TABLE__", conditionKey), options.options().stream()
+                .map(option -> option.value()).sorted().toList());
+    }
+
+    @Test
+    void keepsUsernameOnlyRevisersDistinctInVersionHistory() {
+        long versionId = dao.insertVersion(
+                "20260914-122000", "f".repeat(64), 2, 2,
+                "100", "张三", now);
+        ReplayDbCompareRegistration first = new ReplayDbCompareRegistration(
+                7L, "base_schema", "acct_a", "账户甲", "存款组",
+                null, "c-zhangs", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 1L,
+                "100", "张三", now, "100", "张三", now,
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration second = new ReplayDbCompareRegistration(
+                8L, "base_schema", "acct_b", "账户乙", "存款组",
+                null, "c-lisi", "李四", "102", "钱经理",
+                LocalDate.of(2026, 9, 15), false, null, null, null, 1L,
+                "100", "张三", now, "100", "张三", now,
+                List.of(field("customer_no", "客户号", 1, true, 1)));
+        dao.insertVersionTable(versionId, first);
+        dao.insertVersionTable(versionId, second);
+
+        var options = dao.versionHeaderFilterOptions(
+                "20260914-122000",
+                new ReplayDbCompareHeaderFilterRequest(
+                        "reviser", "", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null));
+
+        assertEquals(List.of("c-lisi", "c-zhangs"), options.options().stream()
+                .map(option -> option.value()).sorted().toList());
+        ReplayDbCompareVersionTablePage selected = dao.searchVersion(
+                "20260914-122000",
+                new ReplayDbCompareVersionQuery(
+                        0, 50, null, null, List.of(), List.of("c-zhangs"),
+                        List.of(), null, null));
+        assertEquals(List.of("acct_a"), selected.items().stream()
+                .map(item -> item.tableName()).toList());
     }
 
     @Test
@@ -171,6 +305,39 @@ class ReplayDatabaseComparisonVersionDaoTest {
 
         assertNull(dao.findStoredVersion("missing"));
         assertTrue(dao.findCompleteSnapshot(versionId).isEmpty());
+    }
+
+    @Test
+    void roundTripsImmutableScopeAndPrimaryKeyOrder() {
+        long versionId = dao.insertVersion(
+                "20260914-190000", "e".repeat(64), 1, 2,
+                "100", "张三", now);
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "status", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        ReplayDbCompareRegistration registration = new ReplayDbCompareRegistration(
+                7L, "base_schema", "acct_master", "账户主表", "存款组",
+                "100", "zhangsan", "张三", "200", "李经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 3,
+                "100", "张三", now, "100", "张三", now,
+                List.of(
+                        new ReplayDbCompareField("a", "主键A", 1, true, 1, 2, null),
+                        new ReplayDbCompareField("b", "主键B", 2, true, 2, 1, null)),
+                condition, 1000L, "(status = '1')", null);
+
+        long tableId = dao.insertVersionTable(versionId, registration);
+        dao.insertVersionFields(tableId, registration.fields());
+        var snapshot = dao.findCompleteSnapshot(versionId).get(0);
+
+        assertEquals("(status = '1')", snapshot.whereSql());
+        assertEquals(1000L, snapshot.compareLimit());
+        assertEquals(ReplayDbCompareConditionOperator.EQ,
+                snapshot.whereCondition().groups().get(0).conditions().get(0).operator());
+        assertEquals(List.of(2, 1), snapshot.fields().stream()
+                .map(item -> item.primaryKeyOrder()).toList());
     }
 
     private ReplayDbCompareRegistration registration(

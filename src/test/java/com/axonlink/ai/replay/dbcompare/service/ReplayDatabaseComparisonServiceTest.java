@@ -7,6 +7,11 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseValidatedTable;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditPage;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditGroupPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareDeleteRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
@@ -19,6 +24,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareReregisterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSaveRequest;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScopeFilterValue;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonDao;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionDao;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
@@ -46,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -87,7 +94,9 @@ class ReplayDatabaseComparisonServiceTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));
@@ -126,6 +135,51 @@ class ReplayDatabaseComparisonServiceTest {
         assertEquals(List.of("customer_no", "acct_no"),
                 updated.fields().stream().map(field -> field.columnName()).toList());
         assertEquals(2, dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).total());
+    }
+
+    @Test
+    void createPersistsConditionOnNonComparisonColumnAndLimit() {
+        List<ReplayBaseColumnOption> selected = List.of(
+                new ReplayBaseColumnOption("acct_no", "账号", "character varying", 1, true, 1));
+        List<ReplayBaseColumnOption> all = List.of(
+                selected.get(0),
+                new ReplayBaseColumnOption("status", "状态", "character varying", 2, false, null));
+        when(metadataService.requireTableWithColumns("acct_master", List.of("acct_no")))
+                .thenReturn(new ReplayBaseValidatedTable(
+                        "base_schema", "acct_master", "母库账户主表", selected, selected, all));
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "status", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+
+        ReplayDbCompareRegistration created = service.create(
+                new ReplayDbCompareSaveRequest(
+                        "acct_master", "存款组", "101", List.of("acct_no"),
+                        null, false, condition, 1000L),
+                new ReplayIssueOperator("creator", "创建人"));
+
+        assertEquals("status", created.whereCondition().groups().get(0).conditions().get(0).columnName());
+        assertEquals(1000L, created.compareLimit());
+        assertTrue(created.metadataValidation() == null);
+    }
+
+    @Test
+    void detailReportsMissingConditionFieldsSeparately() {
+        ReplayDbCompareRegistration created = createWithMetadata(
+                "acct_master", List.of("acct_no"), List.of("acct_no"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET where_condition_json=? WHERE id=?",
+                "{\"connector\":\"AND\",\"groups\":[{\"connector\":\"AND\",\"conditions\":[{\"columnName\":\"legacy_status\",\"operator\":\"EQ\",\"values\":[\"1\"]}]}]}",
+                created.id());
+        when(metadataService.inspectTable("acct_master")).thenReturn(metadata(
+                "acct_master", List.of("acct_no"), List.of("acct_no")));
+
+        ReplayDbCompareRegistration detail = service.detail(created.id());
+
+        assertEquals(List.of("legacy_status"),
+                detail.metadataValidation().missingConditionFieldNames());
+        assertTrue(detail.metadataValidation().missingFieldNames().isEmpty());
     }
 
     @Test
@@ -463,6 +517,7 @@ class ReplayDatabaseComparisonServiceTest {
                 item(page, "acct_master").metadataValidation().status());
         assertEquals(List.of("customer_no"),
                 item(page, "acct_master").metadataValidation().missingFieldNames());
+        assertEquals(List.of("acct_no"), item(page, "acct_master").primaryKeyNames());
         assertEquals(ReplayDbCompareMetadataStatus.VALID,
                 item(page, "valid_table").metadataValidation().status());
         assertEquals(ReplayDbCompareMetadataStatus.TABLE_MISSING,
@@ -514,9 +569,13 @@ class ReplayDatabaseComparisonServiceTest {
         ReplayDbCompareListPage second = service.search(secondQuery);
 
         assertEquals(3, first.total());
+        assertEquals(5, first.globalTableCount());
+        assertEquals(5, first.globalFieldCount());
         assertEquals(List.of("drift_a", "drift_b"), first.items().stream()
                 .map(ReplayDbCompareListItem::tableName).toList());
         assertEquals(3, second.total());
+        assertEquals(5, second.globalTableCount());
+        assertEquals(5, second.globalFieldCount());
         assertEquals(List.of("drift_c"), second.items().stream()
                 .map(ReplayDbCompareListItem::tableName).toList());
         verify(dao, never()).search(firstQuery);
@@ -552,6 +611,28 @@ class ReplayDatabaseComparisonServiceTest {
     }
 
     @Test
+    void tableNamesAndMetadataStatusesUseOrWithinTheSameColumn() {
+        for (String tableName : List.of("drift_a", "removed_a", "valid_a")) {
+            service.create(save(tableName, "存款组", "101", List.of("acct_no"), null),
+                    new ReplayIssueOperator("creator", "创建人"));
+        }
+        when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
+                "drift_a", new ReplayBaseMetadataSnapshot(true, "drift_a", null, List.of()),
+                "removed_a", new ReplayBaseMetadataSnapshot(false, "removed_a", null, List.of()),
+                "valid_a", new ReplayBaseMetadataSnapshot(true, "valid_a", null,
+                        List.of(new ReplayBaseColumnOption("acct_no", "账号", 1, true)))));
+
+        ReplayDbCompareListPage result = service.search(new ReplayDbCompareQuery(
+                null, null, List.of(), List.of(), List.of(), null, null,
+                0, 20, List.of(ReplayDbCompareMetadataStatus.MISSING_FIELDS),
+                List.of("valid_a"), List.of(), List.of()));
+
+        assertEquals(List.of("drift_a", "valid_a"), result.items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
+        assertEquals(2, result.total());
+    }
+
+    @Test
     void primaryKeyChangesAreNotExposedAsMetadataStatusOrHeaderOption() {
         service.create(save("drift_key", "存款组", "101", List.of("acct_no"), null),
                 new ReplayIssueOperator("creator", "创建人"));
@@ -576,6 +657,60 @@ class ReplayDatabaseComparisonServiceTest {
                 List.of(), List.of(), List.of(), null, null));
         assertTrue(options.options().stream()
                 .noneMatch(option -> "母库主键已变更".equals(option.value())));
+    }
+
+    @Test
+    void limitedComparisonExposesOrderedPrimaryKeyDriftAndHeaderFilter() {
+        List<ReplayBaseColumnOption> originalColumns = List.of(
+                new ReplayBaseColumnOption("acct_no", "账号", 1, true, 1),
+                new ReplayBaseColumnOption("tenant_id", "租户", 2, true, 2));
+        when(metadataService.requireTableWithColumns(
+                "limited_key", List.of("acct_no", "tenant_id")))
+                .thenReturn(new ReplayBaseValidatedTable(
+                        "base_schema", "limited_key", "限量表",
+                        originalColumns, originalColumns));
+        service.create(new ReplayDbCompareSaveRequest(
+                        "limited_key", "存款组", "101", List.of("acct_no", "tenant_id"),
+                        null, false, null, 1000L),
+                new ReplayIssueOperator("creator", "创建人"));
+        when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
+                "limited_key", new ReplayBaseMetadataSnapshot(true, "limited_key", null, List.of(
+                        new ReplayBaseColumnOption("acct_no", "账号", 1, true, 2),
+                        new ReplayBaseColumnOption("tenant_id", "租户", 2, true, 1)))));
+
+        ReplayDbCompareListPage page = service.search(ReplayDbCompareQuery.empty(0, 20));
+        var validation = item(page, "limited_key").metadataValidation();
+
+        assertTrue(validation.orderingPrimaryKeyChanged());
+        assertEquals(List.of("acct_no", "tenant_id"), validation.savedOrderingPrimaryKeyNames());
+        assertEquals(List.of("tenant_id", "acct_no"), validation.currentOrderingPrimaryKeyNames());
+
+        var options = service.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "tableName", "排序主键", 20, null, null,
+                List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, options.options().size());
+        assertEquals("排序主键已变更", options.options().get(0).value());
+        assertEquals(ReplayDbCompareMetadataStatus.ORDERING_PRIMARY_KEY_CHANGED,
+                options.options().get(0).metadataStatus());
+    }
+
+    @Test
+    void primaryKeySyncSilentlyInitializesLegacyLimitedSnapshot() {
+        ReplayDbCompareRegistration created = service.create(new ReplayDbCompareSaveRequest(
+                        "legacy_limited", "存款组", "101", List.of("acct_no"),
+                        null, false, null, 1000L),
+                new ReplayIssueOperator("creator", "创建人"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET order_by_primary_keys_json=NULL WHERE id=?",
+                created.id());
+        when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
+                "legacy_limited", metadata("legacy_limited", List.of("acct_no"), List.of("acct_no"))));
+
+        service.synchronizePrimaryKeys();
+
+        ReplayDbCompareRegistration initialized = dao.findByIdIncludingDeleted(created.id());
+        assertEquals(List.of("acct_no"), initialized.orderingPrimaryKeyNames());
+        assertEquals(created.version(), initialized.version());
+        assertEquals(1, dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 20)).total());
     }
 
     @Test
@@ -730,6 +865,41 @@ class ReplayDatabaseComparisonServiceTest {
     }
 
     @Test
+    void tableHeaderOptionsIncludeIndependentMissingConditionFieldStatus() {
+        List<ReplayBaseColumnOption> selected = List.of(
+                new ReplayBaseColumnOption("acct_no", "账号", "character varying", 1, true, 1));
+        List<ReplayBaseColumnOption> originalColumns = List.of(
+                selected.get(0),
+                new ReplayBaseColumnOption("legacy_status", "历史状态", "character varying", 2, false, null));
+        when(metadataService.requireTableWithColumns("condition_missing", List.of("acct_no")))
+                .thenReturn(new ReplayBaseValidatedTable(
+                        "base_schema", "condition_missing", "条件缺失表",
+                        selected, selected, originalColumns));
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "legacy_status", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        service.create(new ReplayDbCompareSaveRequest(
+                        "condition_missing", "存款组", "101", List.of("acct_no"),
+                        null, false, condition, null),
+                new ReplayIssueOperator("creator", "创建人"));
+        when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
+                "condition_missing", new ReplayBaseMetadataSnapshot(
+                        true, "condition_missing", null, selected)));
+
+        var result = service.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "tableName", "条件字段", 20, null, null,
+                List.of(), List.of(), List.of(), null, null));
+
+        assertEquals(1, result.options().size());
+        assertEquals("条件字段母库中不存在", result.options().get(0).value());
+        assertEquals("MISSING_CONDITION_FIELDS", result.options().get(0).metadataStatus().name());
+        assertEquals(1, result.options().get(0).count());
+    }
+
+    @Test
     void tableHeaderOptionsIncludeSyntheticMissingTableStatus() {
         service.create(save("removed_a", "存款组", "101", List.of("acct_no"), null),
                 new ReplayIssueOperator("creator", "创建人"));
@@ -749,6 +919,73 @@ class ReplayDatabaseComparisonServiceTest {
         assertEquals(ReplayDbCompareMetadataStatus.TABLE_MISSING,
                 result.options().get(0).metadataStatus());
         assertEquals(1, result.options().get(0).count());
+    }
+
+    @Test
+    void tableHeaderMetadataCandidatesPreserveSelectedQueryConditions() {
+        when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of());
+        var request = new ReplayDbCompareHeaderFilterRequest(
+                "tableName", "母库", 20, null, null,
+                List.of("存款组"), List.of("creator"), List.of("101"), null, null,
+                List.of("acct_master"), List.of("acct_no"), List.of(),
+                List.of("__FULL_TABLE__"));
+
+        service.headerFilterOptions(request);
+
+        var queryCaptor = forClass(ReplayDbCompareQuery.class);
+        verify(dao).findMetadataCandidates(queryCaptor.capture());
+        ReplayDbCompareQuery query = queryCaptor.getValue();
+        assertEquals(List.of("acct_master"), query.tableNames());
+        assertEquals(List.of("acct_no"), query.fieldNames());
+        assertEquals(List.of("__FULL_TABLE__"), query.whereConditionValues());
+    }
+
+    @Test
+    void queryConditionHeaderOptionsUseReadableLabelsAndLabelKeywordSearch() {
+        ReplayDbCompareRegistration fullTable = service.create(
+                save("acct_full", "存款组", "101", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人"));
+        ReplayDbCompareRegistration scoped = service.create(
+                save("acct_scoped", "存款组", "101", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人"));
+        String conditionKey = new ReplayDatabaseComparisonConditionCodec().encode(
+                new ReplayDbCompareConditionTree(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareConditionGroup(
+                                ReplayDbCompareConditionConnector.AND,
+                                List.of(new ReplayDbCompareCondition(
+                                        "status_cd", ReplayDbCompareConditionOperator.EQ, List.of("1")))))));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET where_condition_json=? WHERE id=?",
+                conditionKey, scoped.id());
+
+        var configured = service.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "whereCondition", "status_cd", 20, null, null,
+                List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, configured.options().size());
+        assertEquals(conditionKey, configured.options().get(0).value());
+        assertEquals("where status_cd = '1'", configured.options().get(0).label());
+
+        ReplayDbCompareRegistration limited = service.create(
+                save("acct_limited", "存款组", "101", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET compare_limit=1000 WHERE id=?",
+                limited.id());
+        var limitedOptions = service.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "whereCondition", "order by acct_no", 20, null, null,
+                List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, limitedOptions.options().size());
+        ReplayDbCompareScopeFilterValue scope = ReplayDbCompareScopeFilterValue.decode(
+                limitedOptions.options().get(0).value());
+        assertEquals("acct_limited", scope.tableName());
+        assertEquals("order by acct_no\nlimit 1000", limitedOptions.options().get(0).label());
+
+        var allRows = service.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "whereCondition", "全表", 20, null, null,
+                List.of(), List.of(), List.of(), null, null));
+        assertEquals(1, allRows.options().size());
+        assertEquals("__FULL_TABLE__", allRows.options().get(0).value());
+        assertEquals("全表", allRows.options().get(0).label());
+        assertEquals(fullTable.id(), dao.findByIdIncludingDeleted(fullTable.id()).id());
     }
 
     @Test

@@ -6,7 +6,9 @@ public record ReplayDbCompareListPage(
         List<ReplayDbCompareListItem> items,
         int page,
         int size,
-        long total) {
+        long total,
+        long globalTableCount,
+        long globalFieldCount) {
 
     public ReplayDbCompareListPage {
         items = List.copyOf(items);
