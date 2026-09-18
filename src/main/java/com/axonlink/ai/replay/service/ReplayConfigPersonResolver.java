@@ -78,6 +78,64 @@ public class ReplayConfigPersonResolver {
         return result;
     }
 
+    /**
+     * 解析某工号作为行方负责人可审核的全部最终服务码集合。
+     *
+     * <p>路径：人员清单 bank_owner_emp_nos 命中该工号 → old_transaction_code →
+     * znzx_service.tran_code → esf_service_code 去点号 → 追加三种后缀。
+     */
+    public Set<String> findReviewableServiceCodes(String empNo) {
+        if (empNo == null || empNo.isBlank()) {
+            return Set.of();
+        }
+        String target = empNo.trim();
+        List<String> transactionCodes = jdbc.query(
+                        "SELECT old_transaction_code, bank_owner_emp_nos FROM dii_replay_transaction_person "
+                                + "WHERE TRIM(COALESCE(bank_owner_emp_nos,'')) <> ''",
+                        (rs, rowNum) -> new String[]{rs.getString("old_transaction_code"),
+                                rs.getString("bank_owner_emp_nos")})
+                .stream()
+                .filter(row -> splitEmpNos(row[1]).contains(target))
+                .map(row -> row[0])
+                .filter(code -> code != null && !code.isBlank())
+                .distinct()
+                .toList();
+        if (transactionCodes.isEmpty()) {
+            return Set.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(transactionCodes.size(), "?"));
+        List<String> esfCodes = jdbc.queryForList(
+                "SELECT esf_service_code FROM znzx_service WHERE tran_code IN (" + placeholders + ")",
+                String.class, transactionCodes.toArray());
+        Set<String> result = new LinkedHashSet<>();
+        for (String esfCode : esfCodes) {
+            if (esfCode == null) {
+                continue;
+            }
+            String base = esfCode.replace(".", "");
+            if (base.isBlank()) {
+                continue;
+            }
+            result.add(base + "&sop");
+            result.add(base + "&soap");
+            result.add(base + "&bzjson");
+        }
+        return result;
+    }
+
+    /** 服务码集合求交；任一侧为 {@code null} 表示不限制。 */
+    public static Set<String> intersect(Set<String> left, Set<String> right) {
+        if (left == null) {
+            return right;
+        }
+        if (right == null) {
+            return left;
+        }
+        Set<String> result = new LinkedHashSet<>(left);
+        result.retainAll(right);
+        return result;
+    }
+
     /** 去掉最终服务码的 &sop / &soap / &bzjson 后缀。 */
     public static String stripSuffix(String code) {
         if (code == null) {

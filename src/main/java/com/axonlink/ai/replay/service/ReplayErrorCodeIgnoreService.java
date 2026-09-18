@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.service;
 
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
@@ -49,10 +50,23 @@ public class ReplayErrorCodeIgnoreService {
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode,
                                                            Integer reviewStatus, ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode,
+                reviewStatus, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
+                                                           String internalTransactionCode, String serviceCode,
+                                                           String oldRespCode, String newRespCode,
+                                                           Integer reviewStatus, Boolean reviewableByMe,
+                                                           ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
-        Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
+        Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
+                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                Boolean.TRUE.equals(reviewableByMe)
+                        ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
+                        : null);
         long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, resolvedReviewStatus);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
@@ -60,6 +74,18 @@ public class ReplayErrorCodeIgnoreService {
         List<ReplayErrorCodeIgnoreRow> rows = dao.list(serviceCode, oldRespCode, newRespCode, serviceCodes,
                 resolvedReviewStatus, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
+    }
+
+    public ReplayConfigBatchReviewResult batchReview(List<ReplayConfigVersionedId> items,
+                                                     ReplayConfigOperator operator) {
+        if (items == null || items.isEmpty()) {
+            return new ReplayConfigBatchReviewResult(0, 0);
+        }
+        int approved = dao.batchReview(items, operator, row -> row.reviewStatus() == 0
+                && ReplayConfigPersonResolver.matchesBankOwner(
+                        personResolver.resolveByServiceCodes(List.of(row.serviceCode())).get(row.serviceCode()),
+                        operator));
+        return new ReplayConfigBatchReviewResult(approved, items.size() - approved);
     }
 
     public ReplayErrorCodeIgnoreRow create(ReplayErrorCodeIgnoreCreateRequest request,

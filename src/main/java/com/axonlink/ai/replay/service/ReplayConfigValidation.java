@@ -110,7 +110,11 @@ public final class ReplayConfigValidation {
 
     /** 批量删除：1 至 100 条，id 不得重复，version 必填。 */
     public static List<ReplayConfigVersionedId> requireBatchItems(ReplayConfigBatchDeleteRequest request) {
-        List<ReplayConfigVersionedId> items = request == null ? null : request.items();
+        return requireBatchItems(request == null ? null : request.items());
+    }
+
+    /** 批量操作（删除/审核）：1 至 100 条，id 不得重复，version 必填。 */
+    public static List<ReplayConfigVersionedId> requireBatchItems(List<ReplayConfigVersionedId> items) {
         if (items == null || items.isEmpty()) {
             throw new IllegalArgumentException("批量删除至少需要 1 条记录");
         }

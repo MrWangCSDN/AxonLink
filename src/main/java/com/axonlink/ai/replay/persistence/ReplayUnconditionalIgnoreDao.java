@@ -156,6 +156,31 @@ public class ReplayUnconditionalIgnoreDao {
             return deleted;
         });
     }
+    /** 批量审核：逐条校验后置为已审核，不满足条件的跳过；返回通过条数。 */
+    public int batchReview(List<ReplayConfigVersionedId> items, ReplayConfigOperator operator,
+                           java.util.function.Predicate<ReplayUnconditionalIgnoreRow> canApprove) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            int approved = 0;
+            for (ReplayConfigVersionedId item : items) {
+                ReplayUnconditionalIgnoreRow current = findById(item.id());
+                if (current == null || current.version() != item.version() || !canApprove.test(current)) {
+                    continue;
+                }
+                int rows = jdbc.update(
+                        "UPDATE dii_replay_unconditional_ignore SET review_status=1,updated_at=?,"
+                                + "version=version+1 WHERE id=? AND version=?",
+                        Timestamp.valueOf(now), current.id(), current.version());
+                if (rows == 0) {
+                    continue;
+                }
+                insertOperation(current.id(), "REVIEW", null, null, null, null,
+                        current.reviewStatus(), 1, operator, now);
+                approved++;
+            }
+            return approved;
+        });
+    }
 
     public ReplayConfigPage<ReplayConfigOperationView> operations(long configId, int limit, int offset) {
         Long total = jdbc.queryForObject(

@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.ReplayConfigTestFixtures;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
@@ -120,6 +121,47 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals(1, service.list(10, 0, null, null, null, 1, null).total());
         assertEquals(2, service.list(10, 0, null, null, null, null, null).total());
         assertThrows(IllegalArgumentException.class, () -> service.list(10, 0, null, null, null, 9, null));
+    }
+
+    @Test
+    void batchReviewApprovesOwnPendingRowsAndSkipsOthers() {
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
+        ReplayUnconditionalIgnoreRow mine = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA"), OPERATOR);
+        ReplayUnconditionalIgnoreRow noOwner = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB"), OPERATOR);
+        ReplayUnconditionalIgnoreRow alreadyApproved = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineC"), OPERATOR);
+        service.review(alreadyApproved.id(), alreadyApproved.version(), reviewer);
+
+        ReplayConfigBatchReviewResult byStranger = service.batchReview(
+                List.of(new ReplayConfigVersionedId(mine.id(), mine.version())), stranger);
+        assertEquals(0, byStranger.approvedCount());
+        assertEquals(1, byStranger.skippedCount());
+
+        ReplayConfigBatchReviewResult result = service.batchReview(List.of(
+                new ReplayConfigVersionedId(mine.id(), mine.version()),
+                new ReplayConfigVersionedId(noOwner.id(), noOwner.version()),
+                new ReplayConfigVersionedId(alreadyApproved.id(), alreadyApproved.version())), reviewer);
+        assertEquals(1, result.approvedCount());
+        assertEquals(2, result.skippedCount());
+        assertEquals(2, service.list(10, 0, null, null, null, 1, null, null).total());
+    }
+
+    @Test
+    void filtersByReviewableByMe() {
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA"), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB"), OPERATOR);
+
+        ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
+                10, 0, null, null, null, null, true, reviewer);
+        assertEquals(1, mine.total());
+        assertEquals("mineA", mine.items().get(0).fieldName());
+
+        assertEquals(0, service.list(10, 0, null, null, null, null, true, OPERATOR).total());
+        assertEquals(1, service.list(10, 0, null, null, null, 0, true, reviewer).total());
     }
 
     @Test

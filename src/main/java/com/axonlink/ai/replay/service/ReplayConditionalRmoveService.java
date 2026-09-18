@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveRow;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveUpdateRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
@@ -52,10 +53,23 @@ public class ReplayConditionalRmoveService {
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             Integer reviewStatus, ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag,
+                reviewStatus, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
+                                                            String internalTransactionCode, String origTrcd,
+                                                            String fieldRmoveName, Integer fieldFileFlag,
+                                                            Integer reviewStatus, Boolean reviewableByMe,
+                                                            ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
-        Set<String> serviceCodes = resolver.resolveFinalServiceCodes(internalTransactionCode);
+        Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
+                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                Boolean.TRUE.equals(reviewableByMe)
+                        ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
+                        : null);
         long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, resolvedReviewStatus);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
@@ -63,6 +77,18 @@ public class ReplayConditionalRmoveService {
         List<ReplayConditionalRmoveRow> rows = dao.list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes,
                 resolvedReviewStatus, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
+    }
+
+    public ReplayConfigBatchReviewResult batchReview(List<ReplayConfigVersionedId> items,
+                                                     ReplayConfigOperator operator) {
+        if (items == null || items.isEmpty()) {
+            return new ReplayConfigBatchReviewResult(0, 0);
+        }
+        int approved = dao.batchReview(items, operator, row -> row.reviewStatus() == 0
+                && ReplayConfigPersonResolver.matchesBankOwner(
+                        personResolver.resolveByServiceCodes(List.of(row.origTrcd())).get(row.origTrcd()),
+                        operator));
+        return new ReplayConfigBatchReviewResult(approved, items.size() - approved);
     }
 
     public ReplayConditionalRmoveRow create(ReplayConditionalRmoveCreateRequest request,

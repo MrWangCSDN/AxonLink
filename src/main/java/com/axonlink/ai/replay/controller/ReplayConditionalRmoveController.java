@@ -4,6 +4,8 @@ import com.axonlink.ai.replay.dto.ReplayConditionalRmoveCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveRow;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
@@ -45,9 +47,10 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
             @RequestParam(required = false) String fieldRmoveName,
             @RequestParam(required = false) Integer fieldFileFlag,
             @RequestParam(required = false) Integer reviewStatus,
+            @RequestParam(required = false) Boolean reviewableByMe,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName,
-                fieldFileFlag, reviewStatus, resolveOperator(request)));
+                fieldFileFlag, reviewStatus, reviewableByMe, resolveOperator(request)));
     }
 
     @PostMapping
@@ -77,6 +80,15 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
                           HttpServletRequest request) {
         service.delete(id, version, resolveOperator(request));
         return R.ok(null);
+    }
+
+    @PostMapping("/batch-review")
+    public R<ReplayConfigBatchReviewResult> batchReview(
+            @RequestBody(required = false) ReplayConfigBatchReviewRequest body,
+            HttpServletRequest request) {
+        return R.ok(service.batchReview(
+                ReplayConfigValidation.requireBatchItems(body == null ? null : body.items()),
+                resolveOperator(request)));
     }
 
     @PostMapping("/batch-delete")

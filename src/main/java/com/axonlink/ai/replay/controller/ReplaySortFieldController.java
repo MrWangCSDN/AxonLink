@@ -1,6 +1,8 @@
 package com.axonlink.ai.replay.controller;
 
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewRequest;
+import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigReviewRequest;
@@ -45,9 +47,10 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
             @RequestParam(required = false) String origArryName,
             @RequestParam(required = false) String origFieldName,
             @RequestParam(required = false) Integer reviewStatus,
+            @RequestParam(required = false) Boolean reviewableByMe,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, origArryName,
-                origFieldName, reviewStatus, resolveOperator(request)));
+                origFieldName, reviewStatus, reviewableByMe, resolveOperator(request)));
     }
 
     @PostMapping
@@ -76,6 +79,15 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
                           HttpServletRequest request) {
         service.delete(id, version, resolveOperator(request));
         return R.ok(null);
+    }
+
+    @PostMapping("/batch-review")
+    public R<ReplayConfigBatchReviewResult> batchReview(
+            @RequestBody(required = false) ReplayConfigBatchReviewRequest body,
+            HttpServletRequest request) {
+        return R.ok(service.batchReview(
+                ReplayConfigValidation.requireBatchItems(body == null ? null : body.items()),
+                resolveOperator(request)));
     }
 
     @PostMapping("/batch-delete")
