@@ -8,6 +8,11 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
@@ -16,6 +21,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareListItem;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareMetadataStatus;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConditionCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
@@ -48,7 +54,9 @@ class ReplayDatabaseComparisonDaoTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonDao(jdbc);
     }
@@ -71,6 +79,8 @@ class ReplayDatabaseComparisonDaoTest {
         ReplayDbCompareListPage page = dao.search(query);
 
         assertEquals(1, page.total());
+        assertEquals(2, page.globalTableCount());
+        assertEquals(5, page.globalFieldCount());
         assertEquals(accountId, page.items().get(0).id());
         assertEquals("张三", page.items().get(0).reviserName());
         assertEquals("赵经理", page.items().get(0).groupOwnerName());
@@ -106,6 +116,31 @@ class ReplayDatabaseComparisonDaoTest {
         assertEquals("10001", importedResult.reviserEmpNo());
         assertEquals("c-zhangs", importedResult.reviserUsername());
         assertEquals("张三", importedResult.reviserName());
+    }
+
+    @Test
+    void roundTripsComparisonConditionAndLimit() {
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.OR,
+                        List.of(new ReplayDbCompareCondition(
+                                "status", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        ReplayDbCompareRegistration registration = new ReplayDbCompareRegistration(
+                null, "base", "scoped_table", "范围表", "存款组",
+                "001", "creator", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 12), false, null, null, null, 0,
+                "001", "张三", CREATED_AT, "001", "张三", CREATED_AT,
+                List.of(field("id", "主键", 1, 1)), condition, 1000L,
+                List.of("id", "tenant_id"), null);
+
+        long id = dao.insertRegistration(registration);
+        ReplayDbCompareRegistration saved = dao.findByIdIncludingDeleted(id);
+
+        assertEquals(ReplayDbCompareConditionOperator.EQ,
+                saved.whereCondition().groups().get(0).conditions().get(0).operator());
+        assertEquals(1000L, saved.compareLimit());
+        assertEquals(List.of("id", "tenant_id"), saved.orderingPrimaryKeyNames());
     }
 
     @Test
@@ -268,7 +303,7 @@ class ReplayDatabaseComparisonDaoTest {
         assertEquals(1, result.candidateCount());
         assertEquals(2, result.matchedRegistrationCount());
         assertEquals("001", result.options().get(0).value());
-        assertEquals("张三（001）", result.options().get(0).label());
+        assertEquals("张三(001)", result.options().get(0).label());
         assertThrows(IllegalArgumentException.class, () -> dao.headerFilterOptions(
                 new ReplayDbCompareHeaderFilterRequest(
                         "deleted", null, 20, null, null, List.of(), List.of(), List.of(), null, null)));
@@ -292,11 +327,118 @@ class ReplayDatabaseComparisonDaoTest {
                         "reviser", "c-zhangs", 20, null, null, List.of(), List.of(), List.of(), null, null));
 
         assertEquals("acct_master", tableResult.options().get(0).value());
-        assertEquals("acct_master（账户主表）", tableResult.options().get(0).label());
+        assertEquals("acct_master(账户主表)", tableResult.options().get(0).label());
         assertEquals("acct_no", fieldResult.options().get(0).value());
-        assertEquals("acct_no（账号）", fieldResult.options().get(0).label());
+        assertEquals("acct_no(账号)", fieldResult.options().get(0).label());
         assertEquals("001", reviserResult.options().get(0).value());
-        assertEquals("张三（c-zhangs）", reviserResult.options().get(0).label());
+        assertEquals("张三(c-zhangs)", reviserResult.options().get(0).label());
+    }
+
+    @Test
+    void supportsExactMultiSelectAndExplicitEmptyPeople() {
+        long firstId = insert("acct_a", "账户甲", "存款组", "001", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 10), false, field("acct_no", "账号", 1, 1));
+        long secondId = insert("acct_b", "账户乙", "存款组", "002", "李四", "102", "钱经理",
+                LocalDate.of(2026, 9, 11), false, field("customer_no", "客户号", 1, 1));
+        ReplayDbCompareRegistration blankActors = new ReplayDbCompareRegistration(
+                null, "base", "acct_empty", "空人员登记", "存款组",
+                null, null, null, null, null, LocalDate.of(2026, 9, 12), false,
+                null, null, null, 0, "SYSTEM", "系统", CREATED_AT,
+                "SYSTEM", "系统", CREATED_AT, List.of(field("status", "状态", 1, 1)));
+        dao.insertRegistration(blankActors);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET reviser_username=? WHERE id=?",
+                "c-zhangs", firstId);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET reviser_username=? WHERE id=?",
+                "c-lisi", secondId);
+
+        ReplayDbCompareQuery query = new ReplayDbCompareQuery(
+                null, null, List.of("存款组"), List.of(), List.of(), null, null, 0, 20, List.of(),
+                List.of("acct_a", "acct_b"), List.of("acct_no", "customer_no"),
+                List.of(LocalDate.of(2026, 9, 10), LocalDate.of(2026, 9, 11)));
+        ReplayDbCompareListPage page = dao.search(query);
+
+        assertEquals(2, page.total());
+        assertEquals(List.of("acct_a", "acct_b"), page.items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
+
+        ReplayDbCompareHeaderFilterResult emptyRevisers = dao.headerFilterOptions(
+                new ReplayDbCompareHeaderFilterRequest(
+                        "reviser", "", 20, null, null, List.of(), List.of(), List.of(), null, null));
+        assertTrue(emptyRevisers.options().stream()
+                .anyMatch(option -> option.value().equals("__EMPTY__") && option.label().equals("空")));
+
+        ReplayDbCompareQuery emptyQuery = new ReplayDbCompareQuery(
+                null, null, List.of(), List.of("__EMPTY__"), List.of("__EMPTY__"),
+                null, null, 0, 20, List.of(), List.of(), List.of(), List.of());
+        assertEquals(List.of("acct_empty"), dao.search(emptyQuery).items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
+    }
+
+    @Test
+    void filtersAndGroupsNormalizedQueryConditionsIncludingFullTable() {
+        long fullTableId = insert("acct_full", "全表账户", "存款组", "001", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 10), false, field("acct_no", "账号", 1, 1));
+        long scopedId = insert("acct_scoped", "条件账户", "存款组", "002", "李四", "102", "钱经理",
+                LocalDate.of(2026, 9, 11), false, field("acct_no", "账号", 1, 1));
+        String conditionKey = new ReplayDatabaseComparisonConditionCodec().encode(
+                new ReplayDbCompareConditionTree(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareConditionGroup(
+                                ReplayDbCompareConditionConnector.AND,
+                                List.of(new ReplayDbCompareCondition(
+                                        "status_cd", ReplayDbCompareConditionOperator.EQ, List.of("1")))))));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET where_condition_json=? WHERE id=?",
+                conditionKey, scopedId);
+
+        ReplayDbCompareQuery fullTableOnly = new ReplayDbCompareQuery(
+                null, null, List.of(), List.of(), List.of(), null, null, 0, 20,
+                List.of(), List.of(), List.of(), List.of(), List.of("__FULL_TABLE__"));
+        assertEquals(List.of("acct_full"), dao.search(fullTableOnly).items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
+
+        ReplayDbCompareQuery both = new ReplayDbCompareQuery(
+                null, null, List.of("存款组"), List.of(), List.of(), null, null, 0, 20,
+                List.of(), List.of(), List.of(), List.of(), List.of("__FULL_TABLE__", conditionKey));
+        assertEquals(List.of("acct_full", "acct_scoped"), dao.search(both).items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
+
+        ReplayDbCompareHeaderFilterResult options = dao.headerFilterOptions(
+                new ReplayDbCompareHeaderFilterRequest(
+                        "whereCondition", "ignored-by-dao", 20, null, null,
+                        List.of(), List.of(), List.of(), null, null,
+                        List.of(), List.of(), List.of(), List.of()));
+        assertEquals(2, options.candidateCount());
+        assertEquals(List.of("__FULL_TABLE__", conditionKey), options.options().stream()
+                .map(option -> option.value()).sorted().toList());
+        assertEquals(fullTableId, dao.findByIdIncludingDeleted(fullTableId).id());
+    }
+
+    @Test
+    void keepsUsernameOnlyRevisersDistinctAndFiltersEachSelectionIndependently() {
+        ReplayDbCompareRegistration first = new ReplayDbCompareRegistration(
+                null, "base", "acct_a", "账户甲", "存款组",
+                null, "c-zhangs", "张三", "101", "赵经理", LocalDate.of(2026, 9, 10), false,
+                null, null, null, 0, "SYSTEM", "系统", CREATED_AT,
+                "SYSTEM", "系统", CREATED_AT, List.of(field("acct_no", "账号", 1, 1)));
+        ReplayDbCompareRegistration second = new ReplayDbCompareRegistration(
+                null, "base", "acct_b", "账户乙", "存款组",
+                null, "c-lisi", "李四", "102", "钱经理", LocalDate.of(2026, 9, 11), false,
+                null, null, null, 0, "SYSTEM", "系统", CREATED_AT,
+                "SYSTEM", "系统", CREATED_AT, List.of(field("customer_no", "客户号", 1, 1)));
+        dao.insertRegistration(first);
+        dao.insertRegistration(second);
+
+        ReplayDbCompareHeaderFilterResult options = dao.headerFilterOptions(
+                new ReplayDbCompareHeaderFilterRequest(
+                        "reviser", "", 20, null, null, List.of(), List.of(), List.of(), null, null));
+
+        assertEquals(List.of("c-lisi", "c-zhangs"), options.options().stream()
+                .map(option -> option.value()).sorted().toList());
+        ReplayDbCompareQuery query = new ReplayDbCompareQuery(
+                null, null, List.of(), List.of("c-zhangs"), List.of(),
+                null, null, 0, 20, List.of(), List.of(), List.of(), List.of());
+        assertEquals(List.of("acct_a"), dao.search(query).items().stream()
+                .map(ReplayDbCompareListItem::tableName).toList());
     }
 
     @Test

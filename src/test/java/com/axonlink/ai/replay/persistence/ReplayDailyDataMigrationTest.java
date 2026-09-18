@@ -44,6 +44,26 @@ class ReplayDailyDataMigrationTest {
     }
 
     @Test
+    void addsSummaryViewJsonToDailyAndWeeklySnapshotsWithoutBackfill() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V57__dii_replay_daily_report_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
+                new ClassPathResource("db/daoindex/V69__replay_report_snapshot_summary_view.sql"))
+                .execute(jdbc.getDataSource());
+
+        assertColumns(jdbc, "DII_REPLAY_DAILY_REPORT_SNAPSHOT", "SUMMARY_VIEW_JSON");
+        assertColumns(jdbc, "DII_REPLAY_WEEKLY_REPORT_SNAPSHOT", "SUMMARY_VIEW_JSON");
+        jdbc.update("INSERT INTO dii_replay_daily_report_snapshot "
+                        + "(batch_no,file_name,content_type,file_content,file_size,generated_at) "
+                        + "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)",
+                "RPT20260916-01", "日报.xlsx", "application/xlsx", new byte[]{1}, 1L);
+        assertEquals(null, jdbc.queryForObject(
+                "SELECT summary_view_json FROM dii_replay_daily_report_snapshot WHERE batch_no=?",
+                String.class, "RPT20260916-01"));
+    }
+
+    @Test
     void preservesExistingSnapshotsAndMailStatus() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(

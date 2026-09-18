@@ -29,7 +29,8 @@ class ReplayDailyReportMailDaoTest {
                 new ClassPathResource("db/daoindex/V57__dii_replay_daily_report_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V58__dii_replay_daily_report_mail.sql"),
                 new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
-                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"))
+                new ClassPathResource("db/daoindex/V67__replay_report_mail_attachment_manifest.sql"),
+                new ClassPathResource("db/daoindex/V69__replay_report_snapshot_summary_view.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDailyReportMailDao(jdbc);
         jdbc.update("INSERT INTO dii_replay_daily_report_snapshot "

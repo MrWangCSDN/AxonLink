@@ -2,6 +2,11 @@ package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -62,6 +67,44 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
 
         assertEquals(hasher.hash(List.of(chinese)), hasher.hash(List.of(chinese)));
         assertNotEquals(hasher.hash(List.of(chinese)), hasher.hash(List.of(ambiguousDelimiterText)));
+    }
+
+    @Test
+    void changesWhenConditionLimitCompiledSqlOrPrimaryKeyOrderChanges() {
+        ReplayDbCompareConditionTree condition = new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                "status", ReplayDbCompareConditionOperator.EQ, List.of("1"))))));
+        ReplayDbCompareRegistration base = scopedRegistration(
+                condition, 1000L, "(status = '1')",
+                List.of(new ReplayDbCompareField("acct_no", "账号", 1, true, 1, 1, null)));
+        ReplayDbCompareRegistration changedLimit = scopedRegistration(
+                condition, 2000L, "(status = '1')", base.fields());
+        ReplayDbCompareRegistration changedSql = scopedRegistration(
+                condition, 1000L, "(status = '2')", base.fields());
+        ReplayDbCompareRegistration changedPrimaryKeyOrder = scopedRegistration(
+                condition, 1000L, "(status = '1')",
+                List.of(new ReplayDbCompareField("acct_no", "账号", 1, true, 1, 2, null)));
+
+        assertNotEquals(hasher.hash(List.of(base)), hasher.hash(List.of(changedLimit)));
+        assertNotEquals(hasher.hash(List.of(base)), hasher.hash(List.of(changedSql)));
+        assertNotEquals(hasher.hash(List.of(base)), hasher.hash(List.of(changedPrimaryKeyOrder)));
+    }
+
+    private ReplayDbCompareRegistration scopedRegistration(
+            ReplayDbCompareConditionTree condition,
+            Long limit,
+            String whereSql,
+            List<ReplayDbCompareField> fields) {
+        LocalDateTime time = LocalDateTime.of(2026, 9, 14, 10, 0);
+        return new ReplayDbCompareRegistration(
+                1L, "base_schema", "acct_master", "账户主表", "存款组",
+                "100", "zhangsan", "张三", "200", "李经理",
+                LocalDate.of(2026, 9, 14), false, null, null, null, 3,
+                "100", "张三", time, "100", "张三", time, fields,
+                condition, limit, whereSql, null);
     }
 
     private ReplayDbCompareRegistration registration(

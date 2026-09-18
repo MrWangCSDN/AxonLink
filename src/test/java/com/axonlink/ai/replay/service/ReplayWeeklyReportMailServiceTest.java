@@ -1,10 +1,16 @@
 package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
-import com.axonlink.ai.replay.config.ReplayDailyReportMailProperties;
+import com.axonlink.ai.replay.config.ReplayWeeklyReportMailProperties;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryColumn;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryRow;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryView;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportMailDao;
 import com.axonlink.notification.service.MailService;
@@ -30,7 +36,7 @@ class ReplayWeeklyReportMailServiceTest {
 
     private ReplayWeeklyReportDao weeklyReportDao;
     private ReplayWeeklyReportMailDao mailDao;
-    private ReplayDailyReportMailProperties properties;
+    private ReplayWeeklyReportMailProperties properties;
     private MailService mailService;
     private ReplayWeeklyReportMailService service;
 
@@ -40,10 +46,10 @@ class ReplayWeeklyReportMailServiceTest {
         ReplayIssueTestFixtures.createSchema(jdbc);
         weeklyReportDao = new ReplayWeeklyReportDao(jdbc);
         mailDao = new ReplayWeeklyReportMailDao(jdbc);
-        properties = new ReplayDailyReportMailProperties();
-        properties.setTo(List.of(" first@example.com ", "FIRST@example.com", "second@example.com"));
-        properties.setCc(List.of("cc@example.com"));
-        properties.setWeeklyBody("默认周报正文");
+        properties = new ReplayWeeklyReportMailProperties();
+        properties.setTo(List.of(" weekly@example.com ", "WEEKLY@example.com"));
+        properties.setCc(List.of("weekly-cc@example.com"));
+        properties.setBody("默认周报正文");
         mailService = mock(MailService.class);
         when(mailService.configuredFrom()).thenReturn("sender@example.com");
         service = new ReplayWeeklyReportMailService(weeklyReportDao, mailDao, properties, mailService,
@@ -59,9 +65,10 @@ class ReplayWeeklyReportMailServiceTest {
         assertEquals("RPT20260901-01", view.startBatchNo());
         assertEquals("RPT20260908-01", view.endBatchNo());
         assertEquals("对公分布式核心回放问题周报-20260908", view.subject());
-        assertEquals(List.of("first@example.com", "second@example.com"), view.toEmails());
-        assertEquals(List.of("cc@example.com"), view.ccEmails());
+        assertEquals(List.of("weekly@example.com"), view.toEmails());
+        assertEquals(List.of("weekly-cc@example.com"), view.ccEmails());
         assertEquals("默认周报正文", view.body());
+        assertEquals("查询周报(20260901-20260908).xlsx", view.currentAttachment().fileName());
         assertEquals("UNSENT", view.status());
     }
 
@@ -75,33 +82,50 @@ class ReplayWeeklyReportMailServiceTest {
                 List.of(" User@Example.com ", "user@example.com"),
                 List.of(" Copy@Example.com "), "请查收周报"));
 
-        verify(mailService).sendTextWithAttachmentsSync(
+        verify(mailService).sendHtmlWithAttachmentsSync(
                 org.mockito.ArgumentMatchers.eq(List.of("user@example.com")),
                 org.mockito.ArgumentMatchers.eq(List.of("copy@example.com")),
                 org.mockito.ArgumentMatchers.eq("自定义周报标题"),
-                org.mockito.ArgumentMatchers.eq("请查收周报"),
+                org.mockito.ArgumentMatchers.contains("<table"),
                 org.mockito.ArgumentMatchers.anyList());
         assertEquals("SENT", view.status());
+        assertEquals("账务周报(20260901-20260908).xlsx", view.currentAttachment().fileName());
         assertTrue(view.sentAt() != null);
         assertEquals("SENT", mailDao.find("DZ20260901-01", "DZ20260908-01").orElseThrow().status());
+    }
+
+    @Test
+    void exposesCanonicalNamesForHistoricalMailAttachments() {
+        saveSnapshot("RPT20260901-01", "RPT20260908-01", new byte[]{1, 2, 3});
+        mailDao.markSending("RPT20260901-01", "RPT20260908-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of(), List.of(
+                        new ReplayMailAttachmentMetadata("RPT20260908-01周报.xlsx", 3,
+                                ReplayMailAttachmentSource.CURRENT_REPORT, "RPT20260908-01"),
+                        new ReplayMailAttachmentMetadata("DZ20260907-01日报.xlsx", 2,
+                                ReplayMailAttachmentSource.GENERATED_DAILY, "DZ20260907-01")));
+
+        ReplayWeeklyReportMailView view = service.configuration("RPT20260901-01", "RPT20260908-01");
+
+        assertEquals(List.of("查询周报(20260901-20260908).xlsx", "账务日报-20260907.xlsx"),
+                view.attachments().stream().map(ReplayMailAttachmentMetadata::fileName).toList());
     }
 
     @Test
     void persistsFailedStatusWhenSmtpFails() {
         byte[] content = new byte[]{5};
         saveSnapshot("RPT20260901-01", "RPT20260910-01", content);
-        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentsSync(
-                org.mockito.ArgumentMatchers.eq(List.of("first@example.com", "second@example.com")),
-                org.mockito.ArgumentMatchers.eq(List.of("cc@example.com")),
+        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendHtmlWithAttachmentsSync(
+                org.mockito.ArgumentMatchers.eq(List.of("weekly@example.com")),
+                org.mockito.ArgumentMatchers.eq(List.of("weekly-cc@example.com")),
                 org.mockito.ArgumentMatchers.eq("对公分布式核心回放问题周报-20260910"),
-                org.mockito.ArgumentMatchers.eq("正文"), org.mockito.ArgumentMatchers.anyList());
+                org.mockito.ArgumentMatchers.contains("<table"), org.mockito.ArgumentMatchers.anyList());
 
         assertThrows(ReplayWeeklyReportMailService.MailSendException.class,
                 () -> service.send(new ReplayWeeklyReportMailSendRequest(
                         "RPT20260901-01", "RPT20260910-01",
                         "对公分布式核心回放问题周报-20260910",
-                        List.of("first@example.com", "second@example.com"),
-                        List.of("cc@example.com"), "正文")));
+                        List.of("weekly@example.com"),
+                        List.of("weekly-cc@example.com"), "正文")));
 
         var status = mailDao.find("RPT20260901-01", "RPT20260910-01").orElseThrow();
         assertEquals("FAILED", status.status());
@@ -150,6 +174,17 @@ class ReplayWeeklyReportMailServiceTest {
     private void saveSnapshot(String startBatchNo, String endBatchNo, byte[] content) {
         weeklyReportDao.saveSnapshot(new ReplayWeeklyReportSnapshot(
                 startBatchNo, endBatchNo, endBatchNo + "周报.xlsx", XLSX,
-                content, content.length, LocalDateTime.of(2026, 9, 8, 9, 0)));
+                content, content.length, summaryJson(ReplayReportPeriod.WEEKLY, startBatchNo, endBatchNo),
+                LocalDateTime.of(2026, 9, 8, 9, 0)));
+    }
+
+    private static String summaryJson(ReplayReportPeriod period, String start, String end) {
+        var column = new ReplayReportSummaryColumn("domain", "领域", null,
+                ReplayReportSummaryColumn.ValueType.TEXT, 0);
+        var detail = new ReplayReportSummaryRow("公共组", "DETAIL", java.util.Map.of("domain", "公共组"));
+        var total = new ReplayReportSummaryRow("合计", "TOTAL", java.util.Map.of("domain", "合计"));
+        return new ReplayReportSummaryCodec().encode(new ReplayReportSummaryView(1, period,
+                end.startsWith("DZ") ? "DZ" : "RPT", start, end, "测试报告",
+                List.of(column), List.of(detail), total));
     }
 }

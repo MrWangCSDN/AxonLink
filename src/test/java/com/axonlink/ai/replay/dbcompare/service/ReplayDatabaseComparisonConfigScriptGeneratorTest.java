@@ -63,6 +63,41 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     }
 
     @Test
+    void generatesAllScopeShapesAndUsesCompositePrimaryKeyOrderForLimit() {
+        ReplayDbCompareVersionField a = new ReplayDbCompareVersionField(
+                "a", "A", 1, true, 2, 1);
+        ReplayDbCompareVersionField b = new ReplayDbCompareVersionField(
+                "b", "B", 2, true, 1, 2);
+        ReplayDbCompareVersionField c = new ReplayDbCompareVersionField(
+                "c", "C", 3, false, null, 3);
+
+        String full = sql(generator.generate("v1", List.of(scopedTable(null, null, a, b, c))));
+        String conditionOnly = sql(generator.generate(
+                "v2", List.of(scopedTable("(status = '1')", null, a, b, c))));
+        String limitOnly = sql(generator.generate(
+                "v3", List.of(scopedTable(null, 1000L, a, b, c))));
+        String both = sql(generator.generate(
+                "v4", List.of(scopedTable("(status = '1' OR status = '2')", 1000L, a, b, c))));
+
+        assertTrue(full.contains("(select a,b,c from txn) orig"));
+        assertTrue(conditionOnly.contains("(select a,b,c from txn where (status = ''1'')) orig"));
+        assertTrue(limitOnly.contains("(select a,b,c from txn order by b,a limit 1000) orig"));
+        assertTrue(both.contains("(select a,b,c from txn where (status = ''1'' OR status = ''2'')"
+                + " order by b,a limit 1000) orig"));
+    }
+
+    private ReplayDbCompareVersionTableItem scopedTable(
+            String whereSql,
+            Long compareLimit,
+            ReplayDbCompareVersionField... fields) {
+        return new ReplayDbCompareVersionTableItem(
+                1L, 1L, "base_schema", "txn", "交易", "存款组",
+                "100", "zhangsan", "张三", "200", null, "李经理",
+                null, whereSql, compareLimit, LocalDate.of(2026, 9, 14),
+                fields.length, List.of(fields));
+    }
+
+    @Test
     void escapesQuotesBatchesAtFiveHundredAndWritesVerifiableMetadata() throws Exception {
         List<ReplayDbCompareVersionField> fields = new ArrayList<>();
         for (int index = 1; index <= 501; index++) {

@@ -5,8 +5,10 @@ import com.axonlink.ai.replay.dto.ReplayDailyReportMailStatus;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayGeneratedReportRef;
 import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
 import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.notification.service.MailService;
@@ -33,6 +35,7 @@ public class ReplayDailyReportMailService {
     private final ReplayDailyReportMailProperties properties;
     private final MailService mailService;
     private final ReplayReportMailAttachmentService attachmentService;
+    private final ReplayReportMailHtmlRenderer htmlRenderer = new ReplayReportMailHtmlRenderer();
 
     public ReplayDailyReportMailService(ReplayDailyDataDao dailyDataDao,
                                         ReplayDailyReportMailDao mailDao,
@@ -86,14 +89,19 @@ public class ReplayDailyReportMailService {
         MailContext context = new MailContext(currentSnapshot, subject, defaults.sender(), toEmails, ccEmails, body);
         ReplayDailyReportSnapshot snapshot = context.snapshot();
         ReplayMailAttachmentMetadata currentMetadata = currentAttachment(snapshot);
+        String currentFileName = ReplayReportFileNames.daily(snapshot.batchNo());
+        ReplayGeneratedReportRef currentRef = new ReplayGeneratedReportRef(
+                ReplayReportPeriod.DAILY, null, snapshot.batchNo());
         var resolved = attachmentService.resolve(
-                new MailAttachment(snapshot.fileName(), snapshot.content(), snapshot.contentType()), currentMetadata,
-                request.reportBatchNos(), files, snapshot.batchNo());
+                new MailAttachment(currentFileName, snapshot.content(), snapshot.contentType()), currentMetadata,
+                attachmentService.resolveSummary(snapshot.summaryViewJson(), snapshot.content(), currentRef),
+                request.effectiveGeneratedReports(), files);
         mailDao.markSending(snapshot.batchNo(), context.subject(), context.body(), context.sender(),
                 context.toEmails(), context.ccEmails(), resolved.metadata());
         try {
-            mailService.sendTextWithAttachmentsSync(context.toEmails(), context.ccEmails(),
-                    context.subject(), context.body(), resolved.mailAttachments());
+            String html = htmlRenderer.render(context.body(), resolved.summaries());
+            mailService.sendHtmlWithAttachmentsSync(context.toEmails(), context.ccEmails(),
+                    context.subject(), html, resolved.mailAttachments());
         } catch (RuntimeException exception) {
             String reason = exception.getMessage() == null ? "邮件发送失败" : exception.getMessage();
             mailDao.markFailed(snapshot.batchNo(), reason);
@@ -128,13 +136,36 @@ public class ReplayDailyReportMailService {
         ReplayMailAttachmentMetadata current = currentAttachment(context.snapshot());
         return new ReplayDailyReportMailView(context.snapshot().batchNo(), context.subject(),
                 context.toEmails(), context.ccEmails(), context.body(), current,
-                status == null ? List.of(current) : status.attachments(), status == null ? "UNSENT" : status.status(),
+                status == null ? List.of(current) : canonicalAttachments(status.attachments(), current),
+                status == null ? "UNSENT" : status.status(),
                 status == null ? null : status.sentAt(), status == null ? null : status.failureMessage());
     }
 
+    private List<ReplayMailAttachmentMetadata> canonicalAttachments(
+            List<ReplayMailAttachmentMetadata> attachments, ReplayMailAttachmentMetadata current) {
+        return attachments.stream().map(attachment -> {
+            if (attachment.source() == ReplayMailAttachmentSource.CURRENT_REPORT) {
+                return current;
+            }
+            if (attachment.source() == ReplayMailAttachmentSource.GENERATED_DAILY) {
+                return new ReplayMailAttachmentMetadata(ReplayReportFileNames.daily(attachment.batchNo()),
+                        attachment.size(), attachment.source(), attachment.batchNo(),
+                        ReplayReportPeriod.DAILY, null, attachment.batchNo());
+            }
+            if (attachment.source() == ReplayMailAttachmentSource.GENERATED_WEEKLY) {
+                return new ReplayMailAttachmentMetadata(
+                        ReplayReportFileNames.weekly(attachment.startBatchNo(), attachment.endBatchNo()),
+                        attachment.size(), attachment.source(), attachment.endBatchNo(),
+                        ReplayReportPeriod.WEEKLY, attachment.startBatchNo(), attachment.endBatchNo());
+            }
+            return attachment;
+        }).toList();
+    }
+
     private ReplayMailAttachmentMetadata currentAttachment(ReplayDailyReportSnapshot snapshot) {
-        return new ReplayMailAttachmentMetadata(snapshot.fileName(), snapshot.fileSize(),
-                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.batchNo());
+        return new ReplayMailAttachmentMetadata(ReplayReportFileNames.daily(snapshot.batchNo()), snapshot.fileSize(),
+                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.batchNo(),
+                ReplayReportPeriod.DAILY, null, snapshot.batchNo());
     }
 
     private List<String> validateEmails(List<String> values) {

@@ -1,7 +1,7 @@
 package com.axonlink.ai.daoindex.sqlinspect.er;
 
 import com.axonlink.ai.daoindex.sqlinspect.er.dto.ErKeySet;
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

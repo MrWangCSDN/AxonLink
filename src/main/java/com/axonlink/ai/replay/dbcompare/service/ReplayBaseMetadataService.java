@@ -60,6 +60,7 @@ public class ReplayBaseMetadataService {
             WITH filter_values AS (SELECT ? AS schema_name, ? AS table_name, ? AS pattern)
             SELECT lower(a.attname) AS column_name,
                    col_description(c.oid, a.attnum) AS column_comment,
+                   format_type(a.atttypid, a.atttypmod) AS data_type,
                    a.attnum AS ordinal_position,
                    pk.indkey::text AS primary_key_attnums
               FROM pg_attribute a
@@ -276,7 +277,7 @@ public class ReplayBaseMetadataService {
                 .toList();
         return new ReplayBaseValidatedTable(
                 schema(), snapshot.tableName(), snapshot.tableComment(),
-                selectedColumns, currentPrimaryKeys);
+                selectedColumns, currentPrimaryKeys, allColumns);
     }
 
     private ReplayBaseTableOption findTable(Connection connection, String tableName) throws SQLException {
@@ -319,6 +320,7 @@ public class ReplayBaseMetadataService {
                     result.add(new ReplayBaseColumnOption(
                             normalizeIdentifier(rows.getString("column_name")),
                             rows.getString("column_comment"),
+                            rows.getString("data_type"),
                             ordinalPosition,
                             primaryKeyOrder != null,
                             primaryKeyOrder));
@@ -339,6 +341,7 @@ public class ReplayBaseMetadataService {
                 SELECT lower(c.relname) AS table_name,
                        lower(a.attname) AS column_name,
                        col_description(c.oid, a.attnum) AS column_comment,
+                       format_type(a.atttypid, a.atttypmod) AS data_type,
                        a.attnum AS ordinal_position,
                        pk.indkey::text AS primary_key_attnums
                   FROM pg_attribute a
@@ -368,6 +371,7 @@ public class ReplayBaseMetadataService {
                             new ReplayBaseColumnOption(
                                     normalizeIdentifier(rows.getString("column_name")),
                                     rows.getString("column_comment"),
+                                    rows.getString("data_type"),
                                     ordinalPosition,
                                     primaryKeyOrder != null,
                                     primaryKeyOrder));

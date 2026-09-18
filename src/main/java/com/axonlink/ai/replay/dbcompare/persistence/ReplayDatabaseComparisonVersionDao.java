@@ -12,6 +12,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionSummary;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTableItem;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTablePage;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConditionCodec;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,6 +21,7 @@ import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
+import java.sql.Date;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
@@ -34,11 +36,18 @@ import java.util.Map;
 public class ReplayDatabaseComparisonVersionDao {
 
     private static final int FIELD_TABLE_ID_BATCH_SIZE = 500;
+    private static final String EMPTY_FILTER_VALUE = ReplayDatabaseComparisonDao.EMPTY_FILTER_VALUE;
+    private static final String FULL_TABLE_FILTER_VALUE = "__FULL_TABLE__";
+    private static final String REVISER_FILTER_EXPRESSION =
+            "COALESCE(NULLIF(TRIM(t.reviser_emp_no),''),NULLIF(TRIM(t.reviser_username),''),'"
+                    + EMPTY_FILTER_VALUE + "')";
 
     private final JdbcTemplate jdbc;
+    private final ReplayDatabaseComparisonConditionCodec conditionCodec;
 
     public ReplayDatabaseComparisonVersionDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
+        this.conditionCodec = new ReplayDatabaseComparisonConditionCodec();
     }
 
     public long insertVersion(
@@ -87,7 +96,8 @@ public class ReplayDatabaseComparisonVersionDao {
                             + "(version_id,source_registration_id,source_registration_version,"
                             + "schema_name,table_name,table_comment,domain_name,reviser_emp_no,"
                             + "reviser_username,reviser_name,group_owner_emp_no,group_owner_username,"
-                            + "group_owner_name,registered_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setLong(1, versionId);
             statement.setLong(2, registration.id());
@@ -102,7 +112,10 @@ public class ReplayDatabaseComparisonVersionDao {
             statement.setString(11, registration.groupOwnerEmpNo());
             statement.setString(12, groupOwnerUsername);
             statement.setString(13, registration.groupOwnerName());
-            statement.setObject(14, registration.registeredDate());
+            statement.setString(14, conditionCodec.encode(registration.whereCondition()));
+            statement.setString(15, registration.compiledWhereSql());
+            statement.setObject(16, registration.compareLimit());
+            statement.setObject(17, registration.registeredDate());
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -115,8 +128,8 @@ public class ReplayDatabaseComparisonVersionDao {
     public void insertVersionFields(long versionTableId, List<ReplayDbCompareField> fields) {
         jdbc.batchUpdate(
                 "INSERT INTO dii_replay_db_compare_version_field "
-                        + "(version_table_id,column_name,column_comment,ordinal_position,primary_key,comparison_order) "
-                        + "VALUES (?,?,?,?,?,?)",
+                        + "(version_table_id,column_name,column_comment,ordinal_position,primary_key,"
+                        + "primary_key_order,comparison_order) VALUES (?,?,?,?,?,?,?)",
                 new BatchPreparedStatementSetter() {
                     @Override
                     public void setValues(PreparedStatement statement, int index) throws SQLException {
@@ -126,7 +139,8 @@ public class ReplayDatabaseComparisonVersionDao {
                         statement.setString(3, field.columnComment());
                         statement.setInt(4, field.ordinalPosition());
                         statement.setBoolean(5, field.primaryKey());
-                        statement.setInt(6, field.comparisonOrder());
+                        statement.setObject(6, field.primaryKeyOrder());
+                        statement.setInt(7, field.comparisonOrder());
                     }
 
                     @Override
@@ -167,6 +181,9 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("reviser_name"), row.getString("group_owner_emp_no"),
                                 row.getString("group_owner_username"),
                                 row.getString("group_owner_name"),
+                                conditionCodec.decode(row.getString("where_condition_json")),
+                                row.getString("where_sql"),
+                                row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
                                 row.getInt("field_count"), List.of())),
                 versionId);
@@ -228,6 +245,9 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("reviser_name"), row.getString("group_owner_emp_no"),
                                 row.getString("group_owner_username"),
                                 row.getString("group_owner_name"),
+                                conditionCodec.decode(row.getString("where_condition_json")),
+                                row.getString("where_sql"),
+                                row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
                                 row.getInt("field_count"), List.of())),
                 arguments.toArray());
@@ -247,7 +267,9 @@ public class ReplayDatabaseComparisonVersionDao {
         ReplayDbCompareVersionQuery query = new ReplayDbCompareVersionQuery(
                 0, 1, request.tableKeyword(), request.fieldKeyword(), request.domains(),
                 request.reviserEmpNos(), request.groupOwnerEmpNos(),
-                request.registeredDateFrom(), request.registeredDateTo());
+                request.registeredDateFrom(), request.registeredDateTo(),
+                request.tableNames(), request.fieldNames(), request.registeredDates(),
+                request.whereConditionValues());
         VersionFilter filter = buildVersionFilter(versionId, query, column.queryKey());
         StringBuilder sql = new StringBuilder("SELECT ")
                 .append(column.valueExpression()).append(" AS option_value,")
@@ -259,7 +281,7 @@ public class ReplayDatabaseComparisonVersionDao {
         }
         sql.append(filter.sql());
         List<Object> arguments = new ArrayList<>(filter.arguments());
-        if (hasText(request.keyword())) {
+        if (hasText(request.keyword()) && !"whereCondition".equals(column.queryKey())) {
             sql.append(" AND LOWER(").append(column.searchExpression()).append(") LIKE ?");
             arguments.add(pattern(request.keyword()));
         }
@@ -295,6 +317,7 @@ public class ReplayDatabaseComparisonVersionDao {
                             new ReplayDbCompareVersionField(
                                     row.getString("column_name"), row.getString("column_comment"),
                                     row.getInt("ordinal_position"), row.getBoolean("primary_key"),
+                                    row.getObject("primary_key_order", Integer.class),
                                     row.getInt("comparison_order"))),
                     batch.toArray());
         }
@@ -312,16 +335,35 @@ public class ReplayDatabaseComparisonVersionDao {
             sql.append(" AND LOWER(CONCAT(t.table_name,' ',COALESCE(t.table_comment,''))) LIKE ?");
             arguments.add(pattern(query.tableKeyword()));
         }
+        if (!"tableName".equals(excludedKey)) {
+            appendValues(sql, arguments, "tableName", excludedKey, "t.table_name", query.tableNames());
+        }
         if (!"fieldName".equals(excludedKey) && hasText(query.fieldKeyword())) {
             sql.append(" AND EXISTS (SELECT 1 FROM dii_replay_db_compare_version_field vf "
                     + "WHERE vf.version_table_id=t.id AND "
                     + "LOWER(CONCAT(vf.column_name,' ',COALESCE(vf.column_comment,''))) LIKE ?)");
             arguments.add(pattern(query.fieldKeyword()));
         }
+        if (!"fieldName".equals(excludedKey) && !query.fieldNames().isEmpty()) {
+            sql.append(" AND EXISTS (SELECT 1 FROM dii_replay_db_compare_version_field ef "
+                    + "WHERE ef.version_table_id=t.id");
+            appendValues(sql, arguments, "fieldName", null, "ef.column_name", query.fieldNames());
+            sql.append(')');
+        }
+        if (!"whereCondition".equals(excludedKey) && !query.whereConditionValues().isEmpty()) {
+            appendWhereConditionValues(sql, arguments, query.whereConditionValues());
+        }
         appendValues(sql, arguments, "domainName", excludedKey, "t.domain_name", query.domains());
-        appendValues(sql, arguments, "reviser", excludedKey, "t.reviser_emp_no", query.reviserEmpNos());
-        appendValues(sql, arguments, "groupOwner", excludedKey,
+        appendValues(sql, arguments, "reviser", excludedKey,
+                REVISER_FILTER_EXPRESSION, query.reviserEmpNos());
+        appendNullableValues(sql, arguments, "groupOwner", excludedKey,
                 "t.group_owner_emp_no", query.groupOwnerEmpNos());
+        if (!"registeredDate".equals(excludedKey) && !query.registeredDates().isEmpty()) {
+            sql.append(" AND t.registered_date IN (")
+                    .append(String.join(",", Collections.nCopies(query.registeredDates().size(), "?")))
+                    .append(')');
+            query.registeredDates().forEach(date -> arguments.add(Date.valueOf(date)));
+        }
         if (!"registeredDate".equals(excludedKey) && query.registeredDateFrom() != null) {
             sql.append(" AND t.registered_date>=?");
             arguments.add(query.registeredDateFrom());
@@ -346,6 +388,39 @@ public class ReplayDatabaseComparisonVersionDao {
         sql.append(" AND ").append(column).append(" IN (")
                 .append(String.join(",", Collections.nCopies(values.size(), "?"))).append(')');
         arguments.addAll(values);
+    }
+
+    private void appendNullableValues(
+            StringBuilder sql,
+            List<Object> arguments,
+            String key,
+            String excludedKey,
+            String column,
+            List<String> values) {
+        if (key.equals(excludedKey) || values == null || values.isEmpty()) {
+            return;
+        }
+        List<String> normalized = values.stream()
+                .filter(this::hasText).map(String::trim).distinct().toList();
+        if (normalized.isEmpty()) {
+            return;
+        }
+        boolean includesEmpty = normalized.contains(EMPTY_FILTER_VALUE);
+        List<String> actual = normalized.stream()
+                .filter(value -> !EMPTY_FILTER_VALUE.equals(value)).toList();
+        sql.append(" AND (");
+        if (!actual.isEmpty()) {
+            sql.append(column).append(" IN (")
+                    .append(String.join(",", Collections.nCopies(actual.size(), "?"))).append(')');
+            arguments.addAll(actual);
+        }
+        if (includesEmpty) {
+            if (!actual.isEmpty()) {
+                sql.append(" OR ");
+            }
+            sql.append("TRIM(COALESCE(").append(column).append(",''))=''");
+        }
+        sql.append(')');
     }
 
     private long countVersionTables(VersionFilter filter) {
@@ -388,7 +463,8 @@ public class ReplayDatabaseComparisonVersionDao {
                 item.sourceRegistrationId(), item.sourceRegistrationVersion(),
                 item.schemaName(), item.tableName(), item.tableComment(), item.domainName(),
                 item.reviserEmpNo(), item.reviserUsername(), item.reviserName(),
-                item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(), item.registeredDate(),
+                item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(),
+                item.whereCondition(), item.whereSql(), item.compareLimit(), item.registeredDate(),
                 item.fieldCount(), fields);
     }
 
@@ -431,37 +507,74 @@ public class ReplayDatabaseComparisonVersionDao {
         private static VersionHeaderColumn from(String key) {
             return switch (key == null ? "" : key) {
                 case "domainName" -> new VersionHeaderColumn(
-                        key, "t.domain_name", "t.domain_name", "t.domain_name", false);
+                        key,
+                        "CASE WHEN TRIM(COALESCE(t.domain_name,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE t.domain_name END",
+                        "CASE WHEN TRIM(COALESCE(t.domain_name,''))='' THEN '空' ELSE t.domain_name END",
+                        "COALESCE(t.domain_name,'')", false);
                 case "tableName" -> new VersionHeaderColumn(
                         key, "t.table_name",
-                        "CASE WHEN COALESCE(t.table_comment,'')='' THEN t.table_name ELSE CONCAT(t.table_name,'（',t.table_comment,'）') END",
+                        "CASE WHEN COALESCE(t.table_comment,'')='' THEN t.table_name ELSE CONCAT(t.table_name,'(',t.table_comment,')') END",
                         "CONCAT(t.table_name,' ',COALESCE(t.table_comment,''))", false);
                 case "fieldName" -> new VersionHeaderColumn(
                         key, "hf.column_name",
-                        "CASE WHEN COALESCE(hf.column_comment,'')='' THEN hf.column_name ELSE CONCAT(hf.column_name,'（',hf.column_comment,'）') END",
+                        "CASE WHEN COALESCE(hf.column_comment,'')='' THEN hf.column_name ELSE CONCAT(hf.column_name,'(',hf.column_comment,')') END",
                         "CONCAT(hf.column_name,' ',COALESCE(hf.column_comment,''))", true);
+                case "whereCondition" -> new VersionHeaderColumn(
+                        key,
+                        "COALESCE(t.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "')",
+                        "COALESCE(t.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "')",
+                        "COALESCE(t.where_condition_json,'')", false);
                 case "reviser" -> new VersionHeaderColumn(
-                        key, "t.reviser_emp_no",
-                        "CASE WHEN COALESCE(t.reviser_name,'')<>'' AND COALESCE(NULLIF(t.reviser_username,''),t.reviser_emp_no,'')<>'' THEN "
-                                + "CONCAT(t.reviser_name,'（',COALESCE(NULLIF(t.reviser_username,''),t.reviser_emp_no),'）') "
+                        key,
+                        REVISER_FILTER_EXPRESSION,
+                        "CASE WHEN TRIM(COALESCE(t.reviser_emp_no,''))='' AND TRIM(COALESCE(t.reviser_username,''))='' AND TRIM(COALESCE(t.reviser_name,''))='' THEN '空' "
+                                + "WHEN COALESCE(t.reviser_name,'')<>'' AND COALESCE(NULLIF(t.reviser_username,''),t.reviser_emp_no,'')<>'' THEN "
+                                + "CONCAT(t.reviser_name,'(',COALESCE(NULLIF(t.reviser_username,''),t.reviser_emp_no),')') "
                                 + "WHEN COALESCE(t.reviser_name,'')<>'' THEN t.reviser_name "
                                 + "ELSE COALESCE(NULLIF(t.reviser_username,''),t.reviser_emp_no,'') END",
                         "CONCAT(COALESCE(t.reviser_emp_no,''),' ',"
                                 + "COALESCE(t.reviser_username,''),' ',COALESCE(t.reviser_name,''))",
                         false);
                 case "groupOwner" -> new VersionHeaderColumn(
-                        key, "t.group_owner_emp_no",
-                        "CASE WHEN t.group_owner_emp_no IS NULL THEN '' ELSE "
-                                + "CONCAT(COALESCE(t.group_owner_name,''),'(',"
-                                + "COALESCE(t.group_owner_username,t.group_owner_emp_no),')') END",
+                        key,
+                        "CASE WHEN TRIM(COALESCE(t.group_owner_emp_no,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE t.group_owner_emp_no END",
+                        "CASE WHEN TRIM(COALESCE(t.group_owner_emp_no,''))='' AND TRIM(COALESCE(t.group_owner_username,''))='' AND TRIM(COALESCE(t.group_owner_name,''))='' THEN '空' "
+                                + "WHEN COALESCE(t.group_owner_name,'')<>'' THEN CONCAT(t.group_owner_name,'(',COALESCE(NULLIF(t.group_owner_username,''),t.group_owner_emp_no),')') "
+                                + "ELSE COALESCE(NULLIF(t.group_owner_username,''),t.group_owner_emp_no,'') END",
                         "CONCAT(COALESCE(t.group_owner_emp_no,''),' ',"
                                 + "COALESCE(t.group_owner_username,''),' ',COALESCE(t.group_owner_name,''))",
                         false);
                 case "registeredDate" -> new VersionHeaderColumn(
-                        key, "CAST(t.registered_date AS CHAR)", "CAST(t.registered_date AS CHAR)",
-                        "CAST(t.registered_date AS CHAR)", false);
+                        key,
+                        "CASE WHEN t.registered_date IS NULL THEN '" + EMPTY_FILTER_VALUE + "' ELSE CAST(t.registered_date AS CHAR) END",
+                        "CASE WHEN t.registered_date IS NULL THEN '空' ELSE CAST(t.registered_date AS CHAR) END",
+                        "COALESCE(CAST(t.registered_date AS CHAR),'')", false);
                 default -> throw new IllegalArgumentException("不支持的筛选列");
             };
         }
+    }
+
+    private void appendWhereConditionValues(
+            StringBuilder sql,
+            List<Object> arguments,
+            List<String> values) {
+        boolean includesFullTable = values.contains(FULL_TABLE_FILTER_VALUE);
+        List<String> configured = values.stream()
+                .filter(value -> !FULL_TABLE_FILTER_VALUE.equals(value))
+                .toList();
+        sql.append(" AND (");
+        if (includesFullTable) {
+            sql.append("t.where_condition_json IS NULL");
+        }
+        if (!configured.isEmpty()) {
+            if (includesFullTable) {
+                sql.append(" OR ");
+            }
+            sql.append("t.where_condition_json IN (")
+                    .append(String.join(",", Collections.nCopies(configured.size(), "?")))
+                    .append(')');
+            arguments.addAll(configured);
+        }
+        sql.append(')');
     }
 }

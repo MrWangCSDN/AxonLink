@@ -16,6 +16,9 @@ public record ReplayDbCompareVersionTableItem(
         String groupOwnerEmpNo,
         String groupOwnerUsername,
         String groupOwnerName,
+        ReplayDbCompareConditionTree whereCondition,
+        String whereSql,
+        Long compareLimit,
         LocalDate registeredDate,
         int fieldCount,
         List<ReplayDbCompareVersionField> fields) {
@@ -32,6 +35,18 @@ public record ReplayDbCompareVersionTableItem(
             List<ReplayDbCompareVersionField> fields) {
         this(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment,
                 domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, null,
-                groupOwnerName, registeredDate, fieldCount, fields);
+                groupOwnerName, null, null, null, registeredDate, fieldCount, fields);
+    }
+
+    public ReplayDbCompareVersionTableItem(
+            long sourceRegistrationId, long sourceRegistrationVersion, String schemaName,
+            String tableName, String tableComment, String domainName, String reviserEmpNo,
+            String reviserUsername, String reviserName, String groupOwnerEmpNo,
+            String groupOwnerUsername, String groupOwnerName, LocalDate registeredDate,
+            int fieldCount, List<ReplayDbCompareVersionField> fields) {
+        this(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment,
+                domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo,
+                groupOwnerUsername, groupOwnerName, null, null, null,
+                registeredDate, fieldCount, fields);
     }
 }

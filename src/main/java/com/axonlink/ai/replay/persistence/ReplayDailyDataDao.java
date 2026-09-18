@@ -12,6 +12,7 @@ import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
 import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
 import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -288,7 +289,8 @@ public class ReplayDailyDataDao {
             return Optional.empty();
         }
         List<ReplayDailyReportSnapshot> snapshots = jdbc.query("""
-                        SELECT batch_no, file_name, content_type, file_content, file_size, generated_at
+                        SELECT batch_no, file_name, content_type, file_content, file_size,
+                               summary_view_json, generated_at
                           FROM dii_replay_daily_report_snapshot
                          WHERE batch_no = ?
                         """, (resultSet, ignored) -> new ReplayDailyReportSnapshot(
@@ -297,6 +299,7 @@ public class ReplayDailyDataDao {
                 resultSet.getString("content_type"),
                 resultSet.getBytes("file_content"),
                 resultSet.getLong("file_size"),
+                resultSet.getString("summary_view_json"),
                 resultSet.getTimestamp("generated_at").toLocalDateTime()), batchNo.trim());
         return snapshots.stream().findFirst();
     }
@@ -336,6 +339,29 @@ public class ReplayDailyDataDao {
         return new ReplayReportAttachmentOptionPage(items, normalizedPage, normalizedSize, total == null ? 0 : total);
     }
 
+    public List<ReplayReportAttachmentOption> findReportAttachmentOptions(String keyword, String family) {
+        String normalizedFamily = family == null ? "ALL" : family.trim().toUpperCase();
+        if (!List.of("ALL", "RPT", "DZ").contains(normalizedFamily))
+            throw new IllegalArgumentException("报告类型错误");
+        String like = "%" + (keyword == null ? "" : keyword.trim().toLowerCase()) + "%";
+        String familySql = "ALL".equals(normalizedFamily) ? "" : " AND batch_no LIKE ?";
+        List<Object> args = new ArrayList<>(List.of(like, like));
+        if (!familySql.isEmpty()) args.add(normalizedFamily + "%");
+        return jdbc.query("""
+                        SELECT batch_no,file_name,file_size,summary_view_json,generated_at
+                          FROM dii_replay_daily_report_snapshot
+                         WHERE file_content IS NOT NULL AND file_size > 0
+                           AND (LOWER(batch_no) LIKE ? OR LOWER(file_name) LIKE ?)
+                        """ + familySql + " ORDER BY generated_at DESC,batch_no DESC",
+                (resultSet, ignored) -> new ReplayReportAttachmentOption(
+                        resultSet.getString("batch_no"), batchFamily(resultSet.getString("batch_no")),
+                        resultSet.getString("file_name"), resultSet.getLong("file_size"),
+                        resultSet.getTimestamp("generated_at").toLocalDateTime(), ReplayReportPeriod.DAILY,
+                        null, resultSet.getString("batch_no"), true,
+                        resultSet.getString("summary_view_json") == null ? "LEGACY_EXCEL" : "SNAPSHOT_JSON"),
+                args.toArray());
+    }
+
     public Map<String, ReplayDailyReportSnapshot> findReportSnapshots(List<String> batchNos) {
         LinkedHashSet<String> normalized = new LinkedHashSet<>();
         if (batchNos != null) {
@@ -345,13 +371,14 @@ public class ReplayDailyDataDao {
         if (normalized.isEmpty()) return Map.of();
         String placeholders = String.join(",", java.util.Collections.nCopies(normalized.size(), "?"));
         Map<String, ReplayDailyReportSnapshot> found = new HashMap<>();
-        jdbc.query("SELECT batch_no,file_name,content_type,file_content,file_size,generated_at "
+        jdbc.query("SELECT batch_no,file_name,content_type,file_content,file_size,summary_view_json,generated_at "
                         + "FROM dii_replay_daily_report_snapshot WHERE batch_no IN (" + placeholders + ")",
                 resultSet -> {
                     ReplayDailyReportSnapshot snapshot = new ReplayDailyReportSnapshot(
                             resultSet.getString("batch_no"), resultSet.getString("file_name"),
                             resultSet.getString("content_type"), resultSet.getBytes("file_content"),
-                            resultSet.getLong("file_size"), resultSet.getTimestamp("generated_at").toLocalDateTime());
+                            resultSet.getLong("file_size"), resultSet.getString("summary_view_json"),
+                            resultSet.getTimestamp("generated_at").toLocalDateTime());
                     found.put(snapshot.batchNo(), snapshot);
                 }, normalized.toArray());
         Map<String, ReplayDailyReportSnapshot> ordered = new LinkedHashMap<>();
@@ -364,16 +391,18 @@ public class ReplayDailyDataDao {
     public void saveReportSnapshot(ReplayDailyReportSnapshot snapshot) {
         jdbc.update("""
                         INSERT INTO dii_replay_daily_report_snapshot
-                               (batch_no, file_name, content_type, file_content, file_size, generated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                               (batch_no, file_name, content_type, file_content, file_size,
+                                summary_view_json, generated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         ON DUPLICATE KEY UPDATE
                                file_name = VALUES(file_name),
                                content_type = VALUES(content_type),
                                file_content = VALUES(file_content),
                                file_size = VALUES(file_size),
+                               summary_view_json = VALUES(summary_view_json),
                                generated_at = VALUES(generated_at)
                         """, snapshot.batchNo(), snapshot.fileName(), snapshot.contentType(), snapshot.content(),
-                snapshot.fileSize(), Timestamp.valueOf(snapshot.generatedAt()));
+                snapshot.fileSize(), snapshot.summaryViewJson(), Timestamp.valueOf(snapshot.generatedAt()));
     }
 
     public int deleteAllReportSnapshots() {

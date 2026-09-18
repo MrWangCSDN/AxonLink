@@ -50,7 +50,9 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V64__drop_replay_database_comparison_generation_lock.sql"),
                 new ClassPathResource("db/daoindex/V65__dii_replay_database_comparison_version_script.sql"),
-                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"))
+                new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
+                new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
         scriptDao = new ReplayDatabaseComparisonVersionScriptDao(jdbc);
@@ -98,6 +100,26 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         assertNotNull(stored);
         assertEquals("GZIP", stored.compression());
         assertEquals(stored.scriptContent().length, stored.compressedSize());
+    }
+
+    @Test
+    void generatesWhereOrderLimitAndAliasesFromThePersistedVersionSnapshot() {
+        jdbc.update("UPDATE dii_replay_db_compare_version_table "
+                        + "SET where_sql=?,compare_limit=? WHERE version_id=?",
+                "(status_cd = '1')", 1000L, versionId);
+        jdbc.update("UPDATE dii_replay_db_compare_version_field SET primary_key_order=1 "
+                        + "WHERE version_table_id=(SELECT id FROM dii_replay_db_compare_version_table "
+                        + "WHERE version_id=?) AND column_name='acct_no'",
+                versionId);
+
+        ReplayDatabaseComparisonConfigScriptService.ScriptFile file =
+                service.generate(VERSION_NO, new ReplayIssueOperator("A012345", "张三"));
+        String sql = new String(file.content(), StandardCharsets.UTF_8);
+
+        assertTrue(sql.contains("'(select acct_no,customer_no from acct_master "
+                + "where (status_cd = ''1'') order by acct_no limit 1000) orig'"));
+        assertTrue(sql.contains("'(select acct_no,customer_no from acct_master "
+                + "where (status_cd = ''1'') order by acct_no limit 1000) dest'"));
     }
 
     @Test

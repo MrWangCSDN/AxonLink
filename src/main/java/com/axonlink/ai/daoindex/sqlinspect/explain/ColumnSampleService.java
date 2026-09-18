@@ -3,7 +3,7 @@ package com.axonlink.ai.daoindex.sqlinspect.explain;
 import com.axonlink.ai.daoindex.sqlinspect.dto.ColumnInfo;
 import com.axonlink.ai.daoindex.sqlinspect.dto.TableMetadata;
 import com.axonlink.ai.daoindex.sqlinspect.metadata.TableMetadataService;
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

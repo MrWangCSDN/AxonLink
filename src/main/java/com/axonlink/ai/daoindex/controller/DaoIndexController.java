@@ -20,7 +20,7 @@ import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiDashboardDao;
 import com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSqlPoolDao;
 import com.axonlink.ai.daoindex.sqlinspect.scan.SqlSourceScanner;
 import com.axonlink.ai.daoindex.sqlinspect.service.SqlInspectionService;
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import com.axonlink.ai.dto.AnalysisMode;
 import com.axonlink.ai.dto.AnalysisPrompt;
 import com.axonlink.ai.dto.LlmResult;

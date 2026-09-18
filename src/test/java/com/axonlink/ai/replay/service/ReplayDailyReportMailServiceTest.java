@@ -5,6 +5,12 @@ import com.axonlink.ai.replay.config.ReplayDailyReportMailProperties;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
+import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryColumn;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryRow;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryView;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.notification.service.MailService;
@@ -60,6 +66,7 @@ class ReplayDailyReportMailServiceTest {
         assertEquals(List.of("first@example.com", "second@example.com"), view.toEmails());
         assertEquals(List.of("cc@example.com"), view.ccEmails());
         assertEquals("默认日报正文", view.body());
+        assertEquals("查询日报-20260908.xlsx", view.currentAttachment().fileName());
         assertEquals("UNSENT", view.status());
     }
 
@@ -76,6 +83,22 @@ class ReplayDailyReportMailServiceTest {
     }
 
     @Test
+    void exposesCanonicalNamesForHistoricalMailAttachments() {
+        saveSnapshot("RPT20260908-01", new byte[]{1, 2, 3});
+        mailDao.markSending("RPT20260908-01", "标题", "正文", "sender@example.com",
+                List.of("to@example.com"), List.of(), List.of(
+                        new ReplayMailAttachmentMetadata("RPT20260908-01日报.xlsx", 3,
+                                ReplayMailAttachmentSource.CURRENT_REPORT, "RPT20260908-01"),
+                        new ReplayMailAttachmentMetadata("DZ20260907-01日报.xlsx", 2,
+                                ReplayMailAttachmentSource.GENERATED_DAILY, "DZ20260907-01")));
+
+        ReplayDailyReportMailView view = service.configuration("RPT20260908-01");
+
+        assertEquals(List.of("查询日报-20260908.xlsx", "账务日报-20260907.xlsx"),
+                view.attachments().stream().map(ReplayMailAttachmentMetadata::fileName).toList());
+    }
+
+    @Test
     void sendsCurrentSnapshotAsAttachmentAndPersistsSentStatus() {
         byte[] content = new byte[]{9, 8, 7};
         saveSnapshot("DZ20260909-02", content);
@@ -84,11 +107,11 @@ class ReplayDailyReportMailServiceTest {
                 "DZ20260909-02", "自定义日报标题", List.of(" User@Example.com ", "user@example.com"),
                 List.of(" Copy@Example.com "), "请查收日报"));
 
-        verify(mailService).sendTextWithAttachmentsSync(
+        verify(mailService).sendHtmlWithAttachmentsSync(
                 org.mockito.ArgumentMatchers.eq(List.of("user@example.com")),
                 org.mockito.ArgumentMatchers.eq(List.of("copy@example.com")),
                 org.mockito.ArgumentMatchers.eq("自定义日报标题"),
-                org.mockito.ArgumentMatchers.eq("请查收日报"),
+                org.mockito.ArgumentMatchers.contains("<table"),
                 org.mockito.ArgumentMatchers.anyList());
         assertEquals("SENT", view.status());
         assertTrue(view.sentAt() != null);
@@ -101,11 +124,11 @@ class ReplayDailyReportMailServiceTest {
     void persistsFailedStatusWhenSmtpFails() {
         byte[] content = new byte[]{5};
         saveSnapshot("RPT20260910-01", content);
-        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendTextWithAttachmentsSync(
+        doThrow(new IllegalStateException("SMTP不可用")).when(mailService).sendHtmlWithAttachmentsSync(
                 org.mockito.ArgumentMatchers.eq(List.of("first@example.com", "second@example.com")),
                 org.mockito.ArgumentMatchers.eq(List.of("cc@example.com")),
                 org.mockito.ArgumentMatchers.eq("对公分布式核心回放问题日报-20260910"),
-                org.mockito.ArgumentMatchers.eq("正文"), org.mockito.ArgumentMatchers.anyList());
+                org.mockito.ArgumentMatchers.contains("<table"), org.mockito.ArgumentMatchers.anyList());
 
         assertThrows(ReplayDailyReportMailService.MailSendException.class,
                 () -> service.send(new ReplayDailyReportMailSendRequest(
@@ -156,6 +179,17 @@ class ReplayDailyReportMailServiceTest {
 
     private void saveSnapshot(String batchNo, byte[] content) {
         dailyDataDao.saveReportSnapshot(new ReplayDailyReportSnapshot(batchNo, batchNo + "日报.xlsx",
-                XLSX, content, content.length, LocalDateTime.of(2026, 9, 8, 9, 0)));
+                XLSX, content, content.length, summaryJson(ReplayReportPeriod.DAILY, null, batchNo),
+                LocalDateTime.of(2026, 9, 8, 9, 0)));
+    }
+
+    private static String summaryJson(ReplayReportPeriod period, String start, String end) {
+        var column = new ReplayReportSummaryColumn("domain", "领域", null,
+                ReplayReportSummaryColumn.ValueType.TEXT, 0);
+        var detail = new ReplayReportSummaryRow("公共组", "DETAIL", java.util.Map.of("domain", "公共组"));
+        var total = new ReplayReportSummaryRow("合计", "TOTAL", java.util.Map.of("domain", "合计"));
+        return new ReplayReportSummaryCodec().encode(new ReplayReportSummaryView(1, period,
+                end.startsWith("DZ") ? "DZ" : "RPT", start, end, "测试报告",
+                List.of(column), List.of(detail), total));
     }
 }

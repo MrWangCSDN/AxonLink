@@ -13,6 +13,8 @@ import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -20,14 +22,42 @@ import static org.mockito.Mockito.when;
 class MailServiceTest {
 
     @Test
+    void sendsHtmlBodyWithAttachmentsSynchronously() throws Exception {
+        JavaMailSender sender = mock(JavaMailSender.class);
+        MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+        when(sender.createMimeMessage()).thenReturn(message);
+        MailService service = service(sender);
+
+        service.sendHtmlWithAttachmentsSync(List.of("to@example.com"), List.of(),
+                "日报", "<strong>正文</strong>", List.of(
+                        new MailAttachment("日报.xlsx", new byte[]{1}, "application/octet-stream")));
+
+        verify(sender).send(message);
+        message.saveChanges();
+        MimeMultipart multipart = (MimeMultipart) message.getContent();
+        java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();
+        message.writeTo(raw);
+        String source = raw.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(source.contains("Content-Type: text/html"));
+    }
+
+    @Test
+    void propagatesSynchronousHtmlSendFailure() {
+        JavaMailSender sender = mock(JavaMailSender.class);
+        MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
+        when(sender.createMimeMessage()).thenReturn(message);
+        doThrow(new IllegalStateException("smtp failed")).when(sender).send(message);
+
+        assertThrows(IllegalStateException.class, () -> service(sender).sendHtmlWithAttachmentsSync(
+                List.of("to@example.com"), List.of(), "日报", "正文", List.of()));
+    }
+
+    @Test
     void sendsAttachmentsInCallerOrderWithNamesAndContentTypes() throws Exception {
         JavaMailSender sender = mock(JavaMailSender.class);
         MimeMessage message = new MimeMessage(Session.getInstance(new Properties()));
         when(sender.createMimeMessage()).thenReturn(message);
-        MailService service = new MailService();
-        ReflectionTestUtils.setField(service, "mailSender", sender);
-        ReflectionTestUtils.setField(service, "fromAddress", "sender@example.com");
-        ReflectionTestUtils.setField(service, "fallbackFrom", "");
+        MailService service = service(sender);
 
         service.sendTextWithAttachmentsSync(
                 List.of("to@example.com"), List.of("cc@example.com"), "日报", "正文",
@@ -47,5 +77,13 @@ class MailServiceTest {
         assertTrue(first.getContentType().startsWith(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
         assertTrue(second.getContentType().startsWith("application/vnd.ms-excel"));
+    }
+
+    private static MailService service(JavaMailSender sender) {
+        MailService service = new MailService();
+        ReflectionTestUtils.setField(service, "mailSender", sender);
+        ReflectionTestUtils.setField(service, "fromAddress", "sender@example.com");
+        ReflectionTestUtils.setField(service, "fallbackFrom", "");
+        return service;
     }
 }

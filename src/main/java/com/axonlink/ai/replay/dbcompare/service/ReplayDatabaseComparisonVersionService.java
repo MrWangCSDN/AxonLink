@@ -3,8 +3,10 @@ package com.axonlink.ai.replay.dbcompare.service;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCompiledScope;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareMetadataStatus;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionGateError;
@@ -38,11 +40,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 @Service
 public class ReplayDatabaseComparisonVersionService {
 
     private static final int METADATA_BATCH_SIZE = 200;
+    private static final String FULL_TABLE_FILTER_VALUE = "__FULL_TABLE__";
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter VERSION_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
@@ -54,6 +59,13 @@ public class ReplayDatabaseComparisonVersionService {
     private final SysUserDao userDao;
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private final ReplayDatabaseComparisonScopeCompiler scopeCompiler =
+            new ReplayDatabaseComparisonScopeCompiler(
+                    new ReplayDatabaseComparisonConditionCodec());
+    private final ReplayDatabaseComparisonConditionCodec conditionCodec =
+            new ReplayDatabaseComparisonConditionCodec();
+    private final ReplayDatabaseComparisonConditionLabeler conditionLabeler =
+            new ReplayDatabaseComparisonConditionLabeler();
 
     @Autowired
     public ReplayDatabaseComparisonVersionService(
@@ -161,7 +173,31 @@ public class ReplayDatabaseComparisonVersionService {
     public ReplayDbCompareHeaderFilterResult versionHeaderFilterOptions(
             String versionNo,
             ReplayDbCompareHeaderFilterRequest request) {
-        return versionDao.versionHeaderFilterOptions(versionNo, request);
+        ReplayDbCompareHeaderFilterResult result = versionDao.versionHeaderFilterOptions(versionNo, request);
+        if (!"whereCondition".equals(request.targetColumn())) {
+            return result;
+        }
+        String keyword = request.keyword() == null
+                ? ""
+                : request.keyword().trim().toLowerCase(Locale.ROOT);
+        List<ReplayDbCompareHeaderFilterOption> matched = result.options().stream()
+                .map(this::queryConditionOption)
+                .filter(option -> keyword.isEmpty()
+                        || option.label().toLowerCase(Locale.ROOT).contains(keyword))
+                .toList();
+        List<ReplayDbCompareHeaderFilterOption> options = matched.stream()
+                .limit(request.effectiveLimit())
+                .toList();
+        return new ReplayDbCompareHeaderFilterResult(
+                options, matched.size(), result.matchedRegistrationCount(), matched.size() > options.size());
+    }
+
+    private ReplayDbCompareHeaderFilterOption queryConditionOption(
+            ReplayDbCompareHeaderFilterOption option) {
+        String label = FULL_TABLE_FILTER_VALUE.equals(option.value())
+                ? "全表"
+                : conditionLabeler.label(conditionCodec.decode(option.value()));
+        return new ReplayDbCompareHeaderFilterOption(option.value(), label, option.count());
     }
 
     ReplayDbCompareVersionGateResult validateAll(
@@ -209,6 +245,7 @@ public class ReplayDatabaseComparisonVersionService {
         }
         Map<String, ReplayBaseColumnOption> columns = new LinkedHashMap<>();
         metadata.columns().forEach(column -> columns.put(normalize(column.columnName()), column));
+        int originalErrorCount = errors.size();
         List<String> missing = registration.fields().stream()
                 .map(ReplayDbCompareField::columnName)
                 .filter(name -> !columns.containsKey(normalize(name)))
@@ -216,6 +253,42 @@ public class ReplayDatabaseComparisonVersionService {
         if (!missing.isEmpty()) {
             errors.add(gateError(registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS,
                     missing, "比对字段母库中不存在：" + String.join("、", missing)));
+        }
+        ReplayDbCompareCompiledScope compiledScope = null;
+        try {
+            compiledScope = scopeCompiler.compile(
+                    registration.whereCondition(), registration.compareLimit(), metadata.columns());
+        } catch (ReplayDatabaseComparisonScopeException exception) {
+            exception.errors().forEach(error -> errors.add(gateError(
+                    registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS,
+                    List.of(), error.path() + "：" + error.reason())));
+        }
+        if (registration.compareLimit() != null) {
+            if (!hasCompletePrimaryKeyOrder(metadata.columns())) {
+                errors.add(gateError(registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS,
+                        List.of(), "配置比对条数时，母库表必须存在完整且有序的主键"));
+            } else {
+                List<String> savedOrderingPrimaryKeys = registration.orderingPrimaryKeyNames().stream()
+                        .map(this::normalize)
+                        .toList();
+                List<String> currentOrderingPrimaryKeys = metadata.columns().stream()
+                        .filter(ReplayBaseColumnOption::primaryKey)
+                        .sorted(Comparator.comparing(ReplayBaseColumnOption::primaryKeyOrder))
+                        .map(ReplayBaseColumnOption::columnName)
+                        .map(this::normalize)
+                        .toList();
+                if (!savedOrderingPrimaryKeys.isEmpty()
+                        && !savedOrderingPrimaryKeys.equals(currentOrderingPrimaryKeys)) {
+                    errors.add(gateError(
+                            registration,
+                            ReplayDbCompareMetadataStatus.ORDERING_PRIMARY_KEY_CHANGED,
+                            List.of(),
+                            "排序主键已变更，原顺序：" + String.join("、", savedOrderingPrimaryKeys)
+                                    + "；当前顺序：" + String.join("、", currentOrderingPrimaryKeys)));
+                }
+            }
+        }
+        if (errors.size() > originalErrorCount) {
             return;
         }
         List<ReplayDbCompareField> snapshotFields = registration.fields().stream()
@@ -224,7 +297,8 @@ public class ReplayDatabaseComparisonVersionService {
                     ReplayBaseColumnOption column = columns.get(normalize(field.columnName()));
                     return new ReplayDbCompareField(
                             column.columnName(), column.columnComment(), column.ordinalPosition(),
-                            column.primaryKey(), field.comparisonOrder());
+                            column.primaryKey(), field.comparisonOrder(),
+                            column.primaryKeyOrder(), null);
                 })
                 .toList();
         valid.add(new ReplayDbCompareRegistration(
@@ -234,7 +308,31 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), false, null, null, null, registration.version(),
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
-                registration.updatedBy(), registration.updatedName(), registration.updatedAt(), snapshotFields));
+                registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
+                snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
+                registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null));
+    }
+
+    private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {
+        List<ReplayBaseColumnOption> primaryKeys = columns.stream()
+                .filter(ReplayBaseColumnOption::primaryKey)
+                .toList();
+        if (primaryKeys.isEmpty()) {
+            return false;
+        }
+        Set<Integer> orders = new HashSet<>();
+        for (ReplayBaseColumnOption primaryKey : primaryKeys) {
+            Integer order = primaryKey.primaryKeyOrder();
+            if (order == null || order <= 0 || !orders.add(order)) {
+                return false;
+            }
+        }
+        for (int order = 1; order <= primaryKeys.size(); order++) {
+            if (!orders.contains(order)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private ReplayDbCompareVersionGateResult unavailableGate(

@@ -1,6 +1,6 @@
 package com.axonlink.ai.daoindex.config;
 
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;

@@ -12,7 +12,9 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareImportError;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareImportResult;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareListPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbComparePrimaryKeySyncResult;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSaveRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareMetadataStatus;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionGateError;
@@ -29,12 +31,15 @@ import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConfigSc
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionConflictException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonScopeException;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScopeValidationError;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionService;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.security.UserPrincipalResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
@@ -44,6 +49,9 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.List;
 import java.util.Map;
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -87,6 +95,43 @@ class ReplayDatabaseComparisonControllerTest {
                         service, metadataService, importService, versionService, configScriptService,
                         resolver, properties, daoProperties))
                 .build();
+    }
+
+    @Test
+    void searchReturnsFilteredAndGlobalTotalsSeparately() throws Exception {
+        when(service.search(any(ReplayDbCompareQuery.class)))
+                .thenReturn(new ReplayDbCompareListPage(List.of(), 0, 50, 3, 166, 271));
+
+        mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"page\":0,\"size\":50,\"domains\":[\"结算组\"]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.globalTableCount").value(166))
+                .andExpect(jsonPath("$.data.globalFieldCount").value(271));
+    }
+
+    @Test
+    void bindsExactMultiValueHeaderFilters() throws Exception {
+        when(service.search(any(ReplayDbCompareQuery.class)))
+                .thenReturn(new ReplayDbCompareListPage(List.of(), 0, 50, 0, 0, 0));
+
+        mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/search")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"page":0,"size":50,
+                                 "tableNames":["acct_a","acct_b"],
+                                 "fieldNames":["acct_no","customer_no"],
+                                 "registeredDates":["2026-09-10","2026-09-11"]}
+                                """))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ReplayDbCompareQuery> captor = ArgumentCaptor.forClass(ReplayDbCompareQuery.class);
+        verify(service).search(captor.capture());
+        assertEquals(List.of("acct_a", "acct_b"), captor.getValue().tableNames());
+        assertEquals(List.of("acct_no", "customer_no"), captor.getValue().fieldNames());
+        assertEquals(List.of(LocalDate.of(2026, 9, 10), LocalDate.of(2026, 9, 11)),
+                captor.getValue().registeredDates());
     }
 
     @Test
@@ -302,6 +347,32 @@ class ReplayDatabaseComparisonControllerTest {
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("登记数据已被其他用户修改，请刷新后重试"));
+    }
+
+    @Test
+    void returnsCompleteComparisonScopeValidationErrors() throws Exception {
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        when(service.update(eq(7L), any(ReplayDbCompareSaveRequest.class), any(ReplayIssueOperator.class)))
+                .thenThrow(new ReplayDatabaseComparisonScopeException(List.of(
+                        new ReplayDbCompareScopeValidationError(
+                                "whereCondition.groups[0].conditions[1]",
+                                "条件字段 legacy_status 在 BASE 母库中不存在"),
+                        new ReplayDbCompareScopeValidationError(
+                                "compareLimit", "比对条数必须在 1～10000000 之间"))));
+
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/7")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"tableName":"acct_master","domainName":"存款组",
+                                 "groupOwnerEmpNo":"101","fieldNames":["acct_no"],"version":0,
+                                 "compareLimit":10000001}
+                                """))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.data.errorCode").value("COMPARISON_SCOPE_INVALID"))
+                .andExpect(jsonPath("$.data.errors.length()").value(2))
+                .andExpect(jsonPath("$.data.errors[0].path")
+                        .value("whereCondition.groups[0].conditions[1]"))
+                .andExpect(jsonPath("$.data.errors[1].path").value("compareLimit"));
     }
 
     @Test

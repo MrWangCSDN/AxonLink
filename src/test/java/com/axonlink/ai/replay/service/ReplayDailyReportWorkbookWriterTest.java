@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayCoverageSummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyRowType;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryCalculatedRow;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
 import com.axonlink.ai.replay.service.ReplayDailyReportCalculator.CalculatedReport;
 import com.axonlink.ai.replay.service.ReplayDailyReportCalculator.PreviousUnresolved;
 import org.apache.poi.ss.usermodel.BorderStyle;
@@ -79,6 +80,25 @@ class ReplayDailyReportWorkbookWriterTest {
             assertEquals(11d, sheet.getRow(3).getCell(14).getNumericCellValue());
             assertTrue(sheet.getColumnWidth(0) > sheet.getDefaultColumnWidth() * 256);
             assertTrue(sheet.getRow(2).getHeightInPoints() > sheet.getDefaultRowHeightInPoints());
+        }
+    }
+
+    @Test
+    void writesLowerSummaryFromSharedView() throws Exception {
+        CalculatedReport report = summary();
+        var view = new ReplayReportSummaryViewFactory().create(
+                ReplayReportPeriod.DAILY, null, "RPT20260916-090000", report);
+
+        byte[] bytes = writer.write(report, view, comparisons(), coverageSummaries(), coverageDetails());
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("汇总信息");
+            int lowerTitleRow = findRow(sheet, "批次号：RPT-CURRENT（本批次）");
+            assertEquals(view.columns().get(15).label(),
+                    sheet.getRow(lowerTitleRow + 1).getCell(15).getStringCellValue());
+            assertEquals(((BigDecimal) view.rows().get(0).values().get("previousResolutionRate")).doubleValue(),
+                    sheet.getRow(lowerTitleRow + 3).getCell(15).getNumericCellValue(), 0.000001d);
+            assertEquals("合计", sheet.getRow(lowerTitleRow + 4).getCell(1).getStringCellValue());
         }
     }
 

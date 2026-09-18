@@ -26,8 +26,10 @@ class ReplayWeeklyReportDaoTest {
     void setUp() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V57__dii_replay_daily_report_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V60__dii_replay_weekly_report.sql"),
-                new ClassPathResource("db/daoindex/V61__unique_replay_weekly_report_end_batch.sql"))
+                new ClassPathResource("db/daoindex/V61__unique_replay_weekly_report_end_batch.sql"),
+                new ClassPathResource("db/daoindex/V69__replay_report_snapshot_summary_view.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayWeeklyReportDao(jdbc);
     }
@@ -40,6 +42,7 @@ class ReplayWeeklyReportDaoTest {
         ReplayWeeklyReportSnapshot first = dao.findSnapshot(
                 "RPT20260901-01", "RPT20260908-01").orElseThrow();
         assertArrayEquals(new byte[]{1, 2}, first.content());
+        assertEquals("{\"schemaVersion\":1}", first.summaryViewJson());
         assertEquals("RPT20260908-01周报.xlsx", first.fileName());
         assertEquals("RPT20260901-01", dao.findSnapshotByEndBatchNo(
                 "RPT20260908-01").orElseThrow().startBatchNo());
@@ -83,6 +86,7 @@ class ReplayWeeklyReportDaoTest {
                                                         byte[] content, int hour) {
         return new ReplayWeeklyReportSnapshot(startBatchNo, endBatchNo, endBatchNo + "周报.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                content, content.length, LocalDateTime.of(2026, 9, 8, hour, 0));
+                content, content.length, "{\"schemaVersion\":1}",
+                LocalDateTime.of(2026, 9, 8, hour, 0));
     }
 }

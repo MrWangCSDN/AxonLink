@@ -33,6 +33,11 @@ class ReplayDatabaseComparisonServiceWiringTest {
             context.registerBean(SysUserDao.class, () -> mock(SysUserDao.class));
             context.registerBean(ReplayDatabaseComparisonAuditDiff.class,
                     ReplayDatabaseComparisonAuditDiff::new);
+            context.registerBean(ReplayDatabaseComparisonConditionCodec.class,
+                    () -> new ReplayDatabaseComparisonConditionCodec());
+            context.registerBean(ReplayDatabaseComparisonScopeCompiler.class,
+                    () -> new ReplayDatabaseComparisonScopeCompiler(
+                            context.getBean(ReplayDatabaseComparisonConditionCodec.class)));
             context.registerBean(ReplayDatabaseComparisonExcelParser.class,
                     () -> mock(ReplayDatabaseComparisonExcelParser.class));
             context.registerBean(ReplayDatabaseComparisonConfigurationHasher.class,

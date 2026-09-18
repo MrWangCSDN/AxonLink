@@ -1,12 +1,14 @@
 package com.axonlink.ai.replay.service;
 
-import com.axonlink.ai.replay.config.ReplayDailyReportMailProperties;
+import com.axonlink.ai.replay.config.ReplayWeeklyReportMailProperties;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailStatus;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportMailView;
 import com.axonlink.ai.replay.dto.ReplayWeeklyReportSnapshot;
+import com.axonlink.ai.replay.dto.ReplayGeneratedReportRef;
 import com.axonlink.ai.replay.dto.ReplayMailAttachmentMetadata;
 import com.axonlink.ai.replay.dto.ReplayMailAttachmentSource;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
 import com.axonlink.notification.service.MailAttachment;
 import org.springframework.web.multipart.MultipartFile;
 import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
@@ -30,13 +32,14 @@ public class ReplayWeeklyReportMailService {
 
     private final ReplayWeeklyReportDao weeklyReportDao;
     private final ReplayWeeklyReportMailDao mailDao;
-    private final ReplayDailyReportMailProperties properties;
+    private final ReplayWeeklyReportMailProperties properties;
     private final MailService mailService;
     private final ReplayReportMailAttachmentService attachmentService;
+    private final ReplayReportMailHtmlRenderer htmlRenderer = new ReplayReportMailHtmlRenderer();
 
     public ReplayWeeklyReportMailService(ReplayWeeklyReportDao weeklyReportDao,
                                          ReplayWeeklyReportMailDao mailDao,
-                                         ReplayDailyReportMailProperties properties,
+                                         ReplayWeeklyReportMailProperties properties,
                                          MailService mailService,
                                          ReplayReportMailAttachmentService attachmentService) {
         this.weeklyReportDao = weeklyReportDao;
@@ -86,13 +89,17 @@ public class ReplayWeeklyReportMailService {
         }
         MailContext context = new MailContext(snapshot, subject, defaults.sender(), toEmails, ccEmails, body);
         ReplayMailAttachmentMetadata currentMetadata = currentAttachment(snapshot);
+        ReplayGeneratedReportRef currentRef = new ReplayGeneratedReportRef(
+                ReplayReportPeriod.WEEKLY, snapshot.startBatchNo(), snapshot.endBatchNo());
         var resolved = attachmentService.resolve(
-                new MailAttachment(snapshot.fileName(), snapshot.content(), snapshot.contentType()), currentMetadata,
-                request.reportBatchNos(), files, null);
+                new MailAttachment(currentMetadata.fileName(), snapshot.content(), snapshot.contentType()), currentMetadata,
+                attachmentService.resolveSummary(snapshot.summaryViewJson(), snapshot.content(), currentRef),
+                request.effectiveGeneratedReports(), files);
         mailDao.markSending(snapshot.startBatchNo(), snapshot.endBatchNo(), subject, body,
                 context.sender(), toEmails, ccEmails, resolved.metadata());
         try {
-            mailService.sendTextWithAttachmentsSync(toEmails, ccEmails, subject, body, resolved.mailAttachments());
+            String html = htmlRenderer.render(body, resolved.summaries());
+            mailService.sendHtmlWithAttachmentsSync(toEmails, ccEmails, subject, html, resolved.mailAttachments());
         } catch (RuntimeException exception) {
             String reason = exception.getMessage() == null ? "邮件发送失败" : exception.getMessage();
             mailDao.markFailed(snapshot.startBatchNo(), snapshot.endBatchNo(), reason);
@@ -119,8 +126,8 @@ public class ReplayWeeklyReportMailService {
                 || ccEmails.stream().anyMatch(email -> !EMAIL.matcher(email).matches())) {
             throw new ConfigurationException();
         }
-        String prefix = properties.getWeeklySubjectPrefix() == null ? "" : properties.getWeeklySubjectPrefix();
-        String body = properties.getWeeklyBody() == null ? "" : properties.getWeeklyBody();
+        String prefix = properties.getSubjectPrefix() == null ? "" : properties.getSubjectPrefix();
+        String body = properties.getBody() == null ? "" : properties.getBody();
         return new MailContext(snapshot, prefix + endMatcher.group(1), sender.trim(), toEmails, ccEmails, body);
     }
 
@@ -137,14 +144,37 @@ public class ReplayWeeklyReportMailService {
         ReplayMailAttachmentMetadata current = currentAttachment(snapshot);
         return new ReplayWeeklyReportMailView(snapshot.startBatchNo(), snapshot.endBatchNo(), context.subject(),
                 context.toEmails(), context.ccEmails(), context.body(), current,
-                status == null ? List.of(current) : status.attachments(),
+                status == null ? List.of(current) : canonicalAttachments(status.attachments(), current),
                 status == null ? "UNSENT" : status.status(), status == null ? null : status.sentAt(),
                 status == null ? null : status.failureMessage());
     }
 
+    private List<ReplayMailAttachmentMetadata> canonicalAttachments(
+            List<ReplayMailAttachmentMetadata> attachments, ReplayMailAttachmentMetadata current) {
+        return attachments.stream().map(attachment -> {
+            if (attachment.source() == ReplayMailAttachmentSource.CURRENT_REPORT) {
+                return current;
+            }
+            if (attachment.source() == ReplayMailAttachmentSource.GENERATED_DAILY) {
+                return new ReplayMailAttachmentMetadata(ReplayReportFileNames.daily(attachment.batchNo()),
+                        attachment.size(), attachment.source(), attachment.batchNo(),
+                        ReplayReportPeriod.DAILY, null, attachment.batchNo());
+            }
+            if (attachment.source() == ReplayMailAttachmentSource.GENERATED_WEEKLY) {
+                return new ReplayMailAttachmentMetadata(
+                        ReplayReportFileNames.weekly(attachment.startBatchNo(), attachment.endBatchNo()),
+                        attachment.size(), attachment.source(), attachment.endBatchNo(),
+                        ReplayReportPeriod.WEEKLY, attachment.startBatchNo(), attachment.endBatchNo());
+            }
+            return attachment;
+        }).toList();
+    }
+
     private ReplayMailAttachmentMetadata currentAttachment(ReplayWeeklyReportSnapshot snapshot) {
-        return new ReplayMailAttachmentMetadata(snapshot.fileName(), snapshot.fileSize(),
-                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.endBatchNo());
+        return new ReplayMailAttachmentMetadata(
+                ReplayReportFileNames.weekly(snapshot.startBatchNo(), snapshot.endBatchNo()), snapshot.fileSize(),
+                ReplayMailAttachmentSource.CURRENT_REPORT, snapshot.endBatchNo(),
+                ReplayReportPeriod.WEEKLY, snapshot.startBatchNo(), snapshot.endBatchNo());
     }
 
     private List<String> validateEmails(List<String> values) {

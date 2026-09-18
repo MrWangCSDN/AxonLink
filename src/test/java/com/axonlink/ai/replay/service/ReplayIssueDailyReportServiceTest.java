@@ -11,6 +11,8 @@ import com.axonlink.ai.replay.dto.ReplayDailyReportSnapshot;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOption;
+import com.axonlink.ai.replay.dto.ReplayReportAttachmentOptionPage;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayDailyReportMailDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
@@ -88,6 +90,28 @@ class ReplayIssueDailyReportServiceTest {
 
             assertNotNull(context.getBean(ReplayIssueDailyReportService.class));
         }
+    }
+
+    @Test
+    void exposesCanonicalNamesForHistoricalReportAttachmentOptions() {
+        ReplayDailyDataDao dataDao = mock(ReplayDailyDataDao.class);
+        ReplayReportAttachmentOptionPage stored = new ReplayReportAttachmentOptionPage(List.of(
+                new ReplayReportAttachmentOption("RPT20260908-01", "RPT", "RPT20260908-01日报.xlsx", 12,
+                        LocalDateTime.of(2026, 9, 8, 10, 0)),
+                new ReplayReportAttachmentOption("DZ20260909-01", "DZ", "DZ20260909-01日报.xlsx", 15,
+                        LocalDateTime.of(2026, 9, 9, 10, 0))), 2, 10, 25);
+        when(dataDao.searchReportAttachmentOptions("日报", "", 2, 10)).thenReturn(stored);
+        ReplayIssueDailyReportService reportService = new ReplayIssueDailyReportService(
+                dataDao, mock(ReplayIssueDao.class), new ReplayDailyReportCalculator(),
+                new ReplayDailyReportWorkbookWriter(), jdbc);
+
+        ReplayReportAttachmentOptionPage result = reportService.searchAttachmentOptions("日报", "", 2, 10);
+
+        assertEquals(List.of("查询日报-20260908.xlsx", "账务日报-20260909.xlsx"),
+                result.items().stream().map(ReplayReportAttachmentOption::fileName).toList());
+        assertEquals(2, result.page());
+        assertEquals(10, result.size());
+        assertEquals(25, result.total());
     }
 
     @Test
@@ -218,6 +242,41 @@ class ReplayIssueDailyReportServiceTest {
     }
 
     @Test
+    void generatedDailyWorkbookExcludesNoActionFromProblemStatistics() throws Exception {
+        seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        insertIssueWithOccurrence(101L, "公共组", false, "合理差异", "交易级",
+                "无需处理", "RPT20260901-01");
+        insertIssueWithOccurrence(102L, "公共组", false, "代码问题", "字段级",
+                "已修复", "RPT20260901-01");
+        insertIssueWithOccurrence(103L, "公共组", false, "参数问题", "字段级",
+                "打开", "RPT20260901-01");
+        insertIssueWithOccurrence(104L, "公共组", false, "合理差异", "交易级",
+                "无需处理", "RPT20260902-01");
+        insertIssueWithOccurrence(105L, "公共组", false, "外围问题", "字段级",
+                "已修复", "RPT20260902-01");
+        insertIssueWithOccurrence(106L, "公共组", false, "平台问题", "字段级",
+                "新建", "RPT20260902-01");
+
+        byte[] workbook = service.generate("RPT20260902-01");
+
+        try (var parsed = WorkbookFactory.create(new ByteArrayInputStream(workbook))) {
+            Sheet summary = parsed.getSheet("汇总信息");
+            var previousRow = findSummaryRow(summary, "RPT20260901-01");
+            var currentRow = findSummaryRow(summary, "RPT20260902-01");
+            assertEquals(2d, previousRow.getCell(13).getNumericCellValue());
+            assertEquals(1d, previousRow.getCell(14).getNumericCellValue());
+            assertEquals(1d, previousRow.getCell(15).getNumericCellValue());
+            assertEquals(0d, previousRow.getCell(16).getNumericCellValue());
+            assertEquals(1d, previousRow.getCell(24).getNumericCellValue());
+            assertEquals(2d, currentRow.getCell(13).getNumericCellValue());
+            assertEquals(1d, currentRow.getCell(14).getNumericCellValue());
+            assertEquals(0.5d, currentRow.getCell(15).getNumericCellValue());
+            assertEquals(1d, currentRow.getCell(17).getNumericCellValue());
+        }
+    }
+
+    @Test
     void generatesInterfaceAndCoverageSheetsFromSelectedBatchOnly() throws Exception {
         seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS-ONLY");
         seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "SELECTED-ONLY");
@@ -247,7 +306,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
         when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
-        when(writer.write(any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
+        when(writer.write(any(), any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
         ReplayIssueDailyReportService orchestrator = new ReplayIssueDailyReportService(dataDao, projectionDao,
                 new ReplayDailyReportCalculator(), writer, jdbc);
 
@@ -314,7 +373,8 @@ class ReplayIssueDailyReportServiceTest {
                 List.of("to@example.com"), List.of());
         dailyReportMailDao.markSent("RPT20260902-01");
         ReplayDailyReportWorkbookWriter failingWriter = mock(ReplayDailyReportWorkbookWriter.class);
-        when(failingWriter.write(any(), any(), any(), any())).thenThrow(new IllegalStateException("write failed"));
+        when(failingWriter.write(any(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("write failed"));
         ReplayIssueDailyReportService failingService = new ReplayIssueDailyReportService(
                 dailyDataDao, issueDao, new ReplayDailyReportCalculator(), failingWriter, jdbc);
 
@@ -339,7 +399,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
         when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
-        when(writer.write(any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
+        when(writer.write(any(), any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
         Clock clock = Clock.fixed(LocalDateTime.of(2026, 9, 7, 10, 30)
                 .toInstant(ZoneOffset.UTC), ZoneOffset.UTC);
         ReplayIssueDailyReportService orchestrator = new ReplayIssueDailyReportService(dataDao, projectionDao,
@@ -350,10 +410,13 @@ class ReplayIssueDailyReportServiceTest {
         ArgumentCaptor<ReplayDailyReportSnapshot> saved = ArgumentCaptor.forClass(ReplayDailyReportSnapshot.class);
         verify(dataDao).saveReportSnapshot(saved.capture());
         assertEquals("RPT20260902-01", saved.getValue().batchNo());
-        assertEquals("RPT20260902-01日报.xlsx", saved.getValue().fileName());
+        assertEquals("查询日报-20260902.xlsx", saved.getValue().fileName());
         assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", saved.getValue().contentType());
         assertArrayEquals(new byte[]{1, 2, 3}, saved.getValue().content());
         assertEquals(3L, saved.getValue().fileSize());
+        var summaryView = new ReplayReportSummaryCodec().decode(saved.getValue().summaryViewJson());
+        assertEquals("RPT20260902-01", summaryView.endBatchNo());
+        assertEquals("RPT", summaryView.family());
         assertEquals(LocalDateTime.of(2026, 9, 7, 10, 30), saved.getValue().generatedAt());
     }
 
@@ -371,7 +434,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
         when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
-        when(writer.write(any(), any(), any(), any())).thenThrow(new IllegalStateException("write failed"));
+        when(writer.write(any(), any(), any(), any(), any())).thenThrow(new IllegalStateException("write failed"));
         ReplayIssueDailyReportService orchestrator = new ReplayIssueDailyReportService(dataDao, projectionDao,
                 new ReplayDailyReportCalculator(), writer, jdbc);
 
@@ -413,7 +476,7 @@ class ReplayIssueDailyReportServiceTest {
             recordSnapshotConnection(snapshotJdbc, snapshotConnections);
             return List.of();
         });
-        when(writer.write(any(), any(), any(), any())).thenAnswer(invocation -> {
+        when(writer.write(any(), any(), any(), any(), any())).thenAnswer(invocation -> {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertFalse(TransactionSynchronizationManager.hasResource(snapshotJdbc.getDataSource()));
             return new byte[]{1, 2, 3};
@@ -520,6 +583,15 @@ class ReplayIssueDailyReportServiceTest {
         StringBuilder text = new StringBuilder();
         sheet.forEach(row -> row.forEach(cell -> text.append(cell).append('|')));
         return text.toString();
+    }
+
+    private static org.apache.poi.ss.usermodel.Row findSummaryRow(Sheet sheet, String batchNo) {
+        for (org.apache.poi.ss.usermodel.Row row : sheet) {
+            if (row.getCell(0) != null && batchNo.equals(row.getCell(0).getStringCellValue())) {
+                return row;
+            }
+        }
+        throw new AssertionError("Missing summary row for batch: " + batchNo);
     }
 
     private static void recordSnapshotConnection(JdbcTemplate jdbc, List<Connection> connections) {

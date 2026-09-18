@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetailDraft;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareState;
 import org.junit.jupiter.api.Test;
 
@@ -94,6 +95,7 @@ class ReplayDatabaseComparisonAuditDiffTest {
                 diff.compare(null, after, ReplayDbCompareAuditOperation.REREGISTER);
 
         assertEquals(List.of("tableComment", "domainName", "groupOwner", "registeredDate", "deleted",
+                        "whereCondition", "compareLimit",
                         "comparisonFields.acct_no", "comparisonFields.customer_no"),
                 created.stream().map(ReplayDbCompareAuditDetailDraft::fieldCode).toList());
         assertEquals(2, reregistered.stream()
@@ -138,6 +140,26 @@ class ReplayDatabaseComparisonAuditDiffTest {
         assertEquals("true", details.get(0).beforeValue());
         assertEquals("false", details.get(0).afterValue());
         assertEquals("比对字段 f（母库新增主键）", details.get(1).fieldLabel());
+    }
+
+    @Test
+    void auditsConditionAndLimitChangesWithReadableDefaults() {
+        ReplayDbCompareState before = new ReplayDbCompareState(
+                "账户主表", "存款组", "101", "赵经理", LocalDate.of(2026, 9, 12),
+                false, List.of(), null, null);
+        ReplayDbCompareState after = new ReplayDbCompareState(
+                "账户主表", "存款组", "101", "赵经理", LocalDate.of(2026, 9, 12),
+                false, List.of(), new ReplayDbCompareConditionTree(
+                        com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector.AND,
+                        List.of()), 1000L);
+
+        List<ReplayDbCompareAuditDetailDraft> details =
+                diff.compare(before, after, ReplayDbCompareAuditOperation.UPDATE);
+
+        assertEquals(List.of("compareLimit"),
+                details.stream().map(ReplayDbCompareAuditDetailDraft::fieldCode).toList());
+        assertEquals("全表", details.get(0).beforeValue());
+        assertEquals("1000", details.get(0).afterValue());
     }
 
     private static ReplayDbCompareState state(String tableComment, String domain, String ownerEmpNo,

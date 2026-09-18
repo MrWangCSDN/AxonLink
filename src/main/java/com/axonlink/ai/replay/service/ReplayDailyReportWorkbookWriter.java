@@ -5,6 +5,9 @@ import com.axonlink.ai.replay.dto.ReplayCoverageSummaryRow;
 import com.axonlink.ai.replay.dto.ReplayDailyRowType;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryCalculatedRow;
 import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayReportPeriod;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryRow;
+import com.axonlink.ai.replay.dto.ReplayReportSummaryView;
 import com.axonlink.ai.replay.service.ReplayDailyReportCalculator.CalculatedReport;
 import org.apache.poi.ss.usermodel.BorderStyle;
 import org.apache.poi.ss.usermodel.Cell;
@@ -29,6 +32,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 @Service
@@ -61,11 +65,23 @@ public class ReplayDailyReportWorkbookWriter {
                         List<ReplayInterfaceComparisonRow> comparisons,
                         List<ReplayCoverageSummaryRow> coverageSummaries,
                         List<ReplayCoverageDetailRow> coverageDetails) {
+        String currentBatch = batchOf(summary.currentTotal(), summary.currentRows());
+        ReplayReportSummaryView lowerSummary = new ReplayReportSummaryViewFactory().create(
+                ReplayReportPeriod.DAILY, null, currentBatch, summary);
+        return write(summary, lowerSummary, comparisons, coverageSummaries, coverageDetails);
+    }
+
+    public byte[] write(CalculatedReport summary,
+                        ReplayReportSummaryView lowerSummary,
+                        List<ReplayInterfaceComparisonRow> comparisons,
+                        List<ReplayCoverageSummaryRow> coverageSummaries,
+                        List<ReplayCoverageDetailRow> coverageDetails) {
         Objects.requireNonNull(summary, "summary");
+        Objects.requireNonNull(lowerSummary, "lowerSummary");
         try (XSSFWorkbook workbook = new XSSFWorkbook();
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             StylePalette styles = StylePalette.create(workbook);
-            writeSummarySheet(workbook, styles, summary);
+            writeSummarySheet(workbook, styles, summary, lowerSummary);
             writeInterfaceComparisonSheet(workbook, styles, safe(comparisons));
             writeCoverageSheet(workbook, styles, safe(coverageSummaries), safe(coverageDetails));
             workbook.write(output);
@@ -75,10 +91,11 @@ public class ReplayDailyReportWorkbookWriter {
         }
     }
 
-    private void writeSummarySheet(XSSFWorkbook workbook, StylePalette styles, CalculatedReport report) {
+    private void writeSummarySheet(XSSFWorkbook workbook, StylePalette styles, CalculatedReport report,
+                                   ReplayReportSummaryView lowerSummary) {
         Sheet sheet = workbook.createSheet(ReplayDailyWorkbookParser.SUMMARY_SHEET);
         int upperTotalRow = writeUpperSummary(sheet, styles, report);
-        writeLowerSummary(sheet, styles, report, upperTotalRow + 3);
+        writeLowerSummary(sheet, styles, report, lowerSummary, upperTotalRow + 3);
         configureSummarySheet(sheet);
     }
 
@@ -104,7 +121,8 @@ public class ReplayDailyReportWorkbookWriter {
         return rowIndex;
     }
 
-    private void writeLowerSummary(Sheet sheet, StylePalette styles, CalculatedReport report, int startRow) {
+    private void writeLowerSummary(Sheet sheet, StylePalette styles, CalculatedReport report,
+                                   ReplayReportSummaryView summaryView, int startRow) {
         int lastColumn = 20;
         String currentBatch = batchOf(report.currentTotal(), report.currentRows());
         String previousBatch = batchOf(report.previousTotal(), report.previousRows());
@@ -118,18 +136,27 @@ public class ReplayDailyReportWorkbookWriter {
         writeSummaryHeaderBase(sheet, headerRow, lastColumn, styles.lowerHeader(), styles.classificationHeader(), 14);
         mergeParent(sheet, headerRow, 4, 10, "交易核对分类统计", styles.lowerHeader());
         mergeParent(sheet, headerRow, 16, 20, "上一批次未解决问题分类统计", styles.classificationHeader());
-        writeCommonVerticalHeaders(sheet, headerRow, styles.lowerHeader(), styles.lowerHeader());
-        setVerticalHeader(sheet, headerRow, 13, "问题总数", styles.lowerHeader());
-        setVerticalHeader(sheet, headerRow, 14, "上一批次未解决问题数量", styles.classificationHeader());
-        setVerticalHeader(sheet, headerRow, 15, "上一批次问题解决率", styles.classificationHeader());
-        writeChildren(sheet.getRow(headerRow + 1), 4, TRANSACTION_HEADERS, styles.lowerHeader());
-        writeChildren(sheet.getRow(headerRow + 1), 16, UNRESOLVED_HEADERS, styles.classificationHeader());
+        writeLowerHeaders(sheet, headerRow, styles, summaryView);
 
         int rowIndex = headerRow + 2;
-        for (ReplayDailySummaryCalculatedRow value : report.currentRows()) {
+        for (ReplayReportSummaryRow value : summaryView.rows()) {
             writeLowerSummaryRow(sheet.createRow(rowIndex++), styles, value, false);
         }
-        writeLowerSummaryRow(sheet.createRow(rowIndex), styles, report.currentTotal(), true);
+        writeLowerSummaryRow(sheet.createRow(rowIndex), styles, summaryView.totalRow(), true);
+    }
+
+    private void writeLowerHeaders(Sheet sheet, int headerRow, StylePalette styles,
+                                   ReplayReportSummaryView summaryView) {
+        for (int index : List.of(0, 1, 2, 3, 11, 12, 13, 14, 15)) {
+            CellStyle style = index >= 14 ? styles.classificationHeader() : styles.lowerHeader();
+            setVerticalHeader(sheet, headerRow, index, summaryView.columns().get(index).label(), style);
+        }
+        writeChildren(sheet.getRow(headerRow + 1), 4,
+                summaryView.columns().subList(4, 11).stream().map(column -> column.label()).toList(),
+                styles.lowerHeader());
+        writeChildren(sheet.getRow(headerRow + 1), 16,
+                summaryView.columns().subList(16, 21).stream().map(column -> column.label()).toList(),
+                styles.classificationHeader());
     }
 
     private void writeSummaryHeaderBase(Sheet sheet, int rowIndex, int lastColumn,
@@ -178,21 +205,57 @@ public class ReplayDailyReportWorkbookWriter {
     }
 
     private void writeLowerSummaryRow(Row row, StylePalette styles,
-                                      ReplayDailySummaryCalculatedRow value, boolean total) {
+                                      ReplayReportSummaryRow value, boolean total) {
         row.setHeightInPoints(24);
         CellStyle textStyle = total ? styles.totalText() : styles.bodyText();
         CellStyle integerStyle = total ? styles.totalInteger() : styles.bodyInteger();
         CellStyle percentStyle = total ? styles.totalPercent() : styles.bodyPercent();
         CellStyle issueInteger = total ? styles.classificationTotalInteger() : styles.classificationInteger();
         CellStyle issuePercent = total ? styles.classificationTotalPercent() : styles.classificationPercent();
-        writeCommonSummaryValues(row, value, textStyle, integerStyle, percentStyle, integerStyle, total);
-        setNumber(row, 14, value.previousUnresolvedTotal(), issueInteger);
-        setDecimal(row, 15, value.previousResolutionRate(), issuePercent);
-        setNumber(row, 16, value.unanalyzed(), issueInteger);
-        setNumber(row, 17, value.analyzedPendingFix(), issueInteger);
-        setNumber(row, 18, value.notFullyFixed(), issueInteger);
-        setNumber(row, 19, value.dataMigrationIssue(), issueInteger);
-        setNumber(row, 20, value.codeNotReleased(), issueInteger);
+        Map<String, Object> values = value.values();
+        setText(row, 0, text(values, "batchNo"), textStyle);
+        setText(row, 1, text(values, "domain"), textStyle);
+        setNullableNumber(row, 2, number(values, "coveredInterfaceCount"), integerStyle);
+        setNullableNumber(row, 3, number(values, "sentTransactionCount"), integerStyle);
+        setNumber(row, 4, numberOrZero(values, "c528SuccessCcbsFail"), integerStyle);
+        setNumber(row, 5, numberOrZero(values, "c528FailCcbsSuccess"), integerStyle);
+        setNullableNumber(row, 6, number(values, "bothFailSameCode"), integerStyle);
+        setNumber(row, 7, numberOrZero(values, "bothFailDiffCode"), integerStyle);
+        setNullableNumber(row, 8, number(values, "bothSuccess"), integerStyle);
+        setNumber(row, 9, numberOrZero(values, "noAction"), integerStyle);
+        setNullableNumber(row, 10, number(values, "codeIgnored"), integerStyle);
+        setDecimal(row, 11, decimal(values, "successRate"), percentStyle);
+        setDecimal(row, 12, decimal(values, "matchPassRate"), percentStyle);
+        setNullableNumber(row, 13, number(values, "issueTotal"), integerStyle);
+        setNumber(row, 14, numberOrZero(values, "previousUnresolvedTotal"), issueInteger);
+        setDecimal(row, 15, decimal(values, "previousResolutionRate"), issuePercent);
+        setNumber(row, 16, numberOrZero(values, "unanalyzed"), issueInteger);
+        setNumber(row, 17, numberOrZero(values, "analyzedPendingFix"), issueInteger);
+        setNumber(row, 18, numberOrZero(values, "notFullyFixed"), issueInteger);
+        setNumber(row, 19, numberOrZero(values, "dataMigrationIssue"), issueInteger);
+        setNumber(row, 20, numberOrZero(values, "codeNotReleased"), issueInteger);
+    }
+
+    private static String text(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        return value == null ? null : value.toString();
+    }
+
+    private static Long number(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private static long numberOrZero(Map<String, Object> values, String key) {
+        Long value = number(values, key);
+        return value == null ? 0L : value;
+    }
+
+    private static BigDecimal decimal(Map<String, Object> values, String key) {
+        Object value = values.get(key);
+        if (value instanceof BigDecimal decimal) return decimal;
+        if (value instanceof Number number) return BigDecimal.valueOf(number.doubleValue());
+        return value == null ? null : new BigDecimal(value.toString());
     }
 
     private void writeCommonSummaryValues(Row row, ReplayDailySummaryCalculatedRow value,

@@ -9,7 +9,14 @@ public record ReplayWeeklyReportSnapshot(
         String contentType,
         byte[] content,
         long fileSize,
+        String summaryViewJson,
         LocalDateTime generatedAt) {
+
+    public ReplayWeeklyReportSnapshot(String startBatchNo, String endBatchNo, String fileName,
+                                      String contentType, byte[] content, long fileSize,
+                                      LocalDateTime generatedAt) {
+        this(startBatchNo, endBatchNo, fileName, contentType, content, fileSize, null, generatedAt);
+    }
 
     public ReplayWeeklyReportSnapshot {
         content = content == null ? new byte[0] : content.clone();

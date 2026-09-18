@@ -12,6 +12,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -73,6 +74,29 @@ class DiiTokenBypassFilterTest {
         SecurityContextHolder.setContext(sessionContext);
         filter.doFilter(new MockHttpServletRequest(), new MockHttpServletResponse(), (req, res) ->
                 assertEquals("c-wangsh8", SecurityContextHolder.getContext().getAuthentication().getName()));
+        assertEquals("c-wangsh8", sessionContext.getAuthentication().getName());
+    }
+
+    @Test
+    void operationTokenDoesNotOverrideHumanLoginStoredInSessionBeforeContextLoading() throws Exception {
+        DaoIndexAnalysisProperties properties = new DaoIndexAnalysisProperties();
+        properties.getBatchTrigger().setToken("secret");
+        DiiTokenBypassFilter filter = new DiiTokenBypassFilter(properties);
+        var sessionContext = SecurityContextHolder.createEmptyContext();
+        sessionContext.setAuthentication(
+                new UsernamePasswordAuthenticationToken("c-wangsh8", "N/A", List.of()));
+        var request = new MockHttpServletRequest();
+        request.getSession().setAttribute("SPRING_SECURITY_CONTEXT", sessionContext);
+        request.addHeader(DiiTokenBypassFilter.HEADER, "secret");
+        SecurityContextHolder.clearContext();
+
+        filter.doFilter(request, new MockHttpServletResponse(), (req, res) -> {
+            var authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication != null) {
+                assertNotEquals(DiiTokenBypassFilter.DII_PRINCIPAL, authentication.getName());
+            }
+        });
+
         assertEquals("c-wangsh8", sessionContext.getAuthentication().getName());
     }
 

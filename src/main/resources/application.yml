@@ -87,8 +87,8 @@ axon-link:
       sdk-url: ${AXON_UIAS_SDK_URL:}
       sso-target: ${AXON_UIAS_SSO_TARGET:}
       session-empno-key: ${AXON_UIAS_SESSION_EMPNO_KEY:uiasEmpNo}
-  # 回放日报邮件默认值。收件人和抄送人使用列表配置，每个邮箱独占一行；
-  # 环境变量仍兼容使用逗号、分号或换行分隔多个邮箱。
+  # 回放日报、周报邮件默认值分别配置。收件人和抄送人使用列表配置，每个邮箱独占一行；
+  # 环境变量仍兼容使用逗号、分号或换行分隔多个邮箱。SMTP 发件邮箱继续共用 axon-link.mail.from。
   replay:
     daily-report-mail:
       subject-prefix: ${REPLAY_DAILY_REPORT_MAIL_SUBJECT_PREFIX:对公分布式核心回放问题日报-}
@@ -99,8 +99,15 @@ axon-link:
         - ${REPLAY_DAILY_REPORT_MAIL_CC:}
         # - copy@example.com
       body: ${REPLAY_DAILY_REPORT_MAIL_BODY:各位好，附件为本批次回放问题日报，请查收。}
-      weekly-subject-prefix: ${REPLAY_WEEKLY_REPORT_MAIL_SUBJECT_PREFIX:对公分布式核心回放问题周报-}
-      weekly-body: ${REPLAY_WEEKLY_REPORT_MAIL_BODY:各位好，附件为本周期回放问题周报，请查收。}
+    weekly-report-mail:
+      subject-prefix: ${REPLAY_WEEKLY_REPORT_MAIL_SUBJECT_PREFIX:对公分布式核心回放问题周报-}
+      to:
+        - ${REPLAY_WEEKLY_REPORT_MAIL_TO:}
+        # - weekly-recipient@example.com
+      cc:
+        - ${REPLAY_WEEKLY_REPORT_MAIL_CC:}
+        # - weekly-copy@example.com
+      body: ${REPLAY_WEEKLY_REPORT_MAIL_BODY:各位好，附件为本周期回放问题周报，请查收。}
 
 # 回放问题“无需处理”审核人员：按领域配置员工工号，沙箱与非沙箱共用。
 dii:

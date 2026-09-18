@@ -7,8 +7,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -22,10 +24,11 @@ import java.util.List;
  * 让自动化触发链路与现有"未知触发者"语义完全一致（{@code request.getRemoteUser()} 为 null）。
  * 已有 LDAP/UIAS 登录身份时保留原身份，不能被 token principal 覆盖。
  *
- * <p>实现策略：filter 注册在 Spring Security 链中的
- * {@code UsernamePasswordAuthenticationFilter} 之前；命中 token 时，
+ * <p>实现策略：filter 注册在 Spring Security 链中的会话管理之后、
+ * {@code AuthorizationFilter} 之前；命中 token 时，
  * 给 SecurityContext 写入一个已认证状态的 token-principal，让下游
- * {@code .anyRequest().authenticated()} 检查能放行。<b>不</b> 提前 chain.doFilter
+ * {@code .anyRequest().authenticated()} 检查能放行，同时避免创建或改写 HttpSession。
+ * <b>不</b> 提前 chain.doFilter
  * 跳过整个 Security 链——因为 chain.doFilter 之后下游 filter 仍会执行 authenticated 检查。
  *
  * <p>安全约束：token 配置本身为空（含全空白）时，本 filter <b>不</b>放行任何请求。
@@ -68,9 +71,8 @@ public class DiiTokenBypassFilter extends OncePerRequestFilter {
         // 取出请求头里的 token
         String actual = request.getHeader(HEADER);
         Authentication current = SecurityContextHolder.getContext().getAuthentication();
-        boolean hasHumanLogin = current != null && current.isAuthenticated()
-                && !DII_PRINCIPAL.equals(current.getName())
-                && !"anonymousUser".equals(String.valueOf(current.getPrincipal()));
+        Authentication sessionAuthentication = sessionAuthentication(request);
+        boolean hasHumanLogin = isHumanLogin(current) || isHumanLogin(sessionAuthentication);
         // 三段卫语句：① expected 非空 ② actual 非空 ③ 完全相等 —— 任一不满足都不旁路
         if (expected != null && !expected.trim().isEmpty()
                 && actual != null && expected.equals(actual) && !hasHumanLogin) {
@@ -95,5 +97,21 @@ public class DiiTokenBypassFilter extends OncePerRequestFilter {
         }
         // 总是放行，让下游 SecurityFilterChain 决定最终访问权限
         chain.doFilter(request, response);
+    }
+
+    private Authentication sessionAuthentication(HttpServletRequest request) {
+        var session = request.getSession(false);
+        if (session == null) {
+            return null;
+        }
+        Object stored = session.getAttribute(
+                HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY);
+        return stored instanceof SecurityContext context ? context.getAuthentication() : null;
+    }
+
+    private boolean isHumanLogin(Authentication authentication) {
+        return authentication != null && authentication.isAuthenticated()
+                && !DII_PRINCIPAL.equals(authentication.getName())
+                && !"anonymousUser".equals(String.valueOf(authentication.getPrincipal()));
     }
 }

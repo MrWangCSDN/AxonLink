@@ -1,7 +1,7 @@
 package com.axonlink.ai.daoindex.health;
 
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
-import com.axonlink.ai.daoindex.target.TargetDataSourceRegistry;
+import com.axonlink.ai.daoindex.datasource.TargetDataSourceRegistry;
 import com.axonlink.ai.provider.LlmClient;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;

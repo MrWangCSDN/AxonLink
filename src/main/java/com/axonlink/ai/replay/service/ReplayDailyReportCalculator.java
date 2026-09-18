@@ -40,15 +40,19 @@ public final class ReplayDailyReportCalculator {
 
         Map<String, List<ReplayDailyIssueStatisticRow>> previousByDomain = indexIssues(safePreviousIssues);
         Map<String, List<ReplayDailyIssueStatisticRow>> currentByDomain = indexIssues(safeCurrentIssues);
+        Map<String, List<ReplayDailyIssueStatisticRow>> reportablePreviousByDomain =
+                indexIssues(reportableIssues(safePreviousIssues));
+        Map<String, List<ReplayDailyIssueStatisticRow>> reportableCurrentByDomain =
+                indexIssues(reportableIssues(safeCurrentIssues));
         Map<String, PreviousUnresolved> unresolvedByDomain = unresolvedByDomain(
-                safePreviousSummaries, previousByDomain);
+                safePreviousSummaries, reportablePreviousByDomain);
         PreviousUnresolved previousUnresolved = totalPreviousUnresolved(
-                safePreviousSummaries, previousByDomain, unresolvedByDomain);
+                safePreviousSummaries, reportablePreviousByDomain, unresolvedByDomain);
 
         List<RowCalculation> previousCalculations = calculateRows(
-                safePreviousSummaries, previousByDomain, unresolvedByDomain);
+                safePreviousSummaries, previousByDomain, reportablePreviousByDomain, unresolvedByDomain);
         List<RowCalculation> currentCalculations = calculateRows(
-                safeCurrentSummaries, currentByDomain, unresolvedByDomain);
+                safeCurrentSummaries, currentByDomain, reportableCurrentByDomain, unresolvedByDomain);
 
         List<ReplayDailySummaryCalculatedRow> previousRows = rows(previousCalculations);
         List<ReplayDailySummaryCalculatedRow> currentRows = rows(currentCalculations);
@@ -60,13 +64,16 @@ public final class ReplayDailyReportCalculator {
     private List<RowCalculation> calculateRows(
             List<ReplayDailySummaryRow> summaries,
             Map<String, List<ReplayDailyIssueStatisticRow>> issuesByDomain,
+            Map<String, List<ReplayDailyIssueStatisticRow>> reportableIssuesByDomain,
             Map<String, PreviousUnresolved> unresolvedByDomain) {
         List<RowCalculation> result = new ArrayList<>(summaries.size());
         for (ReplayDailySummaryRow summary : summaries) {
             String domain = displayDomain(summary.domain());
             List<ReplayDailyIssueStatisticRow> issues = issuesByDomain.getOrDefault(domain, List.of());
-            long issueTotal = issues.size();
-            IssueStatistics statistics = issueStatistics(issues, issueTotal);
+            List<ReplayDailyIssueStatisticRow> reportableIssues =
+                    reportableIssuesByDomain.getOrDefault(domain, List.of());
+            long issueTotal = reportableIssues.size();
+            IssueStatistics statistics = issueStatistics(reportableIssues, issueTotal);
             PreviousUnresolved unresolved = unresolvedByDomain.getOrDefault(domain, PreviousUnresolved.empty());
             result.add(calculateRow(summary, domain, issues, issueTotal, statistics, unresolved));
         }
@@ -135,6 +142,13 @@ public final class ReplayDailyReportCalculator {
         uniqueByDomain.forEach((domain, uniqueIssues) ->
                 result.put(domain, List.copyOf(uniqueIssues.values())));
         return result;
+    }
+
+    private List<ReplayDailyIssueStatisticRow> reportableIssues(
+            List<ReplayDailyIssueStatisticRow> issues) {
+        return issues.stream()
+                .filter(issue -> !NO_ACTION.equals(normalizeText(issue.issueStatus())))
+                .toList();
     }
 
     private Map<String, PreviousUnresolved> unresolvedByDomain(
