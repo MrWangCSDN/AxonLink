@@ -150,6 +150,23 @@ class ReplayUnconditionalIgnoreServiceTest {
     }
 
     @Test
+    void batchCreateInsertsAllOrNothing() {
+        List<ReplayUnconditionalIgnoreRow> created = service.createBatch(List.of(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1"),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&soap", "b1"),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&bzjson", "b1")), OPERATOR);
+        assertEquals(3, created.size());
+        assertEquals(3, service.list(10, 0, null, null, null).total());
+
+        assertThrows(ReplayConfigConflictException.class, () -> service.createBatch(List.of(
+                new ReplayUnconditionalIgnoreCreateRequest("S2&sop", "x"),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1")), OPERATOR));
+        assertEquals(3, service.list(10, 0, null, null, null).total());
+
+        assertThrows(IllegalArgumentException.class, () -> service.createBatch(List.of(), OPERATOR));
+    }
+
+    @Test
     void filtersByReviewableByMe() {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA"), OPERATOR);

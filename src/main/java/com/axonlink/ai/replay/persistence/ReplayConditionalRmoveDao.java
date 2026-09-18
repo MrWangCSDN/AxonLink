@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.persistence;
 
+import com.axonlink.ai.replay.dto.ReplayConditionalRmoveDraft;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveRow;
 import com.axonlink.ai.replay.dto.ReplayConfigFieldChange;
 import com.axonlink.ai.replay.dto.ReplayConfigOperator;
@@ -94,6 +95,26 @@ public class ReplayConditionalRmoveDao {
                     origTrcd, fieldRmoveName, index, fieldFileFlag, origFieldCond, destFieldCond,
                     null, 0, operator, now);
             return findById(id);
+        });
+    }
+
+    /** 一个事务内批量新增（每条按各自服务码分配索引）并逐条写 CREATE 审计；任一条失败整体回滚。 */
+    public List<ReplayConditionalRmoveRow> createAll(List<ReplayConditionalRmoveDraft> drafts,
+                                                     ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            List<ReplayConditionalRmoveRow> created = new ArrayList<>();
+            for (ReplayConditionalRmoveDraft draft : drafts) {
+                int index = nextIndex(draft.origTrcd());
+                long id = insertConfig(draft.origTrcd(), draft.fieldRmoveName(), index, draft.fieldFileFlag(),
+                        draft.origFieldCond(), draft.destFieldCond(), now);
+                insertOperation(id, "CREATE",
+                        null, null, null, null, null, null,
+                        draft.origTrcd(), draft.fieldRmoveName(), index, draft.fieldFileFlag(),
+                        draft.origFieldCond(), draft.destFieldCond(), null, 0, operator, now);
+                created.add(findById(id));
+            }
+            return created;
         });
     }
 

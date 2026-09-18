@@ -7,12 +7,14 @@ import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigPersonInfo;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreCreateRequest;
+import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreRow;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreUpdateRequest;
 import com.axonlink.ai.replay.persistence.ReplayErrorCodeIgnoreDao;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -100,6 +102,28 @@ public class ReplayErrorCodeIgnoreService {
             return enrich(dao.create(serviceCode, oldRespCode, newRespCode, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与错误码组合重复）");
+        }
+    }
+
+    /** 批量新增 1~3 条，逐条独立填写；任一条重复则整批不写入。 */
+    public List<ReplayErrorCodeIgnoreRow> createBatch(
+            List<ReplayErrorCodeIgnoreCreateRequest> requests, ReplayConfigOperator operator) {
+        List<ReplayErrorCodeIgnoreCreateRequest> items = ReplayConfigValidation.requireCreateItems(requests);
+        List<ReplayErrorCodeIgnoreDraft> drafts = new ArrayList<>();
+        for (ReplayErrorCodeIgnoreCreateRequest request : items) {
+            String oldRespCode = ReplayConfigValidation.normalizeResponseCode(
+                    request == null ? null : request.oldRespCode());
+            String newRespCode = ReplayConfigValidation.normalizeResponseCode(
+                    request == null ? null : request.newRespCode());
+            ReplayConfigValidation.requireAtLeastOneResponseCode(oldRespCode, newRespCode);
+            drafts.add(new ReplayErrorCodeIgnoreDraft(
+                    ReplayConfigValidation.requireServiceCode(request == null ? null : request.serviceCode()),
+                    oldRespCode, newRespCode));
+        }
+        try {
+            return enrich(dao.createAll(drafts, operator), operator);
+        } catch (DuplicateKeyException exception) {
+            throw new ReplayConfigConflictException("配置已存在（服务码与错误码组合重复），整批未写入");
         }
     }
 

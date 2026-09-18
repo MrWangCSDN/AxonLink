@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
+import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
 import com.axonlink.ai.replay.service.ReplayConfigConflictException;
 import com.axonlink.ai.replay.service.ReplayConfigNotFoundException;
@@ -79,6 +80,22 @@ public class ReplayUnconditionalIgnoreDao {
             long id = insertConfig(tranCode, fieldName, now);
             insertOperation(id, "CREATE", null, null, tranCode, fieldName, null, 0, operator, now);
             return findById(id);
+        });
+    }
+
+    /** 一个事务内批量新增并逐条写 CREATE 审计；任一条失败整体回滚。 */
+    public List<ReplayUnconditionalIgnoreRow> createAll(List<ReplayUnconditionalIgnoreDraft> drafts,
+                                                        ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            List<ReplayUnconditionalIgnoreRow> created = new ArrayList<>();
+            for (ReplayUnconditionalIgnoreDraft draft : drafts) {
+                long id = insertConfig(draft.tranCode(), draft.fieldName(), now);
+                insertOperation(id, "CREATE", null, null, draft.tranCode(), draft.fieldName(),
+                        null, 0, operator, now);
+                created.add(findById(id));
+            }
+            return created;
         });
     }
 

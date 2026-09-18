@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveCreateRequest;
+import com.axonlink.ai.replay.dto.ReplayConditionalRmoveDraft;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveRow;
 import com.axonlink.ai.replay.dto.ReplayConditionalRmoveUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
@@ -13,6 +14,7 @@ import com.axonlink.ai.replay.persistence.ReplayConditionalRmoveDao;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -192,6 +194,36 @@ public class ReplayConditionalRmoveService {
             throw new ReplayConfigNotFoundException("记录不存在");
         }
         return dao.operations(id, resolvedLimit, resolvedOffset);
+    }
+
+    /** 批量新增 1~3 条，逐条独立填写（索引按各自服务码分配）；任一条重复则整批不写入。 */
+    public List<ReplayConditionalRmoveRow> createBatch(
+            List<ReplayConditionalRmoveCreateRequest> requests, ReplayConfigOperator operator) {
+        List<ReplayConditionalRmoveCreateRequest> items = ReplayConfigValidation.requireCreateItems(requests);
+        List<ReplayConditionalRmoveDraft> drafts = new ArrayList<>();
+        for (ReplayConditionalRmoveCreateRequest request : items) {
+            drafts.add(new ReplayConditionalRmoveDraft(
+                    ReplayConfigValidation.requireServiceCode(request == null ? null : request.origTrcd()),
+                    ReplayConfigValidation.requireText(request == null ? null : request.fieldRmoveName(), "忽略字段"),
+                    ReplayConfigValidation.requireFieldFileFlag(request == null ? null : request.fieldFileFlag()),
+                    ReplayConfigValidation.normalizeNullableText(request == null ? null : request.origFieldCond()),
+                    ReplayConfigValidation.normalizeNullableText(request == null ? null : request.destFieldCond())));
+        }
+        return enrich(withBatchIndexRetry(() -> dao.createAll(drafts, operator)), operator);
+    }
+
+    private List<ReplayConditionalRmoveRow> withBatchIndexRetry(
+            Supplier<List<ReplayConditionalRmoveRow>> action) {
+        for (int attempt = 0; attempt < MAX_INDEX_RETRIES; attempt++) {
+            try {
+                return action.get();
+            } catch (DuplicateKeyException exception) {
+                if (attempt == MAX_INDEX_RETRIES - 1) {
+                    throw new ReplayConfigConflictException("配置已存在或字段索引冲突，整批未写入");
+                }
+            }
+        }
+        throw new ReplayConfigConflictException("配置已存在或字段索引冲突，整批未写入");
     }
 
     private ReplayConditionalRmoveRow withIndexRetry(Supplier<ReplayConditionalRmoveRow> action) {

@@ -7,12 +7,14 @@ import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigPersonInfo;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreCreateRequest;
+import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreUpdateRequest;
 import com.axonlink.ai.replay.persistence.ReplayUnconditionalIgnoreDao;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -93,6 +95,23 @@ public class ReplayUnconditionalIgnoreService {
             return enrich(dao.create(tranCode, fieldName, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
+        }
+    }
+
+    /** 批量新增 1~3 条，逐条独立填写；任一条重复则整批不写入。 */
+    public List<ReplayUnconditionalIgnoreRow> createBatch(
+            List<ReplayUnconditionalIgnoreCreateRequest> requests, ReplayConfigOperator operator) {
+        List<ReplayUnconditionalIgnoreCreateRequest> items = ReplayConfigValidation.requireCreateItems(requests);
+        List<ReplayUnconditionalIgnoreDraft> drafts = new ArrayList<>();
+        for (ReplayUnconditionalIgnoreCreateRequest request : items) {
+            drafts.add(new ReplayUnconditionalIgnoreDraft(
+                    ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode()),
+                    ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段")));
+        }
+        try {
+            return enrich(dao.createAll(drafts, operator), operator);
+        } catch (DuplicateKeyException exception) {
+            throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复），整批未写入");
         }
     }
 

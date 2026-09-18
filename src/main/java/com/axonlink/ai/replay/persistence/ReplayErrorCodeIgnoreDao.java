@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayConfigOperator;
 import com.axonlink.ai.replay.dto.ReplayConfigOperationView;
 import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
+import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayErrorCodeIgnoreRow;
 import com.axonlink.ai.replay.service.ReplayConfigConflictException;
 import com.axonlink.ai.replay.service.ReplayConfigNotFoundException;
@@ -83,6 +84,22 @@ public class ReplayErrorCodeIgnoreDao {
             insertOperation(id, "CREATE", null, null, null, serviceCode, oldRespCode, newRespCode,
                     null, 0, operator, now);
             return findById(id);
+        });
+    }
+
+    /** 一个事务内批量新增并逐条写 CREATE 审计；任一条失败整体回滚。 */
+    public List<ReplayErrorCodeIgnoreRow> createAll(List<ReplayErrorCodeIgnoreDraft> drafts,
+                                                    ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            List<ReplayErrorCodeIgnoreRow> created = new ArrayList<>();
+            for (ReplayErrorCodeIgnoreDraft draft : drafts) {
+                long id = insertConfig(draft.serviceCode(), draft.oldRespCode(), draft.newRespCode(), now);
+                insertOperation(id, "CREATE", null, null, null, draft.serviceCode(), draft.oldRespCode(),
+                        draft.newRespCode(), null, 0, operator, now);
+                created.add(findById(id));
+            }
+            return created;
         });
     }
 

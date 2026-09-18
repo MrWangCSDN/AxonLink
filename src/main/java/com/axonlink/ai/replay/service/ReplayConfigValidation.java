@@ -13,6 +13,7 @@ public final class ReplayConfigValidation {
 
     public static final int DEFAULT_LIMIT = 10;
     public static final int MAX_BATCH_DELETE = 100;
+    public static final int MAX_BATCH_CREATE = 3;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
     private static final Pattern SERVICE_CODE_PATTERN = Pattern.compile("^[0-9A-Za-z]+&(sop|soap|bzjson)$");
 
@@ -140,5 +141,21 @@ public final class ReplayConfigValidation {
         if (id <= 0) {
             throw new IllegalArgumentException("记录 id 不合法");
         }
+    }
+
+    /** 批量新增：1 至 3 条，元素不得为空。 */
+    public static <T> List<T> requireCreateItems(List<T> items) {
+        if (items == null || items.isEmpty()) {
+            throw new IllegalArgumentException("请至少填写一条");
+        }
+        if (items.size() > MAX_BATCH_CREATE) {
+            throw new IllegalArgumentException("单次最多新增 3 条");
+        }
+        for (T item : items) {
+            if (item == null) {
+                throw new IllegalArgumentException("新增内容不能为空");
+            }
+        }
+        return items;
     }
 }

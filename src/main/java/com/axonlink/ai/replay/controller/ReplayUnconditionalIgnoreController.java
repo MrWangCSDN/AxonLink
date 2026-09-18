@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.controller;
 
+import com.axonlink.ai.replay.dto.ReplayConfigBatchCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigBatchReviewResult;
@@ -24,6 +25,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -57,6 +59,14 @@ public class ReplayUnconditionalIgnoreController extends AbstractReplayConfigCon
             @RequestBody(required = false) ReplayUnconditionalIgnoreCreateRequest body,
             HttpServletRequest request) {
         return R.ok(service.create(body, resolveOperator(request)));
+    }
+
+    @PostMapping("/batch-create")
+    public R<List<ReplayUnconditionalIgnoreRow>> batchCreate(
+            @RequestBody(required = false)
+            ReplayConfigBatchCreateRequest<ReplayUnconditionalIgnoreCreateRequest> body,
+            HttpServletRequest request) {
+        return R.ok(service.createBatch(body == null ? null : body.items(), resolveOperator(request)));
     }
 
     @PatchMapping("/{id}")
