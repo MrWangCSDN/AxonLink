@@ -107,7 +107,7 @@ public class ReplaySortFieldDao {
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"
-                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newOrigTrcd, newOrigArryName, newOrigFieldName, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
@@ -116,6 +116,7 @@ public class ReplaySortFieldDao {
             boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
             boolean arryChanged = changed(current.origArryName(), newOrigArryName);
             boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     trcdChanged ? current.origTrcd() : null,
                     arryChanged ? current.origArryName() : null,
@@ -123,7 +124,7 @@ public class ReplaySortFieldDao {
                     trcdChanged ? newOrigTrcd : null,
                     arryChanged ? newOrigArryName : null,
                     fieldChanged ? newOrigFieldName : null,
-                    null, null, operator, now);
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
             return findById(current.id());
         });
     }

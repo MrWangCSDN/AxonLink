@@ -128,11 +128,6 @@ public class ReplayConditionalRmoveService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
-        if (current.reviewStatus() == 1 && !ReplayConfigPersonResolver.matchesBankOwner(
-                personResolver.resolveByServiceCodes(List.of(current.origTrcd())).get(current.origTrcd()),
-                operator)) {
-            throw new ReplayConfigReviewForbiddenException("该记录已审核，仅限审核人员修改");
-        }
         boolean unchanged = Objects.equals(current.origTrcd(), origTrcd)
                 && Objects.equals(current.fieldRmoveName(), fieldRmoveName)
                 && current.fieldFileFlag() == fieldFileFlag

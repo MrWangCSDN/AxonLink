@@ -104,7 +104,7 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int rows = jdbc.update(
-                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,"
+                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,review_status=0,"
                             + "updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newTranCode, newFieldName, Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
@@ -112,10 +112,11 @@ public class ReplayUnconditionalIgnoreDao {
             }
             boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
             boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     tranChanged ? current.tranCode() : null, fieldChanged ? current.fieldName() : null,
                     tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null,
-                    null, null, operator, now);
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
             return findById(current.id());
         });
     }

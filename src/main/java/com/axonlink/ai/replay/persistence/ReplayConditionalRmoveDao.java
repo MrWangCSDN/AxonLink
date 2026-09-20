@@ -127,12 +127,13 @@ public class ReplayConditionalRmoveDao {
             int newIndex = codeChanged ? nextIndex(newOrigTrcd) : current.fieldFileIndx();
             int rows = jdbc.update("UPDATE dii_replay_conditional_rmove SET orig_trcd=?,field_rmove_name=?,"
                             + "field_file_indx=?,field_file_flag=?,orig_field_cond=?,dest_field_cond=?,"
-                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
                     newOrigTrcd, newFieldRmoveName, newIndex, newFieldFileFlag, newOrigFieldCond, newDestFieldCond,
                     Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     changed(current.origTrcd(), newOrigTrcd) ? current.origTrcd() : null,
                     changed(current.fieldRmoveName(), newFieldRmoveName) ? current.fieldRmoveName() : null,
@@ -146,7 +147,7 @@ public class ReplayConditionalRmoveDao {
                     current.fieldFileFlag() != newFieldFileFlag ? newFieldFileFlag : null,
                     changed(current.origFieldCond(), newOrigFieldCond) ? newOrigFieldCond : null,
                     changed(current.destFieldCond(), newDestFieldCond) ? newDestFieldCond : null,
-                    null, null,
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null,
                     operator, now);
             return findById(current.id());
         });

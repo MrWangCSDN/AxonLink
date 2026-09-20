@@ -110,7 +110,7 @@ public class ReplayErrorCodeIgnoreDao {
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_error_code_ignore_config SET service_code=?,old_resp_code=?,"
-                            + "new_resp_code=?,updated_at=?,version=version+1 "
+                            + "new_resp_code=?,review_status=0,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
                     newServiceCode, newOldRespCode, newNewRespCode, Timestamp.valueOf(now),
                     current.id(), current.version());
@@ -120,6 +120,7 @@ public class ReplayErrorCodeIgnoreDao {
             boolean serviceChanged = changed(current.serviceCode(), newServiceCode);
             boolean oldChanged = changed(current.oldRespCode(), newOldRespCode);
             boolean newChanged = changed(current.newRespCode(), newNewRespCode);
+            boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     serviceChanged ? current.serviceCode() : null,
                     oldChanged ? current.oldRespCode() : null,
@@ -127,7 +128,7 @@ public class ReplayErrorCodeIgnoreDao {
                     serviceChanged ? newServiceCode : null,
                     oldChanged ? newOldRespCode : null,
                     newChanged ? newNewRespCode : null,
-                    null, null, operator, now);
+                    reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
             return findById(current.id());
         });
     }

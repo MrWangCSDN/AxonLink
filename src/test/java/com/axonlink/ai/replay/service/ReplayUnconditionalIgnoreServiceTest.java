@@ -77,25 +77,28 @@ class ReplayUnconditionalIgnoreServiceTest {
     }
 
     @Test
-    void approvedRowOnlyEditableByReviewerAndKeepsApproval() {
+    void approvedRowEditableByAnyoneAndResetsToPending() {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
         ReplayUnconditionalIgnoreRow created = service.create(
                 new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
         ReplayUnconditionalIgnoreRow reviewed = service.review(created.id(), created.version(), reviewer);
+        assertEquals(1, reviewed.reviewStatus());
 
-        assertThrows(ReplayConfigReviewForbiddenException.class, () -> service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "hacked", reviewed.version()), stranger));
-
+        // 任何人都可以修改已审核的数据，修改后回到未审核
         ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
                 new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", reviewed.version()),
-                reviewer);
+                stranger);
         assertEquals("accountNumber", updated.fieldName());
-        assertEquals(1, updated.reviewStatus(), "审核人修改后应保留已审核");
+        assertEquals(0, updated.reviewStatus(), "修改后应回到未审核");
+        assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
+                .anyMatch(change -> "review_status".equals(change.field())
+                        && "1".equals(change.oldValue()) && "0".equals(change.newValue())));
 
-        // 删除/批量删除不受审核限制
-        service.delete(updated.id(), updated.version(), stranger);
-        assertEquals(0, service.list(10, 0, null, null, null).total());
+        // 修改后仍需行方负责人重新审核
+        assertThrows(ReplayConfigReviewForbiddenException.class,
+                () -> service.review(updated.id(), updated.version(), stranger));
+        assertEquals(1, service.review(updated.id(), updated.version(), reviewer).reviewStatus());
     }
 
     @Test

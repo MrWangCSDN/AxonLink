@@ -144,11 +144,6 @@ public class ReplayErrorCodeIgnoreService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
-        if (current.reviewStatus() == 1 && !ReplayConfigPersonResolver.matchesBankOwner(
-                personResolver.resolveByServiceCodes(List.of(current.serviceCode())).get(current.serviceCode()),
-                operator)) {
-            throw new ReplayConfigReviewForbiddenException("该记录已审核，仅限审核人员修改");
-        }
         if (Objects.equals(current.serviceCode(), serviceCode)
                 && Objects.equals(current.oldRespCode(), oldRespCode)
                 && Objects.equals(current.newRespCode(), newRespCode)) {
