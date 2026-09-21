@@ -30,7 +30,8 @@ import java.util.Objects;
 public class ReplayErrorCodeIgnoreDao {
 
     private static final String SELECT_COLUMNS =
-            "id,service_code,old_resp_code,new_resp_code,enabled,review_status,created_at,updated_at,version";
+            "id,service_code,old_resp_code,new_resp_code,ignore_reason,enabled,review_status,created_at,"
+                    + "updated_at,version";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -77,12 +78,12 @@ public class ReplayErrorCodeIgnoreDao {
     }
 
     public ReplayErrorCodeIgnoreRow create(String serviceCode, String oldRespCode, String newRespCode,
-                                           ReplayConfigOperator operator) {
+                                           String ignoreReason, ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
-            long id = insertConfig(serviceCode, oldRespCode, newRespCode, now);
+            long id = insertConfig(serviceCode, oldRespCode, newRespCode, ignoreReason, now);
             insertOperation(id, "CREATE", null, null, null, serviceCode, oldRespCode, newRespCode,
-                    null, 0, operator, now);
+                    null, ignoreReason, null, 0, operator, now);
             return findById(id);
         });
     }
@@ -94,9 +95,10 @@ public class ReplayErrorCodeIgnoreDao {
         return tx.execute(status -> {
             List<ReplayErrorCodeIgnoreRow> created = new ArrayList<>();
             for (ReplayErrorCodeIgnoreDraft draft : drafts) {
-                long id = insertConfig(draft.serviceCode(), draft.oldRespCode(), draft.newRespCode(), now);
+                long id = insertConfig(draft.serviceCode(), draft.oldRespCode(), draft.newRespCode(),
+                        draft.ignoreReason(), now);
                 insertOperation(id, "CREATE", null, null, null, draft.serviceCode(), draft.oldRespCode(),
-                        draft.newRespCode(), null, 0, operator, now);
+                        draft.newRespCode(), null, draft.ignoreReason(), null, 0, operator, now);
                 created.add(findById(id));
             }
             return created;
@@ -104,15 +106,15 @@ public class ReplayErrorCodeIgnoreDao {
     }
 
     public ReplayErrorCodeIgnoreRow update(ReplayErrorCodeIgnoreRow current, String newServiceCode,
-                                           String newOldRespCode, String newNewRespCode,
+                                           String newOldRespCode, String newNewRespCode, String newIgnoreReason,
                                            ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int rows = jdbc.update(
                     "UPDATE dii_replay_error_code_ignore_config SET service_code=?,old_resp_code=?,"
-                            + "new_resp_code=?,review_status=0,updated_at=?,version=version+1 "
+                            + "new_resp_code=?,ignore_reason=?,review_status=0,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
-                    newServiceCode, newOldRespCode, newNewRespCode, Timestamp.valueOf(now),
+                    newServiceCode, newOldRespCode, newNewRespCode, newIgnoreReason, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
@@ -120,6 +122,7 @@ public class ReplayErrorCodeIgnoreDao {
             boolean serviceChanged = changed(current.serviceCode(), newServiceCode);
             boolean oldChanged = changed(current.oldRespCode(), newOldRespCode);
             boolean newChanged = changed(current.newRespCode(), newNewRespCode);
+            boolean reasonChanged = changed(current.ignoreReason(), newIgnoreReason);
             boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     serviceChanged ? current.serviceCode() : null,
@@ -128,6 +131,8 @@ public class ReplayErrorCodeIgnoreDao {
                     serviceChanged ? newServiceCode : null,
                     oldChanged ? newOldRespCode : null,
                     newChanged ? newNewRespCode : null,
+                    reasonChanged ? current.ignoreReason() : null,
+                    reasonChanged ? newIgnoreReason : null,
                     reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
             return findById(current.id());
         });
@@ -143,7 +148,7 @@ public class ReplayErrorCodeIgnoreDao {
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null,
+            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null,
                     current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
@@ -153,7 +158,8 @@ public class ReplayErrorCodeIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         tx.executeWithoutResult(status -> {
             insertOperation(current.id(), "DELETE", current.serviceCode(), current.oldRespCode(),
-                    current.newRespCode(), null, null, null, current.reviewStatus(), null, operator, now);
+                    current.newRespCode(), null, null, null, current.ignoreReason(), null,
+                    current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_error_code_ignore_config WHERE id=? AND version=?",
                     current.id(), current.version());
             if (rows == 0) {
@@ -175,7 +181,8 @@ public class ReplayErrorCodeIgnoreDao {
                     throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
                 }
                 insertOperation(current.id(), "DELETE", current.serviceCode(), current.oldRespCode(),
-                        current.newRespCode(), null, null, null, current.reviewStatus(), null, operator, now);
+                        current.newRespCode(), null, null, null, current.ignoreReason(), null,
+                        current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_error_code_ignore_config WHERE id=? AND version=?",
                         current.id(), current.version());
                 if (rows == 0) {
@@ -205,7 +212,7 @@ public class ReplayErrorCodeIgnoreDao {
                 if (rows == 0) {
                     continue;
                 }
-                insertOperation(current.id(), "REVIEW", null, null, null, null, null, null,
+                insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null,
                         current.reviewStatus(), 1, operator, now);
                 approved++;
             }
@@ -224,19 +231,21 @@ public class ReplayErrorCodeIgnoreDao {
         return new ReplayConfigPage<>(total == null ? 0 : total, items);
     }
 
-    private long insertConfig(String serviceCode, String oldRespCode, String newRespCode, LocalDateTime now) {
+    private long insertConfig(String serviceCode, String oldRespCode, String newRespCode, String ignoreReason,
+                              LocalDateTime now) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_error_code_ignore_config "
-                            + "(service_code,old_resp_code,new_resp_code,enabled,review_status,created_at,"
-                            + "updated_at,version) VALUES (?,?,?,1,0,?,?,0)",
+                            + "(service_code,old_resp_code,new_resp_code,ignore_reason,enabled,review_status,"
+                            + "created_at,updated_at,version) VALUES (?,?,?,?,1,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, serviceCode);
             statement.setString(2, oldRespCode);
             statement.setString(3, newRespCode);
-            statement.setTimestamp(4, Timestamp.valueOf(now));
+            statement.setString(4, ignoreReason);
             statement.setTimestamp(5, Timestamp.valueOf(now));
+            statement.setTimestamp(6, Timestamp.valueOf(now));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -248,14 +257,16 @@ public class ReplayErrorCodeIgnoreDao {
 
     private void insertOperation(long configId, String operationType, String serviceCode, String oldRespCode,
                                  String newRespCode, String newServiceCode, String newOldRespCode,
-                                 String newNewRespCode, Integer reviewStatus, Integer newReviewStatus,
+                                 String newNewRespCode, String ignoreReason, String newIgnoreReason,
+                                 Integer reviewStatus, Integer newReviewStatus,
                                  ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_error_code_ignore_config_operation "
                         + "(config_id,operation_type,service_code,old_resp_code,new_resp_code,new_service_code,"
-                        + "new_old_resp_code,new_new_resp_code,review_status,new_review_status,operator_username,"
-                        + "operator_real_name,operation_source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "new_old_resp_code,new_new_resp_code,ignore_reason,new_ignore_reason,review_status,"
+                        + "new_review_status,operator_username,operator_real_name,operation_source,created_at) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 configId, operationType, serviceCode, oldRespCode, newRespCode, newServiceCode,
-                newOldRespCode, newNewRespCode, reviewStatus, newReviewStatus,
+                newOldRespCode, newNewRespCode, ignoreReason, newIgnoreReason, reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
@@ -288,7 +299,8 @@ public class ReplayErrorCodeIgnoreDao {
 
     private ReplayErrorCodeIgnoreRow mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new ReplayErrorCodeIgnoreRow(rs.getLong("id"), rs.getString("service_code"),
-                rs.getString("old_resp_code"), rs.getString("new_resp_code"), rs.getInt("enabled"),
+                rs.getString("old_resp_code"), rs.getString("new_resp_code"), rs.getString("ignore_reason"),
+                rs.getInt("enabled"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
                 ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
                 rs.getInt("review_status"), null, null, null, false, null);
@@ -301,6 +313,8 @@ public class ReplayErrorCodeIgnoreDao {
                 rs.getString("new_old_resp_code"));
         addChange(changes, "new_resp_code", "新核心错误码", rs.getString("new_resp_code"),
                 rs.getString("new_new_resp_code"));
+        addChange(changes, "ignore_reason", "忽略原因", rs.getString("ignore_reason"),
+                rs.getString("new_ignore_reason"));
         addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
                 rs.getObject("new_review_status"));
         return new ReplayConfigOperationView(rs.getLong("id"), rs.getString("operation_type"),

@@ -40,7 +40,8 @@ class ReplaySortFieldServiceTest {
     @Test
     void createExpandsThreeRowsAndParsesFieldFormats() {
         List<ReplaySortFieldRow> created = service.create(
-                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "loans(loanNo,loanType)"),
+                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "loans(loanNo,loanType)",
+                        "排序字段忽略原因"),
                 OPERATOR);
 
         assertEquals(3, created.size());
@@ -51,6 +52,8 @@ class ReplaySortFieldServiceTest {
         assertTrue(created.stream().anyMatch(row -> row.origTrcd().equals(BASE + "&bzjson")
                 && row.origArryName().equals("loans") && row.origFieldName().equals("loanNo,loanType")));
         created.forEach(row -> assertEquals(1, row.tranMode()));
+        // 三条共用同一条忽略原因
+        created.forEach(row -> assertEquals("排序字段忽略原因", row.ignoreReason()));
 
         assertEquals(3, service.list(10, 0, null, null, null, null).total());
         assertEquals(3, jdbc.queryForObject(
@@ -60,22 +63,24 @@ class ReplaySortFieldServiceTest {
     @Test
     void rejectsUnknownTranCodeAndBadFieldFormat() {
         IllegalArgumentException unmapped = assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplaySortFieldCreateRequest("9999", "a.b", "c.d"), OPERATOR));
+                new ReplaySortFieldCreateRequest("9999", "a.b", "c.d", "测试原因"), OPERATOR));
         assertEquals("交易码无映射：9999", unmapped.getMessage());
 
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplaySortFieldCreateRequest("6208", "accounts", "c.d"), OPERATOR));
+                new ReplaySortFieldCreateRequest("6208", "accounts", "c.d", "测试原因"), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "loans()"), OPERATOR));
+                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "loans()", "测试原因"), OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplaySortFieldCreateRequest("6208", "a.b", "c.d", "   "), OPERATOR));
 
         assertEquals(0, service.list(10, 0, null, null, null, null).total());
     }
 
     @Test
     void listsByUpdatedAtDescThenSingleRowUpdateAndDelete() {
-        service.create(new ReplaySortFieldCreateRequest("6208", "a.a1", "b.b1"), OPERATOR);
+        service.create(new ReplaySortFieldCreateRequest("6208", "a.a1", "b.b1", "测试原因"), OPERATOR);
         List<ReplaySortFieldRow> second = service.create(
-                new ReplaySortFieldCreateRequest("6208", "c.c1", "d.d1"), OPERATOR);
+                new ReplaySortFieldCreateRequest("6208", "c.c1", "d.d1", "测试原因"), OPERATOR);
 
         // updated_at DESC：后写入的排在前面
         List<ReplaySortFieldRow> rows = service.list(10, 0, null, null, null, null).items();
@@ -83,14 +88,16 @@ class ReplaySortFieldServiceTest {
 
         ReplaySortFieldRow target = rows.get(0);
         ReplaySortFieldRow updated = service.update(target.id(),
-                new ReplaySortFieldUpdateRequest(target.origTrcd(), "accountItems", "accountNo", target.version()),
+                new ReplaySortFieldUpdateRequest(target.origTrcd(), "accountItems", "accountNo",
+                        "调整原因", target.version()),
                 OPERATOR);
         assertEquals(1, updated.version());
         assertEquals("accountItems", updated.origArryName());
+        assertEquals("调整原因", updated.ignoreReason());
         assertEquals("UPDATE", service.operations(target.id(), 10, 0).items().get(0).operationType());
 
         assertThrows(ReplayConfigConflictException.class, () -> service.update(target.id(),
-                new ReplaySortFieldUpdateRequest(target.origTrcd(), "x", "y", 0), OPERATOR));
+                new ReplaySortFieldUpdateRequest(target.origTrcd(), "x", "y", "测试原因", 0), OPERATOR));
 
         service.delete(target.id(), 1, OPERATOR);
         assertEquals(5, service.list(10, 0, null, null, null, null).total());

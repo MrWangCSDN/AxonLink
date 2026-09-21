@@ -4,7 +4,8 @@ import java.time.LocalDateTime;
 
 /** 错误码忽略配置行（含隐藏 version、审核状态与人员映射展示字段）。 */
 public record ReplayErrorCodeIgnoreRow(long id, String serviceCode, String oldRespCode, String newRespCode,
-                                       int enabled, LocalDateTime createdAt, LocalDateTime updatedAt, int version,
-                                       int reviewStatus, String oldTransactionCode, String developer,
-                                       String bankOwner, boolean canReview, String reviewDisabledReason) {
+                                       String ignoreReason, int enabled, LocalDateTime createdAt,
+                                       LocalDateTime updatedAt, int version, int reviewStatus,
+                                       String oldTransactionCode, String developer, String bankOwner,
+                                       boolean canReview, String reviewDisabledReason) {
 }

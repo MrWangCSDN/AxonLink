@@ -14,6 +14,7 @@ public final class ReplayConfigValidation {
     public static final int DEFAULT_LIMIT = 10;
     public static final int MAX_BATCH_DELETE = 100;
     public static final int MAX_BATCH_CREATE = 3;
+    public static final int MAX_IGNORE_REASON = 512;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
     private static final Pattern SERVICE_CODE_PATTERN = Pattern.compile("^[0-9A-Za-z]+&(sop|soap|bzjson)$");
 
@@ -37,6 +38,15 @@ public final class ReplayConfigValidation {
         String trimmed = value == null ? "" : value.trim();
         if (trimmed.isEmpty()) {
             throw new IllegalArgumentException(label + "不能为空");
+        }
+        return trimmed;
+    }
+
+    /** 忽略原因：必填、去除首尾空格、长度不超过 512。 */
+    public static String requireIgnoreReason(String value) {
+        String trimmed = requireText(value, "忽略原因");
+        if (trimmed.length() > MAX_IGNORE_REASON) {
+            throw new IllegalArgumentException("忽略原因不能超过 512 个字符");
         }
         return trimmed;
     }

@@ -98,8 +98,10 @@ public class ReplayErrorCodeIgnoreService {
         String newRespCode = ReplayConfigValidation.normalizeResponseCode(
                 request == null ? null : request.newRespCode());
         ReplayConfigValidation.requireAtLeastOneResponseCode(oldRespCode, newRespCode);
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         try {
-            return enrich(dao.create(serviceCode, oldRespCode, newRespCode, operator), operator);
+            return enrich(dao.create(serviceCode, oldRespCode, newRespCode, ignoreReason, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与错误码组合重复）");
         }
@@ -118,7 +120,8 @@ public class ReplayErrorCodeIgnoreService {
             ReplayConfigValidation.requireAtLeastOneResponseCode(oldRespCode, newRespCode);
             drafts.add(new ReplayErrorCodeIgnoreDraft(
                     ReplayConfigValidation.requireServiceCode(request == null ? null : request.serviceCode()),
-                    oldRespCode, newRespCode));
+                    oldRespCode, newRespCode,
+                    ReplayConfigValidation.requireIgnoreReason(request == null ? null : request.ignoreReason())));
         }
         try {
             return enrich(dao.createAll(drafts, operator), operator);
@@ -136,6 +139,8 @@ public class ReplayErrorCodeIgnoreService {
         String newRespCode = ReplayConfigValidation.normalizeResponseCode(
                 request == null ? null : request.newRespCode());
         ReplayConfigValidation.requireAtLeastOneResponseCode(oldRespCode, newRespCode);
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
         ReplayErrorCodeIgnoreRow current = dao.findById(id);
         if (current == null) {
@@ -146,11 +151,13 @@ public class ReplayErrorCodeIgnoreService {
         }
         if (Objects.equals(current.serviceCode(), serviceCode)
                 && Objects.equals(current.oldRespCode(), oldRespCode)
-                && Objects.equals(current.newRespCode(), newRespCode)) {
+                && Objects.equals(current.newRespCode(), newRespCode)
+                && Objects.equals(current.ignoreReason(), ignoreReason)) {
             return enrich(current, operator);
         }
         try {
-            return enrich(dao.update(current, serviceCode, oldRespCode, newRespCode, operator), operator);
+            return enrich(dao.update(current, serviceCode, oldRespCode, newRespCode, ignoreReason, operator),
+                    operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与错误码组合重复）");
         }
@@ -229,7 +236,8 @@ public class ReplayErrorCodeIgnoreService {
                                             ReplayConfigOperator operator) {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
         return new ReplayErrorCodeIgnoreRow(row.id(), row.serviceCode(), row.oldRespCode(), row.newRespCode(),
-                row.enabled(), row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
+                row.ignoreReason(), row.enabled(), row.createdAt(), row.updatedAt(), row.version(),
+                row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),

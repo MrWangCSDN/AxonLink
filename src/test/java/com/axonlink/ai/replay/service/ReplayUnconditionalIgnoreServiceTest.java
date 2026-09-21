@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReplayUnconditionalIgnoreServiceTest {
 
     private static final ReplayConfigOperator OPERATOR = new ReplayConfigOperator("zhangs3", "张三");
+    private static final String REASON = "测试原因";
 
     private JdbcTemplate jdbc;
     private ReplayUnconditionalIgnoreService service;
@@ -48,8 +49,9 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void reviewFlowEnforcesBankOwnerAndResetsOnUpdate() {
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
         assertEquals(0, created.reviewStatus());
+        assertEquals(REASON, created.ignoreReason());
         assertEquals("Y444", created.oldTransactionCode());
         assertEquals("张三", created.developer());
         assertEquals("李四", created.bankOwner());
@@ -81,13 +83,13 @@ class ReplayUnconditionalIgnoreServiceTest {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
         ReplayUnconditionalIgnoreRow reviewed = service.review(created.id(), created.version(), reviewer);
         assertEquals(1, reviewed.reviewStatus());
 
         // 任何人都可以修改已审核的数据，修改后回到未审核
         ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", reviewed.version()),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", REASON, reviewed.version()),
                 stranger);
         assertEquals("accountNumber", updated.fieldName());
         assertEquals(0, updated.reviewStatus(), "修改后应回到未审核");
@@ -104,7 +106,7 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void reviewRejectedWhenNoMappedBankOwner() {
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "accountNo"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "accountNo", REASON), OPERATOR);
         assertEquals("无审核人", created.reviewDisabledReason());
         ReplayConfigReviewForbiddenException forbidden = assertThrows(ReplayConfigReviewForbiddenException.class,
                 () -> service.review(created.id(), created.version(),
@@ -113,11 +115,28 @@ class ReplayUnconditionalIgnoreServiceTest {
     }
 
     @Test
+    void updateRequiresIgnoreReasonSoLegacyRowsMustBackfill() {
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+
+        // 修改时不填原因（模拟存量记录补登记场景）→ 400，且不产生修改
+        assertThrows(IllegalArgumentException.class, () -> service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", "   ", 0), OPERATOR));
+        assertEquals(0, service.list(10, 0, null, null, null).items().get(0).version());
+
+        // 补上原因才能修改成功
+        ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", "补登记原因", 0), OPERATOR);
+        assertEquals(1, updated.version());
+        assertEquals("补登记原因", updated.ignoreReason());
+    }
+
+    @Test
     void filtersByReviewStatus() {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         ReplayUnconditionalIgnoreRow first = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accA"), OPERATOR);
-        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accB"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accA", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accB", REASON), OPERATOR);
         service.review(first.id(), first.version(), reviewer);
 
         assertEquals(1, service.list(10, 0, null, null, null, 0, null).total());
@@ -131,11 +150,11 @@ class ReplayUnconditionalIgnoreServiceTest {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         ReplayConfigOperator stranger = new ReplayConfigOperator("wangwu", "王五", "c-wangwu");
         ReplayUnconditionalIgnoreRow mine = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA", REASON), OPERATOR);
         ReplayUnconditionalIgnoreRow noOwner = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB", REASON), OPERATOR);
         ReplayUnconditionalIgnoreRow alreadyApproved = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineC"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineC", REASON), OPERATOR);
         service.review(alreadyApproved.id(), alreadyApproved.version(), reviewer);
 
         ReplayConfigBatchReviewResult byStranger = service.batchReview(
@@ -155,25 +174,29 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void batchCreateInsertsAllOrNothing() {
         List<ReplayUnconditionalIgnoreRow> created = service.createBatch(List.of(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1"),
-                new ReplayUnconditionalIgnoreCreateRequest("S1&soap", "b1"),
-                new ReplayUnconditionalIgnoreCreateRequest("S1&bzjson", "b1")), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1", REASON),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&soap", "b1", REASON),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&bzjson", "b1", REASON)), OPERATOR);
         assertEquals(3, created.size());
+        created.forEach(row -> assertEquals(REASON, row.ignoreReason()));
         assertEquals(3, service.list(10, 0, null, null, null).total());
 
         assertThrows(ReplayConfigConflictException.class, () -> service.createBatch(List.of(
-                new ReplayUnconditionalIgnoreCreateRequest("S2&sop", "x"),
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1")), OPERATOR));
+                new ReplayUnconditionalIgnoreCreateRequest("S2&sop", "x", REASON),
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "b1", REASON)), OPERATOR));
         assertEquals(3, service.list(10, 0, null, null, null).total());
 
+        // 忽略原因必填
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "x", "   "), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.createBatch(List.of(), OPERATOR));
     }
 
     @Test
     void filtersByReviewableByMe() {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
-        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA"), OPERATOR);
-        service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB"), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB", REASON), OPERATOR);
 
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
                 10, 0, null, null, null, null, true, reviewer);
@@ -187,17 +210,18 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void createListUpdateAuditAndDelete() {
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
         assertEquals(0, created.version());
         assertEquals(1, created.enableFlag());
         assertEquals("S1&sop", created.tranCode());
+        assertEquals(REASON, created.ignoreReason());
 
         assertThrows(ReplayConfigConflictException.class, () -> service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo"), OPERATOR));
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("bad-code", "accountNo"), OPERATOR));
+                new ReplayUnconditionalIgnoreCreateRequest("bad-code", "accountNo", REASON), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "   "), OPERATOR));
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "   ", REASON), OPERATOR));
 
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> contains = service.list(
                 10, 0, null, "S1", "account");
@@ -212,7 +236,7 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals(0, unmapped.total());
 
         ReplayUnconditionalIgnoreRow updated = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", 0), OPERATOR);
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", REASON, 0), OPERATOR);
         assertEquals(1, updated.version());
         assertEquals("accountNumber", updated.fieldName());
 
@@ -224,18 +248,25 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals("accountNo", afterUpdate.items().get(0).changes().get(0).oldValue());
         assertEquals("accountNumber", afterUpdate.items().get(0).changes().get(0).newValue());
 
+        // 只修改忽略原因也算有效修改，并写审计
+        ReplayUnconditionalIgnoreRow reasonOnly = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", "补充原因", 1), OPERATOR);
+        assertEquals(2, reasonOnly.version());
+        assertEquals("补充原因", reasonOnly.ignoreReason());
+        assertEquals("ignore_reason", service.operations(created.id(), 10, 0).items().get(0)
+                .changes().get(0).field());
+
         ReplayUnconditionalIgnoreRow unchanged = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", 1), OPERATOR);
-        assertEquals(1, unchanged.version());
-        assertEquals(2, service.operations(created.id(), 10, 0).total());
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", "补充原因", 2), OPERATOR);
+        assertEquals(2, unchanged.version());
 
         assertThrows(ReplayConfigConflictException.class, () -> service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", 0), OPERATOR));
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNumber", REASON, 0), OPERATOR));
         assertThrows(ReplayConfigConflictException.class, () -> service.delete(created.id(), 0, OPERATOR));
 
-        service.delete(created.id(), 1, OPERATOR);
+        service.delete(created.id(), 2, OPERATOR);
         assertEquals(0, service.list(10, 0, null, null, null).total());
-        assertEquals(3, jdbc.queryForObject(
+        assertEquals(4, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_unconditional_ignore_operation WHERE config_id=?",
                 Integer.class, created.id()));
         assertThrows(ReplayConfigNotFoundException.class, () -> service.delete(created.id(), 1, OPERATOR));
@@ -248,10 +279,10 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.list(10, -1, null, null, null));
 
         ReplayUnconditionalIgnoreRow first = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldA"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldA", REASON), OPERATOR);
         ReplayUnconditionalIgnoreRow second = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldB"), OPERATOR);
-        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldC"), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldB", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "fieldC", REASON), OPERATOR);
 
         assertThrows(ReplayConfigConflictException.class, () -> service.batchDelete(
                 List.of(new ReplayConfigVersionedId(first.id(), 0),
@@ -270,7 +301,7 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void defaultsToTenPerPage() {
         for (int index = 0; index < 12; index++) {
-            service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "field" + index), OPERATOR);
+            service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "field" + index, REASON), OPERATOR);
         }
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> page = service.list(null, 0, null, null, null);
         assertEquals(12, page.total());

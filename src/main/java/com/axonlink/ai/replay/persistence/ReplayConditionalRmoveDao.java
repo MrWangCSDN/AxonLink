@@ -30,7 +30,7 @@ import java.util.Objects;
 public class ReplayConditionalRmoveDao {
 
     private static final String SELECT_COLUMNS = "id,orig_trcd,field_rmove_name,field_fiel_state,"
-            + "field_file_indx,field_file_flag,orig_field_cond,dest_field_cond,review_status,"
+            + "field_file_indx,field_file_flag,orig_field_cond,dest_field_cond,ignore_reason,review_status,"
             + "created_at,updated_at,version";
 
     private final JdbcTemplate jdbc;
@@ -84,16 +84,17 @@ public class ReplayConditionalRmoveDao {
     }
 
     public ReplayConditionalRmoveRow create(String origTrcd, String fieldRmoveName, int fieldFileFlag,
-                                            String origFieldCond, String destFieldCond,
+                                            String origFieldCond, String destFieldCond, String ignoreReason,
                                             ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int index = nextIndex(origTrcd);
-            long id = insertConfig(origTrcd, fieldRmoveName, index, fieldFileFlag, origFieldCond, destFieldCond, now);
+            long id = insertConfig(origTrcd, fieldRmoveName, index, fieldFileFlag, origFieldCond,
+                    destFieldCond, ignoreReason, now);
             insertOperation(id, "CREATE",
                     null, null, null, null, null, null,
                     origTrcd, fieldRmoveName, index, fieldFileFlag, origFieldCond, destFieldCond,
-                    null, 0, operator, now);
+                    null, ignoreReason, null, 0, operator, now);
             return findById(id);
         });
     }
@@ -107,11 +108,12 @@ public class ReplayConditionalRmoveDao {
             for (ReplayConditionalRmoveDraft draft : drafts) {
                 int index = nextIndex(draft.origTrcd());
                 long id = insertConfig(draft.origTrcd(), draft.fieldRmoveName(), index, draft.fieldFileFlag(),
-                        draft.origFieldCond(), draft.destFieldCond(), now);
+                        draft.origFieldCond(), draft.destFieldCond(), draft.ignoreReason(), now);
                 insertOperation(id, "CREATE",
                         null, null, null, null, null, null,
                         draft.origTrcd(), draft.fieldRmoveName(), index, draft.fieldFileFlag(),
-                        draft.origFieldCond(), draft.destFieldCond(), null, 0, operator, now);
+                        draft.origFieldCond(), draft.destFieldCond(),
+                        null, draft.ignoreReason(), null, 0, operator, now);
                 created.add(findById(id));
             }
             return created;
@@ -120,16 +122,18 @@ public class ReplayConditionalRmoveDao {
 
     public ReplayConditionalRmoveRow update(ReplayConditionalRmoveRow current, String newOrigTrcd,
                                             String newFieldRmoveName, int newFieldFileFlag, String newOrigFieldCond,
-                                            String newDestFieldCond, ReplayConfigOperator operator) {
+                                            String newDestFieldCond, String newIgnoreReason,
+                                            ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             boolean codeChanged = !Objects.equals(current.origTrcd(), newOrigTrcd);
             int newIndex = codeChanged ? nextIndex(newOrigTrcd) : current.fieldFileIndx();
             int rows = jdbc.update("UPDATE dii_replay_conditional_rmove SET orig_trcd=?,field_rmove_name=?,"
                             + "field_file_indx=?,field_file_flag=?,orig_field_cond=?,dest_field_cond=?,"
-                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
+                            + "ignore_reason=?,review_status=0,updated_at=?,version=version+1 "
+                            + "WHERE id=? AND version=?",
                     newOrigTrcd, newFieldRmoveName, newIndex, newFieldFileFlag, newOrigFieldCond, newDestFieldCond,
-                    Timestamp.valueOf(now), current.id(), current.version());
+                    newIgnoreReason, Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
@@ -147,6 +151,8 @@ public class ReplayConditionalRmoveDao {
                     current.fieldFileFlag() != newFieldFileFlag ? newFieldFileFlag : null,
                     changed(current.origFieldCond(), newOrigFieldCond) ? newOrigFieldCond : null,
                     changed(current.destFieldCond(), newDestFieldCond) ? newDestFieldCond : null,
+                    changed(current.ignoreReason(), newIgnoreReason) ? current.ignoreReason() : null,
+                    changed(current.ignoreReason(), newIgnoreReason) ? newIgnoreReason : null,
                     reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null,
                     operator, now);
             return findById(current.id());
@@ -165,6 +171,7 @@ public class ReplayConditionalRmoveDao {
             }
             insertOperation(current.id(), "REVIEW",
                     null, null, null, null, null, null, null, null, null, null, null, null,
+                    null, null,
                     current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
@@ -177,6 +184,7 @@ public class ReplayConditionalRmoveDao {
                     current.origTrcd(), current.fieldRmoveName(), current.fieldFileIndx(), current.fieldFileFlag(),
                     current.origFieldCond(), current.destFieldCond(),
                     null, null, null, null, null, null,
+                    current.ignoreReason(), null,
                     current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_conditional_rmove WHERE id=? AND version=?",
                     current.id(), current.version());
@@ -202,6 +210,7 @@ public class ReplayConditionalRmoveDao {
                         current.origTrcd(), current.fieldRmoveName(), current.fieldFileIndx(), current.fieldFileFlag(),
                         current.origFieldCond(), current.destFieldCond(),
                         null, null, null, null, null, null,
+                        current.ignoreReason(), null,
                         current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_conditional_rmove WHERE id=? AND version=?",
                         current.id(), current.version());
@@ -234,6 +243,7 @@ public class ReplayConditionalRmoveDao {
                 }
                 insertOperation(current.id(), "REVIEW",
                         null, null, null, null, null, null, null, null, null, null, null, null,
+                        null, null,
                         current.reviewStatus(), 1, operator, now);
                 approved++;
             }
@@ -253,14 +263,15 @@ public class ReplayConditionalRmoveDao {
     }
 
     private long insertConfig(String origTrcd, String fieldRmoveName, int fieldFileIndx, int fieldFileFlag,
-                              String origFieldCond, String destFieldCond, LocalDateTime now) {
+                              String origFieldCond, String destFieldCond, String ignoreReason,
+                              LocalDateTime now) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_conditional_rmove "
                             + "(orig_trcd,field_rmove_name,field_fiel_state,field_file_indx,field_file_flag,"
-                            + "orig_field_cond,dest_field_cond,review_status,created_at,updated_at,version) "
-                            + "VALUES (?,?,1,?,?,?,?,0,?,?,0)",
+                            + "orig_field_cond,dest_field_cond,ignore_reason,review_status,created_at,updated_at,"
+                            + "version) VALUES (?,?,1,?,?,?,?,?,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, origTrcd);
             statement.setString(2, fieldRmoveName);
@@ -268,8 +279,9 @@ public class ReplayConditionalRmoveDao {
             statement.setInt(4, fieldFileFlag);
             statement.setString(5, origFieldCond);
             statement.setString(6, destFieldCond);
-            statement.setTimestamp(7, Timestamp.valueOf(now));
+            statement.setString(7, ignoreReason);
             statement.setTimestamp(8, Timestamp.valueOf(now));
+            statement.setTimestamp(9, Timestamp.valueOf(now));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -285,17 +297,19 @@ public class ReplayConditionalRmoveDao {
                                  String origFieldCond, String destFieldCond,
                                  String newOrigTrcd, String newFieldRmoveName, Integer newFieldFileIndx,
                                  Integer newFieldFileFlag, String newOrigFieldCond, String newDestFieldCond,
+                                 String ignoreReason, String newIgnoreReason,
                                  Integer reviewStatus, Integer newReviewStatus,
                                  ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_conditional_rmove_operation "
                         + "(config_id,operation_type,orig_trcd,field_rmove_name,field_file_indx,field_file_flag,"
                         + "orig_field_cond,dest_field_cond,new_orig_trcd,new_field_rmove_name,new_field_file_indx,"
-                        + "new_field_file_flag,new_orig_field_cond,new_dest_field_cond,review_status,"
-                        + "new_review_status,operator_username,operator_real_name,operation_source,created_at) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "new_field_file_flag,new_orig_field_cond,new_dest_field_cond,ignore_reason,"
+                        + "new_ignore_reason,review_status,new_review_status,operator_username,operator_real_name,"
+                        + "operation_source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 configId, operationType, origTrcd, fieldRmoveName, fieldFileIndx, fieldFileFlag,
                 origFieldCond, destFieldCond, newOrigTrcd, newFieldRmoveName, newFieldFileIndx,
-                newFieldFileFlag, newOrigFieldCond, newDestFieldCond, reviewStatus, newReviewStatus,
+                newFieldFileFlag, newOrigFieldCond, newDestFieldCond, ignoreReason, newIgnoreReason,
+                reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
@@ -330,6 +344,7 @@ public class ReplayConditionalRmoveDao {
         return new ReplayConditionalRmoveRow(rs.getLong("id"), rs.getString("orig_trcd"),
                 rs.getString("field_rmove_name"), rs.getInt("field_fiel_state"), rs.getInt("field_file_indx"),
                 rs.getInt("field_file_flag"), rs.getString("orig_field_cond"), rs.getString("dest_field_cond"),
+                rs.getString("ignore_reason"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
                 ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
                 rs.getInt("review_status"), null, null, null, false, null);
@@ -348,6 +363,8 @@ public class ReplayConditionalRmoveDao {
                 rs.getString("new_orig_field_cond"));
         addChange(changes, "dest_field_cond", "备系统字段忽略条件", rs.getString("dest_field_cond"),
                 rs.getString("new_dest_field_cond"));
+        addChange(changes, "ignore_reason", "忽略原因", rs.getString("ignore_reason"),
+                rs.getString("new_ignore_reason"));
         addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
                 rs.getObject("new_review_status"));
         return new ReplayConfigOperationView(rs.getLong("id"), rs.getString("operation_type"),

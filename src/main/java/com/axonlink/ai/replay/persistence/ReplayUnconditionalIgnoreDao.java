@@ -30,7 +30,7 @@ import java.util.Objects;
 public class ReplayUnconditionalIgnoreDao {
 
     private static final String SELECT_COLUMNS =
-            "id,tran_code,field_name,enable_flag,review_status,created_at,updated_at,version";
+            "id,tran_code,field_name,ignore_reason,enable_flag,review_status,created_at,updated_at,version";
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -74,11 +74,13 @@ public class ReplayUnconditionalIgnoreDao {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public ReplayUnconditionalIgnoreRow create(String tranCode, String fieldName, ReplayConfigOperator operator) {
+    public ReplayUnconditionalIgnoreRow create(String tranCode, String fieldName, String ignoreReason,
+                                               ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
-            long id = insertConfig(tranCode, fieldName, now);
-            insertOperation(id, "CREATE", null, null, tranCode, fieldName, null, 0, operator, now);
+            long id = insertConfig(tranCode, fieldName, ignoreReason, now);
+            insertOperation(id, "CREATE", null, null, tranCode, fieldName, null, ignoreReason,
+                    null, 0, operator, now);
             return findById(id);
         });
     }
@@ -90,9 +92,9 @@ public class ReplayUnconditionalIgnoreDao {
         return tx.execute(status -> {
             List<ReplayUnconditionalIgnoreRow> created = new ArrayList<>();
             for (ReplayUnconditionalIgnoreDraft draft : drafts) {
-                long id = insertConfig(draft.tranCode(), draft.fieldName(), now);
+                long id = insertConfig(draft.tranCode(), draft.fieldName(), draft.ignoreReason(), now);
                 insertOperation(id, "CREATE", null, null, draft.tranCode(), draft.fieldName(),
-                        null, 0, operator, now);
+                        null, draft.ignoreReason(), null, 0, operator, now);
                 created.add(findById(id));
             }
             return created;
@@ -100,22 +102,26 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     public ReplayUnconditionalIgnoreRow update(ReplayUnconditionalIgnoreRow current, String newTranCode,
-                                               String newFieldName, ReplayConfigOperator operator) {
+                                               String newFieldName, String newIgnoreReason,
+                                               ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             int rows = jdbc.update(
-                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,review_status=0,"
-                            + "updated_at=?,version=version+1 WHERE id=? AND version=?",
-                    newTranCode, newFieldName, Timestamp.valueOf(now), current.id(), current.version());
+                    "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,ignore_reason=?,"
+                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
+                    newTranCode, newFieldName, newIgnoreReason, Timestamp.valueOf(now),
+                    current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
             boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
             boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
+            boolean reasonChanged = !Objects.equals(current.ignoreReason(), newIgnoreReason);
             boolean reviewChanged = current.reviewStatus() != 0;
             insertOperation(current.id(), "UPDATE",
                     tranChanged ? current.tranCode() : null, fieldChanged ? current.fieldName() : null,
                     tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null,
+                    reasonChanged ? current.ignoreReason() : null, reasonChanged ? newIgnoreReason : null,
                     reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
             return findById(current.id());
         });
@@ -131,7 +137,7 @@ public class ReplayUnconditionalIgnoreDao {
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            insertOperation(current.id(), "REVIEW", null, null, null, null,
+            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null,
                     current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
@@ -141,7 +147,7 @@ public class ReplayUnconditionalIgnoreDao {
         LocalDateTime now = LocalDateTime.now();
         tx.executeWithoutResult(status -> {
             insertOperation(current.id(), "DELETE", current.tranCode(), current.fieldName(),
-                    null, null, current.reviewStatus(), null, operator, now);
+                    null, null, current.ignoreReason(), null, current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_unconditional_ignore WHERE id=? AND version=?",
                     current.id(), current.version());
             if (rows == 0) {
@@ -163,7 +169,7 @@ public class ReplayUnconditionalIgnoreDao {
                     throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
                 }
                 insertOperation(current.id(), "DELETE", current.tranCode(), current.fieldName(),
-                        null, null, current.reviewStatus(), null, operator, now);
+                        null, null, current.ignoreReason(), null, current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_unconditional_ignore WHERE id=? AND version=?",
                         current.id(), current.version());
                 if (rows == 0) {
@@ -174,6 +180,7 @@ public class ReplayUnconditionalIgnoreDao {
             return deleted;
         });
     }
+
     /** 批量审核：逐条校验后置为已审核，不满足条件的跳过；返回通过条数。 */
     public int batchReview(List<ReplayConfigVersionedId> items, ReplayConfigOperator operator,
                            java.util.function.Predicate<ReplayUnconditionalIgnoreRow> canApprove) {
@@ -192,7 +199,7 @@ public class ReplayUnconditionalIgnoreDao {
                 if (rows == 0) {
                     continue;
                 }
-                insertOperation(current.id(), "REVIEW", null, null, null, null,
+                insertOperation(current.id(), "REVIEW", null, null, null, null, null, null,
                         current.reviewStatus(), 1, operator, now);
                 approved++;
             }
@@ -211,18 +218,19 @@ public class ReplayUnconditionalIgnoreDao {
         return new ReplayConfigPage<>(total == null ? 0 : total, items);
     }
 
-    private long insertConfig(String tranCode, String fieldName, LocalDateTime now) {
+    private long insertConfig(String tranCode, String fieldName, String ignoreReason, LocalDateTime now) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_unconditional_ignore "
-                            + "(tran_code,field_name,enable_flag,review_status,created_at,updated_at,version) "
-                            + "VALUES (?,?,1,0,?,?,0)",
+                            + "(tran_code,field_name,ignore_reason,enable_flag,review_status,created_at,"
+                            + "updated_at,version) VALUES (?,?,?,1,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, tranCode);
             statement.setString(2, fieldName);
-            statement.setTimestamp(3, Timestamp.valueOf(now));
+            statement.setString(3, ignoreReason);
             statement.setTimestamp(4, Timestamp.valueOf(now));
+            statement.setTimestamp(5, Timestamp.valueOf(now));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -233,14 +241,16 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     private void insertOperation(long configId, String operationType, String tranCode, String fieldName,
-                                 String newTranCode, String newFieldName, Integer reviewStatus,
-                                 Integer newReviewStatus, ReplayConfigOperator operator, LocalDateTime now) {
+                                 String newTranCode, String newFieldName, String ignoreReason,
+                                 String newIgnoreReason, Integer reviewStatus, Integer newReviewStatus,
+                                 ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_unconditional_ignore_operation "
                         + "(config_id,operation_type,tran_code,field_name,new_tran_code,new_field_name,"
-                        + "review_status,new_review_status,operator_username,operator_real_name,operation_source,"
-                        + "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "ignore_reason,new_ignore_reason,review_status,new_review_status,operator_username,"
+                        + "operator_real_name,operation_source,created_at) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 configId, operationType, tranCode, fieldName, newTranCode, newFieldName,
-                reviewStatus, newReviewStatus,
+                ignoreReason, newIgnoreReason, reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
     }
@@ -268,7 +278,7 @@ public class ReplayUnconditionalIgnoreDao {
 
     private ReplayUnconditionalIgnoreRow mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new ReplayUnconditionalIgnoreRow(rs.getLong("id"), rs.getString("tran_code"),
-                rs.getString("field_name"), rs.getInt("enable_flag"),
+                rs.getString("field_name"), rs.getString("ignore_reason"), rs.getInt("enable_flag"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
                 ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
                 rs.getInt("review_status"), null, null, null, false, null);
@@ -278,6 +288,8 @@ public class ReplayUnconditionalIgnoreDao {
         List<ReplayConfigFieldChange> changes = new ArrayList<>();
         addChange(changes, "tran_code", "服务码", rs.getString("tran_code"), rs.getString("new_tran_code"));
         addChange(changes, "field_name", "忽略字段", rs.getString("field_name"), rs.getString("new_field_name"));
+        addChange(changes, "ignore_reason", "忽略原因", rs.getString("ignore_reason"),
+                rs.getString("new_ignore_reason"));
         addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
                 rs.getObject("new_review_status"));
         return new ReplayConfigOperationView(rs.getLong("id"), rs.getString("operation_type"),

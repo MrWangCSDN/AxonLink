@@ -102,6 +102,8 @@ public class ReplaySortFieldService {
         ParsedSortField newParsed = parseSortField(
                 ReplayConfigValidation.requireText(request == null ? null : request.newSortField(), "新核心排序字段"),
                 "新核心排序字段");
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         List<String> esfCodes = resolver.findEsfServiceCodes(tranCode);
         if (esfCodes.isEmpty()) {
             throw new IllegalArgumentException("交易码无映射：" + tranCode);
@@ -116,9 +118,9 @@ public class ReplaySortFieldService {
             if (base.isBlank()) {
                 continue;
             }
-            addDraft(drafts, seen, base + "&sop", oldParsed);
-            addDraft(drafts, seen, base + "&soap", newParsed);
-            addDraft(drafts, seen, base + "&bzjson", newParsed);
+            addDraft(drafts, seen, base + "&sop", oldParsed, ignoreReason);
+            addDraft(drafts, seen, base + "&soap", newParsed, ignoreReason);
+            addDraft(drafts, seen, base + "&bzjson", newParsed, ignoreReason);
         }
         if (drafts.isEmpty()) {
             throw new IllegalArgumentException("交易码无映射：" + tranCode);
@@ -137,6 +139,8 @@ public class ReplaySortFieldService {
                 request == null ? null : request.origArryName(), "对象/数组名称");
         String origFieldName = ReplayConfigValidation.requireText(
                 request == null ? null : request.origFieldName(), "排序字段");
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
         ReplaySortFieldRow current = dao.findById(id);
         if (current == null) {
@@ -147,11 +151,13 @@ public class ReplaySortFieldService {
         }
         if (Objects.equals(current.origTrcd(), origTrcd)
                 && Objects.equals(current.origArryName(), origArryName)
-                && Objects.equals(current.origFieldName(), origFieldName)) {
+                && Objects.equals(current.origFieldName(), origFieldName)
+                && Objects.equals(current.ignoreReason(), ignoreReason)) {
             return enrich(current, operator);
         }
         try {
-            return enrich(dao.update(current, origTrcd, origArryName, origFieldName, operator), operator);
+            return enrich(dao.update(current, origTrcd, origArryName, origFieldName, ignoreReason, operator),
+                    operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码、对象/数组名称与排序字段重复）");
         }
@@ -209,10 +215,10 @@ public class ReplaySortFieldService {
     }
 
     private static void addDraft(List<ReplaySortFieldDraft> drafts, Set<String> seen, String origTrcd,
-                                 ParsedSortField parsed) {
+                                 ParsedSortField parsed, String ignoreReason) {
         String key = origTrcd + "|" + parsed.arryName() + "|" + parsed.fieldName();
         if (seen.add(key)) {
-            drafts.add(new ReplaySortFieldDraft(origTrcd, parsed.arryName(), parsed.fieldName()));
+            drafts.add(new ReplaySortFieldDraft(origTrcd, parsed.arryName(), parsed.fieldName(), ignoreReason));
         }
     }
 
@@ -260,7 +266,8 @@ public class ReplaySortFieldService {
                                       ReplayConfigOperator operator) {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
         return new ReplaySortFieldRow(row.id(), row.origTrcd(), row.origArryName(), row.origFieldName(),
-                row.tranMode(), row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
+                row.ignoreReason(), row.tranMode(), row.createdAt(), row.updatedAt(), row.version(),
+                row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),
