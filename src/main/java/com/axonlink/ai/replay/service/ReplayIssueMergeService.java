@@ -281,7 +281,7 @@ public class ReplayIssueMergeService {
                 inheritedDefectRepairDate(current, status),
                 current.cooperationPersonUsername(), current.cooperationPersonRealName(), incoming.globalSerialNo(),
                 current.reviewStatus(), current.reviewerUsername(), current.reviewerRealName(), current.reviewedAt(),
-                current.plannedCompletionDate());
+                current.reviewReason(), current.plannedCompletionDate());
     }
 
     private LocalDate inheritedDefectRepairDate(ReplayIssueRow current, ReplayIssueStatus status) {
@@ -300,7 +300,7 @@ public class ReplayIssueMergeService {
                 row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(), row.affectedTransactionCount(),
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
                 row.importedAt(), status, row.importDate(), defectDate, row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(),
-                null, null, null, null, row.plannedCompletionDate());
+                null, null, null, null, null, row.plannedCompletionDate());
     }
 
     private ReplayIssueRow withId(ReplayIssueRow row, long id) {
@@ -311,7 +311,7 @@ public class ReplayIssueMergeService {
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
                 row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(), row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(),
                 row.reviewStatus(), row.reviewerUsername(), row.reviewerRealName(), row.reviewedAt(),
-                row.plannedCompletionDate());
+                row.reviewReason(), row.plannedCompletionDate());
     }
 
     private String snapshot(ReplayIssueRow row) {

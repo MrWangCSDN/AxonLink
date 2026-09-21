@@ -13,7 +13,8 @@ public record ReplayIssueFilterOptions(
 
     public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes,
                                     List<String> issueStatuses, List<String> coverageRounds) {
-        this(groups, issueLevels, issueTypes, issueStatuses, coverageRounds, List.of("待审核", "已审核"));
+        this(groups, issueLevels, issueTypes, issueStatuses, coverageRounds,
+                List.of("待审核", "已审核（未填写原因）", "已审核（已填写原因）"));
     }
 
     public ReplayIssueFilterOptions(List<String> groups, List<String> issueLevels, List<String> issueTypes) {

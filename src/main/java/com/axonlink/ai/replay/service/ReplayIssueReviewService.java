@@ -114,16 +114,14 @@ public class ReplayIssueReviewService {
         return List.copyOf(names);
     }
 
-    public ReplayIssueRow approve(long issueId, ReplayIssueOperator operator) {
+    public ReplayIssueRow approve(long issueId, ReplayIssueOperator operator, String reason) {
+        String normalizedReason = normalizeReason(reason);
         return issueDao.inTransaction(dao -> {
             ReplayIssueRow before = dao.findCurrentByIdForUpdate(issueId);
             if (before == null) throw new IllegalArgumentException("回放问题不存在");
-            if (before.issueStatus() == ReplayIssueStatus.NO_ACTION
-                    && before.reviewStatus() == ReplayIssueReviewStatus.APPROVED) {
-                return before;
-            }
             if (before.issueStatus() != ReplayIssueStatus.NO_ACTION
-                    || before.reviewStatus() != ReplayIssueReviewStatus.PENDING) {
+                    || (before.reviewStatus() != ReplayIssueReviewStatus.PENDING
+                    && before.reviewStatus() != ReplayIssueReviewStatus.APPROVED)) {
                 throw new IllegalArgumentException("当前问题不是待审核状态");
             }
             if (!isReviewer(before, operator)) {
@@ -132,15 +130,24 @@ public class ReplayIssueReviewService {
                         contacts.isEmpty() ? "没有审核权限" :
                                 "没有权限，请联系" + String.join("、", contacts) + "进行审核");
             }
+            if (normalizedReason.equals(before.reviewReason())) return before;
             java.time.LocalDateTime reviewedAt = java.time.LocalDateTime.now(clock);
-            ReplayIssueRow after = withApprovedReview(before, operator, reviewedAt);
+            boolean firstApproval = before.reviewStatus() == ReplayIssueReviewStatus.PENDING;
+            ReplayIssueRow after = withApprovedReview(before, operator, reviewedAt, normalizedReason, firstApproval);
             dao.updateCurrent(after);
-            dao.insertHistoryForRound(after.id(), after.issueKey(), "审核通过", reviewedAt, operator,
+            dao.insertHistoryForRound(after.id(), after.issueKey(), firstApproval ? "审核通过" : "更新审核原因", reviewedAt, operator,
                     after.importDate(), null, null, null, snapshot(before), snapshot(after), null,
                     dao.findLatestIssueRoundId(after.id()));
             dao.updateLatestHistoryOccurrenceBatch(after.id(), reviewedAt, after.batchNo());
             return after;
         });
+    }
+
+    private static String normalizeReason(String reason) {
+        String normalized = reason == null ? "" : reason.trim();
+        if (normalized.isEmpty()) throw new IllegalArgumentException("请填写审核原因");
+        if (normalized.length() > 500) throw new IllegalArgumentException("审核原因不能超过500个字符");
+        return normalized;
     }
 
     private SysUser activeUser(ReplayIssueOperator operator) {
@@ -155,7 +162,8 @@ public class ReplayIssueReviewService {
     }
 
     private static ReplayIssueRow withApprovedReview(ReplayIssueRow row, ReplayIssueOperator operator,
-                                                     java.time.LocalDateTime reviewedAt) {
+                                                     java.time.LocalDateTime reviewedAt, String reviewReason,
+                                                     boolean firstApproval) {
         return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(),
                 row.domain(), row.sequenceNo(), row.batchNo(), row.transactionCode(), row.transactionName(),
                 row.issueLevel(), row.registeredDate(), row.fieldName(), row.issueDescription(),
@@ -163,9 +171,9 @@ public class ReplayIssueReviewService {
                 row.cooperationGroup(), row.resolver(), row.serialNo(), row.dataRepairDate(), row.remark(),
                 row.affectedTransactionCount(), row.issueId(), row.issueKey(), row.historicalOccurrenceCount(),
                 row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(), ReplayIssueStatus.NO_ACTION,
-                row.importDate(), reviewedAt.toLocalDate(), row.cooperationPersonUsername(),
+                row.importDate(), firstApproval ? reviewedAt.toLocalDate() : row.defectRepairDate(), row.cooperationPersonUsername(),
                 row.cooperationPersonRealName(), row.globalSerialNo(), ReplayIssueReviewStatus.APPROVED,
-                operator.username(), operator.realName(), reviewedAt, row.plannedCompletionDate());
+                operator.username(), operator.realName(), reviewedAt, reviewReason, row.plannedCompletionDate());
     }
 
     private static String snapshot(ReplayIssueRow row) {

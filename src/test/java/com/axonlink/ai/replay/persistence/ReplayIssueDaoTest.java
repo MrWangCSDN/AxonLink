@@ -413,10 +413,12 @@ class ReplayIssueDaoTest {
     void reviewStatusFiltersAndNoActionStatisticsUseDisplayValues() {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("公共组", false, 1, "T-1", "pending"),
-                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "approved"),
-                ReplayIssueTestFixtures.row("存款组", false, 3, "T-3", "open")), IMPORTED_AT);
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "approved without reason"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-3", "approved with reason"),
+                ReplayIssueTestFixtures.row("存款组", false, 4, "T-4", "open")), IMPORTED_AT);
         jdbc.update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE issue_key='key-1'");
         jdbc.update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='APPROVED' WHERE issue_key='key-2'");
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='APPROVED',review_reason='已确认' WHERE issue_key='key-3'");
 
         ReplayIssueQuery pending = new ReplayIssueQuery(50, 0, null, null, null, null,
                 null, null, null, null, null, null, null, null, null,
@@ -426,15 +428,29 @@ class ReplayIssueDaoTest {
                 null, null, null, null, null, null, null, null, null,
                 List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null,
                 "空", List.of());
+        ReplayIssueQuery approvedWithoutReason = new ReplayIssueQuery(50, 0, null, null, null, null,
+                null, null, null, null, null, null, null, null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null,
+                "已审核（未填写原因）", List.of());
+        ReplayIssueQuery approvedWithReason = new ReplayIssueQuery(50, 0, null, null, null, null,
+                null, null, null, null, null, null, null, null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), null,
+                null, List.of("已审核（已填写原因）"));
 
         assertEquals(1L, dao.count(pending));
         assertEquals(1L, dao.count(blankReview));
+        assertEquals(1L, dao.count(approvedWithoutReason));
+        assertEquals(1L, dao.count(approvedWithReason));
         assertEquals("待审核", dao.list(pending).get(0).get("review_status"));
-        assertEquals(List.of("空", "已审核", "待审核"), dao.headerFilterValues("reviewStatus", ALL, null));
-        assertEquals(2L, dao.stats().get("noActionTotal"));
-        assertEquals(2L, dao.groupIssueSummaries().stream()
+        assertEquals("已审核（未填写原因）", dao.list(approvedWithoutReason).get(0).get("review_status"));
+        assertEquals("已审核（已填写原因）", dao.list(approvedWithReason).get(0).get("review_status"));
+        assertEquals(List.of("空", "已审核（已填写原因）", "已审核（未填写原因）", "待审核"),
+                dao.headerFilterValues("reviewStatus", ALL, null));
+        assertEquals(3L, dao.stats().get("noActionTotal"));
+        assertEquals(3L, dao.groupIssueSummaries().stream()
                 .filter(summary -> "公共组".equals(summary.groupName())).findFirst().orElseThrow().noActionCount());
-        assertEquals(List.of("待审核", "已审核"), dao.options().reviewStatuses());
+        assertEquals(List.of("待审核", "已审核（未填写原因）", "已审核（已填写原因）"),
+                dao.options().reviewStatuses());
     }
 
     @Test

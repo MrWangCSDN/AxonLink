@@ -173,7 +173,7 @@ public class ReplayIssueFullRefreshService {
                 row.importedAt(), row.issueStatus(), row.importDate(), row.defectRepairDate(),
                 row.cooperationPersonUsername(), row.cooperationPersonRealName(), row.globalSerialNo(),
                 row.reviewStatus(), row.reviewerUsername(), row.reviewerRealName(), row.reviewedAt(),
-                plannedCompletionDate);
+                row.reviewReason(), plannedCompletionDate);
     }
 
     private String snapshot(ReplayIssueRow row) {

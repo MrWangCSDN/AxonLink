@@ -37,6 +37,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayIssueWeeklyTaskConfig;
 import com.axonlink.ai.replay.dto.ReplayIssueWeeklyTaskUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayIssueReviewPermissions;
+import com.axonlink.ai.replay.dto.ReplayIssueReviewRequest;
 import com.axonlink.ai.replay.dto.ReplayIssuePlanDatePermissions;
 import com.axonlink.ai.replay.dto.ReplayIssuePlannedCompletionDateUpdateRequest;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionDashboard;
@@ -299,11 +300,13 @@ public class ReplayIssueController {
     }
 
     @PostMapping("/{id}/review/approve")
-    public ResponseEntity<R<ReplayIssueRow>> approveReview(@PathVariable long id, HttpServletRequest request) {
+    public ResponseEntity<R<ReplayIssueRow>> approveReview(@PathVariable long id,
+                                                            @RequestBody(required = false) ReplayIssueReviewRequest body,
+                                                            HttpServletRequest request) {
         ReplayIssueOperator operator = resolveOperator(request);
         if (operator == null) return error(HttpStatus.UNAUTHORIZED, "请先登录");
         try {
-            return ResponseEntity.ok(R.ok(reviewService.approve(id, operator)));
+            return ResponseEntity.ok(R.ok(reviewService.approve(id, operator, body == null ? null : body.reason())));
         } catch (ReplayIssueReviewForbiddenException exception) {
             return error(HttpStatus.FORBIDDEN, exception.getMessage());
         } catch (IllegalArgumentException exception) {

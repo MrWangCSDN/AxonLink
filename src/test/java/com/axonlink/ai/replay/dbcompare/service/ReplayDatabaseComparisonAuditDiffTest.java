@@ -5,6 +5,10 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareState;
 import org.junit.jupiter.api.Test;
 
@@ -95,7 +99,7 @@ class ReplayDatabaseComparisonAuditDiffTest {
                 diff.compare(null, after, ReplayDbCompareAuditOperation.REREGISTER);
 
         assertEquals(List.of("tableComment", "domainName", "groupOwner", "registeredDate", "deleted",
-                        "whereCondition", "compareLimit",
+                        "queryCondition",
                         "comparisonFields.acct_no", "comparisonFields.customer_no"),
                 created.stream().map(ReplayDbCompareAuditDetailDraft::fieldCode).toList());
         assertEquals(2, reregistered.stream()
@@ -143,23 +147,24 @@ class ReplayDatabaseComparisonAuditDiffTest {
     }
 
     @Test
-    void auditsConditionAndLimitChangesWithReadableDefaults() {
+    void auditsConditionOrderingAndLimitAsOneReadableQueryCondition() {
         ReplayDbCompareState before = new ReplayDbCompareState(
                 "账户主表", "存款组", "101", "赵经理", LocalDate.of(2026, 9, 12),
-                false, List.of(), null, null);
+                false, List.of(), null, null, List.of());
         ReplayDbCompareState after = new ReplayDbCompareState(
                 "账户主表", "存款组", "101", "赵经理", LocalDate.of(2026, 9, 12),
-                false, List.of(), new ReplayDbCompareConditionTree(
-                        com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector.AND,
-                        List.of()), 1000L);
+                false, List.of(), singleEq("cst_id", "22"), 1000L,
+                List.of("acct_no", "cust_no"));
 
         List<ReplayDbCompareAuditDetailDraft> details =
                 diff.compare(before, after, ReplayDbCompareAuditOperation.UPDATE);
 
-        assertEquals(List.of("compareLimit"),
+        assertEquals(List.of("queryCondition"),
                 details.stream().map(ReplayDbCompareAuditDetailDraft::fieldCode).toList());
+        assertEquals("查询条件", details.get(0).fieldLabel());
         assertEquals("全表", details.get(0).beforeValue());
-        assertEquals("1000", details.get(0).afterValue());
+        assertEquals("where cst_id = '22'\norder by acct_no,cust_no\nlimit 1000",
+                details.get(0).afterValue());
     }
 
     private static ReplayDbCompareState state(String tableComment, String domain, String ownerEmpNo,
@@ -176,5 +181,14 @@ class ReplayDatabaseComparisonAuditDiffTest {
     private static ReplayDbCompareField field(
             String name, String comment, int ordinal, boolean primaryKey, int order) {
         return new ReplayDbCompareField(name, comment, ordinal, primaryKey, order);
+    }
+
+    private static ReplayDbCompareConditionTree singleEq(String columnName, String value) {
+        return new ReplayDbCompareConditionTree(
+                ReplayDbCompareConditionConnector.AND,
+                List.of(new ReplayDbCompareConditionGroup(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareCondition(
+                                columnName, ReplayDbCompareConditionOperator.EQ, List.of(value))))));
     }
 }

@@ -33,6 +33,7 @@ public final class ReplayIssueTrackingProjection {
             new FieldDefinition("cooperationPerson", "需协同人"),
             new FieldDefinition("initialAnalysis", "初步问题分析"),
             new FieldDefinition("finalSolution", "最终处理方案"),
+            new FieldDefinition("reviewReason", "审核原因"),
             new FieldDefinition("remark", "备注"));
 
     private static final List<FieldDefinition> HISTORY_FIELDS = List.of(
@@ -45,6 +46,7 @@ public final class ReplayIssueTrackingProjection {
             new FieldDefinition("plannedCompletionDate", "计划验证日期"),
             new FieldDefinition("reviewStatus", "审核状态"),
             new FieldDefinition("reviewer", "审核人"),
+            new FieldDefinition("reviewReason", "审核原因"),
             new FieldDefinition("defectRepairDate", "缺陷修复日期"),
             new FieldDefinition("transactionCode", "交易码"),
             new FieldDefinition("transactionName", "交易名称"),

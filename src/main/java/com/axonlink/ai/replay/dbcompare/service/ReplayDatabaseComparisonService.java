@@ -73,6 +73,8 @@ public class ReplayDatabaseComparisonService {
             new ReplayDatabaseComparisonConditionCodec();
     private final ReplayDatabaseComparisonConditionLabeler conditionLabeler =
             new ReplayDatabaseComparisonConditionLabeler();
+    private final ReplayDatabaseComparisonLegacyAuditDetailAdapter legacyAuditDetailAdapter =
+            new ReplayDatabaseComparisonLegacyAuditDetailAdapter();
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
 
@@ -778,7 +780,7 @@ public class ReplayDatabaseComparisonService {
     }
 
     public List<ReplayDbCompareAuditDetail> auditDetails(long auditEventId) {
-        return dao.findAuditDetails(auditEventId);
+        return legacyAuditDetailAdapter.adapt(dao.findAuditDetails(auditEventId));
     }
 
     private ReplayDbCompareRegistration deleteInside(
@@ -995,7 +997,8 @@ public class ReplayDatabaseComparisonService {
                 registration.tableComment(), registration.domainName(),
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), registration.deleted(), registration.fields(),
-                registration.whereCondition(), registration.compareLimit());
+                registration.whereCondition(), registration.compareLimit(),
+                registration.orderingPrimaryKeyNames());
     }
 
     private void writeAudit(

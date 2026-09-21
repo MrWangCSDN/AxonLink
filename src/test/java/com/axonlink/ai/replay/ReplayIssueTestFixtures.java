@@ -76,7 +76,7 @@ public final class ReplayIssueTestFixtures {
                 + "issue_status VARCHAR(32) NOT NULL DEFAULT '打开', import_date DATE,"
                 + "defect_repair_date DATE, cooperation_person_username VARCHAR(128),"
                 + "cooperation_person_real_name VARCHAR(128), review_status VARCHAR(16), reviewer_username VARCHAR(128),"
-                + "reviewer_real_name VARCHAR(128), reviewed_at DATETIME,"
+                + "reviewer_real_name VARCHAR(128), reviewed_at DATETIME, review_reason VARCHAR(500),"
                 + "INDEX idx_replay_issue_key_lookup (issue_key), UNIQUE INDEX uq_dii_replay_issue_key (issue_key))");
         jdbc.execute("CREATE TABLE dii_replay_issue_domain_transfer ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY, replay_issue_id BIGINT NOT NULL, issue_key VARCHAR(1024) NOT NULL,"
@@ -94,7 +94,7 @@ public final class ReplayIssueTestFixtures {
                 + "source_row INT, before_snapshot MEDIUMTEXT, after_snapshot MEDIUMTEXT,"
                 + "issue_status VARCHAR(32), issue_type VARCHAR(128), initial_analysis MEDIUMTEXT, final_solution MEDIUMTEXT,"
                 + "cooperation_person_username VARCHAR(128), cooperation_person_real_name VARCHAR(128), remark MEDIUMTEXT, incoming_snapshot MEDIUMTEXT,"
-                + "review_status VARCHAR(16), reviewer_username VARCHAR(128), reviewer_real_name VARCHAR(128), reviewed_at DATETIME,"
+                + "review_status VARCHAR(16), reviewer_username VARCHAR(128), reviewer_real_name VARCHAR(128), reviewed_at DATETIME, review_reason VARCHAR(500),"
                 + "INDEX idx_replay_history_key_time (issue_key, operation_at, id),"
                 + "INDEX idx_replay_history_issue_time (replay_issue_id, operation_at, id))");
         new ResourceDatabasePopulator(new ClassPathResource(

@@ -47,6 +47,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /** Result-database access for the active parallel replay issue snapshot. */
 @Repository
 public class ReplayIssueDao {
+    private static final String REVIEW_STATUS_DISPLAY_SQL = "CASE "
+            + "WHEN i.review_status='PENDING' THEN '待审核' "
+            + "WHEN i.review_status='APPROVED' AND TRIM(COALESCE(i.review_reason,''))='' THEN '已审核（未填写原因）' "
+            + "WHEN i.review_status='APPROVED' THEN '已审核（已填写原因）' ELSE NULL END";
     private static final String EMPTY_FILTER_VALUE = "空";
 
     private static final int BATCH_SIZE = 2_000;
@@ -244,8 +248,8 @@ public class ReplayIssueDao {
                 + "transaction_owner,issue_type,initial_analysis,final_solution,resolved_date,cooperation_group,resolver,"
                 + "serial_no,global_serial_no,data_repair_date,remark,affected_transaction_count,issue_id,issue_key,historical_occurrence_count,"
                 + "first_occurrence_date,last_occurrence_date,imported_at,issue_status,import_date,defect_repair_date,"
-                + "cooperation_person_username,cooperation_person_real_name,review_status,reviewer_username,reviewer_real_name,reviewed_at) "
-                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+                + "cooperation_person_username,cooperation_person_real_name,review_status,reviewer_username,reviewer_real_name,reviewed_at,review_reason) "
+                + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement statement = connection.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS);
@@ -263,7 +267,7 @@ public class ReplayIssueDao {
                 + "transaction_owner=?,issue_type=?,initial_analysis=?,final_solution=?,resolved_date=?,cooperation_group=?,resolver=?,"
                 + "serial_no=?,global_serial_no=?,data_repair_date=?,remark=?,affected_transaction_count=?,issue_id=?,issue_key=?,historical_occurrence_count=?,"
                 + "first_occurrence_date=?,last_occurrence_date=?,imported_at=?,issue_status=?,import_date=?,defect_repair_date=?,"
-                + "cooperation_person_username=?,cooperation_person_real_name=?,review_status=?,reviewer_username=?,reviewer_real_name=?,reviewed_at=? WHERE id=?";
+                + "cooperation_person_username=?,cooperation_person_real_name=?,review_status=?,reviewer_username=?,reviewer_real_name=?,reviewed_at=?,review_reason=? WHERE id=?";
         jdbc.update(sql, currentArgs(row, true, false));
     }
 
@@ -424,8 +428,8 @@ public class ReplayIssueDao {
         jdbc.update("INSERT INTO dii_replay_issue_history (replay_issue_id,issue_key,operation_type,operation_at,"
                         + "operator_username,operator_real_name,import_date,coverage_round,context_round_id,occurrence_batch_name,source_sheet,source_row,before_snapshot,"
                         + "issue_status,issue_type,initial_analysis,final_solution,cooperation_person_username,cooperation_person_real_name,remark,"
-                        + "review_status,reviewer_username,reviewer_real_name,reviewed_at,after_snapshot,incoming_snapshot) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "review_status,reviewer_username,reviewer_real_name,reviewed_at,review_reason,after_snapshot,incoming_snapshot) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 replayIssueId, issueKey, operationType, Timestamp.valueOf(operationAt),
                 operator == null ? null : operator.username(), operator == null ? null : operator.realName(),
                 importDate, coverageRound, contextRoundId, occurrenceBatchName, sourceSheet, sourceRow,
@@ -433,7 +437,7 @@ public class ReplayIssueDao {
                 text(snapshot, "issueStatus"), text(snapshot, "issueType"), text(snapshot, "initialAnalysis"), text(snapshot, "finalSolution"),
                 text(snapshot, "cooperationPersonUsername"), text(snapshot, "cooperationPersonRealName"), text(snapshot, "remark"),
                 reviewValue(snapshot), text(snapshot, "reviewerUsername"), text(snapshot, "reviewerRealName"),
-                timestamp(snapshot, "reviewedAt"),
+                timestamp(snapshot, "reviewedAt"), text(snapshot, "reviewReason"),
                 afterSnapshot, incomingSnapshot);
     }
 
@@ -487,6 +491,7 @@ public class ReplayIssueDao {
                 rs.getString("global_serial_no"), ReplayIssueReviewStatus.fromValue(rs.getString("review_status")),
                 rs.getString("reviewer_username"), rs.getString("reviewer_real_name"),
                 rs.getTimestamp("reviewed_at") == null ? null : rs.getTimestamp("reviewed_at").toLocalDateTime(),
+                rs.getString("review_reason"),
                 plannedDate == null ? null : plannedDate.toLocalDate());
     }
 
@@ -520,6 +525,7 @@ public class ReplayIssueDao {
         args.add(row.importDate()); args.add(row.defectRepairDate()); args.add(row.cooperationPersonUsername()); args.add(row.cooperationPersonRealName());
         args.add(row.reviewStatus() == null ? null : row.reviewStatus().name());
         args.add(row.reviewerUsername()); args.add(row.reviewerRealName()); args.add(row.reviewedAt());
+        args.add(row.reviewReason());
         if (withId) args.add(row.id());
         return args.stream().map(ReplayIssueDao::jdbcValue).toArray();
     }
@@ -571,7 +577,7 @@ public class ReplayIssueDao {
             ReplayIssueQuery query,
             ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
             boolean paged) {
-        StringBuilder sql = new StringBuilder("SELECT i.*, CASE i.review_status WHEN 'PENDING' THEN '待审核' WHEN 'APPROVED' THEN '已审核' ELSE NULL END AS review_status, "
+        StringBuilder sql = new StringBuilder("SELECT i.*, " + REVIEW_STATUS_DISPLAY_SQL + " AS review_status_display, "
                 + "tp.developer AS matched_developer, tp.bank_owner AS matched_bank_owner, "
                 + "tp.bank_owner_emp_nos AS matched_bank_owner_emp_nos, "
                 + "(SELECT COUNT(*) FROM dii_replay_issue_domain_transfer dt WHERE dt.replay_issue_id=i.id) AS issue_domain_transfer_count, "
@@ -618,9 +624,7 @@ public class ReplayIssueDao {
                 row.put("issue_domain", groupName.toString());
             }
         }
-        ReplayIssueReviewStatus reviewStatus = ReplayIssueReviewStatus.fromValue(
-                row.get("review_status") == null ? null : row.get("review_status").toString());
-        row.put("review_status", reviewStatus == null ? null : reviewStatus.displayValue());
+        row.put("review_status", row.remove("review_status_display"));
         if (row.get("planned_completion_date") instanceof java.sql.Date date) {
             row.put("planned_completion_date", date.toLocalDate());
         }
@@ -643,7 +647,7 @@ public class ReplayIssueDao {
                 distinctNonBlank("issue_level"),
                 List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题"),
                 List.of("新建", "打开", "无需处理", "延后修复", "修复待验证", "重新打开", "已修复"),
-                coverageRounds(), List.of("待审核", "已审核"));
+                coverageRounds(), List.of("待审核", "已审核（未填写原因）", "已审核（已填写原因）"));
     }
 
     public List<String> coverageRounds() {
@@ -779,7 +783,7 @@ public class ReplayIssueDao {
             case "sandbox" -> "CASE WHEN i.is_sandbox=1 THEN '是' WHEN i.is_sandbox=0 THEN '否' ELSE NULL END";
             case "issueLevel" -> "i.issue_level";
             case "issueStatus" -> "i.issue_status";
-            case "reviewStatus" -> "CASE i.review_status WHEN 'PENDING' THEN '待审核' WHEN 'APPROVED' THEN '已审核' ELSE NULL END";
+            case "reviewStatus" -> REVIEW_STATUS_DISPLAY_SQL;
             case "plannedCompletionDate" -> "i.planned_completion_date";
             case "serialNo" -> "i.serial_no";
             case "globalSerialNo" -> "i.global_serial_no";
@@ -808,7 +812,7 @@ public class ReplayIssueDao {
                                 rs.getString("remark"), (Long) rs.getObject("context_round_id"), rs.getString("resolved_occurrence_batch_name"),
                                 ReplayIssueReviewStatus.fromValue(rs.getString("review_status")), rs.getString("reviewer_username"),
                                 rs.getString("reviewer_real_name"), rs.getTimestamp("reviewed_at") == null
-                                ? null : rs.getTimestamp("reviewed_at").toLocalDateTime()), issueId, boundedLimit);
+                                ? null : rs.getTimestamp("reviewed_at").toLocalDateTime(), rs.getString("review_reason")), issueId, boundedLimit);
     }
 
     public List<String> occurrenceBatchNames(long issueId) {
@@ -1206,7 +1210,7 @@ public class ReplayIssueDao {
             args.add(query.issueStatus().trim());
         }
         if (hasText(query.reviewStatus())) {
-            appendIn(sql, args, "i.review_status", List.of(reviewStatusCode(query.reviewStatus())));
+            appendReviewStatusFilters(sql, args, List.of(query.reviewStatus()));
         }
         if (hasText(query.developer())) {
             sql.append(" AND tp.developer LIKE ?");
@@ -1228,8 +1232,7 @@ public class ReplayIssueDao {
         appendSplitAny(sql, args, "tp.bank_owner", query.bankOwners());
         appendIn(sql, args, "i.issue_status", query.issueStatuses());
         if (query.reviewStatuses() != null && !query.reviewStatuses().isEmpty()) {
-            appendIn(sql, args, "i.review_status", query.reviewStatuses().stream()
-                    .map(ReplayIssueDao::reviewStatusCode).toList());
+            appendReviewStatusFilters(sql, args, query.reviewStatuses());
         }
         appendIn(sql, args, "i.issue_type", query.issueTypes());
         appendPlannedCompletionDates(sql, args, query.plannedCompletionDates());
@@ -1276,9 +1279,28 @@ public class ReplayIssueDao {
         }
     }
 
-    private static String reviewStatusCode(String value) {
-        ReplayIssueReviewStatus status = ReplayIssueReviewStatus.fromValue(value);
-        return status == null ? value : status.name();
+    private static void appendReviewStatusFilters(StringBuilder sql, List<Object> args, List<String> values) {
+        if (values == null || values.isEmpty()) return;
+        List<String> normalized = values.stream().filter(ReplayIssueDao::hasText)
+                .map(String::trim).distinct().toList();
+        if (normalized.isEmpty()) return;
+        sql.append(" AND (");
+        for (int index = 0; index < normalized.size(); index++) {
+            if (index > 0) sql.append(" OR ");
+            switch (normalized.get(index)) {
+                case "待审核" -> sql.append("i.review_status='PENDING'");
+                case "已审核（未填写原因）" -> sql.append("i.review_status='APPROVED' AND TRIM(COALESCE(i.review_reason,''))=''");
+                case "已审核（已填写原因）" -> sql.append("i.review_status='APPROVED' AND TRIM(COALESCE(i.review_reason,''))<>''");
+                case "已审核" -> sql.append("i.review_status='APPROVED'");
+                case EMPTY_FILTER_VALUE -> sql.append("i.review_status IS NULL OR TRIM(i.review_status)=''");
+                default -> {
+                    sql.append("i.review_status=?");
+                    ReplayIssueReviewStatus status = ReplayIssueReviewStatus.fromValue(normalized.get(index));
+                    args.add(status == null ? normalized.get(index) : status.name());
+                }
+            }
+        }
+        sql.append(")");
     }
 
     private static void appendSandboxFilters(StringBuilder sql, List<Object> args, List<String> values) {

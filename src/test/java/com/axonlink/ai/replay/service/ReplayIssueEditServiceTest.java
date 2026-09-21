@@ -216,19 +216,20 @@ class ReplayIssueEditServiceTest {
     }
 
     @Test
-    void reviewerSelectingNoActionAutoApprovesAndWritesOperationDate() throws Exception {
+    void reviewerSelectingNoActionAlsoCreatesPendingReviewUntilReasonIsSubmitted() throws Exception {
         ReplayIssueRow updated = service.update(issueId,
                 new ReplayIssueUpdateRequest(ReplayIssueStatus.NO_ACTION, "外围问题", "analysis", "solution", null),
                 new ReplayIssueOperator("reviewer", "审核人"));
 
         assertEquals("外围问题", updated.issueType());
-        assertEquals(ReplayIssueReviewStatus.APPROVED, updated.reviewStatus());
-        assertEquals(LocalDate.of(2026, 8, 27), updated.defectRepairDate());
+        assertEquals(ReplayIssueReviewStatus.PENDING, updated.reviewStatus());
+        assertEquals(null, updated.defectRepairDate());
         var history = dao.findHistoryByIssueId(issueId, 10).get(0);
         ReplayIssueRow snapshot = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
                 .readValue(history.afterSnapshot(), ReplayIssueRow.class);
-        assertEquals(LocalDate.of(2026, 8, 27), snapshot.defectRepairDate());
-        assertEquals(ReplayIssueReviewStatus.APPROVED, snapshot.reviewStatus());
+        assertEquals(null, snapshot.defectRepairDate());
+        assertEquals(ReplayIssueReviewStatus.PENDING, snapshot.reviewStatus());
+        assertEquals(null, snapshot.reviewReason());
     }
 
     @Test

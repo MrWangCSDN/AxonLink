@@ -24,6 +24,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayIssueReviewServiceTest {
@@ -111,7 +112,7 @@ class ReplayIssueReviewServiceTest {
         long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
         issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
 
-        var approved = service.approve(issueId, new ReplayIssueOperator("tech", "科技负责人"));
+        var approved = service.approve(issueId, new ReplayIssueOperator("tech", "科技负责人"), "确认无需处理");
 
         assertEquals(ReplayIssueReviewStatus.APPROVED, approved.reviewStatus());
         assertEquals("tech", approved.reviewerUsername());
@@ -124,7 +125,7 @@ class ReplayIssueReviewServiceTest {
 
         ReplayIssueReviewForbiddenException error = org.junit.jupiter.api.Assertions.assertThrows(
                 ReplayIssueReviewForbiddenException.class,
-                () -> service.approve(issueId, new ReplayIssueOperator("wangwu", "王五")));
+                () -> service.approve(issueId, new ReplayIssueOperator("wangwu", "王五"), "确认无需处理"));
 
         assertEquals("没有权限，请联系科技负责人、张三、李四进行审核", error.getMessage());
     }
@@ -134,7 +135,7 @@ class ReplayIssueReviewServiceTest {
         long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
         issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
 
-        var approved = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"));
+        var approved = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "确认无需处理");
 
         assertEquals(ReplayIssueStatus.NO_ACTION, approved.issueStatus());
         assertEquals(ReplayIssueReviewStatus.APPROVED, approved.reviewStatus());
@@ -150,13 +151,73 @@ class ReplayIssueReviewServiceTest {
     }
 
     @Test
+    void rejectsBlankReviewReason() {
+        long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
+        issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "   "));
+
+        assertEquals("请填写审核原因", error.getMessage());
+    }
+
+    @Test
+    void approvalStoresTrimmedReasonInCurrentAndHistory() throws Exception {
+        long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
+        issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
+
+        var approved = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "  属于合理差异  ");
+
+        assertEquals("属于合理差异", approved.reviewReason());
+        assertEquals("属于合理差异", issueDao.findCurrentByIdForUpdate(issueId).reviewReason());
+        var history = issueDao.findHistoryByIssueId(issueId, 10).get(0);
+        assertEquals("审核通过", history.operationType());
+        assertEquals("属于合理差异", history.reviewReason());
+        var snapshot = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                .readValue(history.afterSnapshot(), com.axonlink.ai.replay.dto.ReplayIssueRow.class);
+        assertEquals("属于合理差异", snapshot.reviewReason());
+    }
+
+    @Test
+    void approvedIssueAllowsReviewerToAddOrUpdateReason() {
+        long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
+        issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异'," +
+                        "review_status='APPROVED',review_reason='已有原因',reviewer_username='lisi',reviewer_real_name='李四'," +
+                        "reviewed_at='2026-08-20 09:30:00',defect_repair_date='2026-08-20' WHERE id=?", issueId);
+
+        var added = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "补充原因");
+        var updated = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "更新原因");
+
+        assertEquals("更新原因", updated.reviewReason());
+        assertEquals(2L, issueDao.countHistory("key-1"));
+        assertEquals(List.of("更新审核原因", "更新审核原因"), issueDao.findHistoryByIssueId(issueId, 10).stream()
+                .map(com.axonlink.ai.replay.dto.ReplayIssueHistoryEntry::operationType).toList());
+        assertEquals("补充原因", added.reviewReason());
+    }
+
+    @Test
+    void unchangedTrimmedReasonIsIdempotent() {
+        long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
+        issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异'," +
+                        "review_status='APPROVED',review_reason='已有原因',reviewer_username='lisi'," +
+                        "reviewer_real_name='李四',reviewed_at='2026-08-20 09:30:00'," +
+                        "defect_repair_date='2026-08-20' WHERE id=?", issueId);
+
+        var unchanged = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "  已有原因  ");
+
+        assertEquals("已有原因", unchanged.reviewReason());
+        assertEquals(0L, issueDao.countHistory("key-1"));
+        assertEquals("lisi", unchanged.reviewerUsername());
+    }
+
+    @Test
     void approvingAnAlreadyApprovedNoActionIssueIsIdempotent() {
         long issueId = issueDao.findCurrentByIssueKeyForUpdate("key-1").id();
         issueDao.jdbc().update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异'," +
-                        "review_status='APPROVED',reviewer_username='lisi',reviewer_real_name='李四'," +
+                        "review_status='APPROVED',review_reason='已有原因',reviewer_username='lisi',reviewer_real_name='李四'," +
                         "reviewed_at='2026-08-20 09:30:00',defect_repair_date='2026-08-20' WHERE id=?", issueId);
 
-        var approved = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"));
+        var approved = service.approve(issueId, new ReplayIssueOperator("zhangsan", "张三"), "  已有原因  ");
 
         assertEquals(ReplayIssueReviewStatus.APPROVED, approved.reviewStatus());
         assertEquals("lisi", approved.reviewerUsername());
@@ -172,7 +233,7 @@ class ReplayIssueReviewServiceTest {
 
         ReplayIssueReviewForbiddenException error = org.junit.jupiter.api.Assertions.assertThrows(
                 ReplayIssueReviewForbiddenException.class,
-                () -> service.approve(issueId, new ReplayIssueOperator("wangwu", "王五")));
+                () -> service.approve(issueId, new ReplayIssueOperator("wangwu", "王五"), "确认无需处理"));
 
         assertEquals("没有权限，请联系科技负责人、张三、李四进行审核", error.getMessage());
     }
