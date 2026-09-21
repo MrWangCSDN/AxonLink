@@ -91,8 +91,10 @@ public class ReplayUnconditionalIgnoreService {
                                                ReplayConfigOperator operator) {
         String tranCode = ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode());
         String fieldName = ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段");
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         try {
-            return enrich(dao.create(tranCode, fieldName, operator), operator);
+            return enrich(dao.create(tranCode, fieldName, ignoreReason, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
@@ -106,7 +108,8 @@ public class ReplayUnconditionalIgnoreService {
         for (ReplayUnconditionalIgnoreCreateRequest request : items) {
             drafts.add(new ReplayUnconditionalIgnoreDraft(
                     ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode()),
-                    ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段")));
+                    ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段"),
+                    ReplayConfigValidation.requireIgnoreReason(request == null ? null : request.ignoreReason())));
         }
         try {
             return enrich(dao.createAll(drafts, operator), operator);
@@ -120,6 +123,8 @@ public class ReplayUnconditionalIgnoreService {
         ReplayConfigValidation.requirePositiveId(id);
         String tranCode = ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode());
         String fieldName = ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段");
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
         ReplayUnconditionalIgnoreRow current = dao.findById(id);
         if (current == null) {
@@ -128,11 +133,12 @@ public class ReplayUnconditionalIgnoreService {
         if (current.version() != version) {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
-        if (Objects.equals(current.tranCode(), tranCode) && Objects.equals(current.fieldName(), fieldName)) {
+        if (Objects.equals(current.tranCode(), tranCode) && Objects.equals(current.fieldName(), fieldName)
+                && Objects.equals(current.ignoreReason(), ignoreReason)) {
             return enrich(current, operator);
         }
         try {
-            return enrich(dao.update(current, tranCode, fieldName, operator), operator);
+            return enrich(dao.update(current, tranCode, fieldName, ignoreReason, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
@@ -210,7 +216,8 @@ public class ReplayUnconditionalIgnoreService {
     private ReplayUnconditionalIgnoreRow enrich(ReplayUnconditionalIgnoreRow row, ReplayConfigPersonInfo info,
                                                 ReplayConfigOperator operator) {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
-        return new ReplayUnconditionalIgnoreRow(row.id(), row.tranCode(), row.fieldName(), row.enableFlag(),
+        return new ReplayUnconditionalIgnoreRow(row.id(), row.tranCode(), row.fieldName(), row.ignoreReason(),
+                row.enableFlag(),
                 row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),

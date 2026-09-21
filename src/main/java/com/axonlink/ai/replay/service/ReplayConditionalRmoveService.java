@@ -104,8 +104,10 @@ public class ReplayConditionalRmoveService {
                 request == null ? null : request.origFieldCond());
         String destFieldCond = ReplayConfigValidation.normalizeNullableText(
                 request == null ? null : request.destFieldCond());
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         return enrich(withIndexRetry(() -> dao.create(origTrcd, fieldRmoveName, fieldFileFlag, origFieldCond,
-                destFieldCond, operator)), operator);
+                destFieldCond, ignoreReason, operator)), operator);
     }
 
     public ReplayConditionalRmoveRow update(long id, ReplayConditionalRmoveUpdateRequest request,
@@ -120,6 +122,8 @@ public class ReplayConditionalRmoveService {
                 request == null ? null : request.origFieldCond());
         String destFieldCond = ReplayConfigValidation.normalizeNullableText(
                 request == null ? null : request.destFieldCond());
+        String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
+                request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
         ReplayConditionalRmoveRow current = dao.findById(id);
         if (current == null) {
@@ -132,12 +136,13 @@ public class ReplayConditionalRmoveService {
                 && Objects.equals(current.fieldRmoveName(), fieldRmoveName)
                 && current.fieldFileFlag() == fieldFileFlag
                 && Objects.equals(current.origFieldCond(), origFieldCond)
-                && Objects.equals(current.destFieldCond(), destFieldCond);
+                && Objects.equals(current.destFieldCond(), destFieldCond)
+                && Objects.equals(current.ignoreReason(), ignoreReason);
         if (unchanged) {
             return enrich(current, operator);
         }
         return enrich(withIndexRetry(() -> dao.update(current, origTrcd, fieldRmoveName, fieldFileFlag,
-                origFieldCond, destFieldCond, operator)), operator);
+                origFieldCond, destFieldCond, ignoreReason, operator)), operator);
     }
 
     public ReplayConditionalRmoveRow review(long id, Integer version, ReplayConfigOperator operator) {
@@ -202,7 +207,8 @@ public class ReplayConditionalRmoveService {
                     ReplayConfigValidation.requireText(request == null ? null : request.fieldRmoveName(), "忽略字段"),
                     ReplayConfigValidation.requireFieldFileFlag(request == null ? null : request.fieldFileFlag()),
                     ReplayConfigValidation.normalizeNullableText(request == null ? null : request.origFieldCond()),
-                    ReplayConfigValidation.normalizeNullableText(request == null ? null : request.destFieldCond())));
+                    ReplayConfigValidation.normalizeNullableText(request == null ? null : request.destFieldCond()),
+                    ReplayConfigValidation.requireIgnoreReason(request == null ? null : request.ignoreReason())));
         }
         return enrich(withBatchIndexRetry(() -> dao.createAll(drafts, operator)), operator);
     }
@@ -257,6 +263,7 @@ public class ReplayConditionalRmoveService {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
         return new ReplayConditionalRmoveRow(row.id(), row.origTrcd(), row.fieldRmoveName(), row.fieldFielState(),
                 row.fieldFileIndx(), row.fieldFileFlag(), row.origFieldCond(), row.destFieldCond(),
+                row.ignoreReason(),
                 row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),

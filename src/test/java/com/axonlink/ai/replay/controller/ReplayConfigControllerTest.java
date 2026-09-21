@@ -66,7 +66,7 @@ class ReplayConfigControllerTest {
 
     @Test
     void createConflictUpdateConflictDeleteAndOperations() throws Exception {
-        String body = "{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\"}";
+        String body = "{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"ignoreReason\":\"测试原因\"}";
         mvc.perform(post(PREFIX).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(0))
@@ -80,12 +80,12 @@ class ReplayConfigControllerTest {
                 .andExpect(jsonPath("$.code").value(409));
 
         mvc.perform(patch(PREFIX + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"version\":99}"))
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"ignoreReason\":\"测试原因\",\"version\":99}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
 
         mvc.perform(patch(PREFIX + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"version\":0}"))
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"ignoreReason\":\"测试原因\",\"version\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(1));
 

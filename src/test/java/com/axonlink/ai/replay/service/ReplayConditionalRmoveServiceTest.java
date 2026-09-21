@@ -53,7 +53,8 @@ class ReplayConditionalRmoveServiceTest {
 
         create("S3&soap", "existing");
         ReplayConditionalRmoveRow moved = service.update(a.id(),
-                new ReplayConditionalRmoveUpdateRequest("S3&soap", "accounts", 2, "status == '0'", null, 0),
+                new ReplayConditionalRmoveUpdateRequest("S3&soap", "accounts", 2, "status == '0'", null,
+                        "测试原因", 0),
                 OPERATOR);
         assertEquals(2, moved.fieldFileIndx());
 
@@ -67,23 +68,29 @@ class ReplayConditionalRmoveServiceTest {
     @Test
     void validatesFlagAndDetectsNoChange() {
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 3, null, null), OPERATOR));
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 3, null, null, "测试原因"), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", null, null, null), OPERATOR));
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", null, null, null, "测试原因"), OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 2, null, null, "  "), OPERATOR));
 
         ReplayConditionalRmoveRow created = service.create(
-                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 2, "  ", "x == 1"), OPERATOR);
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 2, "  ", "x == 1", "测试原因"),
+                OPERATOR);
         assertEquals(2, created.fieldFileFlag());
         assertEquals(null, created.origFieldCond());
         assertEquals("x == 1", created.destFieldCond());
+        assertEquals("测试原因", created.ignoreReason());
 
         ReplayConditionalRmoveRow unchanged = service.update(created.id(),
-                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", 2, null, "x == 1", 0), OPERATOR);
+                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", 2, null, "x == 1", "测试原因", 0),
+                OPERATOR);
         assertEquals(0, unchanged.version());
         assertEquals(1, service.operations(created.id(), 10, 0).total());
     }
 
     private ReplayConditionalRmoveRow create(String code, String fieldName) {
-        return service.create(new ReplayConditionalRmoveCreateRequest(code, fieldName, 1, null, null), OPERATOR);
+        return service.create(new ReplayConditionalRmoveCreateRequest(code, fieldName, 1, null, null, "测试原因"),
+                OPERATOR);
     }
 }

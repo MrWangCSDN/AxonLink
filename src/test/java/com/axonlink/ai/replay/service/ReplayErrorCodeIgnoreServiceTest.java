@@ -33,26 +33,30 @@ class ReplayErrorCodeIgnoreServiceTest {
     @Test
     void keepsNullSemanticsAndRejectsBothEmpty() {
         ReplayErrorCodeIgnoreRow oldOnly = service.create(
-                new ReplayErrorCodeIgnoreCreateRequest(CODE, "E001", null), OPERATOR);
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, "E001", null, "测试原因"), OPERATOR);
         assertEquals("E001", oldOnly.oldRespCode());
         assertNull(oldOnly.newRespCode());
 
         ReplayErrorCodeIgnoreRow newOnly = service.create(
-                new ReplayErrorCodeIgnoreCreateRequest(CODE, "  ", "N001"), OPERATOR);
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, "  ", "N001", "测试原因"), OPERATOR);
         assertNull(newOnly.oldRespCode());
         assertEquals("N001", newOnly.newRespCode());
+        assertEquals("测试原因", newOnly.ignoreReason());
 
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayErrorCodeIgnoreCreateRequest(CODE, null, null), OPERATOR));
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, null, null, "测试原因"), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
-                new ReplayErrorCodeIgnoreCreateRequest("bad", "E1", null), OPERATOR));
+                new ReplayErrorCodeIgnoreCreateRequest("bad", "E1", null, "测试原因"), OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, "E1", null, "   "), OPERATOR));
 
         // (service_code, NULL, N001) 允许重复：保留 MySQL 对 NULL 的唯一索引语义
-        service.create(new ReplayErrorCodeIgnoreCreateRequest(CODE, null, "N001"), OPERATOR);
+        service.create(new ReplayErrorCodeIgnoreCreateRequest(CODE, null, "N001", "测试原因"), OPERATOR);
         assertEquals(3, service.list(10, 0, null, null, null, null).total());
 
         ReplayErrorCodeIgnoreRow updated = service.update(newOnly.id(),
-                new ReplayErrorCodeIgnoreUpdateRequest(CODE, null, "N002", newOnly.version()), OPERATOR);
+                new ReplayErrorCodeIgnoreUpdateRequest(CODE, null, "N002", "测试原因", newOnly.version()),
+                OPERATOR);
         assertEquals("N002", updated.newRespCode());
         assertEquals(1, updated.version());
     }
