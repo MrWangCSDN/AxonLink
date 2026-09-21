@@ -32,6 +32,7 @@ import com.axonlink.ai.replay.dbcompare.service.ReplayBaseDatabaseUnavailableExc
 import com.axonlink.ai.replay.dbcompare.service.ReplayBaseTableNotFoundException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonImportService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConfigScriptService;
+import com.axonlink.ai.replay.dbcompare.service.ConfigScriptTarget;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionConflictException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
@@ -315,13 +316,17 @@ public class ReplayDatabaseComparisonController {
     @PostMapping("/versions/{versionNo}/config-script")
     public ResponseEntity<byte[]> generateConfigScript(
             @PathVariable String versionNo,
+            @RequestParam(defaultValue = "LEGACY") ConfigScriptTarget targetVersion,
             HttpServletRequest request) {
-        return scriptFile(configScriptService.generate(versionNo, requireOperator(request)));
+        var file = configScriptService.generate(versionNo, requireOperator(request));
+        return scriptFile(targetVersion.file(file));
     }
 
     @GetMapping("/versions/{versionNo}/config-script/download")
-    public ResponseEntity<byte[]> downloadConfigScript(@PathVariable String versionNo) {
-        return scriptFile(configScriptService.download(versionNo));
+    public ResponseEntity<byte[]> downloadConfigScript(@PathVariable String versionNo,
+            @RequestParam(defaultValue = "LEGACY") ConfigScriptTarget targetVersion) {
+        var file = configScriptService.download(versionNo);
+        return scriptFile(targetVersion.file(file));
     }
 
     private ResponseEntity<byte[]> scriptFile(

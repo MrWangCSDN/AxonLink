@@ -73,6 +73,21 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     }
 
     @Test
+    void newTargetHasItsOwnHashAndDoesNotOverwriteStoredLegacyScript() throws Exception {
+        var legacy = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
+        var converted = service.forTarget(service.download(VERSION_NO), ConfigScriptTarget.NEW);
+        String sql = new String(converted.content(), StandardCharsets.UTF_8);
+        assertTrue(sql.contains("TRUNCATE TABLE tss_bcomp_conf_new;"));
+        assertTrue(sql.contains("INSERT INTO tss_bcomp_field_new"));
+        assertTrue(sql.contains("INSERT INTO tss_bcomp_table_sql_new"));
+        assertTrue(converted.fileName().endsWith("-new.sql"));
+        assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(converted.content())), converted.sha256());
+        assertArrayEquals(legacy.content(), service.download(VERSION_NO).content());
+        assertEquals(legacy.sha256(), service.status(VERSION_NO).sha256());
+    }
+
+    @Test
     void returnsGeneratedFalseForAnExistingVersionWithoutAScript() {
         ReplayDbCompareConfigScriptStatus status = service.status(VERSION_NO);
 
