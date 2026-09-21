@@ -78,6 +78,54 @@ class ReplayDatabaseComparisonServiceTest {
     private ReplayDatabaseComparisonService service;
 
     @Test
+    void partitionUpdateIsVersionedAuditedAndPreservedByOrdinaryEditsAndSync() {
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("200"));
+        service.setPartitionProperties(properties);
+        var created = createWithMetadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        var operator = new ReplayIssueOperator("editor", "编辑人");
+        var updated = service.updatePartitioning(created.id(), created.version(), 8, operator);
+        assertEquals(8, updated.partitionNum());
+        assertEquals(created.version() + 1, updated.version());
+        var events = dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50));
+        var detail = service.auditDetails(events.items().get(0).id()).get(0);
+        assertEquals("partitionNum", detail.fieldCode());
+        assertEquals("1", detail.beforeValue());
+        assertEquals("8", detail.afterValue());
+        assertEquals(updated.version(), service.updatePartitioning(
+                created.id(), updated.version(), 8, operator).version());
+        assertEquals(events.total(), dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).total());
+        assertThrows(ReplayDatabaseComparisonVersionConflictException.class,
+                () -> service.updatePartitioning(created.id(), created.version(), 16, operator));
+        var edited = service.update(created.id(), save("acct_master", "公共组", "102",
+                List.of("acct_no"), updated.version()), operator);
+        assertEquals(8, edited.partitionNum());
+        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
+        assertEquals(8, service.detail(created.id()).partitionNum());
+        assertEquals(8, service.search(ReplayDbCompareQuery.empty(0, 50)).items().get(0).partitionNum());
+        service.synchronizePrimaryKeys();
+        assertEquals(8, dao.findByIdIncludingDeleted(created.id()).partitionNum());
+    }
+
+    @Test
+    void partitionUpdateRejectsUnauthorizedOperatorsAndInvalidCounts() {
+        var created = createWithMetadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        var operator = new ReplayIssueOperator("editor", "编辑人");
+        assertThrows(com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonPartitionForbiddenException.class,
+                () -> service.updatePartitioning(created.id(), created.version(), 8, operator));
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("200"));
+        service.setPartitionProperties(properties);
+        for (Integer count : java.util.Arrays.asList(null, 0, -1, 257)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> service.updatePartitioning(created.id(), created.version(), count, operator));
+        }
+        assertEquals(1, dao.findByIdIncludingDeleted(created.id()).partitionNum());
+    }
+
+    @Test
     void assemblesPagedAuditGroupsWithLatestOperator() {
         createWithMetadata("acct_master", List.of("acct_no"), List.of("acct_no"));
 
@@ -132,7 +180,8 @@ class ReplayDatabaseComparisonServiceTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));

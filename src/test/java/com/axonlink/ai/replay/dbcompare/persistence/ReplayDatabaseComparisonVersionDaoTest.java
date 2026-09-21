@@ -44,7 +44,8 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);
@@ -59,7 +60,7 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 7L, 3L, "acct_master", "账户主表", "存款组", "100", "张三",
                 List.of(field("acct_no", "账号", 1, true, 1),
                         field("customer_no", "客户号", 2, false, 2)));
-        long tableId = dao.insertVersionTable(firstId, account, "li-manager");
+        long tableId = dao.insertVersionTable(firstId, account.withPartitionNum(16), "li-manager");
         dao.insertVersionFields(tableId, account.fields());
         dao.insertVersion(
                 "20260914-130000", "b".repeat(64), 0, 0,
@@ -82,6 +83,8 @@ class ReplayDatabaseComparisonVersionDaoTest {
         assertFalse(versions.items().get(1).latest());
         assertEquals(1, snapshot.total());
         assertEquals(7L, snapshot.items().get(0).sourceRegistrationId());
+        assertEquals(16, snapshot.items().get(0).partitionNum());
+        assertEquals(16, dao.findCompleteSnapshot(firstId).get(0).partitionNum());
         assertEquals("li-manager", snapshot.items().get(0).groupOwnerUsername());
         assertEquals(List.of("acct_no", "customer_no"), snapshot.items().get(0).fields().stream()
                 .map(item -> item.columnName()).toList());

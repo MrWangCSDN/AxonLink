@@ -68,6 +68,13 @@ public class ReplayDatabaseComparisonDao {
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
+    public boolean updatePartitioning(long id, long version, int partitionNum,
+                                      String updatedBy, String updatedName, LocalDateTime updatedAt) {
+        return jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=?,version=version+1,"
+                        + "updated_by=?,updated_name=?,updated_at=? WHERE id=? AND version=? AND deleted=0",
+                partitionNum, updatedBy, updatedName, updatedAt, id, version) == 1;
+    }
+
     public long insertRegistration(ReplayDbCompareRegistration registration) {
         Long result = transactionTemplate.execute(status -> {
             long id = insertRegistrationRow(registration);
@@ -94,7 +101,7 @@ public class ReplayDatabaseComparisonDao {
                                r.reviser_emp_no,r.reviser_username,r.reviser_name,
                                r.group_owner_emp_no,r.group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json
+                               r.order_by_primary_keys_json,r.partition_num
                           FROM dii_replay_db_compare_registration r
                         """ + filter.sql() + " ORDER BY r.table_name,r.id LIMIT ? OFFSET ?",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
@@ -107,7 +114,8 @@ public class ReplayDatabaseComparisonDao {
                         conditionCodec.decode(row.getString("where_condition_json")),
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
-                        decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json"))),
+                        decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
+                                .withPartitionNum(row.getInt("partition_num")),
                 arguments.toArray());
         ReplayDbCompareGlobalCounts globalCounts = findGlobalCounts();
         return new ReplayDbCompareListPage(
@@ -135,7 +143,7 @@ public class ReplayDatabaseComparisonDao {
                                r.reviser_emp_no,r.reviser_username,r.reviser_name,
                                r.group_owner_emp_no,r.group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json
+                               r.order_by_primary_keys_json,r.partition_num
                           FROM dii_replay_db_compare_registration r
                         """ + filter.sql() + " ORDER BY r.table_name,r.id",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
@@ -148,7 +156,8 @@ public class ReplayDatabaseComparisonDao {
                         conditionCodec.decode(row.getString("where_condition_json")),
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
-                        decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json"))),
+                        decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
+                                .withPartitionNum(row.getInt("partition_num")),
                 filter.arguments().toArray());
         return withFieldPreviews(items);
     }
@@ -634,8 +643,8 @@ public class ReplayDatabaseComparisonDao {
                     (schema_name,table_name,table_comment,domain_name,reviser_emp_no,reviser_username,reviser_name,
                      group_owner_emp_no,group_owner_name,registered_date,deleted,deleted_reason,deleted_by,deleted_at,
                      version,created_by,created_name,created_at,updated_by,updated_name,updated_at,
-                     where_condition_json,compare_limit,order_by_primary_keys_json)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     where_condition_json,compare_limit,order_by_primary_keys_json,partition_num)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, normalizeIdentifier(registration.schemaName()));
             statement.setString(2, normalizeIdentifier(registration.tableName()));
@@ -665,6 +674,7 @@ public class ReplayDatabaseComparisonDao {
                 statement.setLong(23, registration.compareLimit());
             }
             statement.setString(24, encodeOrderingPrimaryKeys(registration.orderingPrimaryKeyNames()));
+            statement.setInt(25, registration.partitionNum());
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -849,7 +859,7 @@ public class ReplayDatabaseComparisonDao {
                             .filter(ReplayDbCompareField::primaryKey)
                             .sorted(java.util.Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
                             .map(ReplayDbCompareField::columnName)
-                            .toList(), item.orderingPrimaryKeyNames());
+                            .toList(), item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum());
         }).toList();
     }
 
@@ -888,7 +898,8 @@ public class ReplayDatabaseComparisonDao {
                 row.getString("updated_name"), row.getTimestamp("updated_at").toLocalDateTime(), fields,
                 conditionCodec.decode(row.getString("where_condition_json")),
                 nullableLong(row, "compare_limit"),
-                decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")), null);
+                decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")), null)
+                .withPartitionNum(row.getInt("partition_num"));
     }
 
     private ReplayDbCompareRegistration withFields(ReplayDbCompareRegistration row,
@@ -900,7 +911,7 @@ public class ReplayDatabaseComparisonDao {
                 row.registeredDate(), row.deleted(), row.deletedReason(), row.deletedBy(), row.deletedAt(),
                 row.version(), row.createdBy(), row.createdName(), row.createdAt(), row.updatedBy(),
                 row.updatedName(), row.updatedAt(), fields, row.whereCondition(), row.compareLimit(),
-                row.orderingPrimaryKeyNames(), row.metadataValidation());
+                row.orderingPrimaryKeyNames(), row.metadataValidation()).withPartitionNum(row.partitionNum());
     }
 
     public boolean initializeOrderingPrimaryKeys(long id, List<String> orderingPrimaryKeyNames) {

@@ -52,7 +52,8 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 new ClassPathResource("db/daoindex/V65__dii_replay_database_comparison_version_script.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
         scriptDao = new ReplayDatabaseComparisonVersionScriptDao(jdbc);
@@ -126,6 +127,7 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     void returnsTheStoredArtifactWhenTheVersionSnapshotLaterChanges() {
         ReplayDatabaseComparisonConfigScriptService.ScriptFile first =
                 service.generate(VERSION_NO, new ReplayIssueOperator("A012345", "张三"));
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET partition_num=32 WHERE version_id=?", versionId);
         ReplayDbCompareRegistration later = registration("later_table", List.of(
                 field("later_id", "后加字段", true, 1)));
         long tableId = versionDao.insertVersionTable(versionId, later);
@@ -135,6 +137,7 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 service.generate(VERSION_NO, new ReplayIssueOperator("B000001", "李四"));
 
         assertArrayEquals(first.content(), second.content());
+        assertArrayEquals(first.content(), service.download(VERSION_NO).content());
         assertEquals(first.sha256(), second.sha256());
         assertEquals(1, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_db_compare_version_script WHERE version_id=?",

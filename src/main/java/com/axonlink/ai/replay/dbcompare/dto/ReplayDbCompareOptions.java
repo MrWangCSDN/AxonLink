@@ -5,7 +5,8 @@ import java.util.List;
 public record ReplayDbCompareOptions(
         List<String> domains,
         boolean importEnabled,
-        boolean canImport) {
+        boolean canImport,
+        boolean canConfigurePartitions) {
 
     public ReplayDbCompareOptions {
         domains = List.copyOf(domains);

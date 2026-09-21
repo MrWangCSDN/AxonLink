@@ -98,6 +98,70 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void onlyServerResolvedAllowlistedEmpNoCanConfigurePartitions() throws Exception {
+        properties.setPartitionAdminEmpNos(List.of("200"));
+        for (UserPrincipalResolver.Resolved identity : java.util.Arrays.asList(
+                null, new UserPrincipalResolver.Resolved("UIAS", "200", null),
+                new UserPrincipalResolver.Resolved("TOKEN", com.axonlink.security.DiiTokenBypassFilter.DII_PRINCIPAL, null),
+                authenticated("200", "冒用工号的账号", "999"))) {
+            when(resolver.resolve(any())).thenReturn(identity);
+            mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                    .andExpect(jsonPath("$.data.canConfigurePartitions").value(false));
+            mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                            .header("X-DII-Trigger-Token", "secret")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"partitionNum\":16,\"empNo\":\"200\"}"))
+                    .andExpect(status().isForbidden());
+        }
+        var disabled = authenticated("editor", "编辑人", "200");
+        disabled.user.setStatus(0);
+        when(resolver.resolve(any())).thenReturn(disabled);
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"partitionNum\":16}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(service);
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                .andExpect(jsonPath("$.data.canConfigurePartitions").value(true));
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":3,\"partitionNum\":16}"))
+                .andExpect(status().isOk());
+        verify(service).updatePartitioning(1L, 3L, 16, new ReplayIssueOperator("editor", "编辑人"));
+    }
+
+    @Test
+    void rejectsMissingFractionalStringAndOutOfRangeCounts() throws Exception {
+        properties.setPartitionAdminEmpNos(List.of("200"));
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        for (String value : List.of("null", "1.5", "\"16\"", "0", "257", "2147483648", "true", "{}")) {
+            mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"partitionNum\":" + value + "}"))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
+    }
+
+    @Test
+    void partitionConfigurationIsDeniedByDefaultAndCannotUseClientIdentity() throws Exception {
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.canConfigurePartitions").value(false));
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                        .header("X-DII-Trigger-Token", "secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"partitionNum\":8,\"empNo\":\"200\"}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(service);
+    }
+
+    @Test
     void searchReturnsFilteredAndGlobalTotalsSeparately() throws Exception {
         when(service.search(any(ReplayDbCompareQuery.class)))
                 .thenReturn(new ReplayDbCompareListPage(List.of(), 0, 50, 3, 166, 271));

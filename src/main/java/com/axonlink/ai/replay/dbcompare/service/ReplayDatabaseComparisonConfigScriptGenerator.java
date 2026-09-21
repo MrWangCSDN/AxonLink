@@ -72,6 +72,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         List<ReplayDbCompareConfigScriptValidationError> errors = new ArrayList<>();
         for (ReplayDbCompareVersionTableItem table : tables) {
             String tableName = table.tableName();
+            if (table.partitionNum() < 1 || table.partitionNum() > 256) {
+                errors.add(error(tableName, null, "读取分区数必须为 1 到 256 的整数"));
+            }
             if (!DOMAIN_MODULES.containsKey(table.domainName())) {
                 errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
             }
@@ -152,7 +155,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         writeBatches(output, tables.size(),
                 "INSERT INTO tss_bcomp_conf\n"
                         + "  (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,"
-                        + "bcomp_range,bcomp_time_node,bcomp_state)\nVALUES\n",
+                        + "bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy)\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String memoBase = hasText(table.tableComment())
@@ -162,7 +165,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                             + "," + quote(DOMAIN_MODULES.get(table.domainName()))
                             + "," + quote(table.tableName())
                             + "," + quote(memo)
-                            + ",'2','1','3','1')";
+                            + ",'2','1','3','1'," + table.partitionNum() + ",'HASH')";
                 });
     }
 

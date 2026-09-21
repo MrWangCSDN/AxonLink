@@ -28,6 +28,25 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
     @Test
+    void rejectsInvalidSnapshotPartitionCount() {
+        var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generate("v1", List.of(table.withPartitionNum(0))));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generate("v1", List.of(table.withPartitionNum(257))));
+    }
+
+    @Test
+    void exportsPartitionCountAndFixedHashStrategyWithoutChangingFieldSchema() {
+        var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1))
+                .withPartitionNum(16);
+        String sql = sql(generator.generate("v1", List.of(table)));
+        assertTrue(sql.contains("bcomp_state,bcomp_partition_num,bcomp_shard_strategy)"));
+        assertTrue(sql.contains("'2','1','3','1',16,'HASH')"));
+        assertTrue(sql.contains("(1,'id','1','编号','1','1','1','0')"));
+    }
+
+    @Test
     void ordersDomainsAndTablesAndMapsConfigurationRows() {
         List<ReplayDbCompareVersionTableItem> tables = List.of(
                 table("z_platform", "平台配置", "平台组", field("id", "编号", true, 1)),
@@ -39,8 +58,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
 
         String sql = sql(generator.generate("20260914-172637", tables));
 
-        assertBefore(sql, "(1,'dept','a_deposit','账户主表比对','2','1','3','1')",
-                "(2,'dept','z_deposit','存款配置比对','2','1','3','1')");
+        assertBefore(sql, "(1,'dept','a_deposit','账户主表比对','2','1','3','1',1,'HASH')",
+                "(2,'dept','z_deposit','存款配置比对','2','1','3','1',1,'HASH')");
         assertBefore(sql, "(2,'dept'", "(3,'loan'");
         assertBefore(sql, "(3,'loan'", "(4,'comm'");
         assertBefore(sql, "(4,'comm','comm_table','comm_table比对'", "(5,'sett'");

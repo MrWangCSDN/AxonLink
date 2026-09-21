@@ -56,7 +56,8 @@ class ReplayDatabaseComparisonImportServiceTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
@@ -107,7 +108,7 @@ class ReplayDatabaseComparisonImportServiceTest {
                         input("存款", "acct_master", "acct_no", "创建人"))),
                 new ReplayIssueOperator("editor", "编辑人"));
         ReplayDbCompareRegistration created = dao.findBySchemaAndTable("base_schema", "acct_master");
-        jdbc.update("UPDATE dii_replay_db_compare_registration SET group_owner_emp_no='101',group_owner_name='赵经理' WHERE id=?",
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=16,group_owner_emp_no='101',group_owner_name='赵经理' WHERE id=?",
                 created.id());
 
         ReplayDbCompareImportResult second = service.importFile(
@@ -127,6 +128,7 @@ class ReplayDatabaseComparisonImportServiceTest {
         assertEquals("编辑人", merged.reviserName());
         assertEquals("101", merged.groupOwnerEmpNo());
         assertEquals("赵经理", merged.groupOwnerName());
+        assertEquals(16, merged.partitionNum());
         assertEquals(List.of("系统", "系统"),
                 dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).items().stream()
                         .map(event -> event.operatorName()).toList());

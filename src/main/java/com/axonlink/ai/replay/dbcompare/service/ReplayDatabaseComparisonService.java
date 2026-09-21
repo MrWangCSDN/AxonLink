@@ -1,5 +1,9 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
+import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
+import org.springframework.http.HttpStatus;
+
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseValidatedTable;
@@ -77,6 +81,48 @@ public class ReplayDatabaseComparisonService {
             new ReplayDatabaseComparisonLegacyAuditDetailAdapter();
     private final TransactionTemplate transactionTemplate;
     private final Clock clock;
+    private ReplayDatabaseComparisonProperties partitionProperties =
+            new ReplayDatabaseComparisonProperties();
+
+    @Autowired
+    public void setPartitionProperties(
+            ReplayDatabaseComparisonProperties properties) {
+        this.partitionProperties = properties;
+    }
+
+    public ReplayDbCompareRegistration updatePartitioning(
+            long id, Long version, Integer partitionNum, ReplayIssueOperator operator) {
+        Actor actor = requireActor(operator);
+        SysUser authenticatedUser = findActiveUser(operator.username());
+        if (authenticatedUser == null || !partitionProperties.canConfigurePartitions(authenticatedUser.getEmpNo())) {
+            throw new ReplayDatabaseComparisonPartitionForbiddenException();
+        }
+        if (partitionNum == null || partitionNum < 1 || partitionNum > 256) {
+            throw new IllegalArgumentException("读取分区数必须为 1 到 256 的整数");
+        }
+        LocalDateTime now = LocalDateTime.now(clock);
+        return requiredResult(transactionTemplate.execute(status -> {
+            ReplayDbCompareRegistration current = dao.findByIdIncludingDeleted(id);
+            if (current == null) {
+                throw new ReplayDatabaseComparisonGenerationException(
+                        HttpStatus.NOT_FOUND, "REGISTRATION_NOT_FOUND", "登记不存在", null);
+            }
+            requireActive(current);
+            requireVersion(current, version);
+            if (current.partitionNum() == partitionNum) {
+                return current;
+            }
+            if (!dao.updatePartitioning(id, version, partitionNum, actor.empNo(), actor.name(), now)) {
+                throw new ReplayDatabaseComparisonVersionConflictException();
+            }
+            writeAudit(id, current.schemaName(), current.tableName(), ReplayDbCompareAuditOperation.UPDATE,
+                    current.version() + 1, null, actor, now, List.of(new ReplayDbCompareAuditDetailDraft(
+                            ReplayDbCompareChangeType.MODIFY,
+                            "partitionNum", "读取分区数", String.valueOf(current.partitionNum()),
+                            String.valueOf(partitionNum))));
+            return dao.findByIdIncludingDeleted(id);
+        }));
+    }
 
     @Autowired
     public ReplayDatabaseComparisonService(
@@ -591,7 +637,7 @@ public class ReplayDatabaseComparisonService {
                 current.version() + 1, current.createdBy(), current.createdName(), current.createdAt(),
                 "SYSTEM", "系统", updatedAt, fields,
                 current.whereCondition(), current.compareLimit(),
-                current.orderingPrimaryKeyNames(), null);
+                current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum());
     }
 
     public ReplayDbCompareAuditPage searchAudits(ReplayDbCompareAuditQuery query) {
@@ -937,7 +983,7 @@ public class ReplayDatabaseComparisonService {
                 current.createdBy(), current.createdName(), current.createdAt(),
                 actor.empNo(), actor.name(), updatedAt, prepared.fields(),
                 prepared.scope().conditionTree(), prepared.scope().compareLimit(),
-                orderingPrimaryKeySnapshot(prepared), null);
+                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(current.partitionNum());
     }
 
     private ReplayDbCompareListItem withValidation(
@@ -956,7 +1002,7 @@ public class ReplayDatabaseComparisonService {
                 item.groupOwnerEmpNo(), item.groupOwnerName(), item.registeredDate(), item.version(),
                 item.fieldCount(), item.fieldPreview(), item.whereCondition(),
                 item.whereConditionConfigured(), item.compareLimit(), validation, primaryKeyNames,
-                item.orderingPrimaryKeyNames());
+                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum());
     }
 
     private ReplayDbCompareRegistration withValidation(
@@ -972,7 +1018,7 @@ public class ReplayDatabaseComparisonService {
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(), fields,
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames(), validation);
+                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum());
     }
 
     private ReplayDbCompareField withExistsInBase(ReplayDbCompareField field, Boolean existsInBase) {

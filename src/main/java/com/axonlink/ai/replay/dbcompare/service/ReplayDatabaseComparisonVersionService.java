@@ -310,7 +310,8 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
-                registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null));
+                registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
+                .withPartitionNum(registration.partitionNum()));
     }
 
     private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {

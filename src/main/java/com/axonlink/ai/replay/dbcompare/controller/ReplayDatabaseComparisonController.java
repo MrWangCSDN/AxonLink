@@ -1,5 +1,9 @@
 package com.axonlink.ai.replay.dbcompare.controller;
 
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbComparePartitioningRequest;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonPartitionForbiddenException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
@@ -172,9 +176,10 @@ public class ReplayDatabaseComparisonController {
     }
 
     @GetMapping("/options")
-    public R<ReplayDbCompareOptions> options() {
+    public R<ReplayDbCompareOptions> options(HttpServletRequest request) {
         boolean importEnabled = properties.isImportEnabled();
-        return R.ok(new ReplayDbCompareOptions(DOMAINS, importEnabled, importEnabled));
+        return R.ok(new ReplayDbCompareOptions(DOMAINS, importEnabled, importEnabled,
+                canConfigurePartitions(request)));
     }
 
     @PostMapping
@@ -182,6 +187,36 @@ public class ReplayDatabaseComparisonController {
             @RequestBody ReplayDbCompareSaveRequest body,
             HttpServletRequest request) {
         return ResponseEntity.ok(R.ok(service.create(body, requireRegistrationOperator(request))));
+    }
+
+    @PutMapping("/{id}/partitioning")
+    public R<ReplayDbCompareRegistration> updatePartitioning(
+            @PathVariable long id,
+            @RequestBody ReplayDbComparePartitioningRequest body,
+            HttpServletRequest request) {
+        if (!canConfigurePartitions(request)) {
+            throw new ReplayDatabaseComparisonPartitionForbiddenException();
+        }
+        return R.ok(service.updatePartitioning(id, body.version(), body.validatedPartitionNum(),
+                requireRegistrationOperator(request)));
+    }
+
+    private boolean canConfigurePartitions(HttpServletRequest request) {
+        UserPrincipalResolver.Resolved resolved = userResolver.resolve(request);
+        return resolved != null && resolved.principal != null && !resolved.principal.isBlank()
+                && !DiiTokenBypassFilter.DII_PRINCIPAL.equals(resolved.principal)
+                && resolved.user != null && Integer.valueOf(1).equals(resolved.user.getStatus())
+                && properties.canConfigurePartitions(resolved.user.getEmpNo());
+    }
+
+    @ExceptionHandler(ReplayDatabaseComparisonPartitionForbiddenException.class)
+    public ResponseEntity<R<Void>> handlePartitionForbidden() {
+        return error(HttpStatus.FORBIDDEN, "无权配置读取分区数");
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<R<Void>> handleUnreadableRequest() {
+        return error(HttpStatus.BAD_REQUEST, "请求格式不正确");
     }
 
     @PutMapping("/{id}")

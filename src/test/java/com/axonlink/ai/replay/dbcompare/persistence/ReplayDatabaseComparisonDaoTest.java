@@ -56,7 +56,8 @@ class ReplayDatabaseComparisonDaoTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonDao(jdbc);
     }

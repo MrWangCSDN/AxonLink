@@ -65,7 +65,8 @@ class ReplayDatabaseComparisonVersionServiceTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
-                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"))
+                new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
+                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
@@ -226,6 +227,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
                                 new ReplayBaseColumnOption("customer_no", "客户号", 2, false, null))));
         when(metadataService.inspectTables(any())).thenReturn(metadata);
 
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=16");
         ReplayDbCompareVersionSummary generated = service.generate("secret", "secret", operator());
 
         assertEquals("20260914-110701", generated.versionNo());
@@ -234,6 +236,10 @@ class ReplayDatabaseComparisonVersionServiceTest {
         var snapshot = versionDao.searchVersion(
                 generated.versionNo(), com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionQuery.empty(0, 50));
         assertEquals("账户主表", snapshot.items().get(0).tableComment());
+        assertEquals(16, snapshot.items().get(0).partitionNum());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=32");
+        assertEquals(16, versionDao.findCompleteSnapshot(versionDao.findStoredVersion(generated.versionNo()).id())
+                .get(0).partitionNum());
         assertEquals("leader-a", snapshot.items().get(0).groupOwnerUsername());
         assertEquals("账号", snapshot.items().get(0).fields().get(0).columnComment());
         assertTrue(snapshot.items().get(0).fields().get(0).primaryKey());

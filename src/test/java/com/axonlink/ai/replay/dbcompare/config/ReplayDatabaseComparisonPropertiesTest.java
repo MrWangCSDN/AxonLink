@@ -14,6 +14,25 @@ class ReplayDatabaseComparisonPropertiesTest {
             .withUserConfiguration(ReplayDatabaseComparisonProperties.class);
 
     @Test
+    void bindsCommaSeparatedOrEmptyPartitionAllowlistSafely() {
+        contextRunner.withPropertyValues("replay-database-comparison.partition-admin-emp-nos=200, 201")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var properties = context.getBean(ReplayDatabaseComparisonProperties.class);
+                    assertThat(properties.canConfigurePartitions("200")).isTrue();
+                    assertThat(properties.canConfigurePartitions("201")).isTrue();
+                    assertThat(properties.canConfigurePartitions("202")).isFalse();
+                });
+        contextRunner.withPropertyValues("replay-database-comparison.partition-admin-emp-nos=")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var properties = context.getBean(ReplayDatabaseComparisonProperties.class);
+                    assertThat(properties.getPartitionAdminEmpNos()).isEmpty();
+                    assertThat(properties.canConfigurePartitions("200")).isFalse();
+                });
+    }
+
+    @Test
     void bindsBaseTargetSelectionAndAccessOptions() {
         contextRunner.withPropertyValues(
                         "replay-database-comparison.base-target-env=base-metadata",
@@ -38,6 +57,7 @@ class ReplayDatabaseComparisonPropertiesTest {
             assertThat(properties.getBaseTargetEnv()).isEqualTo("base");
             assertThat(properties.getBaseSchema()).isBlank();
             assertThat(properties.isImportEnabled()).isTrue();
+            assertThat(properties.canConfigurePartitions("200")).isFalse();
         });
     }
 }

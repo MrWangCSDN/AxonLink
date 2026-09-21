@@ -96,8 +96,8 @@ public class ReplayDatabaseComparisonVersionDao {
                             + "(version_id,source_registration_id,source_registration_version,"
                             + "schema_name,table_name,table_comment,domain_name,reviser_emp_no,"
                             + "reviser_username,reviser_name,group_owner_emp_no,group_owner_username,"
-                            + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date,partition_num) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setLong(1, versionId);
             statement.setLong(2, registration.id());
@@ -116,6 +116,7 @@ public class ReplayDatabaseComparisonVersionDao {
             statement.setString(15, registration.compiledWhereSql());
             statement.setObject(16, registration.compareLimit());
             statement.setObject(17, registration.registeredDate());
+            statement.setInt(18, registration.partitionNum());
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -185,7 +186,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of())),
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num"))),
                 versionId);
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -249,7 +250,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of())),
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num"))),
                 arguments.toArray());
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -465,7 +466,7 @@ public class ReplayDatabaseComparisonVersionDao {
                 item.reviserEmpNo(), item.reviserUsername(), item.reviserName(),
                 item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(),
                 item.whereCondition(), item.whereSql(), item.compareLimit(), item.registeredDate(),
-                item.fieldCount(), fields);
+                item.fieldCount(), fields).withPartitionNum(item.partitionNum());
     }
 
     private boolean hasText(String value) {

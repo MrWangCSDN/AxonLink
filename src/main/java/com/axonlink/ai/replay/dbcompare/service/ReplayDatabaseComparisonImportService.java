@@ -201,7 +201,7 @@ public class ReplayDatabaseComparisonImportService {
                 false, null, null, null, current.version() + 1,
                 current.createdBy(), current.createdName(), current.createdAt(),
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields,
-                current.whereCondition(), current.compareLimit(), null);
+                current.whereCondition(), current.compareLimit(), null).withPartitionNum(current.partitionNum());
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.IMPORT);
         if (details.isEmpty()) {

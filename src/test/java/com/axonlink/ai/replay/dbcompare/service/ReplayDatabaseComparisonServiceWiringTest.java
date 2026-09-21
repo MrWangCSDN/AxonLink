@@ -45,6 +45,7 @@ class ReplayDatabaseComparisonServiceWiringTest {
             context.registerBean(ReplayDatabaseComparisonConfigScriptGenerator.class,
                     ReplayDatabaseComparisonConfigScriptGenerator::new);
             context.registerBean(JdbcTemplate.class, () -> jdbcTemplate);
+            context.register(com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties.class);
             context.register(ReplayDatabaseComparisonService.class);
             context.register(ReplayDatabaseComparisonImportService.class);
             context.register(ReplayDatabaseComparisonVersionService.class);
