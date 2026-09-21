@@ -281,7 +281,8 @@ public class ReplayDatabaseComparisonImportService {
                 registration.tableComment(), registration.domainName(),
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), registration.deleted(), registration.fields(),
-                registration.whereCondition(), registration.compareLimit());
+                registration.whereCondition(), registration.compareLimit(),
+                registration.orderingPrimaryKeyNames());
     }
 
     private ReplayDbCompareImportError error(

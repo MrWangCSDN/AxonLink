@@ -139,6 +139,7 @@ public class ReplayIssueEditService {
         String reviewerUsername = null;
         String reviewerRealName = null;
         LocalDateTime reviewedAt = null;
+        String reviewReason = null;
         LocalDate defectRepairDate = row.defectRepairDate();
         if (issueStatus == ReplayIssueStatus.NO_ACTION) {
             if (row.issueStatus() == ReplayIssueStatus.NO_ACTION
@@ -147,13 +148,10 @@ public class ReplayIssueEditService {
                 reviewerUsername = row.reviewerUsername();
                 reviewerRealName = row.reviewerRealName();
                 reviewedAt = row.reviewedAt();
+                reviewReason = row.reviewReason();
             } else {
-                boolean reviewer = reviewService.isReviewer(row, operator);
-                reviewStatus = reviewer ? ReplayIssueReviewStatus.APPROVED : ReplayIssueReviewStatus.PENDING;
-                reviewerUsername = reviewer ? operator.username() : null;
-                reviewerRealName = reviewer ? operator.realName() : null;
-                reviewedAt = reviewer ? operationAt : null;
-                defectRepairDate = reviewer ? operationAt.toLocalDate() : null;
+                reviewStatus = ReplayIssueReviewStatus.PENDING;
+                defectRepairDate = null;
             }
         } else if (issueStatus == ReplayIssueStatus.DEFERRED) {
             issueType = "迁移问题";
@@ -172,7 +170,7 @@ public class ReplayIssueEditService {
                 row.issueId(), row.issueKey(), row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(),
                 row.importedAt(), issueStatus, row.importDate(), defectRepairDate,
                 collaborator == null ? null : collaborator.getUsername(), collaborator == null ? null : collaborator.getRealName(), row.globalSerialNo(),
-                reviewStatus, reviewerUsername, reviewerRealName, reviewedAt, row.plannedCompletionDate());
+                reviewStatus, reviewerUsername, reviewerRealName, reviewedAt, reviewReason, row.plannedCompletionDate());
     }
 
     private String snapshot(ReplayIssueRow row) {

@@ -5,6 +5,8 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseValidatedTable;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditQuery;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetail;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditEvent;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
@@ -12,6 +14,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionOperator;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditGroupPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareDeleteRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
@@ -37,6 +40,7 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Collection;
 import java.util.List;
@@ -86,6 +90,38 @@ class ReplayDatabaseComparisonServiceTest {
         assertEquals("creator", page.content().get(0).latestOperatorUsername());
         assertEquals("创建人", page.content().get(0).latestOperatorName());
         assertEquals(1, page.content().get(0).events().size());
+    }
+
+    @Test
+    void auditDetailsMergeLegacyConditionAndLimitIntoReadableQueryCondition() {
+        LocalDateTime operatedAt = LocalDateTime.of(2026, 9, 18, 9, 14, 58);
+        long eventId = dao.insertAuditEvent(new ReplayDbCompareAuditEvent(
+                null, 99L, "base_schema", "acct_master",
+                ReplayDbCompareAuditOperation.UPDATE, 1L, 2, null,
+                "100", "creator", "创建人", operatedAt));
+        String conditionJson = new ReplayDatabaseComparisonConditionCodec().encode(
+                new ReplayDbCompareConditionTree(
+                        ReplayDbCompareConditionConnector.AND,
+                        List.of(new ReplayDbCompareConditionGroup(
+                                ReplayDbCompareConditionConnector.AND,
+                                List.of(new ReplayDbCompareCondition(
+                                        "cst_id", ReplayDbCompareConditionOperator.EQ,
+                                        List.of("22")))))));
+        dao.insertAuditDetails(eventId, List.of(
+                new ReplayDbCompareAuditDetail(
+                        null, eventId, 1, ReplayDbCompareChangeType.MODIFY,
+                        "whereCondition", "WHERE 条件", "未配置", conditionJson, operatedAt),
+                new ReplayDbCompareAuditDetail(
+                        null, eventId, 2, ReplayDbCompareChangeType.MODIFY,
+                        "compareLimit", "比对条数", "全表", "1000", operatedAt)), operatedAt);
+
+        List<ReplayDbCompareAuditDetail> details = service.auditDetails(eventId);
+
+        assertEquals(1, details.size());
+        assertEquals("queryCondition", details.get(0).fieldCode());
+        assertEquals("查询条件", details.get(0).fieldLabel());
+        assertEquals("全表", details.get(0).beforeValue());
+        assertEquals("where cst_id = '22'\nlimit 1000", details.get(0).afterValue());
     }
 
     @BeforeEach

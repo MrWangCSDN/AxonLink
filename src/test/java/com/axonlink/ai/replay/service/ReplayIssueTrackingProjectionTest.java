@@ -55,6 +55,15 @@ class ReplayIssueTrackingProjectionTest {
     }
 
     @Test
+    void exposesReviewReasonChangesInTrackingDetails() {
+        String before = "{\"reviewReason\":\"旧原因\"}";
+        String after = "{\"reviewReason\":\"新原因\"}";
+
+        assertEquals(List.of(new ReplayIssueFieldChange("审核原因", "旧原因", "新原因")),
+                ReplayIssueTrackingProjection.fieldChanges(before, after));
+    }
+
+    @Test
     void projectsTheThirteenOriginalDataFieldsInDisplayOrder() {
         String incoming = """
                 {"issueId":"ISSUE-99","sandbox":false,"transactionCode":"TX001","transactionName":"客户查询","issueLevel":"高","fieldName":"响应码","serialNo":"SERIAL-1","globalSerialNo":"GLOBAL-1","issueDescription":"描述","domain":"贷款组","affectedTransactionCount":"8","issueKey":"internal","firstOccurrenceDate":"2026-08-01"}

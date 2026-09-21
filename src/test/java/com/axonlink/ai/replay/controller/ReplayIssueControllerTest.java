@@ -507,14 +507,33 @@ class ReplayIssueControllerTest {
         long issueId = dao.findCurrentByIssueKeyForUpdate("key-1").id();
         jdbc.update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId))
+        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId)
+                        .contentType("application/json")
+                        .content("{\"reason\":\"首次审核原因\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.reviewStatus").value("已审核"));
-        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId))
+                .andExpect(jsonPath("$.data.reviewStatus").value("已审核"))
+                .andExpect(jsonPath("$.data.reviewReason").value("首次审核原因"));
+        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId)
+                        .contentType("application/json")
+                        .content("{\"reason\":\"首次审核原因\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.reviewerUsername").value("sunhy1"));
 
         assertEquals(1L, dao.countHistory("key-1"));
+    }
+
+    @Test
+    void reviewApproveRejectsBlankReason() throws Exception {
+        dao.replaceAll(List.of(ReplayIssueTestFixtures.row("公共组", false, 1, "6208", "review")),
+                LocalDateTime.of(2026, 8, 21, 9, 0));
+        long issueId = dao.findCurrentByIssueKeyForUpdate("key-1").id();
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='无需处理',issue_type='合理差异',review_status='PENDING' WHERE id=?", issueId);
+
+        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId)
+                        .contentType("application/json")
+                        .content("{\"reason\":\"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("请填写审核原因"));
     }
 
     @Test
@@ -539,7 +558,9 @@ class ReplayIssueControllerTest {
         resolvedUser = new UserPrincipalResolver.Resolved("LDAP", "other",
                 new SysUserDao(jdbc).findByUsername("other"));
 
-        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId))
+        mvc.perform(post("/api/ai/parallel-replay/issues/{id}/review/approve", issueId)
+                        .contentType("application/json")
+                        .content("{\"reason\":\"无权限尝试\"}"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.message").value("没有权限，请联系孙海英进行审核"));
     }
