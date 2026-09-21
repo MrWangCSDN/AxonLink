@@ -98,6 +98,23 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void partitioningRejectsCoercibleOrMissingVersionsBeforeUpdating() throws Exception {
+        properties.setPartitionAdminEmpNos(List.of("200"));
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        for (String value : List.of("3.9", "\"3\"", "null", "9223372036854775808",
+                "-9223372036854775809", "true", "{}")) {
+            mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":" + value + ",\"partitionNum\":16}"))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(put("/api/ai/parallel-replay/database-comparison-fields/1/partitioning")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"partitionNum\":16}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
+    }
+
+    @Test
     void onlyServerResolvedAllowlistedEmpNoCanConfigurePartitions() throws Exception {
         properties.setPartitionAdminEmpNos(List.of("200"));
         for (UserPrincipalResolver.Resolved identity : java.util.Arrays.asList(

@@ -197,7 +197,7 @@ public class ReplayDatabaseComparisonController {
         if (!canConfigurePartitions(request)) {
             throw new ReplayDatabaseComparisonPartitionForbiddenException();
         }
-        return R.ok(service.updatePartitioning(id, body.version(), body.validatedPartitionNum(),
+        return R.ok(service.updatePartitioning(id, body.validatedVersion(), body.validatedPartitionNum(),
                 requireRegistrationOperator(request)));
     }
 

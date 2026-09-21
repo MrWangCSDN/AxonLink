@@ -2,8 +2,15 @@ package com.axonlink.ai.replay.dbcompare.dto;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
-/** Retain JSON numeric type so Jackson cannot silently truncate fractional counts. */
-public record ReplayDbComparePartitioningRequest(Long version, JsonNode partitionNum) {
+/** Retain JSON numeric types so Jackson cannot silently coerce versions or counts. */
+public record ReplayDbComparePartitioningRequest(JsonNode version, JsonNode partitionNum) {
+    public Long validatedVersion() {
+        if (version == null || !version.isIntegralNumber() || !version.canConvertToLong()) {
+            throw new IllegalArgumentException("登记版本必须为有效的整数");
+        }
+        return version.longValue();
+    }
+
     public Integer validatedPartitionNum() {
         if (partitionNum == null || !partitionNum.isIntegralNumber() || !partitionNum.canConvertToInt()
                 || partitionNum.intValue() < 1 || partitionNum.intValue() > 256) {
