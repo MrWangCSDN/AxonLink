@@ -45,7 +45,7 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
-                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
+                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);

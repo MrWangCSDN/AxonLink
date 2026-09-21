@@ -78,7 +78,7 @@ class ReplayDatabaseComparisonMigrationTest {
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
-                new ClassPathResource("db/daoindex/V73__replay_db_compare_partition_num.sql"))
+                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"))
                 .execute(jdbc.getDataSource());
 
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_AUDIT_EVENT", "OPERATOR_USERNAME");
