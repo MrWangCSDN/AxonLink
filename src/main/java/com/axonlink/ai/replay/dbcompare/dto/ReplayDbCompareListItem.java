@@ -24,7 +24,37 @@ public record ReplayDbCompareListItem(
         ReplayDbCompareMetadataValidation metadataValidation,
         List<String> primaryKeyNames,
         List<String> orderingPrimaryKeyNames,
+        int partitionNum,
+        int sampleLimit) {
+
+    public ReplayDbCompareListItem(
+        long id,
+        String schemaName,
+        String tableName,
+        String tableComment,
+        String domainName,
+        String reviserEmpNo,
+        String reviserUsername,
+        String reviserName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        long version,
+        int fieldCount,
+        List<String> fieldPreview,
+        ReplayDbCompareConditionTree whereCondition,
+        boolean whereConditionConfigured,
+        Long compareLimit,
+        ReplayDbCompareMetadataValidation metadataValidation,
+        List<String> primaryKeyNames,
+        List<String> orderingPrimaryKeyNames,
         int partitionNum) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, 1000);
+    }
+
+    public ReplayDbCompareListItem withSampleLimit(int sampleLimit) {
+        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit);
+    }
 
     public ReplayDbCompareListItem(
         long id,
@@ -57,7 +87,7 @@ public record ReplayDbCompareListItem(
         return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo,
                 reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount,
                 fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation,
-                primaryKeyNames, orderingPrimaryKeyNames, partitionNum);
+                primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit);
     }
 
     public ReplayDbCompareListItem {

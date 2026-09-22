@@ -44,6 +44,7 @@ public class ReplayDatabaseComparisonConfigurationHasher {
             putString(digest, registration.compiledWhereSql());
             putLong(digest, registration.compareLimit());
             putInt(digest, registration.partitionNum());
+            putInt(digest, registration.sampleLimit());
             List<ReplayDbCompareField> fields = registration.fields().stream()
                     .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder)
                             .thenComparing(field -> normalize(field.columnName())))

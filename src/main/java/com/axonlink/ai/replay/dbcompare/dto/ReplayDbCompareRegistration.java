@@ -34,7 +34,45 @@ public record ReplayDbCompareRegistration(
         List<String> orderingPrimaryKeyNames,
         @JsonIgnore String compiledWhereSql,
         ReplayDbCompareMetadataValidation metadataValidation,
+        int partitionNum,
+        int sampleLimit) {
+
+    public ReplayDbCompareRegistration(
+        Long id,
+        String schemaName,
+        String tableName,
+        String tableComment,
+        String domainName,
+        String reviserEmpNo,
+        String reviserUsername,
+        String reviserName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        boolean deleted,
+        String deletedReason,
+        String deletedBy,
+        LocalDateTime deletedAt,
+        long version,
+        String createdBy,
+        String createdName,
+        LocalDateTime createdAt,
+        String updatedBy,
+        String updatedName,
+        LocalDateTime updatedAt,
+        List<ReplayDbCompareField> fields,
+        ReplayDbCompareConditionTree whereCondition,
+        Long compareLimit,
+        List<String> orderingPrimaryKeyNames,
+        String compiledWhereSql,
+        ReplayDbCompareMetadataValidation metadataValidation,
         int partitionNum) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, 1000);
+    }
+
+    public ReplayDbCompareRegistration withSampleLimit(int sampleLimit) {
+        return new ReplayDbCompareRegistration(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit);
+    }
 
     public ReplayDbCompareRegistration(
         Long id,
@@ -76,7 +114,7 @@ public record ReplayDbCompareRegistration(
                 reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted,
                 deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy,
                 updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames,
-                compiledWhereSql, metadataValidation, partitionNum);
+                compiledWhereSql, metadataValidation, partitionNum, sampleLimit);
     }
 
     public ReplayDbCompareRegistration {

@@ -139,6 +139,27 @@ public class ReplayDatabaseComparisonService {
         return requested;
     }
 
+    private int sampleForSave(Integer requested, int current, ReplayIssueOperator operator) {
+        if (requested == null) return current;
+        if (requested < 0 || requested > 10000) throw new IllegalArgumentException("样本数必须为 0 到 10000 的整数");
+        if (requested != current) {
+            SysUser user = findActiveUser(operator.username());
+            if (user == null || com.axonlink.security.DiiTokenBypassFilter.DII_PRINCIPAL.equals(operator.username())
+                    || !partitionProperties.canConfigurePartitions(user.getUsername(), user.getEmpNo()))
+                throw new ReplayDatabaseComparisonPartitionForbiddenException();
+        }
+        return requested;
+    }
+
+    private List<ReplayDbCompareAuditDetailDraft> withSampleAudit(
+            List<ReplayDbCompareAuditDetailDraft> details, int before, int after) {
+        if (before == after) return details;
+        var result = new java.util.ArrayList<>(details);
+        result.add(new ReplayDbCompareAuditDetailDraft(ReplayDbCompareChangeType.MODIFY,
+                "sampleLimit", "样本数", String.valueOf(before), String.valueOf(after)));
+        return List.copyOf(result);
+    }
+
     private List<ReplayDbCompareAuditDetailDraft> withPartitionAudit(
             List<ReplayDbCompareAuditDetailDraft> details, int before, int after) {
         if (before == after) return details;
@@ -199,6 +220,7 @@ public class ReplayDatabaseComparisonService {
             ReplayIssueOperator operator) {
         Actor actor = requireActor(operator);
         int partitionNum = partitionForSave(request.partitionNum(), 1, operator);
+        int sampleLimit = sampleForSave(request.sampleLimit(), 1000, operator);
         PreparedSave prepared = prepare(request.tableName(), request.domainName(),
                 request.groupOwnerEmpNo(), request.fieldNames(),
                 request.whereCondition(), request.compareLimit());
@@ -210,11 +232,11 @@ public class ReplayDatabaseComparisonService {
                 false, null, null, null, 0, actor.empNo(), actor.name(), now,
                 actor.empNo(), actor.name(), now, prepared.fields(),
                 prepared.scope().conditionTree(), prepared.scope().compareLimit(),
-                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(partitionNum);
+                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(partitionNum).withSampleLimit(sampleLimit);
         ReplayDbCompareState after = state(registration);
         List<ReplayDbCompareAuditDetailDraft> details =
-                withPartitionAudit(auditDiff.compare(null, after, ReplayDbCompareAuditOperation.CREATE),
-                        1, partitionNum);
+                withSampleAudit(withPartitionAudit(auditDiff.compare(null, after, ReplayDbCompareAuditOperation.CREATE),
+                        1, partitionNum), 1000, sampleLimit);
 
         ReplayDbCompareRegistration result = transactionTemplate.execute(status -> {
             ReplayDbCompareRegistration existing = dao.findBySchemaAndTable(
@@ -248,6 +270,7 @@ public class ReplayDatabaseComparisonService {
                 requireActive(current);
                 requireVersion(current, request.version());
                 partitionForSave(request.partitionNum(), current.partitionNum(), operator);
+                sampleForSave(request.sampleLimit(), current.sampleLimit(), operator);
                 return deleteInside(current, "全部比对字段已移除", actor, now);
             });
             return requiredResult(deleted);
@@ -264,10 +287,12 @@ public class ReplayDatabaseComparisonService {
             requireSameTable(current, prepared.table());
             ReplayDbCompareRegistration target = updatedRegistration(
                     current, prepared, actor, LocalDate.now(clock), now, false)
-                    .withPartitionNum(partitionForSave(request.partitionNum(), current.partitionNum(), operator));
+                    .withPartitionNum(partitionForSave(request.partitionNum(), current.partitionNum(), operator))
+                    .withSampleLimit(sampleForSave(request.sampleLimit(), current.sampleLimit(), operator));
             List<ReplayDbCompareAuditDetailDraft> details =
                     withPartitionAudit(auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.UPDATE),
                             current.partitionNum(), target.partitionNum());
+            details = withSampleAudit(details, current.sampleLimit(), target.sampleLimit());
             if (details.isEmpty()) {
                 return current;
             }
@@ -275,7 +300,7 @@ public class ReplayDatabaseComparisonService {
                     id, current.version(), target.tableComment(), target.domainName(),
                     target.groupOwnerEmpNo(), target.groupOwnerName(), target.registeredDate(),
                     actor.empNo(), actor.username(), actor.name(), actor.empNo(), actor.name(), now,
-                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum())) {
+                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit())) {
                 throw new ReplayDatabaseComparisonVersionConflictException();
             }
             dao.replaceFields(id, target.fields(), now);
@@ -325,15 +350,17 @@ public class ReplayDatabaseComparisonService {
             requireSameTable(current, prepared.table());
             ReplayDbCompareRegistration target = updatedRegistration(
                     current, prepared, actor, LocalDate.now(clock), now, false)
-                    .withPartitionNum(partitionForSave(request.partitionNum(), current.partitionNum(), operator));
+                    .withPartitionNum(partitionForSave(request.partitionNum(), current.partitionNum(), operator))
+                    .withSampleLimit(sampleForSave(request.sampleLimit(), current.sampleLimit(), operator));
             List<ReplayDbCompareAuditDetailDraft> details =
                     withPartitionAudit(auditDiff.compare(null, state(target), ReplayDbCompareAuditOperation.REREGISTER),
                             current.partitionNum(), target.partitionNum());
+            details = withSampleAudit(details, current.sampleLimit(), target.sampleLimit());
             if (!dao.reregisterRegistration(
                     id, current.version(), target.tableComment(), target.domainName(),
                     target.groupOwnerEmpNo(), target.groupOwnerName(), target.registeredDate(),
                     actor.empNo(), actor.username(), actor.name(), now,
-                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum())) {
+                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit())) {
                 throw new ReplayDatabaseComparisonVersionConflictException();
             }
             dao.replaceFields(id, target.fields(), now);
@@ -668,7 +695,7 @@ public class ReplayDatabaseComparisonService {
                 current.version() + 1, current.createdBy(), current.createdName(), current.createdAt(),
                 "SYSTEM", "系统", updatedAt, fields,
                 current.whereCondition(), current.compareLimit(),
-                current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum());
+                current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit());
     }
 
     public ReplayDbCompareAuditPage searchAudits(ReplayDbCompareAuditQuery query) {
@@ -1014,7 +1041,7 @@ public class ReplayDatabaseComparisonService {
                 current.createdBy(), current.createdName(), current.createdAt(),
                 actor.empNo(), actor.name(), updatedAt, prepared.fields(),
                 prepared.scope().conditionTree(), prepared.scope().compareLimit(),
-                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(current.partitionNum());
+                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit());
     }
 
     private ReplayDbCompareListItem withValidation(
@@ -1033,7 +1060,7 @@ public class ReplayDatabaseComparisonService {
                 item.groupOwnerEmpNo(), item.groupOwnerName(), item.registeredDate(), item.version(),
                 item.fieldCount(), item.fieldPreview(), item.whereCondition(),
                 item.whereConditionConfigured(), item.compareLimit(), validation, primaryKeyNames,
-                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum());
+                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit());
     }
 
     private ReplayDbCompareRegistration withValidation(
@@ -1049,7 +1076,7 @@ public class ReplayDatabaseComparisonService {
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(), fields,
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum());
+                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit());
     }
 
     private ReplayDbCompareField withExistsInBase(ReplayDbCompareField field, Boolean existsInBase) {

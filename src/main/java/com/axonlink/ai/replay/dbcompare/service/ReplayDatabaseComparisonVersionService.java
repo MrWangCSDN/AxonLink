@@ -311,7 +311,7 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
                 registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
-                .withPartitionNum(registration.partitionNum()));
+                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()));
     }
 
     private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {

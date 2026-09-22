@@ -4,6 +4,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ConfigScriptTargetTest {
+    @Test void legacyDropsSampleLimitWhileNewPreservesIt() {
+        String sql = "INSERT INTO tss_bcomp_conf (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit) VALUES (1,'a','b','c','2','1','3','1',16,'HASH',37);";
+        assertFalse(ConfigScriptTarget.LEGACY.convert(sql).contains("sample_limit"));
+        assertTrue(ConfigScriptTarget.LEGACY.convert(sql).contains("'3','1')"));
+        assertTrue(ConfigScriptTarget.NEW.convert(sql).contains("'HASH',37)"));
+    }
+
     @Test void legacyDropsOnlyUnsupportedPartitionColumnsAndTheirValues() {
         String sql = "INSERT INTO tss_bcomp_conf\n(bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy) VALUES\n(1,'a','b','x,y;z','2','1','3','1',16,'HASH'),\n(2,'a','b','memo','2','1','3','1',1,'HASH');";
         String result = ConfigScriptTarget.LEGACY.convert(sql);

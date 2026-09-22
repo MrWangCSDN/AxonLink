@@ -85,6 +85,65 @@ class ReplayDatabaseComparisonServiceTest {
                 ReplayDbCompareSaveRequest.class);
     }
 
+    private ReplayDbCompareSaveRequest sampleSave(Long version, String value) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                "{\"tableName\":\"acct_master\",\"domainName\":\"存款组\",\"groupOwnerEmpNo\":\"101\","
+                + "\"fieldNames\":[\"acct_no\"],\"version\":" + version + ",\"sampleLimit\":" + value + "}",
+                ReplayDbCompareSaveRequest.class);
+    }
+
+    @Test void sampleLimitUsesPartitionPermissionAndPreservesOnOrdinarySave() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
+        assertEquals(1000, created.sampleLimit());
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () ->
+                service.update(created.id(), sampleSave(created.version(), "17"), operator));
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("creator"));
+        service.setPartitionProperties(properties);
+        var changed = service.update(created.id(), sampleSave(created.version(), "17"), operator);
+        assertEquals(17, changed.sampleLimit());
+        assertEquals(created.version()+1, changed.version());
+        assertTrue(service.auditDetails(dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0,50)).items().get(0).id())
+                .stream().anyMatch(d -> "sampleLimit".equals(d.fieldCode()) && "17".equals(d.afterValue())));
+        properties.setPartitionAdminEmpNos(List.of());
+        var preserved = service.update(changed.id(), save("acct_master", "存款组", "101", List.of("acct_no"), changed.version()), operator);
+        assertEquals(17, preserved.sampleLimit());
+        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
+        assertEquals(17, service.detail(changed.id()).sampleLimit());
+        assertEquals(17, service.search(ReplayDbCompareQuery.empty(0,50)).items().get(0).sampleLimit());
+        for (String invalid : List.of("-1", "10001", "1.5", "\"10\"", "true"))
+            assertThrows(Exception.class, () -> sampleSave(changed.version(), invalid));
+        properties.setPartitionAdminEmpNos(List.of("creator"));
+        assertEquals(0, service.update(preserved.id(), sampleSave(preserved.version(), "0"), operator).sampleLimit());
+    }
+
+    @Test void sampleLimitReregisterAndMetadataRefreshKeepTheConfiguredValue() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () -> service.create(sampleSave(null,"19"),operator));
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("100"));
+        service.setPartitionProperties(properties);
+        var created = service.create(sampleSave(null,"19"), operator);
+        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
+        service.synchronizePrimaryKeys();
+        var current = dao.findByIdIncludingDeleted(created.id());
+        assertEquals(19, current.sampleLimit());
+        var deleted = service.delete(current.id(),new ReplayDbCompareDeleteRequest(current.version(),"删除"),operator);
+        var request = new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                "{\"version\":"+deleted.version()+",\"domainName\":\"存款组\",\"groupOwnerEmpNo\":\"101\","
+                +"\"fieldNames\":[\"acct_no\"],\"reason\":\"恢复\",\"sampleLimit\":10000}",ReplayDbCompareReregisterRequest.class);
+        properties.setPartitionAdminEmpNos(List.of());
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () -> service.reregister(current.id(),request,operator));
+        assertTrue(dao.findByIdIncludingDeleted(current.id()).deleted());
+        properties.setPartitionAdminEmpNos(List.of("100"));
+        assertEquals(10000,service.reregister(current.id(),request,operator).sampleLimit());
+    }
+
     @Test
     void ordinarySaveAcceptsUsernameAndPersistsPartitionOnlyChangesAtomically() throws Exception {
         var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
@@ -264,7 +323,8 @@ class ReplayDatabaseComparisonServiceTest {
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
-                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"))
+                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
                 .execute(jdbc.getDataSource());
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));

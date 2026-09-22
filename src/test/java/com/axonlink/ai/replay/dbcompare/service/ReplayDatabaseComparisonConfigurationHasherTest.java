@@ -53,6 +53,7 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
                 1L, "acct_master", "账户资料表", 3, original.fields());
 
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(original.withPartitionNum(16))));
+        assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(original.withSampleLimit(17))));
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(reordered)));
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(renamed)));
     }

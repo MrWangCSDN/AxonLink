@@ -2,6 +2,6 @@ package com.axonlink.ai.replay.dbcompare.service;
 
 public class ReplayDatabaseComparisonPartitionForbiddenException extends RuntimeException {
     public ReplayDatabaseComparisonPartitionForbiddenException() {
-        super("无权配置读取分区数");
+        super("无权配置分区数或样本数");
     }
 }

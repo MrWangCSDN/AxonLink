@@ -27,6 +27,14 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
+    @Test void exportsPerTableSampleLimitIncludingZero() {
+        var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
+        assertTrue(sql(generator.generate("v1", List.of(table.withSampleLimit(17)))).contains("'HASH',17)"));
+        assertTrue(sql(generator.generate("v1", List.of(table.withSampleLimit(0)))).contains("'HASH',0)"));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generate("v1", List.of(table.withSampleLimit(10001))));
+    }
+
     @Test
     void rejectsInvalidSnapshotPartitionCount() {
         var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
@@ -41,8 +49,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1))
                 .withPartitionNum(16);
         String sql = sql(generator.generate("v1", List.of(table)));
-        assertTrue(sql.contains("bcomp_state,bcomp_partition_num,bcomp_shard_strategy)"));
-        assertTrue(sql.contains("'2','1','3','1',16,'HASH')"));
+        assertTrue(sql.contains("bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit)"));
+        assertTrue(sql.contains("'2','1','3','1',16,'HASH',1000)"));
         assertTrue(sql.contains("(1,'id','1','编号','1','1','1','0')"));
     }
 
@@ -58,8 +66,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
 
         String sql = sql(generator.generate("20260914-172637", tables));
 
-        assertBefore(sql, "(1,'dept','a_deposit','账户主表比对','2','1','3','1',1,'HASH')",
-                "(2,'dept','z_deposit','存款配置比对','2','1','3','1',1,'HASH')");
+        assertBefore(sql, "(1,'dept','a_deposit','账户主表比对','2','1','3','1',1,'HASH',1000)",
+                "(2,'dept','z_deposit','存款配置比对','2','1','3','1',1,'HASH',1000)");
         assertBefore(sql, "(2,'dept'", "(3,'loan'");
         assertBefore(sql, "(3,'loan'", "(4,'comm'");
         assertBefore(sql, "(4,'comm','comm_table','comm_table比对'", "(5,'sett'");

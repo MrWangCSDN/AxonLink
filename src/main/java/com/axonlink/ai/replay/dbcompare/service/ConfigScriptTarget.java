@@ -55,7 +55,7 @@ public enum ConfigScriptTarget {
 
     private String legacyStatement(String sql) {
         var header = java.util.regex.Pattern.compile(
-                "(?is)^(\\s*INSERT\\s+INTO\\s+tss_bcomp_conf\\s*\\([^)]*?),\\s*bcomp_partition_num\\s*,\\s*bcomp_shard_strategy(\\s*\\)\\s*VALUES\\s*)(.*)$")
+                "(?is)^(\\s*INSERT\\s+INTO\\s+tss_bcomp_conf\\s*\\([^)]*?),\\s*bcomp_partition_num\\s*,\\s*bcomp_shard_strategy(?:\\s*,\\s*bcomp_sample_limit)?(\\s*\\)\\s*VALUES\\s*)(.*)$")
                 .matcher(sql);
         if (!header.matches()) return sql;
         String values = header.group(3);

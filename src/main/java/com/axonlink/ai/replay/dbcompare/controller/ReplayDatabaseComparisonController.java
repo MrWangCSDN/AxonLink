@@ -212,7 +212,7 @@ public class ReplayDatabaseComparisonController {
 
     @ExceptionHandler(ReplayDatabaseComparisonPartitionForbiddenException.class)
     public ResponseEntity<R<Void>> handlePartitionForbidden() {
-        return error(HttpStatus.FORBIDDEN, "无权配置读取分区数");
+        return error(HttpStatus.FORBIDDEN, "无权配置分区数或样本数");
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
