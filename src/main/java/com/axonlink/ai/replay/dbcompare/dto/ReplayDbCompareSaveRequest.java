@@ -10,7 +10,17 @@ public record ReplayDbCompareSaveRequest(
         Long version,
         boolean deleteWhenNoFields,
         ReplayDbCompareConditionTree whereCondition,
-        Long compareLimit) {
+        Long compareLimit,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = ReplayDbComparePartitionNumDeserializer.class)
+        Integer partitionNum) {
+
+    public ReplayDbCompareSaveRequest(
+            String tableName, String domainName, String groupOwnerEmpNo,
+            List<String> fieldNames, Long version, boolean deleteWhenNoFields,
+            ReplayDbCompareConditionTree whereCondition, Long compareLimit) {
+        this(tableName, domainName, groupOwnerEmpNo, fieldNames, version,
+                deleteWhenNoFields, whereCondition, compareLimit, null);
+    }
 
     public ReplayDbCompareSaveRequest {
         fieldNames = fieldNames == null ? List.of() : List.copyOf(fieldNames);

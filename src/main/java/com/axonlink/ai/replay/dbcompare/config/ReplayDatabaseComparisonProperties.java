@@ -26,6 +26,11 @@ public class ReplayDatabaseComparisonProperties {
         return empNo != null && !empNo.isBlank() && partitionAdminEmpNos.contains(empNo.trim());
     }
 
+    /** Values in the existing allowlist may identify either a username or an employee number. */
+    public boolean canConfigurePartitions(String username, String empNo) {
+        return canConfigurePartitions(username) || canConfigurePartitions(empNo);
+    }
+
     private String baseTargetEnv = "base";
     private String baseSchema = "";
     private boolean importEnabled = true;

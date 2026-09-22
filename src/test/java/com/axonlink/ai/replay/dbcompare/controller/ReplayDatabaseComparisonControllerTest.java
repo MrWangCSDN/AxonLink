@@ -115,12 +115,26 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
-    void onlyServerResolvedAllowlistedEmpNoCanConfigurePartitions() throws Exception {
+    void partitionPermissionAcceptsResolvedUsernameAsWellAsEmpNo() throws Exception {
+        properties.setPartitionAdminEmpNos(List.of("c-wangsh8"));
+        when(resolver.resolve(any())).thenReturn(authenticated("c-wangsh8", "王", "90001"));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                .andExpect(jsonPath("$.data.canConfigurePartitions").value(true));
+        properties.setPartitionAdminEmpNos(List.of("90001"));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                .andExpect(jsonPath("$.data.canConfigurePartitions").value(true));
+        properties.setPartitionAdminEmpNos(List.of("unrelated"));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
+                .andExpect(jsonPath("$.data.canConfigurePartitions").value(false));
+    }
+
+    @Test
+    void onlyServerResolvedAllowlistedIdentityCanConfigurePartitions() throws Exception {
         properties.setPartitionAdminEmpNos(List.of("200"));
         for (UserPrincipalResolver.Resolved identity : java.util.Arrays.asList(
                 null, new UserPrincipalResolver.Resolved("UIAS", "200", null),
                 new UserPrincipalResolver.Resolved("TOKEN", com.axonlink.security.DiiTokenBypassFilter.DII_PRINCIPAL, null),
-                authenticated("200", "冒用工号的账号", "999"))) {
+                new UserPrincipalResolver.Resolved("LDAP", "200", authenticated("other-user", "未授权账号", "999").user))) {
             when(resolver.resolve(any())).thenReturn(identity);
             mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/options"))
                     .andExpect(jsonPath("$.data.canConfigurePartitions").value(false));

@@ -207,7 +207,7 @@ public class ReplayDatabaseComparisonController {
         return resolved != null && resolved.principal != null && !resolved.principal.isBlank()
                 && !DiiTokenBypassFilter.DII_PRINCIPAL.equals(resolved.principal)
                 && resolved.user != null && Integer.valueOf(1).equals(resolved.user.getStatus())
-                && properties.canConfigurePartitions(resolved.user.getEmpNo());
+                && properties.canConfigurePartitions(resolved.user.getUsername(), resolved.user.getEmpNo());
     }
 
     @ExceptionHandler(ReplayDatabaseComparisonPartitionForbiddenException.class)

@@ -288,19 +288,28 @@ public class ReplayDatabaseComparisonDao {
                                       String updatedBy, String updatedName, LocalDateTime updatedAt,
                                       ReplayDbCompareConditionTree whereCondition, Long compareLimit,
                                       List<String> orderingPrimaryKeyNames) {
+        return updateRegistration(id, expectedVersion, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, reviserEmpNo, reviserUsername, reviserName, updatedBy, updatedName, updatedAt, whereCondition, compareLimit, orderingPrimaryKeyNames, null);
+    }
+
+    public boolean updateRegistration(long id, long expectedVersion, String tableComment, String domainName,
+                                      String groupOwnerEmpNo, String groupOwnerName, java.time.LocalDate registeredDate,
+                                      String reviserEmpNo, String reviserUsername, String reviserName,
+                                      String updatedBy, String updatedName, LocalDateTime updatedAt,
+                                      ReplayDbCompareConditionTree whereCondition, Long compareLimit,
+                                      List<String> orderingPrimaryKeyNames, Integer partitionNum) {
         return jdbc.update("""
                         UPDATE dii_replay_db_compare_registration
                            SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
                                registered_date=?,reviser_emp_no=?,reviser_username=?,reviser_name=?,
                                updated_by=?,updated_name=?,updated_at=?,where_condition_json=?,compare_limit=?,
-                               order_by_primary_keys_json=?,
+                               order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),
                                version=version+1
                          WHERE id=? AND version=? AND deleted=0
                         """, tableComment, domainName, groupOwnerEmpNo, groupOwnerName,
                 Date.valueOf(registeredDate), reviserEmpNo, reviserUsername, reviserName,
                 updatedBy, updatedName, Timestamp.valueOf(updatedAt),
                 conditionCodec.encode(whereCondition), compareLimit,
-                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), id, expectedVersion) == 1;
+                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, id, expectedVersion) == 1;
     }
 
     public boolean touchSystemUpdate(long id, long expectedVersion, LocalDateTime updatedAt) {
@@ -369,17 +378,26 @@ public class ReplayDatabaseComparisonDao {
                                           String reviserUsername, String reviserName, LocalDateTime updatedAt,
                                           ReplayDbCompareConditionTree whereCondition, Long compareLimit,
                                           List<String> orderingPrimaryKeyNames) {
+        return reregisterRegistration(id, expectedVersion, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, reviserEmpNo, reviserUsername, reviserName, updatedAt, whereCondition, compareLimit, orderingPrimaryKeyNames, null);
+    }
+
+    public boolean reregisterRegistration(long id, long expectedVersion, String tableComment, String domainName,
+                                          String groupOwnerEmpNo, String groupOwnerName,
+                                          java.time.LocalDate registeredDate, String reviserEmpNo,
+                                          String reviserUsername, String reviserName, LocalDateTime updatedAt,
+                                          ReplayDbCompareConditionTree whereCondition, Long compareLimit,
+                                          List<String> orderingPrimaryKeyNames, Integer partitionNum) {
         return jdbc.update("""
                         UPDATE dii_replay_db_compare_registration
                            SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
                                registered_date=?,deleted=0,deleted_reason=NULL,deleted_by=NULL,deleted_at=NULL,
                                reviser_emp_no=?,reviser_username=?,reviser_name=?,updated_by=?,updated_name=?,updated_at=?,
-                               where_condition_json=?,compare_limit=?,order_by_primary_keys_json=?,version=version+1
+                               where_condition_json=?,compare_limit=?,order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),version=version+1
                          WHERE id=? AND version=? AND deleted=1
                         """, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, Date.valueOf(registeredDate),
                 reviserEmpNo, reviserUsername, reviserName, reviserEmpNo, reviserName, Timestamp.valueOf(updatedAt),
                 conditionCodec.encode(whereCondition), compareLimit,
-                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), id, expectedVersion) == 1;
+                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, id, expectedVersion) == 1;
     }
 
     public void replaceFields(long registrationId, List<ReplayDbCompareField> fields, LocalDateTime createdAt) {

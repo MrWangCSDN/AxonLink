@@ -434,7 +434,7 @@ code-analysis:
   enabled: true
 
 replay-database-comparison:
-  # Only server-resolved employee numbers may change per-table JDBC partition counts; empty denies all.
+  # Allowlisted usernames or employee numbers from authenticated users may change partition counts; empty denies all.
   partition-admin-emp-nos: ${REPLAY_DB_COMPARE_PARTITION_ADMIN_EMP_NOS:}
   base-target-env: ${REPLAY_BASE_TARGET_ENV:base}
   base-schema: ${REPLAY_BASE_DB_SCHEMA:}

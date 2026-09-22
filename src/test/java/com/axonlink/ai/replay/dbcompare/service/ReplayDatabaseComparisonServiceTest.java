@@ -77,6 +77,89 @@ class ReplayDatabaseComparisonServiceTest {
     private ReplayBaseMetadataService metadataService;
     private ReplayDatabaseComparisonService service;
 
+    private ReplayDbCompareSaveRequest partitionSave(String table, Long version, String value) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                "{\"tableName\":\"" + table + "\",\"domainName\":\"存款组\","
+                + "\"groupOwnerEmpNo\":\"101\",\"fieldNames\":[\"acct_no\"],"
+                + "\"version\":" + version + ",\"partitionNum\":" + value + "}",
+                ReplayDbCompareSaveRequest.class);
+    }
+
+    @Test
+    void ordinarySaveAcceptsUsernameAndPersistsPartitionOnlyChangesAtomically() throws Exception {
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("creator", "editor"));
+        service.setPartitionProperties(properties);
+        var creator = new ReplayIssueOperator("creator", "创建人");
+        var editor = new ReplayIssueOperator("editor", "编辑人");
+        var created = service.create(partitionSave("acct_master", null, "8"), creator);
+        assertEquals(8, created.partitionNum());
+        var updated = service.update(created.id(), partitionSave("acct_master", created.version(), "16"), editor);
+        assertEquals(16, updated.partitionNum());
+        assertEquals(created.version() + 1, updated.version());
+        var events = dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50));
+        assertTrue(service.auditDetails(events.items().get(0).id()).stream().anyMatch(d ->
+                "partitionNum".equals(d.fieldCode()) && "8".equals(d.beforeValue()) && "16".equals(d.afterValue())));
+        assertEquals(updated.version(), service.update(updated.id(), partitionSave("acct_master", updated.version(), "16"), editor).version());
+        assertThrows(ReplayDatabaseComparisonVersionConflictException.class, () ->
+                service.update(created.id(), partitionSave("acct_master", created.version(), "32"), editor));
+        doThrow(new IllegalStateException("field write failed")).when(dao).replaceFields(org.mockito.ArgumentMatchers.anyLong(), any(), any());
+        assertThrows(IllegalStateException.class, () ->
+                service.update(updated.id(), partitionSave("acct_master", updated.version(), "32"), editor));
+        assertEquals(16, dao.findByIdIncludingDeleted(updated.id()).partitionNum());
+        assertEquals(updated.version(), dao.findByIdIncludingDeleted(updated.id()).version());
+        assertEquals(events.total(), dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).total());
+    }
+
+    @Test
+    void unauthorizedOrdinarySavesPreserveCountsAndRejectChanges() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(partitionSave("acct_master", null, "1"), operator);
+        assertEquals(1, created.partitionNum());
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () ->
+                service.create(partitionSave("other_table", null, "8"), operator));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=16 WHERE id=?", created.id());
+        assertEquals(16, service.update(created.id(), save("acct_master", "公共组", "101", List.of("acct_no"), created.version()), operator).partitionNum());
+        var saved = dao.findByIdIncludingDeleted(created.id());
+        assertEquals(16, service.update(saved.id(), partitionSave("acct_master", saved.version(), "16"), operator).partitionNum());
+        saved = dao.findByIdIncludingDeleted(created.id());
+        final var current = saved;
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () ->
+                service.update(current.id(), partitionSave("acct_master", current.version(), "32"), operator));
+        assertEquals(16, dao.findByIdIncludingDeleted(created.id()).partitionNum());
+    }
+
+    @Test
+    void reregisterPreservesCountUnlessAuthorizedToChangeIt() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(partitionSave("acct_master", null, "1"), operator);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=16 WHERE id=?", created.id());
+        var deleted = service.delete(created.id(), new ReplayDbCompareDeleteRequest(created.version(), "删除"), operator);
+        var unchanged = service.reregister(deleted.id(), new ReplayDbCompareReregisterRequest(
+                deleted.version(), "存款组", "101", List.of("acct_no"), "恢复"), operator);
+        assertEquals(16, unchanged.partitionNum());
+        deleted = service.delete(unchanged.id(), new ReplayDbCompareDeleteRequest(unchanged.version(), "删除"), operator);
+        var request = new com.fasterxml.jackson.databind.ObjectMapper().readValue(
+                "{\"version\":" + deleted.version() + ",\"domainName\":\"存款组\",\"groupOwnerEmpNo\":\"101\","
+                        + "\"fieldNames\":[\"acct_no\"],\"reason\":\"恢复\",\"partitionNum\":256}",
+                ReplayDbCompareReregisterRequest.class);
+        final long id = deleted.id();
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () -> service.reregister(id, request, operator));
+        assertTrue(dao.findByIdIncludingDeleted(id).deleted());
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("100"));
+        service.setPartitionProperties(properties);
+        assertEquals(256, service.reregister(id, request, operator).partitionNum());
+    }
+
+    @Test
+    void registrationPartitionRequiresJsonIntegerInRange() {
+        for (String value : List.of("0", "257", "-1", "1.5", "\"16\"", "true", "{}", "2147483648")) {
+            assertThrows(com.fasterxml.jackson.core.JsonProcessingException.class,
+                    () -> partitionSave("acct_master", null, value), value);
+        }
+    }
+
     @Test
     void partitionUpdateIsVersionedAuditedAndPreservedByOrdinaryEditsAndSync() {
         var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
