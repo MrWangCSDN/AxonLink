@@ -7,5 +7,5 @@ public record ReplayUnconditionalIgnoreRow(long id, String tranCode, String fiel
                                            int enableFlag, LocalDateTime createdAt, LocalDateTime updatedAt,
                                            int version, int reviewStatus, String oldTransactionCode,
                                            String developer, String bankOwner, boolean canReview,
-                                           String reviewDisabledReason) {
+                                           String reviewDisabledReason, String domain) {
 }

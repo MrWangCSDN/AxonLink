@@ -7,5 +7,5 @@ public record ReplayErrorCodeIgnoreRow(long id, String serviceCode, String oldRe
                                        String ignoreReason, int enabled, LocalDateTime createdAt,
                                        LocalDateTime updatedAt, int version, int reviewStatus,
                                        String oldTransactionCode, String developer, String bankOwner,
-                                       boolean canReview, String reviewDisabledReason) {
+                                       boolean canReview, String reviewDisabledReason, String domain) {
 }

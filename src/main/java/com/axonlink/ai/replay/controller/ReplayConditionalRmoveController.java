@@ -45,13 +45,14 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) Integer offset,
             @RequestParam(required = false) String internalTransactionCode,
+            @RequestParam(required = false) String domain,
             @RequestParam(required = false) String origTrcd,
             @RequestParam(required = false) String fieldRmoveName,
             @RequestParam(required = false) Integer fieldFileFlag,
             @RequestParam(required = false) Integer reviewStatus,
             @RequestParam(required = false) Boolean reviewableByMe,
             HttpServletRequest request) {
-        return R.ok(service.list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName,
+        return R.ok(service.list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName,
                 fieldFileFlag, reviewStatus, reviewableByMe, resolveOperator(request)));
     }
 

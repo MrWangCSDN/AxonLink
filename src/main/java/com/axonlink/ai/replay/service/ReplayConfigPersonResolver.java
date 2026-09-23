@@ -55,7 +55,7 @@ public class ReplayConfigPersonResolver {
             String placeholders = String.join(",", Collections.nCopies(bases.size(), "?"));
             List<Object> args = new ArrayList<>(bases);
             jdbc.query("SELECT REPLACE(z.esf_service_code,'.','') AS service_base, "
-                            + "p.old_transaction_code AS person_code, p.developer, p.bank_owner, p.bank_owner_emp_nos "
+                            + "p.old_transaction_code AS person_code, p.domain, p.developer, p.bank_owner, p.bank_owner_emp_nos "
                             + "FROM znzx_service z "
                             + "LEFT JOIN dii_replay_transaction_person p ON p.old_transaction_code = z.tran_code "
                             + "WHERE REPLACE(z.esf_service_code,'.','') IN (" + placeholders + ")",
@@ -65,7 +65,8 @@ public class ReplayConfigPersonResolver {
                         if (base == null || personCode == null || byBase.containsKey(base)) {
                             return;
                         }
-                        byBase.put(base, new ReplayConfigPersonInfo(personCode, rs.getString("developer"),
+                        byBase.put(base, new ReplayConfigPersonInfo(personCode, rs.getString("domain"),
+                                rs.getString("developer"),
                                 rs.getString("bank_owner"), rs.getString("bank_owner_emp_nos")));
                     }, args.toArray());
         }
@@ -121,6 +122,46 @@ public class ReplayConfigPersonResolver {
             result.add(base + "&bzjson");
         }
         return result;
+    }
+
+    /**
+     * 把「领域」解析为它覆盖的最终服务码集合。
+     *
+     * <p>路径：{@code dii_replay_transaction_person.domain} 对应的 {@code old_transaction_code}
+     * → {@code znzx_service.tran_code} → {@code esf_service_code}（去点）→ 追加三种后缀。
+     * 领域为空表示不筛选（返回 {@code null}）；领域下无映射时返回空集合，调用方据此返回空页。
+     */
+    public Set<String> resolveFinalServiceCodesByDomain(String domain) {
+        if (domain == null || domain.isBlank()) {
+            return null;
+        }
+        List<String> esfCodes = jdbc.queryForList(
+                "SELECT z.esf_service_code FROM dii_replay_transaction_person p "
+                        + "JOIN znzx_service z ON z.tran_code = p.old_transaction_code "
+                        + "WHERE p.domain = ?",
+                String.class, domain.trim());
+        Set<String> result = new LinkedHashSet<>();
+        for (String esfCode : esfCodes) {
+            if (esfCode == null) {
+                continue;
+            }
+            String base = esfCode.replace(".", "");
+            if (base.isBlank()) {
+                continue;
+            }
+            result.add(base + "&sop");
+            result.add(base + "&soap");
+            result.add(base + "&bzjson");
+        }
+        return result;
+    }
+
+    /** 全部领域选项，取自全量交易人员清单。 */
+    public List<String> listDomains() {
+        return jdbc.queryForList(
+                "SELECT DISTINCT domain FROM dii_replay_transaction_person "
+                        + "WHERE TRIM(COALESCE(domain,'')) <> '' ORDER BY domain",
+                String.class);
     }
 
     /** 服务码集合求交；任一侧为 {@code null} 表示不限制。 */

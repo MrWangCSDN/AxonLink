@@ -37,7 +37,21 @@ class ReplayConfigControllerTest {
                 new ReplayConfigPersonResolver(jdbc));
         ReplayUnconditionalIgnoreController controller =
                 new ReplayUnconditionalIgnoreController(service, anonymousResolver());
-        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+        ReplayConfigDomainController domainController =
+                new ReplayConfigDomainController(new ReplayConfigPersonResolver(jdbc), anonymousResolver());
+        mvc = MockMvcBuilders.standaloneSetup(controller, domainController).build();
+    }
+
+    private void seedServiceAndPerson() {
+        jdbc.update("INSERT INTO znzx_service "
+                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
+                        + "VALUES (?,?,?,?,?,?)",
+                "app", "S1", "flow", "Y444", "描述", "公共组");
+        jdbc.update("INSERT INTO dii_replay_transaction_person "
+                        + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
+                        + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+                "公共组", "Y444", "客户信息查询", "张三", "c-zhangs", "李四", "c-lisi",
+                java.sql.Timestamp.valueOf(java.time.LocalDateTime.now()));
     }
 
     private static UserPrincipalResolver anonymousResolver() {
@@ -61,6 +75,33 @@ class ReplayConfigControllerTest {
         mvc.perform(get(PREFIX))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    @Test
+    void domainsEndpointListsDistinctDomains() throws Exception {
+        seedServiceAndPerson();
+
+        mvc.perform(get("/api/ai/parallel-replay/config/domains"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0]").value("公共组"));
+    }
+
+    @Test
+    void listCarriesDomainAndFiltersByIt() throws Exception {
+        seedServiceAndPerson();
+        mvc.perform(post(PREFIX).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"ignoreReason\":\"测试原因\"}"))
+                .andExpect(status().isOk());
+
+        mvc.perform(get(PREFIX).param("domain", "公共组"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].domain").value("公共组"));
+
+        mvc.perform(get(PREFIX).param("domain", "不存在的领域"))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(0));
     }
 

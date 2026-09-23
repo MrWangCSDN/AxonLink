@@ -347,7 +347,7 @@ public class ReplayConditionalRmoveDao {
                 rs.getString("ignore_reason"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
                 ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
-                rs.getInt("review_status"), null, null, null, false, null);
+                rs.getInt("review_status"), null, null, null, false, null, null);
     }
 
     private ReplayConfigOperationView mapOperation(ResultSet rs, int rowNum) throws SQLException {

@@ -8,5 +8,5 @@ public record ReplayConditionalRmoveRow(long id, String origTrcd, String fieldRm
                                         String destFieldCond, String ignoreReason, LocalDateTime createdAt,
                                         LocalDateTime updatedAt, int version, int reviewStatus,
                                         String oldTransactionCode, String developer, String bankOwner,
-                                        boolean canReview, String reviewDisabledReason) {
+                                        boolean canReview, String reviewDisabledReason, String domain) {
 }
