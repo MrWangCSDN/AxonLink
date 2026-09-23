@@ -49,7 +49,7 @@ public record ReplayDbCompareListItem(
         List<String> primaryKeyNames,
         List<String> orderingPrimaryKeyNames,
         int partitionNum) {
-        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, 1000);
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, 100);
     }
 
     public ReplayDbCompareListItem withSampleLimit(int sampleLimit) {

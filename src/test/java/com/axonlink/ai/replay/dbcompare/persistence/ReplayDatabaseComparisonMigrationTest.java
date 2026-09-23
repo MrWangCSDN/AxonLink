@@ -17,6 +17,48 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReplayDatabaseComparisonMigrationTest {
 
     @Test
+    void sampleLimitDefaultChangesOnlyForFutureRows() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
+                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                .execute(jdbc.getDataSource());
+
+        String insertRegistration = "INSERT INTO dii_replay_db_compare_registration "
+                + "(schema_name,table_name,domain_name,registered_date,created_by,created_name,created_at,"
+                + "updated_by,updated_name,updated_at) VALUES ('base',?,'domain',CURRENT_DATE,'u','User',"
+                + "CURRENT_TIMESTAMP,'u','User',CURRENT_TIMESTAMP)";
+        jdbc.update(insertRegistration, "old_default");
+        jdbc.update(insertRegistration, "old_zero");
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET sample_limit=0 WHERE table_name='old_zero'");
+        jdbc.update("INSERT INTO dii_replay_db_compare_version "
+                + "(version_no,configuration_hash,table_count,field_count,generated_by,generated_name,generated_at) "
+                + "VALUES ('v1',?,1,0,'u','User',CURRENT_TIMESTAMP)", "a".repeat(64));
+        String insertSnapshot = "INSERT INTO dii_replay_db_compare_version_table "
+                + "(version_id,source_registration_id,source_registration_version,schema_name,table_name,"
+                + "domain_name,registered_date) VALUES (1,1,1,'base',?,'domain',CURRENT_DATE)";
+        jdbc.update(insertSnapshot, "old_default");
+        jdbc.update(insertSnapshot, "old_zero");
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET sample_limit=0 WHERE table_name='old_zero'");
+
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V76__replay_db_compare_sample_limit_default_100.sql"))
+                .execute(jdbc.getDataSource());
+        jdbc.update(insertRegistration, "new_default");
+        jdbc.update(insertSnapshot, "new_default");
+        for (String table : List.of("dii_replay_db_compare_registration", "dii_replay_db_compare_version_table")) {
+            assertEquals(1000, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='old_default'", Integer.class));
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='old_zero'", Integer.class));
+            assertEquals(100, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='new_default'", Integer.class));
+        }
+    }
+
+    @Test
     void createsRegistrationFieldAndAppendOnlyAuditStructures() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
 

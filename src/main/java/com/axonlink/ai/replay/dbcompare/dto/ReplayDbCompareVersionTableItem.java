@@ -45,7 +45,7 @@ public record ReplayDbCompareVersionTableItem(
         int fieldCount,
         List<ReplayDbCompareVersionField> fields,
         int partitionNum) {
-        this(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName, whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, 1000);
+        this(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName, whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, 100);
     }
 
     public ReplayDbCompareVersionTableItem withSampleLimit(int sampleLimit) {

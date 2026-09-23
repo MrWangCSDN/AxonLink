@@ -220,7 +220,7 @@ public class ReplayDatabaseComparisonService {
             ReplayIssueOperator operator) {
         Actor actor = requireActor(operator);
         int partitionNum = partitionForSave(request.partitionNum(), 1, operator);
-        int sampleLimit = sampleForSave(request.sampleLimit(), 1000, operator);
+        int sampleLimit = sampleForSave(request.sampleLimit(), 100, operator);
         PreparedSave prepared = prepare(request.tableName(), request.domainName(),
                 request.groupOwnerEmpNo(), request.fieldNames(),
                 request.whereCondition(), request.compareLimit());
@@ -236,7 +236,7 @@ public class ReplayDatabaseComparisonService {
         ReplayDbCompareState after = state(registration);
         List<ReplayDbCompareAuditDetailDraft> details =
                 withSampleAudit(withPartitionAudit(auditDiff.compare(null, after, ReplayDbCompareAuditOperation.CREATE),
-                        1, partitionNum), 1000, sampleLimit);
+                        1, partitionNum), 100, sampleLimit);
 
         ReplayDbCompareRegistration result = transactionTemplate.execute(status -> {
             ReplayDbCompareRegistration existing = dao.findBySchemaAndTable(

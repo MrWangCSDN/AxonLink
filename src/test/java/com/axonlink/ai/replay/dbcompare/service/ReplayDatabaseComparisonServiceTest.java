@@ -95,7 +95,7 @@ class ReplayDatabaseComparisonServiceTest {
     @Test void sampleLimitUsesPartitionPermissionAndPreservesOnOrdinarySave() throws Exception {
         var operator = new ReplayIssueOperator("creator", "创建人");
         var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
-        assertEquals(1000, created.sampleLimit());
+        assertEquals(100, created.sampleLimit());
         assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class, () ->
                 service.update(created.id(), sampleSave(created.version(), "17"), operator));
         var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();

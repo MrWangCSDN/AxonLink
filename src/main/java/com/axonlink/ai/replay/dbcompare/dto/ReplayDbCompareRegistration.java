@@ -67,7 +67,7 @@ public record ReplayDbCompareRegistration(
         String compiledWhereSql,
         ReplayDbCompareMetadataValidation metadataValidation,
         int partitionNum) {
-        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, 1000);
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, 100);
     }
 
     public ReplayDbCompareRegistration withSampleLimit(int sampleLimit) {
