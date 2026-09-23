@@ -38,31 +38,34 @@ public class ReplayUnconditionalIgnoreService {
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
                                                                String internalTransactionCode, String tranCode,
                                                                String fieldName) {
-        return list(limit, offset, internalTransactionCode, tranCode, fieldName, null, null);
+        return list(limit, offset, internalTransactionCode, null, tranCode, fieldName, null, null, null);
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
                                                                String internalTransactionCode, String tranCode,
                                                                String fieldName, ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, tranCode, fieldName, null, operator);
+        return list(limit, offset, internalTransactionCode, null, tranCode, fieldName, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
                                                                String internalTransactionCode, String tranCode,
                                                                String fieldName, Integer reviewStatus,
                                                                ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, tranCode, fieldName, reviewStatus, null, operator);
+        return list(limit, offset, internalTransactionCode, null, tranCode, fieldName, reviewStatus, null, operator);
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
-                                                               String internalTransactionCode, String tranCode,
+                                                               String internalTransactionCode, String domain,
+                                                               String tranCode,
                                                                String fieldName, Integer reviewStatus,
                                                                Boolean reviewableByMe, ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
-                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                ReplayConfigPersonResolver.intersect(
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
+                        personResolver.resolveFinalServiceCodesByDomain(domain)),
                 Boolean.TRUE.equals(reviewableByMe)
                         ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
                         : null);
@@ -222,6 +225,6 @@ public class ReplayUnconditionalIgnoreService {
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),
-                reason == null, reason);
+                reason == null, reason, info == null ? null : info.domain());
     }
 }

@@ -38,26 +38,27 @@ public class ReplayErrorCodeIgnoreService {
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode) {
-        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode, null, null);
+        return list(limit, offset, internalTransactionCode, null, serviceCode, oldRespCode, newRespCode, null, null, null);
     }
 
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode,
                                                            ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode, null, operator);
+        return list(limit, offset, internalTransactionCode, null, serviceCode, oldRespCode, newRespCode, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
                                                            String internalTransactionCode, String serviceCode,
                                                            String oldRespCode, String newRespCode,
                                                            Integer reviewStatus, ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, serviceCode, oldRespCode, newRespCode,
+        return list(limit, offset, internalTransactionCode, null, serviceCode, oldRespCode, newRespCode,
                 reviewStatus, null, operator);
     }
 
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
-                                                           String internalTransactionCode, String serviceCode,
+                                                           String internalTransactionCode, String domain,
+                                                           String serviceCode,
                                                            String oldRespCode, String newRespCode,
                                                            Integer reviewStatus, Boolean reviewableByMe,
                                                            ReplayConfigOperator operator) {
@@ -65,7 +66,9 @@ public class ReplayErrorCodeIgnoreService {
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
-                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                ReplayConfigPersonResolver.intersect(
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
+                        personResolver.resolveFinalServiceCodesByDomain(domain)),
                 Boolean.TRUE.equals(reviewableByMe)
                         ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
                         : null);
@@ -241,6 +244,6 @@ public class ReplayErrorCodeIgnoreService {
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),
-                reason == null, reason);
+                reason == null, reason, info == null ? null : info.domain());
     }
 }

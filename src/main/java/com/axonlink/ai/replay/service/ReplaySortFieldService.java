@@ -42,26 +42,27 @@ public class ReplaySortFieldService {
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName) {
-        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null, null);
+        return list(limit, offset, internalTransactionCode, null, origTrcd, origArryName, origFieldName, null, null, null);
     }
 
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName,
                                                      ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName, null, operator);
+        return list(limit, offset, internalTransactionCode, null, origTrcd, origArryName, origFieldName, null, null, operator);
     }
 
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
                                                      String internalTransactionCode, String origTrcd,
                                                      String origArryName, String origFieldName,
                                                      Integer reviewStatus, ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, origTrcd, origArryName, origFieldName,
+        return list(limit, offset, internalTransactionCode, null, origTrcd, origArryName, origFieldName,
                 reviewStatus, null, operator);
     }
 
     public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
-                                                     String internalTransactionCode, String origTrcd,
+                                                     String internalTransactionCode, String domain,
+                                                     String origTrcd,
                                                      String origArryName, String origFieldName,
                                                      Integer reviewStatus, Boolean reviewableByMe,
                                                      ReplayConfigOperator operator) {
@@ -69,7 +70,9 @@ public class ReplaySortFieldService {
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
-                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                ReplayConfigPersonResolver.intersect(
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
+                        personResolver.resolveFinalServiceCodesByDomain(domain)),
                 Boolean.TRUE.equals(reviewableByMe)
                         ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
                         : null);
@@ -271,7 +274,7 @@ public class ReplaySortFieldService {
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),
-                reason == null, reason);
+                reason == null, reason, info == null ? null : info.domain());
     }
 
     private record ParsedSortField(String arryName, String fieldName) {

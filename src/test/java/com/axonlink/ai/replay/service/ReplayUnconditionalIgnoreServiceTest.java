@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -168,7 +170,7 @@ class ReplayUnconditionalIgnoreServiceTest {
                 new ReplayConfigVersionedId(alreadyApproved.id(), alreadyApproved.version())), reviewer);
         assertEquals(1, result.approvedCount());
         assertEquals(2, result.skippedCount());
-        assertEquals(2, service.list(10, 0, null, null, null, 1, null, null).total());
+        assertEquals(2, service.list(10, 0, null, null, null, null, 1, null, null).total());
     }
 
     @Test
@@ -199,12 +201,12 @@ class ReplayUnconditionalIgnoreServiceTest {
         service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB", REASON), OPERATOR);
 
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
-                10, 0, null, null, null, null, true, reviewer);
+                10, 0, null, null, null, null, null, true, reviewer);
         assertEquals(1, mine.total());
         assertEquals("mineA", mine.items().get(0).fieldName());
 
-        assertEquals(0, service.list(10, 0, null, null, null, null, true, OPERATOR).total());
-        assertEquals(1, service.list(10, 0, null, null, null, 0, true, reviewer).total());
+        assertEquals(0, service.list(10, 0, null, null, null, null, null, true, OPERATOR).total());
+        assertEquals(1, service.list(10, 0, null, null, null, null, 0, true, reviewer).total());
     }
 
     @Test
@@ -306,5 +308,52 @@ class ReplayUnconditionalIgnoreServiceTest {
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> page = service.list(null, 0, null, null, null);
         assertEquals(12, page.total());
         assertEquals(10, page.items().size());
+    }
+
+    @Test
+    void exposesDomainResolvedFromTransactionPerson() {
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+
+        assertEquals("公共组", created.domain());
+        assertEquals("公共组", service.list(10, 0, null, null, null).items().get(0).domain());
+    }
+
+    @Test
+    void filtersByDomainAndIntersectsWithInternalTransactionCode() {
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "domainA", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "domainB", REASON), OPERATOR);
+
+        ReplayConfigPage<ReplayUnconditionalIgnoreRow> byDomain = service.list(
+                10, 0, null, "公共组", null, null, null, null, null);
+        assertEquals(1, byDomain.total());
+        assertEquals("domainA", byDomain.items().get(0).fieldName());
+        assertEquals("公共组", byDomain.items().get(0).domain());
+
+        // 领域与内部核心交易码同指一条链路 → 交集命中；两者矛盾或领域未知 → 空
+        assertEquals(1, service.list(10, 0, "Y444", "公共组", null, null, null, null, null).total());
+        assertEquals(0, service.list(10, 0, "Y444", "其他领域", null, null, null, null, null).total());
+        assertEquals(0, service.list(10, 0, null, "无此领域", null, null, null, null, null).total());
+    }
+
+    @Test
+    void listsDistinctDomainsFromPersonList() {
+        seedServiceAndPerson("S2", "Z999", "贷款组", "贷款查询", "c-zhaoliu");
+
+        assertEquals(Set.of("公共组", "贷款组"),
+                new HashSet<>(new ReplayConfigPersonResolver(jdbc).listDomains()));
+    }
+
+    private void seedServiceAndPerson(String esfServiceCode, String tranCode, String domain, String name,
+                                      String bankOwnerEmpNos) {
+        jdbc.update("INSERT INTO znzx_service "
+                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
+                        + "VALUES (?,?,?,?,?,?)",
+                "app-" + tranCode, esfServiceCode, "flow", tranCode, "描述", domain);
+        jdbc.update("INSERT INTO dii_replay_transaction_person "
+                        + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
+                        + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",
+                domain, tranCode, name, "开发", "c-dev", "行方", bankOwnerEmpNos,
+                java.sql.Timestamp.valueOf(java.time.LocalDateTime.now()));
     }
 }

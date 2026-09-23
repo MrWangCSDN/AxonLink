@@ -41,26 +41,27 @@ public class ReplayConditionalRmoveService {
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag) {
-        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null, null);
+        return list(limit, offset, internalTransactionCode, null, origTrcd, fieldRmoveName, fieldFileFlag, null, null, null);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag, null, operator);
+        return list(limit, offset, internalTransactionCode, null, origTrcd, fieldRmoveName, fieldFileFlag, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
                                                             String internalTransactionCode, String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             Integer reviewStatus, ReplayConfigOperator operator) {
-        return list(limit, offset, internalTransactionCode, origTrcd, fieldRmoveName, fieldFileFlag,
+        return list(limit, offset, internalTransactionCode, null, origTrcd, fieldRmoveName, fieldFileFlag,
                 reviewStatus, null, operator);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
-                                                            String internalTransactionCode, String origTrcd,
+                                                            String internalTransactionCode, String domain,
+                                                            String origTrcd,
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             Integer reviewStatus, Boolean reviewableByMe,
                                                             ReplayConfigOperator operator) {
@@ -68,7 +69,9 @@ public class ReplayConditionalRmoveService {
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
-                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                ReplayConfigPersonResolver.intersect(
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
+                        personResolver.resolveFinalServiceCodesByDomain(domain)),
                 Boolean.TRUE.equals(reviewableByMe)
                         ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
                         : null);
@@ -268,6 +271,6 @@ public class ReplayConditionalRmoveService {
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
                 info == null ? null : info.bankOwner(),
-                reason == null, reason);
+                reason == null, reason, info == null ? null : info.domain());
     }
 }
