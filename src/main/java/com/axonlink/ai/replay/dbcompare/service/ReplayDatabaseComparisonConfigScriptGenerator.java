@@ -75,9 +75,6 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             if (table.sampleLimit() < 0 || table.sampleLimit() > 10000) {
                 errors.add(error(tableName, null, "样本数必须为 0 到 10000 的整数"));
             }
-            if (table.partitionNum() < 1 || table.partitionNum() > 256) {
-                errors.add(error(tableName, null, "读取分区数必须为 1 到 256 的整数"));
-            }
             if (!DOMAIN_MODULES.containsKey(table.domainName())) {
                 errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
             }
@@ -168,7 +165,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                             + "," + quote(DOMAIN_MODULES.get(table.domainName()))
                             + "," + quote(table.tableName())
                             + "," + quote(memo)
-                            + ",'2','1','3','1'," + table.partitionNum() + ",'HASH'," + table.sampleLimit() + ")";
+                            + ",'2','1','3','1',1,'HASH'," + table.sampleLimit() + ")";
                 });
     }
 

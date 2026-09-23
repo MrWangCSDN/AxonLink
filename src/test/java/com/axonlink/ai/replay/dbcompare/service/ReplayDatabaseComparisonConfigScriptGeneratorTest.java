@@ -36,12 +36,10 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     }
 
     @Test
-    void rejectsInvalidSnapshotPartitionCount() {
+    void historicalSnapshotPartitionCountDoesNotControlNewSql() {
         var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
-        assertThrows(ReplayDatabaseComparisonGenerationException.class,
-                () -> generator.generate("v1", List.of(table.withPartitionNum(0))));
-        assertThrows(ReplayDatabaseComparisonGenerationException.class,
-                () -> generator.generate("v1", List.of(table.withPartitionNum(257))));
+        assertTrue(sql(generator.generate("v1", List.of(table.withPartitionNum(257))))
+                .contains("'2','1','3','1',1,'HASH',100)"));
     }
 
     @Test
@@ -50,7 +48,7 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
                 .withPartitionNum(16);
         String sql = sql(generator.generate("v1", List.of(table)));
         assertTrue(sql.contains("bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit)"));
-        assertTrue(sql.contains("'2','1','3','1',16,'HASH',100)"));
+        assertTrue(sql.contains("'2','1','3','1',1,'HASH',100)"));
         assertTrue(sql.contains("(1,'id','1','编号','1','1','1','0')"));
     }
 
