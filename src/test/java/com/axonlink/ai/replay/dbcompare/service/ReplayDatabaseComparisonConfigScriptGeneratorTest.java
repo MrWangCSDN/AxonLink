@@ -50,7 +50,7 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
                 .withPartitionNum(16);
         String sql = sql(generator.generate("v1", List.of(table)));
         assertTrue(sql.contains("bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit)"));
-        assertTrue(sql.contains("'2','1','3','1',16,'HASH',1000)"));
+        assertTrue(sql.contains("'2','1','3','1',16,'HASH',100)"));
         assertTrue(sql.contains("(1,'id','1','编号','1','1','1','0')"));
     }
 
@@ -66,12 +66,12 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
 
         String sql = sql(generator.generate("20260914-172637", tables));
 
-        assertBefore(sql, "(1,'dept','a_deposit','账户主表比对','2','1','3','1',1,'HASH',1000)",
-                "(2,'dept','z_deposit','存款配置比对','2','1','3','1',1,'HASH',1000)");
-        assertBefore(sql, "(2,'dept'", "(3,'loan'");
-        assertBefore(sql, "(3,'loan'", "(4,'comm'");
-        assertBefore(sql, "(4,'comm','comm_table','comm_table比对'", "(5,'sett'");
-        assertBefore(sql, "(5,'sett'", "(6,'platform'");
+        assertBefore(sql, "(1,'存款组','a_deposit','账户主表比对','2','1','3','1',1,'HASH',100)",
+                "(2,'存款组','z_deposit','存款配置比对','2','1','3','1',1,'HASH',100)");
+        assertBefore(sql, "(2,'存款组'", "(3,'贷款组'");
+        assertBefore(sql, "(3,'贷款组'", "(4,'公共组'");
+        assertBefore(sql, "(4,'公共组','comm_table','comm_table比对'", "(5,'结算组'");
+        assertBefore(sql, "(5,'结算组'", "(6,'平台组'");
     }
 
     @Test

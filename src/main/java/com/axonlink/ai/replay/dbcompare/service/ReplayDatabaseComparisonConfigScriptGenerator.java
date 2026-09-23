@@ -30,12 +30,6 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_$#]*");
     private static final List<String> DOMAIN_ORDER =
             List.of("存款组", "贷款组", "公共组", "结算组", "平台组");
-    private static final Map<String, String> DOMAIN_MODULES = Map.of(
-            "存款组", "dept",
-            "贷款组", "loan",
-            "公共组", "comm",
-            "结算组", "sett",
-            "平台组", "platform");
 
     public GeneratedScript generate(
             String versionNo,
@@ -78,7 +72,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             if (table.partitionNum() < 1 || table.partitionNum() > 256) {
                 errors.add(error(tableName, null, "读取分区数必须为 1 到 256 的整数"));
             }
-            if (!DOMAIN_MODULES.containsKey(table.domainName())) {
+            if (!DOMAIN_ORDER.contains(table.domainName())) {
                 errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
             }
             if (!validIdentifier(tableName)) {
@@ -165,7 +159,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                             ? table.tableComment().trim() : table.tableName();
                     String memo = memoBase.endsWith("比对") ? memoBase : memoBase + "比对";
                     return "(" + (index + 1)
-                            + "," + quote(DOMAIN_MODULES.get(table.domainName()))
+                            + "," + quote(table.domainName())
                             + "," + quote(table.tableName())
                             + "," + quote(memo)
                             + ",'2','1','3','1'," + table.partitionNum() + ",'HASH'," + table.sampleLimit() + ")";
