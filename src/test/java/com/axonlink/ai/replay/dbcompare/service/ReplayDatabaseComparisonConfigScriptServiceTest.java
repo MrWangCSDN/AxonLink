@@ -76,16 +76,35 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     @Test
     void newTargetHasItsOwnHashAndDoesNotOverwriteStoredLegacyScript() throws Exception {
         var legacy = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
-        var converted = service.forTarget(service.download(VERSION_NO), ConfigScriptTarget.NEW);
+        var converted = service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW);
         String sql = new String(converted.content(), StandardCharsets.UTF_8);
         assertTrue(sql.contains("TRUNCATE TABLE tss_bcomp_conf_new;"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_field_new"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_table_sql_new"));
+        assertTrue(sql.contains("bcomp_sample_limit,reviser_name,reviser_username)"));
+        assertTrue(sql.contains("'张三','zhangsan')"));
         assertTrue(converted.fileName().endsWith("-new.sql"));
         assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                 .digest(converted.content())), converted.sha256());
         assertArrayEquals(legacy.content(), service.download(VERSION_NO).content());
         assertEquals(legacy.sha256(), service.status(VERSION_NO).sha256());
+        assertFalse(new String(legacy.content(), StandardCharsets.UTF_8).contains("reviser_name"));
+    }
+
+    @Test
+    void newTargetEscapesSnapshotReviserAndRejectsOverlongValues() {
+        service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=?,reviser_username=? WHERE version_id=?",
+                "王'山河", "c-wangsh8", versionId);
+        String sql = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
+        assertTrue(sql.contains("'王''山河','c-wangsh8')"));
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=NULL,reviser_username=NULL WHERE version_id=?", versionId);
+        String noReviser = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
+        assertTrue(noReviser.contains(",'HASH',100,NULL,NULL)"));
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=? WHERE version_id=?",
+                "王".repeat(101), versionId);
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW));
     }
 
     @Test
