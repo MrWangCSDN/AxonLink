@@ -92,6 +92,19 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     }
 
     @Test
+    void legacyDownloadStillRemovesNewerConfigurationColumns() {
+        var stored = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
+
+        var legacy = service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.LEGACY);
+        String sql = new String(legacy.content(), StandardCharsets.UTF_8);
+        assertFalse(sql.contains("bcomp_partition_num"));
+        assertFalse(sql.contains("bcomp_shard_strategy"));
+        assertFalse(sql.contains("bcomp_sample_limit"));
+        assertTrue(new String(stored.content(), StandardCharsets.UTF_8).contains("bcomp_partition_num"));
+        assertArrayEquals(stored.content(), service.download(VERSION_NO).content());
+    }
+
+    @Test
     void newTargetEscapesSnapshotReviserAndRejectsOverlongValues() {
         service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=?,reviser_username=? WHERE version_id=?",
