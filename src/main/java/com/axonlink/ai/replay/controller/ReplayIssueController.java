@@ -828,20 +828,20 @@ public class ReplayIssueController {
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(200); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             workbook.setCompressTempFiles(true);
             Sheet sheet = workbook.createSheet("回放问题清单");
-            String[] headers = {"issue_id", "是否沙箱", "交易码", "交易名称", "问题级别", "字段名", "流水号", "全局流水号", "问题描述",
+            String[] headers = {"issue_id", "是否沙箱", "交易码", "交易名称", "问题级别", "字段名", "问题描述",
                     "优先任务", "领域", "问题所属领域", "计划验证日期", "缺陷修复日期", "开发负责人", "科技负责人", "问题状态", "审核状态", "审核人", "审核时间", "问题类型", "需协同人", "初步问题分析", "最终处理方案", "备注",
-                    "出现笔数", "issue_key", "首次出现日期", "出现批次"};
+                    "出现笔数", "issue_key", "首次出现日期", "流水号", "全局流水号", "出现批次"};
             Row header = sheet.createRow(0);
             for (int i = 0; i < headers.length; i++) header.createCell(i).setCellValue(headers[i]);
             int rowIndex = 1;
             for (Map<String, Object> item : dao.listForExport(query, affectedTransactionCountOrder)) {
                 Row row = sheet.createRow(rowIndex++);
                 Object[] values = {text(item.get("issue_id")), sandboxText(item.get("is_sandbox")), text(item.get("transaction_code")),
-                        text(item.get("transaction_name")), text(item.get("issue_level")), text(item.get("field_name")), text(item.get("serial_no")), text(item.get("global_serial_no")),
+                        text(item.get("transaction_name")), text(item.get("issue_level")), text(item.get("field_name")),
                         text(item.get("issue_description")), weeklyTaskText(item.get("weekly_task")), text(item.get("domain")), text(item.get("issue_domain")),
                         text(item.get("planned_completion_date")), text(item.get("defect_repair_date")), text(item.get("matched_developer")), text(item.get("matched_bank_owner")), text(item.get("issue_status")), text(item.get("review_status")), text(item.get("reviewer_real_name")), text(item.get("reviewed_at")), text(item.get("issue_type")), personText(item), text(item.get("initial_analysis")),
                         text(item.get("final_solution")), text(item.get("remark")), text(item.get("affected_transaction_count")), text(item.get("issue_key")),
-                        dateOnlyText(item.get("first_occurrence_date")), text(item.get("occurrence_rounds"))};
+                        dateOnlyText(item.get("first_occurrence_date")), text(item.get("serial_no")), text(item.get("global_serial_no")), text(item.get("occurrence_rounds"))};
                 for (int i = 0; i < values.length; i++) row.createCell(i).setCellValue(String.valueOf(values[i]));
             }
             workbook.write(output);

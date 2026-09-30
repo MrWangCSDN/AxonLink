@@ -874,8 +874,7 @@ class ReplayIssueControllerTest {
                 headers.add(headerRow.getCell(index).getStringCellValue());
             }
             assertFalse(headers.contains("上次出现日期"));
-            assertEquals("出现笔数", headerRow.getCell(25).getStringCellValue());
-            assertEquals("10", sheet.getRow(1).getCell(25).getStringCellValue());
+            assertEquals("10", sheet.getRow(1).getCell(headers.indexOf("出现笔数")).getStringCellValue());
         }
     }
 
@@ -967,6 +966,7 @@ class ReplayIssueControllerTest {
         dao.updatePlannedCompletionDate(issueId, LocalDate.of(2026, 8, 26));
         jdbc.update("UPDATE dii_replay_issue SET first_occurrence_date=?, last_occurrence_date=?, cooperation_person_username=?, cooperation_person_real_name=? WHERE id=?",
                 "2026-07-28 00:00:00.0", "2026-07-31 00:00:00.0", "sunhy1", "孙海英", issueId);
+        jdbc.update("UPDATE dii_replay_issue SET serial_no='SERIAL-1', global_serial_no='GLOBAL-1' WHERE id=?", issueId);
 
         byte[] body = mvc.perform(get("/api/ai/parallel-replay/issues/export")
                         .param("groupName", "公共组")
@@ -993,6 +993,9 @@ class ReplayIssueControllerTest {
             assertFalse(headers.contains("历史出现次数"));
             assertFalse(headers.contains("上次出现日期"));
             assertEquals(headers.indexOf("问题类型") + 1, headers.indexOf("需协同人"));
+            assertEquals(headers.indexOf("首次出现日期") + 1, headers.indexOf("流水号"));
+            assertEquals(headers.indexOf("流水号") + 1, headers.indexOf("全局流水号"));
+            assertEquals(headers.indexOf("全局流水号") + 1, headers.indexOf("出现批次"));
             assertEquals(headers.indexOf("问题描述") + 1, headers.indexOf("优先任务"));
             assertEquals(headers.indexOf("优先任务") + 1, headers.indexOf("领域"));
             assertEquals(headers.indexOf("领域") + 1, headers.indexOf("问题所属领域"));
@@ -1007,6 +1010,8 @@ class ReplayIssueControllerTest {
             assertEquals("刘科技", dataRow.getCell(headers.indexOf("科技负责人")).getStringCellValue());
             assertEquals("孙海英(sunhy1)", dataRow.getCell(headers.indexOf("需协同人")).getStringCellValue());
             assertEquals("2026-07-28", dataRow.getCell(headers.indexOf("首次出现日期")).getStringCellValue());
+            assertEquals("SERIAL-1", dataRow.getCell(headers.indexOf("流水号")).getStringCellValue());
+            assertEquals("GLOBAL-1", dataRow.getCell(headers.indexOf("全局流水号")).getStringCellValue());
             assertTrue(!dataRow.getCell(headers.indexOf("出现批次")).getStringCellValue().isBlank());
         }
     }
