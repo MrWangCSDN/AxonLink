@@ -40,9 +40,22 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
     public GeneratedScript generate(
             String versionNo,
             List<ReplayDbCompareVersionTableItem> snapshotTables) {
+        return generate(versionNo, snapshotTables, false);
+    }
+
+    public GeneratedScript generateNew(
+            String versionNo,
+            List<ReplayDbCompareVersionTableItem> snapshotTables) {
+        return generate(versionNo, snapshotTables, true);
+    }
+
+    private GeneratedScript generate(
+            String versionNo,
+            List<ReplayDbCompareVersionTableItem> snapshotTables,
+            boolean newTarget) {
         List<ReplayDbCompareVersionTableItem> tables = new ArrayList<>(
                 snapshotTables == null ? List.of() : snapshotTables);
-        validate(tables);
+        validate(tables, newTarget);
         tables.sort(Comparator
                 .comparingInt((ReplayDbCompareVersionTableItem table) ->
                         DOMAIN_ORDER.indexOf(table.domainName()))
@@ -51,10 +64,10 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                 .thenComparing(ReplayDbCompareVersionTableItem::tableName));
         int fieldCount = tables.stream().mapToInt(table -> table.fields().size()).sum();
         try (ScriptOutput output = new ScriptOutput()) {
-            writePreamble(output);
-            writeConfigurationRows(output, tables);
-            writeFieldRows(output, tables);
-            writeTableSqlRows(output, tables);
+            writePreamble(output, newTarget);
+            writeConfigurationRows(output, tables, newTarget);
+            writeFieldRows(output, tables, newTarget);
+            writeTableSqlRows(output, tables, newTarget);
             output.write("COMMIT;\n\n");
             output.write("-- Version: " + versionNo + "\n");
             output.write("-- Tables: " + tables.size() + "\n");
@@ -68,12 +81,18 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         }
     }
 
-    private void validate(List<ReplayDbCompareVersionTableItem> tables) {
+    private void validate(List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) {
         List<ReplayDbCompareConfigScriptValidationError> errors = new ArrayList<>();
         for (ReplayDbCompareVersionTableItem table : tables) {
             String tableName = table.tableName();
             if (table.sampleLimit() < 0 || table.sampleLimit() > 10000) {
                 errors.add(error(tableName, null, "样本数必须为 0 到 10000 的整数"));
+            }
+            if (newTarget && table.reviserName() != null && table.reviserName().trim().length() > 100) {
+                errors.add(error(tableName, null, "修订人姓名不能超过100个字符"));
+            }
+            if (newTarget && table.reviserUsername() != null && table.reviserUsername().trim().length() > 100) {
+                errors.add(error(tableName, null, "修订人账号不能超过100个字符"));
             }
             if (!DOMAIN_MODULES.containsKey(table.domainName())) {
                 errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
@@ -142,20 +161,22 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         return value != null && IDENTIFIER.matcher(value).matches();
     }
 
-    private void writePreamble(ScriptOutput output) throws IOException {
+    private void writePreamble(ScriptOutput output, boolean newTarget) throws IOException {
+        String suffix = newTarget ? "_new" : "";
         output.write("START TRANSACTION;\n\n");
-        output.write("TRUNCATE TABLE tss_bcomp_field;\n");
-        output.write("TRUNCATE TABLE tss_bcomp_table_sql;\n");
-        output.write("TRUNCATE TABLE tss_bcomp_conf;\n\n");
+        output.write("TRUNCATE TABLE tss_bcomp_field" + suffix + ";\n");
+        output.write("TRUNCATE TABLE tss_bcomp_table_sql" + suffix + ";\n");
+        output.write("TRUNCATE TABLE tss_bcomp_conf" + suffix + ";\n\n");
     }
 
     private void writeConfigurationRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables) throws IOException {
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
         writeBatches(output, tables.size(),
-                "INSERT INTO tss_bcomp_conf\n"
+                "INSERT INTO tss_bcomp_conf" + (newTarget ? "_new" : "") + "\n"
                         + "  (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,"
-                        + "bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit)\nVALUES\n",
+                        + "bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit"
+                        + (newTarget ? ",reviser_name,reviser_username" : "") + ")\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String memoBase = hasText(table.tableComment())
@@ -165,14 +186,16 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                             + "," + quote(DOMAIN_MODULES.get(table.domainName()))
                             + "," + quote(table.tableName())
                             + "," + quote(memo)
-                            + ",'2','1','3','1',1,'HASH'," + table.sampleLimit() + ")";
+                            + ",'2','1','3','1',1,'HASH'," + table.sampleLimit()
+                            + (newTarget ? "," + quoteNullable(table.reviserName()) + "," + quoteNullable(table.reviserUsername()) : "")
+                            + ")";
                 });
     }
 
     private void writeFieldRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables) throws IOException {
-        String header = "INSERT INTO tss_bcomp_field\n"
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
+        String header = "INSERT INTO tss_bcomp_field" + (newTarget ? "_new" : "") + "\n"
                 + "  (bcomp_index,field_name,field_type,field_memo,field_old_index,"
                 + "field_new_index,field_index_flag,field_enum_flag)\nVALUES\n";
         int batchPosition = 0;
@@ -209,9 +232,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private void writeTableSqlRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables) throws IOException {
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
         writeBatches(output, tables.size(),
-                "INSERT INTO tss_bcomp_table_sql\n"
+                "INSERT INTO tss_bcomp_table_sql" + (newTarget ? "_new" : "") + "\n"
                         + "  (bcomp_index,orig_sql,orig_database_id,dest_sql,dest_database_id)\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
@@ -265,6 +288,10 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private String quote(String value) {
         return "'" + value.replace("'", "''") + "'";
+    }
+
+    private String quoteNullable(String value) {
+        return hasText(value) ? quote(value.trim()) : "NULL";
     }
 
     private boolean hasText(String value) {

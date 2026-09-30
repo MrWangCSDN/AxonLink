@@ -319,14 +319,14 @@ public class ReplayDatabaseComparisonController {
             @RequestParam(defaultValue = "LEGACY") ConfigScriptTarget targetVersion,
             HttpServletRequest request) {
         var file = configScriptService.generate(versionNo, requireOperator(request));
-        return scriptFile(targetVersion.file(file));
+        return scriptFile(configScriptService.forTarget(versionNo, file, targetVersion));
     }
 
     @GetMapping("/versions/{versionNo}/config-script/download")
     public ResponseEntity<byte[]> downloadConfigScript(@PathVariable String versionNo,
             @RequestParam(defaultValue = "LEGACY") ConfigScriptTarget targetVersion) {
         var file = configScriptService.download(versionNo);
-        return scriptFile(targetVersion.file(file));
+        return scriptFile(configScriptService.forTarget(versionNo, file, targetVersion));
     }
 
     private ResponseEntity<byte[]> scriptFile(

@@ -116,8 +116,12 @@ public class ReplayDatabaseComparisonConfigScriptService {
         return verifiedFile(script);
     }
 
-    public ScriptFile forTarget(ScriptFile file, ConfigScriptTarget target) {
-        return target.file(file);
+    public ScriptFile forTarget(String versionNo, ScriptFile file, ConfigScriptTarget target) {
+        if (target == ConfigScriptTarget.LEGACY) return target.file(file);
+        ReplayDatabaseComparisonVersionDao.StoredVersion version = requireVersion(versionNo);
+        var generated = generator.generateNew(versionNo, versionDao.findCompleteSnapshot(version.id()));
+        return new ScriptFile(file.fileName().replaceFirst("\\.sql$", "-new.sql"),
+                generated.sha256(), generated.sqlContent());
     }
 
     private ReplayDatabaseComparisonVersionDao.StoredVersion requireVersion(String versionNo) {
