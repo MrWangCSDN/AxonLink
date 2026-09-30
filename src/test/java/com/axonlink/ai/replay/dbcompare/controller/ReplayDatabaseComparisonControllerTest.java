@@ -28,6 +28,7 @@ import com.axonlink.ai.replay.dbcompare.service.ReplayBasePrimaryKeysRequiredExc
 import com.axonlink.ai.replay.dbcompare.service.ReplayBaseTableNotFoundException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonImportService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConfigScriptService;
+import com.axonlink.ai.replay.dbcompare.service.ConfigScriptTarget;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonService;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonVersionConflictException;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonGenerationException;
@@ -243,6 +244,8 @@ class ReplayDatabaseComparisonControllerTest {
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
         when(configScriptService.download(versionNo)).thenReturn(
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
+        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
+                .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/versions/"
                         + versionNo + "/config-script"))
@@ -288,6 +291,8 @@ class ReplayDatabaseComparisonControllerTest {
         when(configScriptService.generate(versionNo, new ReplayIssueOperator("A012345", "A012345")))
                 .thenReturn(new ReplayDatabaseComparisonConfigScriptService.ScriptFile(
                         "replay-db-compare-config-20260914-172637.sql", "a".repeat(64), sql));
+        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
+                .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/versions/"
                         + versionNo + "/config-script"))
