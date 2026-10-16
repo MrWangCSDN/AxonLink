@@ -11,6 +11,7 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
@@ -118,7 +119,8 @@ class ReplayBaseMetadataServiceTest {
                 assertThat(sql)
                         .doesNotContainIgnoringCase("LATERAL")
                         .doesNotContainIgnoringCase("WITH ORDINALITY")
-                        .contains("indkey::text");
+                        .contains("array_to_string(pk.conkey, ' ')", "pk.contype = 'p'")
+                        .doesNotContain("pk.indkey");
                 return columnStatement;
             }
             return tableStatement;
@@ -140,6 +142,9 @@ class ReplayBaseMetadataServiceTest {
         ResultSet columnRows = mock(ResultSet.class);
         when(connection.prepareStatement(anyString())).thenAnswer(invocation -> {
             String sql = invocation.getArgument(0);
+            if (sql.contains("FROM pg_index i")) {
+                return emptyIndexStatement();
+            }
             return sql.contains("a.attname") ? columnStatement : tableStatement;
         });
         when(tableStatement.executeQuery()).thenReturn(tableRow);
@@ -205,18 +210,22 @@ class ReplayBaseMetadataServiceTest {
     }
 
     @Test
-    void inspectTablesLoadsExistingAndMissingTablesWithTwoQueries() throws Exception {
+    void inspectTablesLoadsExistingAndMissingTablesWithThreeQueries() throws Exception {
         PreparedStatement tableStatement = mock(PreparedStatement.class);
         PreparedStatement columnStatement = mock(PreparedStatement.class);
         ResultSet tableRows = mock(ResultSet.class);
         ResultSet columnRows = mock(ResultSet.class);
         when(connection.prepareStatement(anyString())).thenAnswer(invocation -> {
             String sql = invocation.getArgument(0);
+            if (sql.contains("FROM pg_index i")) {
+                return emptyIndexStatement();
+            }
             if (sql.contains("a.attname")) {
                 assertThat(sql)
                         .doesNotContainIgnoringCase("LATERAL")
                         .doesNotContainIgnoringCase("WITH ORDINALITY")
-                        .contains("indkey::text");
+                        .contains("array_to_string(pk.conkey, ' ')", "pk.contype = 'p'")
+                        .doesNotContain("pk.indkey");
                 return columnStatement;
             }
             return tableStatement;
@@ -245,7 +254,7 @@ class ReplayBaseMetadataServiceTest {
                 new ReplayBaseColumnOption("customer_name", "客户名称", "text", 2, false, null));
         assertThat(result.get("removed_table").tableExists()).isFalse();
         assertThat(result.get("removed_table").columns()).isEmpty();
-        verify(connection, times(2)).prepareStatement(anyString());
+        verify(connection, times(3)).prepareStatement(anyString());
         verify(tableStatement).setString(1, "base_schema");
         verify(tableStatement).setString(2, "acct_master");
         verify(tableStatement).setString(3, "removed_table");
@@ -298,6 +307,19 @@ class ReplayBaseMetadataServiceTest {
     }
 
     @Test
+    void listKeysUsesDedicatedExceptionWhenTableIsMissing() throws Exception {
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet rows = mock(ResultSet.class);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeQuery()).thenReturn(rows);
+        when(rows.next()).thenReturn(false);
+
+        assertThatThrownBy(() -> service.listKeys("removed_table"))
+                .isInstanceOf(ReplayBaseTableNotFoundException.class)
+                .hasMessage("BASE 母库中不存在表：removed_table");
+    }
+
+    @Test
     void connectionFailureIsSanitized() throws Exception {
         when(dataSource.getConnection()).thenThrow(new SQLException(
                 "connection refused jdbc:opengauss://secret-host:5432/base user=reader"));
@@ -307,5 +329,13 @@ class ReplayBaseMetadataServiceTest {
                 .hasMessage("BASE 母库未配置或暂不可用")
                 .hasMessageNotContaining("secret-host")
                 .hasMessageNotContaining("reader");
+    }
+
+    private PreparedStatement emptyIndexStatement() throws Exception {
+        PreparedStatement statement = mock(PreparedStatement.class);
+        ResultSet rows = mock(ResultSet.class);
+        when(statement.executeQuery()).thenReturn(rows);
+        when(rows.getMetaData()).thenReturn(mock(ResultSetMetaData.class));
+        return statement;
     }
 }

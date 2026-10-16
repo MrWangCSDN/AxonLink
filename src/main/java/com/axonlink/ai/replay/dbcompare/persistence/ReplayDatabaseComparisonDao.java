@@ -1,5 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonKeys;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetail;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditEvent;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditGroup;
@@ -53,8 +55,8 @@ public class ReplayDatabaseComparisonDao {
 
     private static final int MAX_PAGE_SIZE = 200;
     private static final String REVISER_FILTER_EXPRESSION =
-            "COALESCE(NULLIF(TRIM(r.reviser_emp_no),''),NULLIF(TRIM(r.reviser_username),''),'"
-                    + EMPTY_FILTER_VALUE + "')";
+            "COALESCE(NULLIF(TRIM(p.developer_emp_nos),''),NULLIF(TRIM(p.developer_usernames),''),'" + EMPTY_FILTER_VALUE + "')";
+    private static final String PERSON_JOIN = " LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name) ";
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactionTemplate;
     private final ReplayDatabaseComparisonConditionCodec conditionCodec;
@@ -97,12 +99,15 @@ public class ReplayDatabaseComparisonDao {
         arguments.add(size);
         arguments.add(page * size);
         List<ReplayDbCompareListItem> items = jdbc.query("""
-                        SELECT r.id,r.schema_name,r.table_name,r.table_comment,r.domain_name,
-                               r.reviser_emp_no,r.reviser_username,r.reviser_name,
-                               r.group_owner_emp_no,r.group_owner_name,
+                        SELECT r.id,r.schema_name,r.table_name,r.table_comment,p.domain_name,
+                               p.developer_emp_nos AS reviser_emp_no,p.developer_usernames AS reviser_username,
+                               COALESCE(p.developer_display,'') AS reviser_name,
+                               p.technology_owner_emp_nos AS group_owner_emp_no,
+                               COALESCE(p.technology_owner_display,'') AS group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit
+                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json
                           FROM dii_replay_db_compare_registration r
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
                         """ + filter.sql() + " ORDER BY r.table_name,r.id LIMIT ? OFFSET ?",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
                         row.getLong("id"), row.getString("schema_name"), row.getString("table_name"),
@@ -115,7 +120,7 @@ public class ReplayDatabaseComparisonDao {
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
                         decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
-                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")),
+                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json"))),
                 arguments.toArray());
         ReplayDbCompareGlobalCounts globalCounts = findGlobalCounts();
         return new ReplayDbCompareListPage(
@@ -139,12 +144,15 @@ public class ReplayDatabaseComparisonDao {
         ReplayDbCompareQuery effective = query == null ? ReplayDbCompareQuery.empty(0, MAX_PAGE_SIZE) : query;
         SqlFilter filter = buildRegistrationFilter(effective);
         List<ReplayDbCompareListItem> items = jdbc.query("""
-                        SELECT r.id,r.schema_name,r.table_name,r.table_comment,r.domain_name,
-                               r.reviser_emp_no,r.reviser_username,r.reviser_name,
-                               r.group_owner_emp_no,r.group_owner_name,
+                        SELECT r.id,r.schema_name,r.table_name,r.table_comment,p.domain_name,
+                               p.developer_emp_nos AS reviser_emp_no,p.developer_usernames AS reviser_username,
+                               COALESCE(p.developer_display,'') AS reviser_name,
+                               p.technology_owner_emp_nos AS group_owner_emp_no,
+                               COALESCE(p.technology_owner_display,'') AS group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit
+                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json
                           FROM dii_replay_db_compare_registration r
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
                         """ + filter.sql() + " ORDER BY r.table_name,r.id",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
                         row.getLong("id"), row.getString("schema_name"), row.getString("table_name"),
@@ -157,7 +165,7 @@ public class ReplayDatabaseComparisonDao {
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
                         decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
-                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")),
+                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json"))),
                 filter.arguments().toArray());
         return withFieldPreviews(items);
     }
@@ -306,19 +314,28 @@ public class ReplayDatabaseComparisonDao {
                                       String updatedBy, String updatedName, LocalDateTime updatedAt,
                                       ReplayDbCompareConditionTree whereCondition, Long compareLimit,
                                       List<String> orderingPrimaryKeyNames, Integer partitionNum, Integer sampleLimit) {
+        return updateRegistration(id, expectedVersion, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, reviserEmpNo, reviserUsername, reviserName, updatedBy, updatedName, updatedAt, whereCondition, compareLimit, orderingPrimaryKeyNames, partitionNum, sampleLimit, null);
+    }
+
+    public boolean updateRegistration(long id, long expectedVersion, String tableComment, String domainName,
+                                      String groupOwnerEmpNo, String groupOwnerName, java.time.LocalDate registeredDate,
+                                      String reviserEmpNo, String reviserUsername, String reviserName,
+                                      String updatedBy, String updatedName, LocalDateTime updatedAt,
+                                      ReplayDbCompareConditionTree whereCondition, Long compareLimit,
+                                      List<String> orderingPrimaryKeyNames, Integer partitionNum, Integer sampleLimit, ReplayDbCompareKeySelection comparisonKey) {
         return jdbc.update("""
                         UPDATE dii_replay_db_compare_registration
                            SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
                                registered_date=?,reviser_emp_no=?,reviser_username=?,reviser_name=?,
                                updated_by=?,updated_name=?,updated_at=?,where_condition_json=?,compare_limit=?,
-                               order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),sample_limit=COALESCE(?,sample_limit),
+                               order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),sample_limit=COALESCE(?,sample_limit),comparison_key_json=COALESCE(?,comparison_key_json),
                                version=version+1
                          WHERE id=? AND version=? AND deleted=0
                         """, tableComment, domainName, groupOwnerEmpNo, groupOwnerName,
                 Date.valueOf(registeredDate), reviserEmpNo, reviserUsername, reviserName,
                 updatedBy, updatedName, Timestamp.valueOf(updatedAt),
                 conditionCodec.encode(whereCondition), compareLimit,
-                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, sampleLimit, id, expectedVersion) == 1;
+                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, sampleLimit, ReplayDatabaseComparisonKeys.encode(comparisonKey), id, expectedVersion) == 1;
     }
 
     public boolean touchSystemUpdate(long id, long expectedVersion, LocalDateTime updatedAt) {
@@ -405,17 +422,26 @@ public class ReplayDatabaseComparisonDao {
                                           String reviserUsername, String reviserName, LocalDateTime updatedAt,
                                           ReplayDbCompareConditionTree whereCondition, Long compareLimit,
                                           List<String> orderingPrimaryKeyNames, Integer partitionNum, Integer sampleLimit) {
+        return reregisterRegistration(id, expectedVersion, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, reviserEmpNo, reviserUsername, reviserName, updatedAt, whereCondition, compareLimit, orderingPrimaryKeyNames, partitionNum, sampleLimit, null);
+    }
+
+    public boolean reregisterRegistration(long id, long expectedVersion, String tableComment, String domainName,
+                                          String groupOwnerEmpNo, String groupOwnerName,
+                                          java.time.LocalDate registeredDate, String reviserEmpNo,
+                                          String reviserUsername, String reviserName, LocalDateTime updatedAt,
+                                          ReplayDbCompareConditionTree whereCondition, Long compareLimit,
+                                          List<String> orderingPrimaryKeyNames, Integer partitionNum, Integer sampleLimit, ReplayDbCompareKeySelection comparisonKey) {
         return jdbc.update("""
                         UPDATE dii_replay_db_compare_registration
                            SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
                                registered_date=?,deleted=0,deleted_reason=NULL,deleted_by=NULL,deleted_at=NULL,
                                reviser_emp_no=?,reviser_username=?,reviser_name=?,updated_by=?,updated_name=?,updated_at=?,
-                               where_condition_json=?,compare_limit=?,order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),sample_limit=COALESCE(?,sample_limit),version=version+1
+                               where_condition_json=?,compare_limit=?,order_by_primary_keys_json=?,partition_num=COALESCE(?,partition_num),sample_limit=COALESCE(?,sample_limit),comparison_key_json=COALESCE(?,comparison_key_json),version=version+1
                          WHERE id=? AND version=? AND deleted=1
                         """, tableComment, domainName, groupOwnerEmpNo, groupOwnerName, Date.valueOf(registeredDate),
                 reviserEmpNo, reviserUsername, reviserName, reviserEmpNo, reviserName, Timestamp.valueOf(updatedAt),
                 conditionCodec.encode(whereCondition), compareLimit,
-                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, sampleLimit, id, expectedVersion) == 1;
+                encodeOrderingPrimaryKeys(orderingPrimaryKeyNames), partitionNum, sampleLimit, ReplayDatabaseComparisonKeys.encode(comparisonKey), id, expectedVersion) == 1;
     }
 
     public void replaceFields(long registrationId, List<ReplayDbCompareField> fields, LocalDateTime createdAt) {
@@ -595,7 +621,7 @@ public class ReplayDatabaseComparisonDao {
         StringBuilder sql = new StringBuilder("SELECT ")
                 .append(column.valueExpression()).append(" AS option_value,")
                 .append(column.labelExpression()).append(" AS option_label,")
-                .append("COUNT(DISTINCT r.id) AS option_count FROM dii_replay_db_compare_registration r ");
+                .append("COUNT(DISTINCT r.id) AS option_count FROM dii_replay_db_compare_registration r ").append(PERSON_JOIN);
         if (column.fieldColumn()) {
             sql.append("JOIN dii_replay_db_compare_field hf ON hf.registration_id=r.id ");
         }
@@ -623,6 +649,7 @@ public class ReplayDatabaseComparisonDao {
         List<ScopeFilterRow> rows = jdbc.query("""
                         SELECT r.id,r.table_name,r.where_condition_json,r.compare_limit
                           FROM dii_replay_db_compare_registration r
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
                         """ + filter.sql() + " ORDER BY r.table_name,r.id",
                 (row, rowNumber) -> new ScopeFilterRow(
                         row.getLong("id"), row.getString("table_name"),
@@ -679,8 +706,8 @@ public class ReplayDatabaseComparisonDao {
                     (schema_name,table_name,table_comment,domain_name,reviser_emp_no,reviser_username,reviser_name,
                      group_owner_emp_no,group_owner_name,registered_date,deleted,deleted_reason,deleted_by,deleted_at,
                      version,created_by,created_name,created_at,updated_by,updated_name,updated_at,
-                     where_condition_json,compare_limit,order_by_primary_keys_json,partition_num,sample_limit)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     where_condition_json,compare_limit,order_by_primary_keys_json,partition_num,sample_limit,comparison_key_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, normalizeIdentifier(registration.schemaName()));
             statement.setString(2, normalizeIdentifier(registration.tableName()));
@@ -712,6 +739,7 @@ public class ReplayDatabaseComparisonDao {
             statement.setString(24, encodeOrderingPrimaryKeys(registration.orderingPrimaryKeyNames()));
             statement.setInt(25, registration.partitionNum());
             statement.setInt(26, registration.sampleLimit());
+            statement.setString(27, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -752,9 +780,9 @@ public class ReplayDatabaseComparisonDao {
         if (!"whereCondition".equals(excludedKey) && !query.whereConditionValues().isEmpty()) {
             appendWhereConditionValues(sql, arguments, query.whereConditionValues());
         }
-        if (!"domainName".equals(excludedKey)) appendNullableValues(sql, arguments, "r.domain_name", query.domains());
+        if (!"domainName".equals(excludedKey)) appendNullableValues(sql, arguments, "p.domain_name", query.domains());
         if (!"reviser".equals(excludedKey)) appendValues(sql, arguments, REVISER_FILTER_EXPRESSION, query.reviserEmpNos());
-        if (!"groupOwner".equals(excludedKey)) appendNullableValues(sql, arguments, "r.group_owner_emp_no", query.groupOwnerEmpNos());
+        if (!"groupOwner".equals(excludedKey)) appendNullableValues(sql, arguments, "p.technology_owner_emp_nos", query.groupOwnerEmpNos());
         if (!"registeredDate".equals(excludedKey) && !query.registeredDates().isEmpty()) {
             sql.append(" AND r.registered_date IN (")
                     .append(String.join(",", Collections.nCopies(query.registeredDates().size(), "?")))
@@ -841,7 +869,7 @@ public class ReplayDatabaseComparisonDao {
 
     private long count(SqlFilter filter) {
         Long value = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM dii_replay_db_compare_registration r" + filter.sql(),
+                "SELECT COUNT(*) FROM dii_replay_db_compare_registration r" + PERSON_JOIN + filter.sql(),
                 Long.class, filter.arguments().toArray());
         return value == null ? 0 : value;
     }
@@ -896,7 +924,7 @@ public class ReplayDatabaseComparisonDao {
                             .filter(ReplayDbCompareField::primaryKey)
                             .sorted(java.util.Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
                             .map(ReplayDbCompareField::columnName)
-                            .toList(), item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit());
+                            .toList(), item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey());
         }).toList();
     }
 
@@ -936,7 +964,7 @@ public class ReplayDatabaseComparisonDao {
                 conditionCodec.decode(row.getString("where_condition_json")),
                 nullableLong(row, "compare_limit"),
                 decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")), null)
-                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit"));
+                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")));
     }
 
     private ReplayDbCompareRegistration withFields(ReplayDbCompareRegistration row,
@@ -948,7 +976,7 @@ public class ReplayDatabaseComparisonDao {
                 row.registeredDate(), row.deleted(), row.deletedReason(), row.deletedBy(), row.deletedAt(),
                 row.version(), row.createdBy(), row.createdName(), row.createdAt(), row.updatedBy(),
                 row.updatedName(), row.updatedAt(), fields, row.whereCondition(), row.compareLimit(),
-                row.orderingPrimaryKeyNames(), row.metadataValidation()).withPartitionNum(row.partitionNum()).withSampleLimit(row.sampleLimit());
+                row.orderingPrimaryKeyNames(), row.metadataValidation()).withPartitionNum(row.partitionNum()).withSampleLimit(row.sampleLimit()).withComparisonKey(row.comparisonKey());
     }
 
     public boolean initializeOrderingPrimaryKeys(long id, List<String> orderingPrimaryKeyNames) {
@@ -1022,9 +1050,9 @@ public class ReplayDatabaseComparisonDao {
         private static HeaderColumn from(String key) {
             return switch (key == null ? "" : key) {
                 case "domainName" -> new HeaderColumn(key,
-                        "CASE WHEN TRIM(COALESCE(r.domain_name,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE r.domain_name END",
-                        "CASE WHEN TRIM(COALESCE(r.domain_name,''))='' THEN '空' ELSE r.domain_name END",
-                        "COALESCE(r.domain_name,'')", false);
+                        "CASE WHEN TRIM(COALESCE(p.domain_name,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE p.domain_name END",
+                        "CASE WHEN TRIM(COALESCE(p.domain_name,''))='' THEN '空' ELSE p.domain_name END",
+                        "COALESCE(p.domain_name,'')", false);
                 case "tableName" -> new HeaderColumn(key, "r.table_name", "CASE WHEN COALESCE(r.table_comment,'')='' THEN r.table_name ELSE CONCAT(r.table_name,'(',r.table_comment,')') END", "CONCAT(r.table_name,' ',COALESCE(r.table_comment,''))", false);
                 case "fieldName" -> new HeaderColumn(key, "hf.column_name", "CASE WHEN COALESCE(hf.column_comment,'')='' THEN hf.column_name ELSE CONCAT(hf.column_name,'(',hf.column_comment,')') END", "CONCAT(hf.column_name,' ',COALESCE(hf.column_comment,''))", true);
                 case "whereCondition" -> new HeaderColumn(key,
@@ -1033,12 +1061,12 @@ public class ReplayDatabaseComparisonDao {
                         "COALESCE(r.where_condition_json,'')", false);
                 case "reviser" -> new HeaderColumn(key,
                         REVISER_FILTER_EXPRESSION,
-                        "CASE WHEN TRIM(COALESCE(r.reviser_emp_no,''))='' AND TRIM(COALESCE(r.reviser_username,''))='' AND TRIM(COALESCE(r.reviser_name,''))='' THEN '空' WHEN COALESCE(r.reviser_name,'')<>'' AND COALESCE(NULLIF(r.reviser_username,''),r.reviser_emp_no,'')<>'' THEN CONCAT(r.reviser_name,'(',COALESCE(NULLIF(r.reviser_username,''),r.reviser_emp_no),')') WHEN COALESCE(r.reviser_name,'')<>'' THEN r.reviser_name ELSE COALESCE(NULLIF(r.reviser_username,''),r.reviser_emp_no,'') END",
-                        "CONCAT(COALESCE(r.reviser_emp_no,''),' ',COALESCE(r.reviser_username,''),' ',COALESCE(r.reviser_name,''))", false);
+                        "CASE WHEN COALESCE(p.developer_display,'')='' THEN '空' ELSE p.developer_display END",
+                        "CONCAT(COALESCE(p.developer_usernames,''),' ',COALESCE(p.developer_usernames,''),' ',COALESCE(p.developer_display,''))", false);
                 case "groupOwner" -> new HeaderColumn(key,
-                        "CASE WHEN TRIM(COALESCE(r.group_owner_emp_no,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE r.group_owner_emp_no END",
-                        "CASE WHEN TRIM(COALESCE(r.group_owner_emp_no,''))='' AND TRIM(COALESCE(r.group_owner_name,''))='' THEN '空' WHEN COALESCE(r.group_owner_name,'')<>'' THEN CONCAT(r.group_owner_name,'(',r.group_owner_emp_no,')') ELSE r.group_owner_emp_no END",
-                        "CONCAT(COALESCE(r.group_owner_emp_no,''),' ',COALESCE(r.group_owner_name,''))", false);
+                        "CASE WHEN TRIM(COALESCE(p.technology_owner_emp_nos,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE p.technology_owner_emp_nos END",
+                        "CASE WHEN COALESCE(p.technology_owner_display,'')='' THEN '空' ELSE p.technology_owner_display END",
+                        "CONCAT(COALESCE(p.technology_owner_emp_nos,''),' ',COALESCE(p.technology_owner_display,''))", false);
                 case "registeredDate" -> new HeaderColumn(key,
                         "CASE WHEN r.registered_date IS NULL THEN '" + EMPTY_FILTER_VALUE + "' ELSE CAST(r.registered_date AS CHAR) END",
                         "CASE WHEN r.registered_date IS NULL THEN '空' ELSE CAST(r.registered_date AS CHAR) END",

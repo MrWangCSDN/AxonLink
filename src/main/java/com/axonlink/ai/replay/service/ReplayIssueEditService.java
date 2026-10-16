@@ -21,8 +21,8 @@ import java.util.Set;
 /** Atomically updates the six page-managed fields and appends one audit snapshot. */
 @Service
 public class ReplayIssueEditService {
-    private static final Set<String> ISSUE_TYPES = Set.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题");
-    private static final Set<String> NO_ACTION_ISSUE_TYPES = Set.of("合理差异", "规则性差异问题", "外围问题");
+    private static final Set<String> ISSUE_TYPES = Set.copyOf(ReplayIssueTypes.ALL);
+    private static final Set<String> NO_ACTION_ISSUE_TYPES = ReplayIssueTypes.NO_ACTION;
 
     private final ReplayIssueDao dao;
     private final SysUserDao userDao;

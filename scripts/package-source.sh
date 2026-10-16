@@ -32,7 +32,11 @@ mkdir -p "$(dirname "${OUTPUT}")"
 rm -f -- "${OUTPUT}"
 
 cd "${REPO_ROOT}"
-zip -qr "${OUTPUT}" "${SOURCE_PATHS[@]}" -x '.DS_Store' '*/.DS_Store'
+zip -qr "${OUTPUT}" "${SOURCE_PATHS[@]}" -x \
+  '.DS_Store' '*/.DS_Store' '*.java.zip' \
+  'src/main/resources/111.txt' \
+  'src/main/resources/111.txt.zip' \
+  'src/main/resources/application-local.yml'
 unzip -tq "${OUTPUT}"
 
 REQUIRED_REGISTRY='src/main/java/com/axonlink/ai/daoindex/datasource/TargetDataSourceRegistry.java'

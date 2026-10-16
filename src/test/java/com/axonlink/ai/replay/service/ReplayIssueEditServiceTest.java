@@ -181,6 +181,20 @@ class ReplayIssueEditServiceTest {
     }
 
     @Test
+    void savesRequirementSpecificationIssueTypeAndRecordsHistory() {
+        ReplayIssueRow updated = service.update(issueId,
+                new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "需规问题", "analysis", "solution", null),
+                new ReplayIssueOperator("editor", "编辑人"));
+
+        assertEquals("需规问题", updated.issueType());
+        assertEquals("需规问题", dao.findCurrentByIdForUpdate(issueId).issueType());
+        assertEquals(1L, dao.countHistory(updated.issueKey()));
+        assertEquals("需规问题", jdbc.queryForObject(
+                "SELECT issue_type FROM dii_replay_issue_history WHERE issue_key = ?",
+                String.class, updated.issueKey()));
+    }
+
+    @Test
     void rejectsLegacyRuleDifferenceIssueType() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> service.update(issueId,
                 new ReplayIssueUpdateRequest(ReplayIssueStatus.OPEN, "规则差异问题", "analysis", "solution", null),

@@ -13,7 +13,25 @@ public record ReplayDbCompareState(
         List<ReplayDbCompareField> fields,
         ReplayDbCompareConditionTree whereCondition,
         Long compareLimit,
+        List<String> orderingPrimaryKeyNames,
+        ReplayDbCompareKeySelection comparisonKey) {
+
+    public ReplayDbCompareState(String tableComment,
+        String domainName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        boolean deleted,
+        List<ReplayDbCompareField> fields,
+        ReplayDbCompareConditionTree whereCondition,
+        Long compareLimit,
         List<String> orderingPrimaryKeyNames) {
+        this(tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, null);
+    }
+
+    public ReplayDbCompareState withComparisonKey(ReplayDbCompareKeySelection comparisonKey) {
+        return new ReplayDbCompareState(tableComment, domainName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, comparisonKey);
+    }
 
     public ReplayDbCompareState {
         fields = fields == null ? List.of() : List.copyOf(fields);

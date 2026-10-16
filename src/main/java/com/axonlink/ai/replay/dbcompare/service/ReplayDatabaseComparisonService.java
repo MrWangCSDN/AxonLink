@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
 import org.springframework.http.HttpStatus;
@@ -33,9 +34,12 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareReregisterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSaveRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScopeFilterValue;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareState;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareTechnologyOwnerOption;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonDao;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionDao;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
+import com.axonlink.ai.replay.dto.ReplayDatabaseTablePersonRow;
+import com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao;
 import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -71,6 +75,12 @@ public class ReplayDatabaseComparisonService {
     private final ReplayBaseMetadataService metadataService;
     private final ReplayDatabaseComparisonDao dao;
     private final SysUserDao userDao;
+    private ReplayDatabaseTablePersonDao tablePersonDao;
+
+    @Autowired(required = false)
+    public void setTablePersonDao(ReplayDatabaseTablePersonDao tablePersonDao) {
+        this.tablePersonDao = tablePersonDao;
+    }
     private final ReplayDatabaseComparisonAuditDiff auditDiff;
     private final ReplayDatabaseComparisonScopeCompiler scopeCompiler;
     private final ReplayDatabaseComparisonConditionCodec conditionCodec =
@@ -223,16 +233,19 @@ public class ReplayDatabaseComparisonService {
         int sampleLimit = sampleForSave(request.sampleLimit(), 100, operator);
         PreparedSave prepared = prepare(request.tableName(), request.domainName(),
                 request.groupOwnerEmpNo(), request.fieldNames(),
-                request.whereCondition(), request.compareLimit());
+                request.whereCondition(), request.compareLimit(), null, request.comparisonKeyName());
         LocalDateTime now = LocalDateTime.now(clock);
         ReplayDbCompareRegistration registration = new ReplayDbCompareRegistration(
                 null, prepared.table().schemaName(), prepared.table().tableName(),
-                prepared.table().tableComment(), prepared.domainName(), actor.empNo(), actor.username(), actor.name(),
+                prepared.table().tableComment(), prepared.domainName(),
+                prepared.person() == null ? actor.empNo() : developerEmpNo(prepared),
+                prepared.person() == null ? actor.username() : developerUsername(prepared),
+                prepared.person() == null ? actor.name() : developerName(prepared),
                 prepared.groupOwner().identifier(), prepared.groupOwner().name(), LocalDate.now(clock),
                 false, null, null, null, 0, actor.empNo(), actor.name(), now,
                 actor.empNo(), actor.name(), now, prepared.fields(),
                 prepared.scope().conditionTree(), prepared.scope().compareLimit(),
-                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(partitionNum).withSampleLimit(sampleLimit);
+                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(partitionNum).withSampleLimit(sampleLimit).withComparisonKey(prepared.comparisonKey());
         ReplayDbCompareState after = state(registration);
         List<ReplayDbCompareAuditDetailDraft> details =
                 withSampleAudit(withPartitionAudit(auditDiff.compare(null, after, ReplayDbCompareAuditOperation.CREATE),
@@ -263,7 +276,8 @@ public class ReplayDatabaseComparisonService {
             if (!request.deleteWhenNoFields()) {
                 throw new IllegalArgumentException("比对字段不能为空");
             }
-            requirePrimaryKey(metadataService.requireTableWithColumns(request.tableName(), List.of()));
+            ReplayBaseValidatedTable emptyTable = metadataService.requireTableWithColumns(request.tableName(), List.of());
+            ReplayDatabaseComparisonKeys.choose(emptyTable.tableName(), emptyTable.keyOptions(), request.comparisonKeyName(), null);
             LocalDateTime now = LocalDateTime.now(clock);
             ReplayDbCompareRegistration deleted = transactionTemplate.execute(status -> {
                 ReplayDbCompareRegistration current = requireRegistration(id);
@@ -275,9 +289,10 @@ public class ReplayDatabaseComparisonService {
             });
             return requiredResult(deleted);
         }
+        ReplayDbCompareRegistration snapshot = requireRegistration(id);
         PreparedSave prepared = prepare(request.tableName(), request.domainName(),
                 request.groupOwnerEmpNo(), request.fieldNames(),
-                request.whereCondition(), request.compareLimit());
+                request.whereCondition(), request.compareLimit(), snapshot, request.comparisonKeyName());
         LocalDateTime now = LocalDateTime.now(clock);
 
         ReplayDbCompareRegistration result = transactionTemplate.execute(status -> {
@@ -299,8 +314,10 @@ public class ReplayDatabaseComparisonService {
             if (!dao.updateRegistration(
                     id, current.version(), target.tableComment(), target.domainName(),
                     target.groupOwnerEmpNo(), target.groupOwnerName(), target.registeredDate(),
-                    actor.empNo(), actor.username(), actor.name(), actor.empNo(), actor.name(), now,
-                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit())) {
+                    prepared.person() == null ? actor.empNo() : developerEmpNo(prepared),
+                    prepared.person() == null ? actor.username() : developerUsername(prepared),
+                    prepared.person() == null ? actor.name() : developerName(prepared), actor.empNo(), actor.name(), now,
+                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit(), target.comparisonKey())) {
                 throw new ReplayDatabaseComparisonVersionConflictException();
             }
             dao.replaceFields(id, target.fields(), now);
@@ -338,7 +355,7 @@ public class ReplayDatabaseComparisonService {
         }
         PreparedSave prepared = prepare(snapshot.tableName(), request.domainName(),
                 request.groupOwnerEmpNo(), request.fieldNames(),
-                request.whereCondition(), request.compareLimit());
+                request.whereCondition(), request.compareLimit(), snapshot, request.comparisonKeyName());
         LocalDateTime now = LocalDateTime.now(clock);
 
         ReplayDbCompareRegistration result = transactionTemplate.execute(status -> {
@@ -359,8 +376,10 @@ public class ReplayDatabaseComparisonService {
             if (!dao.reregisterRegistration(
                     id, current.version(), target.tableComment(), target.domainName(),
                     target.groupOwnerEmpNo(), target.groupOwnerName(), target.registeredDate(),
-                    actor.empNo(), actor.username(), actor.name(), now,
-                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit())) {
+                    prepared.person() == null ? actor.empNo() : developerEmpNo(prepared),
+                    prepared.person() == null ? actor.username() : developerUsername(prepared),
+                    prepared.person() == null ? actor.name() : developerName(prepared), now,
+                    target.whereCondition(), target.compareLimit(), target.orderingPrimaryKeyNames(), target.partitionNum(), target.sampleLimit(), target.comparisonKey())) {
                 throw new ReplayDatabaseComparisonVersionConflictException();
             }
             dao.replaceFields(id, target.fields(), now);
@@ -452,7 +471,7 @@ public class ReplayDatabaseComparisonService {
                 .map(item -> withValidation(item, validationFor(
                         metadataByTable.get(identifier(item.tableName())),
                         fieldsByRegistration.getOrDefault(item.id(), List.of()),
-                        item.whereCondition(), item.compareLimit(), item.orderingPrimaryKeyNames()), currentPrimaryKeyNames(
+                        item.whereCondition(), item.compareLimit(), item.orderingPrimaryKeyNames(), item.comparisonKey()), currentPrimaryKeyNames(
                         metadataByTable.get(identifier(item.tableName())), item.primaryKeyNames())))
                 .toList();
     }
@@ -475,11 +494,7 @@ public class ReplayDatabaseComparisonService {
         if (prepared.scope().compareLimit() == null) {
             return List.of();
         }
-        return prepared.table().currentPrimaryKeys().stream()
-                .sorted(Comparator.comparing(ReplayBaseColumnOption::primaryKeyOrder))
-                .map(ReplayBaseColumnOption::columnName)
-                .map(this::identifier)
-                .toList();
+        return prepared.comparisonKey().columnNames().stream().map(this::identifier).toList();
     }
 
     private ReplayDbCompareMetadataValidation validationFor(
@@ -487,7 +502,7 @@ public class ReplayDatabaseComparisonService {
             List<ReplayDbCompareField> registeredFields,
             com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree whereCondition,
             Long compareLimit,
-            List<String> savedOrderingPrimaryKeyNames) {
+            List<String> savedOrderingPrimaryKeyNames, ReplayDbCompareKeySelection comparisonKey) {
         if (metadata == null || !metadata.tableExists()) {
             return ReplayDbCompareMetadataValidation.tableMissing();
         }
@@ -512,6 +527,14 @@ public class ReplayDatabaseComparisonService {
                 .map(ReplayBaseColumnOption::columnName)
                 .map(this::identifier)
                 .toList();
+        if (comparisonKey == null && currentPrimaryKeys.isEmpty() && !metadata.keyOptions().isEmpty()) {
+            currentPrimaryKeys = ReplayDatabaseComparisonKeys.choose(metadata.tableName(), metadata.keyOptions(), null, null).columnNames();
+        }
+        if (comparisonKey != null) {
+            currentPrimaryKeys = metadata.keyOptions().stream()
+                    .filter(key -> key.indexName().equals(comparisonKey.indexName()) && key.indexType().equals(comparisonKey.indexType()))
+                    .findFirst().map(key -> key.columnNames().stream().map(this::identifier).toList()).orElse(List.of());
+        }
         Set<String> currentPrimaryKeySet = Set.copyOf(currentPrimaryKeys);
         List<String> missingPrimaryKeys = currentPrimaryKeys.stream()
                 .filter(name -> !registeredNames.contains(name))
@@ -527,12 +550,15 @@ public class ReplayDatabaseComparisonService {
                 : ReplayDbCompareMetadataStatus.MISSING_FIELDS;
         ReplayDbCompareMetadataValidation validation = ReplayDbCompareMetadataValidation.of(
                 status, missingFields, missingConditionFields, missingPrimaryKeys, formerPrimaryKeys);
+        if (comparisonKey != null) {
+            return validation.withOrderingPrimaryKeyDrift(comparisonKey.columnNames(), currentPrimaryKeys);
+        }
         return compareLimit == null ? validation
                 : validation.withOrderingPrimaryKeyDrift(savedOrderingPrimaryKeyNames, currentPrimaryKeys);
     }
 
     public ReplayDbCompareRegistration detail(long id) {
-        ReplayDbCompareRegistration snapshot = requireRegistration(id);
+        ReplayDbCompareRegistration snapshot = mappedPerson(requireRegistration(id));
         try {
             ReplayBaseMetadataSnapshot metadata = metadataService.inspectTable(snapshot.tableName());
             if (!metadata.tableExists()) {
@@ -554,7 +580,7 @@ public class ReplayDatabaseComparisonService {
                     .toList();
             ReplayDbCompareMetadataValidation validation = validationFor(
                     metadata, snapshot.fields(), snapshot.whereCondition(),
-                    snapshot.compareLimit(), snapshot.orderingPrimaryKeyNames());
+                    snapshot.compareLimit(), snapshot.orderingPrimaryKeyNames(), snapshot.comparisonKey());
             return withValidation(snapshot, fields, validation);
         } catch (ReplayBaseDatabaseUnavailableException exception) {
             return withValidation(snapshot,
@@ -607,12 +633,25 @@ public class ReplayDatabaseComparisonService {
     private SyncOutcome synchronizePrimaryKeys(long registrationId, ReplayBaseMetadataSnapshot metadata) {
         ReplayDbCompareRegistration current = requireRegistration(registrationId);
         requireActive(current);
-        List<String> currentPrimaryKeys = currentPrimaryKeyNames(metadata, List.of());
+        List<String> currentPrimaryKeys;
+        if (current.comparisonKey() == null) {
+            currentPrimaryKeys = currentPrimaryKeyNames(metadata, List.of());
+            if (currentPrimaryKeys.isEmpty() && !metadata.keyOptions().isEmpty()) {
+                currentPrimaryKeys = ReplayDatabaseComparisonKeys.choose(current.tableName(), metadata.keyOptions(), null, null).columnNames();
+            }
+        } else {
+            try {
+                currentPrimaryKeys = ReplayDatabaseComparisonKeys.choose(current.tableName(), metadata.keyOptions(), null,
+                        current.comparisonKey()).columnNames();
+            } catch (IllegalArgumentException invalidKey) {
+                return new SyncOutcome(0); // Generation gate reports drift; never silently choose another index.
+            }
+        }
         if (current.compareLimit() != null && current.orderingPrimaryKeyNames().isEmpty()) {
             dao.initializeOrderingPrimaryKeys(current.id(), currentPrimaryKeys);
         }
         List<ReplayDbCompareField> synchronizedFields =
-                addMissingPrimaryKeys(current.fields(), metadata.columns());
+                addMissingPrimaryKeys(current.fields(), metadata.columns(), currentPrimaryKeys);
         int addedFieldCount = synchronizedFields.size() - current.fields().size();
         if (addedFieldCount == 0) {
             return new SyncOutcome(0);
@@ -627,20 +666,20 @@ public class ReplayDatabaseComparisonService {
         dao.replaceFields(current.id(), synchronizedFields, now);
         writeAudit(current.id(), current.schemaName(), current.tableName(),
                 ReplayDbCompareAuditOperation.UPDATE, current.version() + 1,
-                "自动同步母库主键", new Actor("SYSTEM", "SYSTEM", "系统"), now, details);
+                current.comparisonKey() == null ? "自动同步母库主键" : "自动同步母库比对键", new Actor("SYSTEM", "SYSTEM", "系统"), now, details);
         return new SyncOutcome(addedFieldCount);
     }
 
     private List<ReplayDbCompareField> addMissingPrimaryKeys(
             List<ReplayDbCompareField> registeredFields,
-            List<ReplayBaseColumnOption> currentColumns) {
+            List<ReplayBaseColumnOption> currentColumns, List<String> keyNames) {
         List<ReplayDbCompareField> result = new ArrayList<>(registeredFields.stream()
                 .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
                 .toList());
-        List<ReplayBaseColumnOption> currentPrimaryKeys = currentColumns.stream()
-                .filter(ReplayBaseColumnOption::primaryKey)
-                .sorted(Comparator.comparing(ReplayBaseColumnOption::primaryKeyOrder))
-                .toList();
+        Map<String, ReplayBaseColumnOption> columnsByName = new LinkedHashMap<>();
+        currentColumns.forEach(column -> columnsByName.put(identifier(column.columnName()), column));
+        List<ReplayBaseColumnOption> currentPrimaryKeys = keyNames.stream()
+                .map(name -> columnsByName.get(identifier(name))).filter(java.util.Objects::nonNull).toList();
         Set<String> registeredNames = result.stream()
                 .map(ReplayDbCompareField::columnName)
                 .map(this::identifier)
@@ -661,7 +700,7 @@ public class ReplayDatabaseComparisonService {
                 }
             }
             result.add(insertionIndex, new ReplayDbCompareField(
-                    key.columnName(), key.columnComment(), key.ordinalPosition(), true, 0));
+                    key.columnName(), key.columnComment(), key.ordinalPosition(), key.primaryKey(), 0));
             registeredNames.add(keyName);
         }
         return java.util.stream.IntStream.range(0, result.size())
@@ -695,7 +734,7 @@ public class ReplayDatabaseComparisonService {
                 current.version() + 1, current.createdBy(), current.createdName(), current.createdAt(),
                 "SYSTEM", "系统", updatedAt, fields,
                 current.whereCondition(), current.compareLimit(),
-                current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit());
+                current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit()).withComparisonKey(current.comparisonKey());
     }
 
     public ReplayDbCompareAuditPage searchAudits(ReplayDbCompareAuditQuery query) {
@@ -905,33 +944,33 @@ public class ReplayDatabaseComparisonService {
         return dao.findByIdIncludingDeleted(current.id());
     }
 
+    public List<ReplayDbCompareTechnologyOwnerOption> searchTechnologyOwners(String keyword, int limit) {
+        return userDao.searchActiveEmployees(keyword, limit).stream()
+                .map(user -> new ReplayDbCompareTechnologyOwnerOption(
+                        user.getUsername(), user.getRealName(), user.getEmpNo().trim()))
+                .toList();
+    }
+
     private PreparedSave prepare(
-            String tableName,
-            String domainName,
-            String groupOwnerEmpNo,
-            List<String> fieldNames,
+            String tableName, String domainName, String groupOwnerEmpNo, List<String> fieldNames,
             com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionTree whereCondition,
-            Long compareLimit) {
-        String domain = requireDomain(domainName);
-        String groupOwnerIdentity = requireText(groupOwnerEmpNo, "小组负责人不能为空");
-        SysUser groupOwner = findActiveUser(groupOwnerIdentity);
-        if (groupOwner == null) {
-            throw new IllegalArgumentException("小组负责人不存在或已停用");
+            Long compareLimit, ReplayDbCompareRegistration current, String comparisonKeyName) {
+        ReplayDatabaseTablePersonRow person = tablePersonDao == null ? null : tablePersonDao.findByTableName(tableName);
+        if (tablePersonDao != null && person == null) {
+            throw new IllegalArgumentException("该表未配置数据库表人员清单，请先导入人员清单：" + tableName);
         }
+        String domain = person == null ? requireDomain(domainName) : requireText(person.domain(), "人员清单领域不能为空");
+        Owner groupOwner = person == null
+                ? technologyOwner(requireText(groupOwnerEmpNo, "科技负责人不能为空"), current)
+                : new Owner(person.technologyOwnerEmpNos() == null ? "" : person.technologyOwnerEmpNos(),
+                        person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0]);
         List<String> normalizedFields = normalizeFields(fieldNames);
-        ReplayBaseValidatedTable table = requirePrimaryKey(
-                metadataService.requireTableWithColumns(tableName, normalizedFields));
+        ReplayBaseValidatedTable table = metadataService.requireTableWithColumns(tableName, normalizedFields);
+        ReplayDbCompareKeySelection comparisonKey = ReplayDatabaseComparisonKeys.choose(table.tableName(),
+                table.keyOptions(), comparisonKeyName, current == null ? null : current.comparisonKey());
+        ReplayDatabaseComparisonKeys.requireFields(table.tableName(), comparisonKey, normalizedFields);
         ReplayDbCompareCompiledScope scope = scopeCompiler.compile(
                 whereCondition, compareLimit, table.allColumns());
-        Set<String> selectedFieldNames = Set.copyOf(normalizedFields);
-        List<String> missingPrimaryKeys = table.currentPrimaryKeys().stream()
-                .map(ReplayBaseColumnOption::columnName)
-                .map(this::identifier)
-                .filter(name -> !selectedFieldNames.contains(name))
-                .toList();
-        if (!missingPrimaryKeys.isEmpty()) {
-            throw new ReplayBasePrimaryKeysRequiredException(table.tableName(), missingPrimaryKeys);
-        }
         Map<String, ReplayBaseColumnOption> metadataByName = new LinkedHashMap<>();
         table.columns().forEach(column -> metadataByName.put(identifier(column.columnName()), column));
         List<ReplayDbCompareField> fields = java.util.stream.IntStream.range(0, normalizedFields.size())
@@ -945,16 +984,46 @@ public class ReplayDatabaseComparisonService {
                             column.primaryKey(), index + 1);
                 })
                 .toList();
-        return new PreparedSave(table, domain,
-                new Owner(userIdentifier(groupOwner),
-                        requireText(groupOwner.getRealName(), "小组负责人姓名为空")), fields, scope);
+        return new PreparedSave(table, domain, groupOwner, fields, scope, comparisonKey, person);
     }
 
-    private ReplayBaseValidatedTable requirePrimaryKey(ReplayBaseValidatedTable table) {
-        if (table.currentPrimaryKeys().isEmpty()) {
-            throw new ReplayBasePrimaryKeyMissingException(table.tableName());
+    private String developerUsername(PreparedSave prepared) {
+        return prepared.person() == null ? null : prepared.person().developerUsernames();
+    }
+    private String developerEmpNo(PreparedSave prepared) {
+        return prepared.person() == null || prepared.person().developerEmpNos() == null
+                ? "" : prepared.person().developerEmpNos();
+    }
+    private String developerName(PreparedSave prepared) {
+        if (prepared.person() == null) return "";
+        String display = prepared.person().developer();
+        if (display == null) return "";
+        int bracket = display.indexOf('(');
+        return bracket < 0 ? display : display.substring(0, bracket);
+    }
+
+    private Owner technologyOwner(String identity, ReplayDbCompareRegistration current) {
+        if (current != null && identity.equals(current.groupOwnerEmpNo())) {
+            return new Owner(current.groupOwnerEmpNo(), current.groupOwnerName());
         }
-        return table;
+        List<SysUser> matches = userDao.findByUsernamesOrEmpNos(List.of(identity));
+        if (matches.size() > 1) {
+            throw new IllegalArgumentException("科技负责人账号或工号存在歧义，请核对人员信息");
+        }
+        SysUser user = matches.isEmpty() ? null : matches.get(0);
+        if (user == null || !Integer.valueOf(1).equals(user.getStatus())) {
+            throw new IllegalArgumentException("科技负责人不存在或已停用");
+        }
+        if (user.getEmpNo() == null || user.getEmpNo().isBlank()) {
+            throw new IllegalArgumentException("科技负责人必须选择带工号的行员");
+        }
+        String employeeNumber = user.getEmpNo().trim();
+        List<SysUser> storedIdentityMatches = userDao.findByUsernamesOrEmpNos(List.of(employeeNumber));
+        if (storedIdentityMatches.size() != 1
+                || !java.util.Objects.equals(storedIdentityMatches.get(0).getId(), user.getId())) {
+            throw new IllegalArgumentException("科技负责人工号存在歧义，请核对人员信息");
+        }
+        return new Owner(employeeNumber, requireText(user.getRealName(), "科技负责人姓名为空"));
     }
 
     private List<String> normalizeFields(List<String> fieldNames) {
@@ -1035,13 +1104,15 @@ public class ReplayDatabaseComparisonService {
             boolean deleted) {
         return new ReplayDbCompareRegistration(
                 current.id(), current.schemaName(), current.tableName(), prepared.table().tableComment(),
-                prepared.domainName(), actor.empNo(), actor.username(), actor.name(),
+                prepared.domainName(), prepared.person() == null ? actor.empNo() : developerEmpNo(prepared),
+                prepared.person() == null ? actor.username() : developerUsername(prepared),
+                prepared.person() == null ? actor.name() : developerName(prepared),
                 prepared.groupOwner().identifier(), prepared.groupOwner().name(), registeredDate,
                 deleted, null, null, null, current.version() + 1,
                 current.createdBy(), current.createdName(), current.createdAt(),
                 actor.empNo(), actor.name(), updatedAt, prepared.fields(),
                 prepared.scope().conditionTree(), prepared.scope().compareLimit(),
-                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit());
+                orderingPrimaryKeySnapshot(prepared), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit()).withComparisonKey(prepared.comparisonKey());
     }
 
     private ReplayDbCompareListItem withValidation(
@@ -1060,7 +1131,7 @@ public class ReplayDatabaseComparisonService {
                 item.groupOwnerEmpNo(), item.groupOwnerName(), item.registeredDate(), item.version(),
                 item.fieldCount(), item.fieldPreview(), item.whereCondition(),
                 item.whereConditionConfigured(), item.compareLimit(), validation, primaryKeyNames,
-                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit());
+                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey());
     }
 
     private ReplayDbCompareRegistration withValidation(
@@ -1076,7 +1147,28 @@ public class ReplayDatabaseComparisonService {
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(), fields,
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit());
+                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey());
+    }
+
+    private ReplayDbCompareRegistration mappedPerson(ReplayDbCompareRegistration registration) {
+        if (tablePersonDao == null) return registration;
+        ReplayDatabaseTablePersonRow person = tablePersonDao.findByTableName(registration.tableName());
+        String domain = person == null ? "" : person.domain();
+        String developerName = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
+        String developerUsername = person == null ? "" : person.developerUsernames();
+        String developerEmpNo = person == null ? "" : person.developerEmpNos();
+        String ownerName = person == null || person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0];
+        String ownerEmpNo = person == null ? "" : person.technologyOwnerEmpNos();
+        return new ReplayDbCompareRegistration(
+                registration.id(), registration.schemaName(), registration.tableName(), registration.tableComment(),
+                domain, developerEmpNo, developerUsername, developerName, ownerEmpNo, ownerName,
+                registration.registeredDate(), registration.deleted(), registration.deletedReason(),
+                registration.deletedBy(), registration.deletedAt(), registration.version(),
+                registration.createdBy(), registration.createdName(), registration.createdAt(),
+                registration.updatedBy(), registration.updatedName(), registration.updatedAt(), registration.fields(),
+                registration.whereCondition(), registration.compareLimit(), registration.orderingPrimaryKeyNames(),
+                registration.metadataValidation()).withPartitionNum(registration.partitionNum())
+                .withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey());
     }
 
     private ReplayDbCompareField withExistsInBase(ReplayDbCompareField field, Boolean existsInBase) {
@@ -1102,7 +1194,7 @@ public class ReplayDatabaseComparisonService {
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), registration.deleted(), registration.fields(),
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames());
+                registration.orderingPrimaryKeyNames(), registration.comparisonKey());
     }
 
     private void writeAudit(
@@ -1182,7 +1274,9 @@ public class ReplayDatabaseComparisonService {
             String domainName,
             Owner groupOwner,
             List<ReplayDbCompareField> fields,
-            ReplayDbCompareCompiledScope scope) {
+            ReplayDbCompareCompiledScope scope,
+            ReplayDbCompareKeySelection comparisonKey,
+            ReplayDatabaseTablePersonRow person) {
     }
 
     public record RegistrationState(String status, Long registrationId, Long registrationVersion) {

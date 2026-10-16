@@ -52,8 +52,14 @@ public class ReplayIssueMergeService {
 
     public ReplayIssueImportResult merge(ReplayIssueExcelParser.ParsedWorkbook workbook,
                                          LocalDate importDate, ReplayIssueOperator operator, String coverageRound) {
+        return merge(workbook, importDate, operator, coverageRound, null);
+    }
+
+    public ReplayIssueImportResult merge(ReplayIssueExcelParser.ParsedWorkbook workbook,
+                                         LocalDate importDate, ReplayIssueOperator operator, String coverageRound,
+                                         String releaseAt) {
         return dao.inTransaction(currentDao ->
-                mergeWithinTransaction(currentDao, workbook, importDate, operator, coverageRound));
+                mergeWithinTransaction(currentDao, workbook, importDate, operator, coverageRound, null, releaseAt));
     }
 
     public ReplayIssueImportResult mergeWithinTransaction(ReplayIssueDao transactionDao,
@@ -67,6 +73,14 @@ public class ReplayIssueMergeService {
                                                            ReplayIssueExcelParser.ParsedWorkbook workbook,
                                                            LocalDate importDate, ReplayIssueOperator operator,
                                                            String coverageRound, String fallbackBatchName) {
+        return mergeWithinTransaction(transactionDao, workbook, importDate, operator, coverageRound, fallbackBatchName, null);
+    }
+
+    public ReplayIssueImportResult mergeWithinTransaction(ReplayIssueDao transactionDao,
+                                                           ReplayIssueExcelParser.ParsedWorkbook workbook,
+                                                           LocalDate importDate, ReplayIssueOperator operator,
+                                                           String coverageRound, String fallbackBatchName,
+                                                           String releaseAt) {
         if (workbook == null) {
             throw new IllegalArgumentException("目标页签中没有可导入数据");
         }
@@ -80,6 +94,7 @@ public class ReplayIssueMergeService {
         validateKeys(workbook);
         LocalDate effectiveDate = importDate == null ? LocalDate.now(clock) : importDate;
         LocalDate repairDate = batchDate(workbook.rows(), occurrenceBatchName);
+        LocalDateTime releaseTime = ReplayReleaseTime.resolve(releaseAt, repairDate);
         String batchFamily = batchFamily(occurrenceBatchName);
         ReplayIssueOperator effectiveOperator = operator == null ? ReplayIssueOperator.system() : operator;
         LocalDateTime operationAt = LocalDateTime.now(clock);
@@ -141,7 +156,7 @@ public class ReplayIssueMergeService {
                     continue;
                 }
                 boolean pendingVerificationNeedsReopen = status == ReplayIssueStatus.PENDING_VERIFICATION
-                        && shouldReopenBefore(currentDao.findLatestManualSaveAt(current.id()), repairDate);
+                        && ReplayReleaseTime.canReopen(currentDao.findLatestManualSaveAt(current.id()), releaseTime);
                 ReplayIssueStatus nextStatus = pendingVerificationNeedsReopen
                         ? ReplayIssueStatus.REOPENED : status == ReplayIssueStatus.FIXED ? ReplayIssueStatus.NEW : status;
                 boolean resetImportDate = status == ReplayIssueStatus.FIXED;
@@ -201,10 +216,6 @@ public class ReplayIssueMergeService {
         if (normalized.startsWith("RPT")) return "RPT";
         if (normalized.startsWith("DZ")) return "DZ";
         return null;
-    }
-
-    private boolean shouldReopenBefore(LocalDateTime lastManualSaveAt, LocalDate batchRegisteredDate) {
-        return lastManualSaveAt == null || lastManualSaveAt.toLocalDate().isBefore(batchRegisteredDate);
     }
 
     private LocalDate batchDate(List<ReplayIssueRow> rows, String fallbackBatchName) {

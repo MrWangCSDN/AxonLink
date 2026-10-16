@@ -93,6 +93,11 @@ public class ReplayIssueImportService {
     }
 
     public ReplayIssueImportResult importFile(MultipartFile file, ReplayIssueImportMode mode) throws IOException {
+        return importFile(file, mode, null);
+    }
+
+    public ReplayIssueImportResult importFile(MultipartFile file, ReplayIssueImportMode mode,
+                                               String releaseAt) throws IOException {
         ReplayIssueImportMode effectiveMode = mode == null ? ReplayIssueImportMode.QUERY : mode;
         if (file.getSize() > MAX_FILE_BYTES) {
             throw new IllegalArgumentException("文件不能超过 50MB");
@@ -106,15 +111,16 @@ public class ReplayIssueImportService {
             }
             validateDailyBatch(parsed, dailyData);
             LocalDateTime importedAt = LocalDateTime.now(clock);
+            if (releaseAt != null) ReplayReleaseTime.resolve(releaseAt, importedAt.toLocalDate());
             String coverageRound = importedAt.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
             if (dailyData == null) {
                 return mergeService.merge(parsed, importedAt.toLocalDate(),
-                        ReplayIssueOperator.system(), coverageRound);
+                        ReplayIssueOperator.system(), coverageRound, releaseAt);
             }
             return dao.inTransaction(currentDao -> {
                 ReplayIssueImportResult result = parsed.hasIssueSheets()
                         ? mergeService.mergeWithinTransaction(currentDao, parsed, importedAt.toLocalDate(),
-                                ReplayIssueOperator.system(), coverageRound, dailyData.batchNo())
+                                ReplayIssueOperator.system(), coverageRound, dailyData.batchNo(), releaseAt)
                         : new ReplayIssueImportResult(0, parsed.rowsBySheet(), 0, 0, importedAt,
                                 0, 0, 0, 0, 0, coverageRound);
                 dailyDataDao.replaceBatch(dailyData, importedAt);

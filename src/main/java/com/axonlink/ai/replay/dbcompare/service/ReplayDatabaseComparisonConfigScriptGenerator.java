@@ -112,6 +112,14 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     errors.add(error(tableName, field.columnName(), "比对顺序必须为不重复的正整数"));
                 }
             }
+            if (table.comparisonKey() != null) {
+                var names = table.fields().stream().map(ReplayDbCompareVersionField::columnName).toList();
+                var key = table.comparisonKey();
+                if (key.columnNames().isEmpty() || key.columnNames().stream().distinct().count() != key.columnNames().size()
+                        || !names.containsAll(key.columnNames()) || key.columnNames().stream().anyMatch(name -> !validIdentifier(name))) {
+                    errors.add(error(tableName, null, "版本比对键快照不完整或包含无效列"));
+                }
+            }
             if (table.compareLimit() != null) {
                 validateLimitedTable(table, errors);
             }
@@ -131,6 +139,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         if (table.compareLimit() < 1 || table.compareLimit() > 10_000_000L) {
             errors.add(error(table.tableName(), null, "比对条数必须在 1 到 10000000 之间"));
         }
+        if (table.comparisonKey() != null) return;
         List<ReplayDbCompareVersionField> primaryKeys = table.fields().stream()
                 .filter(ReplayDbCompareVersionField::primaryKey)
                 .toList();
@@ -216,7 +225,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                         + ",'1'," + quote(memo)
                         + "," + quote(String.valueOf(order))
                         + "," + quote(String.valueOf(order))
-                        + "," + quote(field.primaryKey() ? "1" : "0")
+                        + "," + quote(isComparisonKey(tables.get(tableIndex), field) ? "1" : "0")
                         + ",'0')");
                 batchPosition++;
                 if (batchPosition == INSERT_BATCH_SIZE) {
@@ -280,10 +289,18 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private List<ReplayDbCompareVersionField> orderedPrimaryKeyFields(
             ReplayDbCompareVersionTableItem table) {
+        if (table.comparisonKey() != null) {
+            return table.comparisonKey().columnNames().stream().map(name -> table.fields().stream()
+                    .filter(field -> field.columnName().equals(name)).findFirst().orElseThrow()).toList();
+        }
         return table.fields().stream()
                 .filter(ReplayDbCompareVersionField::primaryKey)
                 .sorted(Comparator.comparingInt(ReplayDbCompareVersionField::primaryKeyOrder))
                 .toList();
+    }
+
+    private boolean isComparisonKey(ReplayDbCompareVersionTableItem table, ReplayDbCompareVersionField field) {
+        return table.comparisonKey() == null ? field.primaryKey() : table.comparisonKey().columnNames().contains(field.columnName());
     }
 
     private String quote(String value) {

@@ -41,7 +41,7 @@ public class ReplayDatabaseComparisonAuditDiff {
                 text(before.tableComment()), text(after.tableComment()));
         addModify(details, "domainName", "领域",
                 text(before.domainName()), text(after.domainName()));
-        addModify(details, "groupOwner", "小组负责人",
+        addModify(details, "groupOwner", "科技负责人",
                 owner(before), owner(after));
         addModify(details, "registeredDate", "登记日期",
                 value(before.registeredDate()), value(after.registeredDate()));
@@ -49,6 +49,7 @@ public class ReplayDatabaseComparisonAuditDiff {
                 Boolean.toString(before.deleted()), Boolean.toString(after.deleted()));
         addModify(details, "queryCondition", "查询条件",
                 queryCondition(before), queryCondition(after));
+        addModify(details, "comparisonKey", "比对键索引", keyLabel(before), keyLabel(after));
         addFieldDifferences(details, before.fields(), after.fields());
         return List.copyOf(details);
     }
@@ -60,10 +61,11 @@ public class ReplayDatabaseComparisonAuditDiff {
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
         addAdded(details, "tableComment", "表中文名", text(after.tableComment()));
         addAdded(details, "domainName", "领域", text(after.domainName()));
-        addAdded(details, "groupOwner", "小组负责人", owner(after));
+        addAdded(details, "groupOwner", "科技负责人", owner(after));
         addAdded(details, "registeredDate", "登记日期", value(after.registeredDate()));
         addAdded(details, "deleted", "删除状态", Boolean.toString(after.deleted()));
         addAdded(details, "queryCondition", "查询条件", queryCondition(after));
+        if (after.comparisonKey() != null) addAdded(details, "comparisonKey", "比对键索引", keyLabel(after));
         fieldsByName(after.fields()).values().forEach(field ->
                 details.add(fieldDetail(ReplayDbCompareChangeType.ADD, field, null, fieldValue(field))));
         return List.copyOf(details);
@@ -166,6 +168,11 @@ public class ReplayDatabaseComparisonAuditDiff {
     private void addAdded(List<ReplayDbCompareAuditDetailDraft> details, String code, String label, String after) {
         details.add(new ReplayDbCompareAuditDetailDraft(
                 ReplayDbCompareChangeType.ADD, code, label, null, after));
+    }
+
+    private String keyLabel(ReplayDbCompareState state) {
+        var key = state.comparisonKey();
+        return key == null ? null : key.indexName() + " (" + key.indexType() + "): " + String.join(",", key.columnNames());
     }
 
     private String owner(ReplayDbCompareState state) {

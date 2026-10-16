@@ -9,12 +9,25 @@ public record ReplayBaseValidatedTable(
         String tableComment,
         List<ReplayBaseColumnOption> columns,
         List<ReplayBaseColumnOption> currentPrimaryKeys,
-        List<ReplayBaseColumnOption> allColumns) {
+        List<ReplayBaseColumnOption> allColumns,
+        List<ReplayBaseKeyOption> keyOptions) {
 
     public ReplayBaseValidatedTable {
         columns = List.copyOf(columns);
         currentPrimaryKeys = List.copyOf(currentPrimaryKeys);
         allColumns = List.copyOf(allColumns);
+        keyOptions = keyOptions == null ? List.of() : List.copyOf(keyOptions);
+    }
+
+    public ReplayBaseValidatedTable(
+            String schemaName,
+            String tableName,
+            String tableComment,
+            List<ReplayBaseColumnOption> columns,
+            List<ReplayBaseColumnOption> currentPrimaryKeys,
+            List<ReplayBaseColumnOption> allColumns) {
+        this(schemaName, tableName, tableComment, columns, currentPrimaryKeys, allColumns,
+                ReplayBaseKeyOption.fromPrimaryKeys(currentPrimaryKeys));
     }
 
     public ReplayBaseValidatedTable(

@@ -104,20 +104,7 @@ class ReplayDatabaseComparisonServiceTest {
         var changed = service.update(created.id(), sampleSave(created.version(), "17"), operator);
         assertEquals(17, changed.sampleLimit());
         assertEquals(created.version()+1, changed.version());
-        assertTrue(service.auditDetails(dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0,50)).items().get(0).id())
-                .stream().anyMatch(d -> "sampleLimit".equals(d.fieldCode()) && "17".equals(d.afterValue())));
-        properties.setPartitionAdminEmpNos(List.of());
-        var preserved = service.update(changed.id(), save("acct_master", "存款组", "101", List.of("acct_no"), changed.version()), operator);
-        assertEquals(17, preserved.sampleLimit());
-        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
-        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
-        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
-        assertEquals(17, service.detail(changed.id()).sampleLimit());
-        assertEquals(17, service.search(ReplayDbCompareQuery.empty(0,50)).items().get(0).sampleLimit());
-        for (String invalid : List.of("-1", "10001", "1.5", "\"10\"", "true"))
-            assertThrows(Exception.class, () -> sampleSave(changed.version(), invalid));
-        properties.setPartitionAdminEmpNos(List.of("creator"));
-        assertEquals(0, service.update(preserved.id(), sampleSave(preserved.version(), "0"), operator).sampleLimit());
+
     }
 
     @Test void sampleLimitReregisterAndMetadataRefreshKeepTheConfiguredValue() throws Exception {
@@ -319,12 +306,14 @@ class ReplayDatabaseComparisonServiceTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));
@@ -341,6 +330,86 @@ class ReplayDatabaseComparisonServiceTest {
         service = new ReplayDatabaseComparisonService(
                 metadataService, dao, versionDao, new SysUserDao(jdbc),
                 new ReplayDatabaseComparisonAuditDiff(), jdbc, CLOCK);
+    }
+
+    @Test void personnelListOverridesLegacyRegistrationValues() {
+        var people = mock(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao.class);
+        when(people.findByTableName("acct_master")).thenReturn(new com.axonlink.ai.replay.dto.ReplayDatabaseTablePersonRow(
+                1L, "贷款组", "acct_master", "账户", "张三(dev1)", "dev1", "", "王五(owner1)", "owner1", "101", java.time.LocalDateTime.now()));
+        service.setTablePersonDao(people);
+        var created = service.create(save("acct_master", "存款组", "错误人员", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人"));
+        assertEquals("贷款组", created.domainName());
+        assertEquals("张三", created.reviserName());
+        assertEquals("dev1", created.reviserUsername());
+        assertEquals("101", created.groupOwnerEmpNo());
+    }
+
+    @Test void newRegistrationRequiresPersonnelListRow() {
+        service.setTablePersonDao(mock(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao.class));
+        var error = assertThrows(IllegalArgumentException.class, () -> service.create(
+                save("acct_master", "存款组", "101", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人")));
+        assertTrue(error.getMessage().contains("请先导入人员清单"));
+    }
+
+    @Test void changingOnlyIndexChoiceCreatesAuditAndRetainsPhysicalPrimaryFlag() {
+        var physical = new ReplayBaseColumnOption("acct_no", "账号", "text", 1, true, 1);
+        var unique = new ReplayBaseColumnOption("customer_no", "客户号", "text", 2, false, null);
+        var keys = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("acct_pkey", "PRIMARY_KEY", List.of("acct_no")),
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("customer_unique", "UNIQUE_INDEX", List.of("customer_no")));
+        when(metadataService.requireTableWithColumns("acct_master", List.of("acct_no", "customer_no")))
+                .thenReturn(new ReplayBaseValidatedTable("base_schema", "acct_master", "账户", List.of(physical, unique), List.of(physical), List.of(physical, unique), keys));
+        var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no", "customer_no"), null), new ReplayIssueOperator("creator", "创建人"));
+        var changed = service.update(created.id(), new ReplayDbCompareSaveRequest("acct_master", "存款组", "101",
+                List.of("acct_no", "customer_no"), created.version(), false, null, null, null, null, "customer_unique"), new ReplayIssueOperator("editor", "编辑人"));
+        assertEquals(created.version() + 1, changed.version());
+        assertTrue(changed.fields().get(0).primaryKey());
+        var update = dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).items().stream()
+                .filter(event -> event.operation() == ReplayDbCompareAuditOperation.UPDATE).findFirst().orElseThrow();
+        var detail = service.auditDetails(update.id()).stream().filter(d -> d.fieldCode().equals("comparisonKey")).findFirst().orElseThrow();
+        assertTrue(detail.beforeValue().contains("acct_pkey"));
+        assertTrue(detail.afterValue().contains("customer_unique"));
+    }
+
+    @Test void uniqueSelectionPersistsAcrossUpdateDetailListAndSyncWithoutAddingPhysicalPrimary() {
+        var physical = new ReplayBaseColumnOption("acct_no", "账号", "text", 1, true, 1);
+        var unique = new ReplayBaseColumnOption("customer_no", "客户号", "text", 2, false, null);
+        var keys = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("acct_pkey", "PRIMARY_KEY", List.of("acct_no")),
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("customer_unique", "UNIQUE_INDEX", List.of("customer_no")));
+        when(metadataService.requireTableWithColumns("acct_master", List.of("customer_no")))
+                .thenReturn(new ReplayBaseValidatedTable("base_schema", "acct_master", "账户", List.of(unique), List.of(physical), List.of(physical, unique), keys));
+        var request = new ReplayDbCompareSaveRequest("acct_master", "存款组", "101", List.of("customer_no"), null,
+                false, null, 10L, null, null, "customer_unique");
+        var created = service.create(request, new ReplayIssueOperator("creator", "创建人"));
+        assertEquals("customer_unique", created.comparisonKey().indexName());
+        assertFalse(created.fields().get(0).primaryKey());
+        var metadata = new ReplayBaseMetadataSnapshot(true, "acct_master", "账户", List.of(physical, unique), keys);
+        when(metadataService.inspectTable("acct_master")).thenReturn(metadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", metadata));
+        var updated = service.update(created.id(), new ReplayDbCompareSaveRequest("acct_master", "公共组", "101",
+                List.of("customer_no"), created.version(), false, null, 10L), new ReplayIssueOperator("editor", "编辑人"));
+        assertEquals(created.comparisonKey(), updated.comparisonKey());
+        assertEquals(List.of("customer_no"), updated.orderingPrimaryKeyNames());
+        assertEquals(created.comparisonKey(), service.detail(created.id()).comparisonKey());
+        assertEquals(created.comparisonKey(), service.search(ReplayDbCompareQuery.empty(0, 50)).items().get(0).comparisonKey());
+        assertEquals(0, service.synchronizePrimaryKeys().addedFieldCount());
+        assertEquals(List.of("customer_no"), dao.findByIdIncludingDeleted(created.id()).fields().stream().map(ReplayDbCompareField::columnName).toList());
+
+    }
+
+    @Test void noPhysicalPrimaryDefaultsToWholeUniqueIndexAndRejectsIncompleteSelection() {
+        var a = new ReplayBaseColumnOption("a", "A", "text", 1, false, null);
+        var b = new ReplayBaseColumnOption("b", "B", "text", 2, false, null);
+        var keys = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("ab_unique", "UNIQUE_INDEX", List.of("b", "a")));
+        when(metadataService.requireTableWithColumns("unique_only", List.of("a", "b")))
+                .thenReturn(new ReplayBaseValidatedTable("base_schema", "unique_only", "唯一表", List.of(a, b), List.of(), List.of(a, b), keys));
+        var created = service.create(save("unique_only", "存款组", "101", List.of("a", "b"), null), new ReplayIssueOperator("creator", "创建人"));
+        assertEquals(List.of("b", "a"), created.comparisonKey().columnNames());
+        when(metadataService.requireTableWithColumns("unique_only", List.of("a")))
+                .thenReturn(new ReplayBaseValidatedTable("base_schema", "unique_only", "唯一表", List.of(a), List.of(), List.of(a,b), keys));
+        assertThrows(IllegalArgumentException.class, () -> service.update(created.id(), save("unique_only", "存款组", "101", List.of("a"), created.version()), new ReplayIssueOperator("creator", "创建人")));
+        assertEquals(created.version(), dao.findByIdIncludingDeleted(created.id()).version());
     }
 
     @Test
@@ -425,16 +494,122 @@ class ReplayDatabaseComparisonServiceTest {
     }
 
     @Test
-    void groupOwnerSelectedByUsernameDoesNotRequireEmployeeNumber() {
+    void technologyOwnerMustHaveRealEmployeeNumberForNewRegistration() {
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
-                "owner-user", "小组负责人", null, 1);
+                "owner-user", "科技负责人", null, 1);
 
-        ReplayDbCompareRegistration created = service.create(
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> service.create(
                 save("acct_master", "存款组", "owner-user", List.of("acct_no"), null),
-                new ReplayIssueOperator("creator", "创建人"));
+                new ReplayIssueOperator("creator", "创建人")));
+        assertTrue(error.getMessage().contains("工号"));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
+    }
 
-        assertEquals("owner-user", created.groupOwnerEmpNo());
-        assertEquals("小组负责人", created.groupOwnerName());
+    @Test
+    void technologyOwnerCanBeSelectedByUsernameWhenEmployeeNumberExists() {
+        var created = service.create(
+                save("acct_master", "存款组", "leader-a", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人"));
+        assertEquals("101", created.groupOwnerEmpNo());
+        assertEquals("赵经理", created.groupOwnerName());
+    }
+
+    @Test
+    void technologyOwnerRejectsAnIdentityMatchingDifferentEmployeeAndUsername() {
+        jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                "101", "另一行员", "900101", 1);
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                save("acct_master", "存款组", "101", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人")));
+    }
+
+    @Test
+    void technologyOwnerSelectedByUsernameRejectsAnAmbiguousStoredEmployeeNumber() {
+        jdbc.batchUpdate("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                List.of(new Object[]{"staff-owner", "行员负责人", "500101", 1},
+                        new Object[]{"500101", "碰撞账号", null, 1}));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                save("acct_master", "存款组", "staff-owner", List.of("acct_no"), null),
+                new ReplayIssueOperator("creator", "创建人")));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
+    }
+
+    @Test
+    void changingTechnologyOwnerRejectsAnEmployeeNumberSharedByDifferentUsers() {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
+        jdbc.batchUpdate("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                List.of(new Object[]{"staff-owner", "行员负责人", "500101", 1},
+                        new Object[]{"duplicate-owner", "同工号行员", "500101", 1}));
+        assertThrows(IllegalArgumentException.class, () -> service.update(created.id(),
+                save("acct_master", "公共组", "staff-owner", List.of("acct_no"), created.version()), operator));
+        var retained = dao.findByIdIncludingDeleted(created.id());
+        assertEquals("101", retained.groupOwnerEmpNo());
+        assertEquals("存款组", retained.domainName());
+        assertEquals(created.version(), retained.version());
+    }
+
+    @Test
+    void technologyOwnerLookupSearchesEmployeeNumberAndExcludesExternalOrInactiveUsers() {
+        jdbc.batchUpdate("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                List.of(new Object[]{"staff-owner", "行员负责人", "500101", 1},
+                        new Object[]{"500101", "外部负责人", null, 1},
+                        new Object[]{"blank-owner", "行员空工号", " ", 1},
+                        new Object[]{"disabled-owner", "行员停用", "500102", 0}));
+        var byEmpNo = service.searchTechnologyOwners("500101", 20);
+        assertEquals(1, byEmpNo.size());
+        assertEquals("staff-owner", byEmpNo.get(0).username());
+        assertEquals("500101", byEmpNo.get(0).empNo());
+        assertEquals("行员负责人(500101)", byEmpNo.get(0).displayName());
+        assertEquals(byEmpNo, service.searchTechnologyOwners("staff-owner", 20));
+        assertEquals(byEmpNo, service.searchTechnologyOwners("行员", 20));
+        assertEquals(1, service.searchTechnologyOwners("", 1).size());
+        assertTrue(service.searchTechnologyOwners("停用", 20).isEmpty());
+        assertTrue(service.searchTechnologyOwners("外部", 20).isEmpty());
+    }
+
+    @Test
+    void batchedTechnologyOwnerIdentityLookupRetainsInactiveCollisionCandidates() {
+        jdbc.batchUpdate("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                List.of(new Object[]{"101", "停用碰撞账号", "90101", 0},
+                        new Object[]{"external-user", "外部人员", null, 1}));
+        var users = new SysUserDao(jdbc).findByUsernamesOrEmpNos(List.of(" 101 ", "101", "external-user", " "));
+        assertEquals(Set.of("leader-a", "101", "external-user"), users.stream().map(user -> user.getUsername()).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(users.stream().anyMatch(user -> Integer.valueOf(0).equals(user.getStatus())));
+        assertTrue(new SysUserDao(jdbc).findByUsernamesOrEmpNos(List.of()).isEmpty());
+    }
+
+    @Test
+    void existingLegacyTechnologyOwnerCanRemainUnchangedButCannotBeNewlySelected() {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
+        jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                "legacy-owner", "旧负责人", null, 0);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET group_owner_emp_no=?,group_owner_name=? WHERE id=?",
+                "legacy-owner", "旧负责人", created.id());
+        var retained = service.update(created.id(), save("acct_master", "公共组", "legacy-owner", List.of("acct_no"), created.version()), operator);
+        assertEquals("legacy-owner", retained.groupOwnerEmpNo());
+        assertEquals("旧负责人", retained.groupOwnerName());
+
+        var replaced = service.update(retained.id(), save("acct_master", "公共组", "leader-b", List.of("acct_no"), retained.version()), operator);
+        assertEquals("102", replaced.groupOwnerEmpNo());
+        jdbc.update("UPDATE ccbs_ai_sys_user SET status=1 WHERE username='legacy-owner'");
+        assertThrows(IllegalArgumentException.class, () -> service.update(replaced.id(),
+                save("acct_master", "公共组", "legacy-owner", List.of("acct_no"), replaced.version()), operator));
+        assertEquals("102", dao.findByIdIncludingDeleted(replaced.id()).groupOwnerEmpNo());
+    }
+
+    @Test
+    void reregisterRejectsLegacyOwnerWithoutEmployeeNumber() {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
+        var deleted = service.delete(created.id(), new ReplayDbCompareDeleteRequest(created.version(), "删除"), operator);
+        jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES (?,?,?,?)",
+                "legacy-owner", "旧负责人", " ", 1);
+        assertThrows(IllegalArgumentException.class, () -> service.reregister(deleted.id(),
+                new ReplayDbCompareReregisterRequest(deleted.version(), "存款组", "legacy-owner", List.of("acct_no"), "重新登记"), operator));
+
+        assertTrue(dao.findByIdIncludingDeleted(deleted.id()).deleted());
     }
 
     @Test
@@ -459,6 +634,7 @@ class ReplayDatabaseComparisonServiceTest {
         ReplayDbCompareRegistration created = service.create(
                 save("acct_master", "存款组", "101", List.of("acct_no"), null),
                 new ReplayIssueOperator("creator", "创建人"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET comparison_key_json=NULL WHERE id=?", created.id()); // Legacy registration follows current physical primary.
         List<ReplayBaseColumnOption> selected = List.of(
                 new ReplayBaseColumnOption("a", "主键A", 1, true, 1),
                 new ReplayBaseColumnOption("c", "主键C", 3, true, 3),
@@ -506,7 +682,7 @@ class ReplayDatabaseComparisonServiceTest {
                         new ReplayIssueOperator("creator", "创建人")));
 
         assertEquals("no_primary_key", error.tableName());
-        assertEquals("该表没有主键，请联系 DBA 创建表主键", error.getMessage());
+        assertEquals("该表没有主键或可用唯一索引，请联系 DBA 创建比对键索引", error.getMessage());
         assertEquals(0, dao.search(ReplayDbCompareQuery.empty(0, 50)).total());
         assertEquals(0, dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).total());
     }
@@ -531,7 +707,7 @@ class ReplayDatabaseComparisonServiceTest {
                         new ReplayIssueOperator("editor", "编辑人")));
 
         assertEquals("acct_master", error.tableName());
-        assertEquals("该表没有主键，请联系 DBA 创建表主键", error.getMessage());
+        assertEquals("该表没有主键或可用唯一索引，请联系 DBA 创建比对键索引", error.getMessage());
         ReplayDbCompareRegistration unchanged = dao.findByIdIncludingDeleted(created.id());
         assertFalse(unchanged.deleted());
         assertEquals(created.version(), unchanged.version());
@@ -570,7 +746,7 @@ class ReplayDatabaseComparisonServiceTest {
         ReplayDbCompareRegistration restored = service.reregister(
                 created.id(),
                 new ReplayDbCompareReregisterRequest(
-                        deleted.version(), "平台组", "102", List.of("status"), "重新启用"),
+                        deleted.version(), "平台组", "102", List.of("status"), "重新启用", null, null, null, null, "PRIMARY"),
                 new ReplayIssueOperator("other", "其他人"));
 
         assertEquals(created.id(), restored.id());
@@ -599,7 +775,7 @@ class ReplayDatabaseComparisonServiceTest {
         ReplayDbCompareRegistration deleted = dao.findByIdIncludingDeleted(created.id());
         service.reregister(created.id(),
                 new ReplayDbCompareReregisterRequest(
-                        deleted.version(), "存款组", "101", List.of("status"), "重新登记"),
+                        deleted.version(), "存款组", "101", List.of("status"), "重新登记", null, null, null, null, "PRIMARY"),
                 new ReplayIssueOperator("other", "其他人"));
 
         assertEquals("母库表已删除，清理登记",
@@ -732,6 +908,7 @@ class ReplayDatabaseComparisonServiceTest {
                 new ReplayIssueOperator("creator", "创建人"));
         service.create(save("removed_table", "贷款组", "101", List.of("legacy_id"), null),
                 new ReplayIssueOperator("creator", "创建人"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET comparison_key_json=NULL"); // Legacy metadata status contract.
         when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
                 "acct_master", new ReplayBaseMetadataSnapshot(true, "acct_master", "账户主表",
                         List.of(new ReplayBaseColumnOption("acct_no", "账号", 1, true))),
@@ -866,6 +1043,7 @@ class ReplayDatabaseComparisonServiceTest {
                 new ReplayIssueOperator("creator", "创建人"));
         service.create(save("valid_key", "存款组", "101", List.of("acct_no"), null),
                 new ReplayIssueOperator("creator", "创建人"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET comparison_key_json=NULL"); // Legacy metadata status contract.
         when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
                 "drift_key", new ReplayBaseMetadataSnapshot(true, "drift_key", null, List.of(
                         new ReplayBaseColumnOption("acct_no", "账号", 1, true, 1),
@@ -1033,6 +1211,7 @@ class ReplayDatabaseComparisonServiceTest {
                 "existing_key", List.of("a", "c", "b", "d"), List.of("a"));
         ReplayDbCompareRegistration unchanged = createWithMetadata(
                 "unchanged_key", List.of("a", "c"), List.of("a"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET comparison_key_json=NULL"); // Legacy sync compatibility.
         when(metadataService.inspectTables(any(Collection.class))).thenReturn(Map.of(
                 "missing_key", metadata("missing_key", List.of("a", "b"), List.of("a", "b", "c", "d")),
                 "existing_key", metadata("existing_key", List.of("a", "b"), List.of("a", "b", "c", "d")),

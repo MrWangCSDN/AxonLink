@@ -348,6 +348,7 @@ public class ReplayIssueController {
     public ResponseEntity<R<ReplayIssueImportResult>> importFile(
             @RequestPart("file") MultipartFile file,
             @RequestParam(value = "replayType", required = false) String replayType,
+            @RequestParam(value = "releaseAt", required = false) String releaseAt,
             @RequestHeader(value = "X-DII-Trigger-Token", required = false) String token,
             HttpServletRequest request) {
         String expected = properties.getBatchTrigger().getToken();
@@ -367,7 +368,7 @@ public class ReplayIssueController {
         }
         try {
             ReplayIssueImportMode mode = ReplayIssueImportMode.fromRequest(replayType);
-            return ResponseEntity.ok(R.ok(importService.importFile(file, mode)));
+            return ResponseEntity.ok(R.ok(importService.importFile(file, mode, releaseAt)));
         } catch (IllegalArgumentException exception) {
             return error(HttpStatus.BAD_REQUEST, exception.getMessage());
         } catch (ReplayIssueImportBusyException exception) {
@@ -458,7 +459,10 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> issueDescriptions,
             @RequestParam(required = false) List<String> issueKeys,
             @RequestParam(required = false) String replayType,
-            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
+            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            @RequestParam(required = false) Boolean unverifiedOnly,
+            @RequestParam(required = false) Boolean relatedToMe,
+            HttpServletRequest httpRequest) {
         ReplayIssueQuery query = new ReplayIssueQuery(limit, offset, groupName,
                 sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner, cooperationPerson,
                 serialNo, globalSerialNo, defectRepairDate, coverageRound,
@@ -467,15 +471,17 @@ public class ReplayIssueController {
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
+        query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
         return executeList(query, affectedTransactionCountOrder);
     }
 
     @PostMapping
-    public R<Map<String, Object>> search(@RequestBody ReplayIssueListSearchRequest request) {
+    public R<Map<String, Object>> search(@RequestBody ReplayIssueListSearchRequest request, HttpServletRequest httpRequest) {
         ReplayIssueListSearchRequest safeRequest = request == null
                 ? new ReplayIssueListSearchRequest(null, null)
                 : request;
-        return executeList(safeRequest.normalizedQuery(), safeRequest.affectedTransactionCountOrder());
+        return executeList(resolveTaskFilters(safeRequest.normalizedQuery(), httpRequest),
+                safeRequest.affectedTransactionCountOrder());
     }
 
     private R<Map<String, Object>> executeList(
@@ -525,7 +531,10 @@ public class ReplayIssueController {
                                                 @RequestParam(required = false) List<String> fieldNames,
                                                 @RequestParam(required = false) List<String> issueDescriptions,
                                                 @RequestParam(required = false) List<String> issueKeys,
-                                                @RequestParam(required = false) String replayType) {
+                                                @RequestParam(required = false) String replayType,
+                                                @RequestParam(required = false) Boolean unverifiedOnly,
+                                                @RequestParam(required = false) Boolean relatedToMe,
+                                                HttpServletRequest httpRequest) {
         ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
@@ -533,6 +542,7 @@ public class ReplayIssueController {
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
+        query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
         return R.ok(dao.headerFilterValues(field, query, keyword));
     }
 
@@ -576,7 +586,10 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> fieldNames,
             @RequestParam(required = false) List<String> issueDescriptions,
             @RequestParam(required = false) List<String> issueKeys,
-            @RequestParam(required = false) String replayType) {
+            @RequestParam(required = false) String replayType,
+            @RequestParam(required = false) Boolean unverifiedOnly,
+            @RequestParam(required = false) Boolean relatedToMe,
+            HttpServletRequest httpRequest) {
         ReplayIssueQuery query = new ReplayIssueQuery(500, 0, groupName, sandbox, issueLevel, issueType, null,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate,
                 coverageRound, safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners),
@@ -585,17 +598,18 @@ public class ReplayIssueController {
                 safe(plannedCompletionDates), safe(issueIds), safe(serialNos), safe(globalSerialNos),
                 safe(defectRepairDates), safe(transactionNames), safe(fieldNames), safe(issueDescriptions),
                 safe(issueKeys), safe(issueDomains), ReplayIssueReplayType.parse(replayType));
+        query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
         return executeHeaderFilterOptionCounts(field, keyword, query);
     }
 
     @PostMapping("/header-filter-option-counts")
     public R<ReplayIssueHeaderFilterOptionResult> searchHeaderFilterOptionCounts(
-            @RequestBody ReplayIssueHeaderFilterSearchRequest request) {
+            @RequestBody ReplayIssueHeaderFilterSearchRequest request, HttpServletRequest httpRequest) {
         ReplayIssueHeaderFilterSearchRequest safeRequest = request == null
                 ? new ReplayIssueHeaderFilterSearchRequest(null, null, null)
                 : request;
         return executeHeaderFilterOptionCounts(
-                safeRequest.field(), safeRequest.keyword(), safeRequest.normalizedQuery());
+                safeRequest.field(), safeRequest.keyword(), resolveTaskFilters(safeRequest.normalizedQuery(), httpRequest));
     }
 
     private R<ReplayIssueHeaderFilterOptionResult> executeHeaderFilterOptionCounts(
@@ -817,7 +831,10 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> issueDescriptions,
             @RequestParam(required = false) List<String> issueKeys,
             @RequestParam(required = false) String replayType,
-            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
+            @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            @RequestParam(required = false) Boolean unverifiedOnly,
+            @RequestParam(required = false) Boolean relatedToMe,
+            HttpServletRequest httpRequest) {
         ReplayIssueQuery query = new ReplayIssueQuery(200, 0, groupName, sandbox, issueLevel, issueType, keyword,
                 issueStatus, developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
                 safe(transactionCodes), safe(issueLevels), safe(developers), safe(bankOwners), safe(issueStatuses), safe(issueTypes), safe(cooperationPersons), safe(occurrenceBatches), weeklyTask,
@@ -825,6 +842,7 @@ public class ReplayIssueController {
                 safe(issueIds), safe(serialNos), safe(globalSerialNos), safe(defectRepairDates),
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
+        query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(200); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             workbook.setCompressTempFiles(true);
             Sheet sheet = workbook.createSheet("回放问题清单");
@@ -1182,6 +1200,25 @@ public class ReplayIssueController {
 
     private static String firstNonBlank(String preferred, String fallback) {
         return preferred == null || preferred.isBlank() ? fallback : preferred;
+    }
+
+    private ReplayIssueQuery resolveTaskFilters(ReplayIssueQuery query, HttpServletRequest request) {
+        LinkedHashSet<String> accounts = new LinkedHashSet<>();
+        if (Boolean.TRUE.equals(query.relatedToMe())) {
+            UserPrincipalResolver.Resolved resolved = userResolver.resolve(request);
+            if (resolved != null) {
+                addRelatedAccount(accounts, resolved.principal);
+                if (resolved.user != null) {
+                    addRelatedAccount(accounts, resolved.user.getUsername());
+                    addRelatedAccount(accounts, resolved.user.getEmpNo());
+                }
+            }
+        }
+        return query.withTaskFilters(query.unverifiedOnly(), query.relatedToMe(), List.copyOf(accounts));
+    }
+
+    private static void addRelatedAccount(LinkedHashSet<String> accounts, String value) {
+        if (value != null && !value.isBlank()) accounts.add(value.trim());
     }
 
     private ReplayIssueOperator resolveOperator(HttpServletRequest request) {

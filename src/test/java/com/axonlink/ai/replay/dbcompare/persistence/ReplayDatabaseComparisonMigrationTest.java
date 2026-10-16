@@ -21,9 +21,11 @@ class ReplayDatabaseComparisonMigrationTest {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
 
         String insertRegistration = "INSERT INTO dii_replay_db_compare_registration "
@@ -114,6 +116,7 @@ class ReplayDatabaseComparisonMigrationTest {
 
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V64__drop_replay_database_comparison_generation_lock.sql"),
                 new ClassPathResource("db/daoindex/V65__dii_replay_database_comparison_version_script.sql"),
@@ -121,7 +124,8 @@ class ReplayDatabaseComparisonMigrationTest {
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
 
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_AUDIT_EVENT", "OPERATOR_USERNAME");

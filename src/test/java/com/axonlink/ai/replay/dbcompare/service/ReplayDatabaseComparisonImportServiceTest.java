@@ -53,12 +53,14 @@ class ReplayDatabaseComparisonImportServiceTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
@@ -175,6 +177,22 @@ class ReplayDatabaseComparisonImportServiceTest {
                 "SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
     }
 
+    @Test void importingAnExistingRegistrationKeepsItsChosenUniqueIndexAndOrderingSnapshot() throws Exception {
+        var first = service().importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct_master", "acct_no", "创建人"), input("存款", "acct_master", "customer_no", "创建人"))), new ReplayIssueOperator("creator", "创建人"));
+        assertTrue(first.success());
+        var existing = dao.findBySchemaAndTable("base_schema", "acct_master");
+        var chosen = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("customer_unique", "UNIQUE_INDEX", List.of("customer_no"));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET comparison_key_json=?,compare_limit=10,order_by_primary_keys_json=? WHERE id=?",
+                ReplayDatabaseComparisonKeys.encode(chosen), "[\"customer_no\"]", existing.id());
+        var result = service().importFile(new ByteArrayInputStream(workbook(input("存款", "acct_master", "status", "编辑人"))), new ReplayIssueOperator("creator", "创建人"));
+        assertTrue(result.success());
+        var changed = dao.findByIdIncludingDeleted(existing.id());
+        assertEquals(chosen, changed.comparisonKey());
+        assertEquals(List.of("customer_no"), changed.orderingPrimaryKeyNames());
+        assertEquals(10L, changed.compareLimit());
+    }
+
     @Test
     void allowsBlankReviserAndLeavesNewGroupOwnerBlank() throws Exception {
         ReplayDbCompareImportResult result = service().importFile(
@@ -190,6 +208,8 @@ class ReplayDatabaseComparisonImportServiceTest {
         assertNull(registration.reviserName());
         assertNull(registration.groupOwnerEmpNo());
         assertNull(registration.groupOwnerName());
+        assertEquals("UNIQUE_INDEX", registration.comparisonKey().indexType());
+        assertEquals(List.of("settlement_no"), registration.comparisonKey().columnNames());
     }
 
     @Test
@@ -269,8 +289,10 @@ class ReplayDatabaseComparisonImportServiceTest {
                 .map(name -> new ReplayBaseColumnOption(name, name + "备注",
                         name.equals("acct_no") ? 1 : 2, name.equals("acct_no")))
                 .toList();
-        return new ReplayBaseValidatedTable(
-                "base_schema", tableName.toLowerCase(), tableName + "备注", columns);
+        var table = new ReplayBaseValidatedTable("base_schema", tableName.toLowerCase(), tableName + "备注", columns);
+        if (!table.keyOptions().isEmpty()) return table;
+        return new ReplayBaseValidatedTable("base_schema", tableName.toLowerCase(), tableName + "备注", columns,
+                List.of(), columns, List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption(tableName + "_unique", "UNIQUE_INDEX", List.of(columns.get(0).columnName()))));
     }
 
     private static ImportRow input(String sheet, String table, String field, String reviser) {

@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonKeys;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
@@ -96,8 +97,8 @@ public class ReplayDatabaseComparisonVersionDao {
                             + "(version_id,source_registration_id,source_registration_version,"
                             + "schema_name,table_name,table_comment,domain_name,reviser_emp_no,"
                             + "reviser_username,reviser_name,group_owner_emp_no,group_owner_username,"
-                            + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date,partition_num,sample_limit) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date,partition_num,sample_limit,comparison_key_json) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setLong(1, versionId);
             statement.setLong(2, registration.id());
@@ -118,6 +119,7 @@ public class ReplayDatabaseComparisonVersionDao {
             statement.setObject(17, registration.registeredDate());
             statement.setInt(18, registration.partitionNum());
             statement.setInt(19, registration.sampleLimit());
+            statement.setString(20, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -187,7 +189,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit"))),
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))),
                 versionId);
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -251,7 +253,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit"))),
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))),
                 arguments.toArray());
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -467,7 +469,7 @@ public class ReplayDatabaseComparisonVersionDao {
                 item.reviserEmpNo(), item.reviserUsername(), item.reviserName(),
                 item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(),
                 item.whereCondition(), item.whereSql(), item.compareLimit(), item.registeredDate(),
-                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit());
+                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey());
     }
 
     private boolean hasText(String value) {

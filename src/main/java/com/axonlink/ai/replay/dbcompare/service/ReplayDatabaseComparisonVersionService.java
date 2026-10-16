@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
@@ -45,6 +46,12 @@ import java.util.Set;
 
 @Service
 public class ReplayDatabaseComparisonVersionService {
+    private com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao;
+
+    @Autowired(required = false)
+    public void setTablePersonDao(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao) {
+        this.tablePersonDao = tablePersonDao;
+    }
 
     private static final int METADATA_BATCH_SIZE = 200;
     private static final String FULL_TABLE_FILTER_VALUE = "__FULL_TABLE__";
@@ -100,6 +107,30 @@ public class ReplayDatabaseComparisonVersionService {
         this.clock = clock;
     }
 
+    private List<ReplayDbCompareRegistration> mappedRegistrations() {
+        List<ReplayDbCompareRegistration> registrations = registrationDao.findAllActiveWithFields();
+        if (tablePersonDao == null) return registrations;
+        return registrations.stream().map(registration -> {
+            var person = tablePersonDao.findByTableName(registration.tableName());
+            String domain = person == null ? "" : person.domain();
+            String developer = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
+            String username = person == null ? "" : person.developerUsernames();
+            String technologyOwner = person == null || person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0];
+            String technologyEmpNo = person == null ? "" : person.technologyOwnerEmpNos();
+            return new ReplayDbCompareRegistration(
+                    registration.id(), registration.schemaName(), registration.tableName(), registration.tableComment(),
+                    domain, person == null ? "" : person.developerEmpNos(), username, developer, technologyEmpNo, technologyOwner,
+                    registration.registeredDate(), registration.deleted(), registration.deletedReason(),
+                    registration.deletedBy(), registration.deletedAt(), registration.version(),
+                    registration.createdBy(), registration.createdName(), registration.createdAt(),
+                    registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
+                    registration.fields(), registration.whereCondition(), registration.compareLimit(),
+                    registration.orderingPrimaryKeyNames(), registration.metadataValidation())
+                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                    .withComparisonKey(registration.comparisonKey());
+        }).toList();
+    }
+
     public ReplayDbCompareVersionSummary generate(
             String suppliedToken,
             String expectedToken,
@@ -111,9 +142,9 @@ public class ReplayDatabaseComparisonVersionService {
         ReplayDbCompareVersionGateResult gate;
         try {
             registrationService.synchronizePrimaryKeys();
-            gate = validateAll(registrationDao.findAllActiveWithFields());
+            gate = validateAll(mappedRegistrations());
         } catch (ReplayBaseDatabaseUnavailableException exception) {
-            gate = unavailableGate(registrationDao.findAllActiveWithFields());
+            gate = unavailableGate(mappedRegistrations());
         }
         requireGate(gate);
         List<ReplayDbCompareRegistration> snapshotRegistrations = gate.registrations();
@@ -125,7 +156,7 @@ public class ReplayDatabaseComparisonVersionService {
                     "当前登记与最新版本一致，无需重复生成", null);
         }
 
-        requireUnchangedRegistrations(snapshotRegistrations, registrationDao.findAllActiveWithFields());
+        requireUnchangedRegistrations(snapshotRegistrations, mappedRegistrations());
         LocalDateTime generatedAt = LocalDateTime.now(clock);
         String versionNo = newVersionNo(generatedAt);
         int fieldCount = snapshotRegistrations.stream()
@@ -263,7 +294,28 @@ public class ReplayDatabaseComparisonVersionService {
                     registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS,
                     List.of(), error.path() + "：" + error.reason())));
         }
-        if (registration.compareLimit() != null) {
+        ReplayDbCompareKeySelection snapshotKey = registration.comparisonKey();
+        if (snapshotKey == null && metadata.columns().stream().noneMatch(ReplayBaseColumnOption::primaryKey)) {
+            try {
+                snapshotKey = ReplayDatabaseComparisonKeys.choose(registration.tableName(), metadata.keyOptions(), null, null);
+            } catch (ReplayBasePrimaryKeyMissingException exception) {
+                errors.add(gateError(registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS, List.of(), exception.getMessage()));
+            }
+        }
+        if (snapshotKey != null) {
+            try {
+                var chosen = ReplayDatabaseComparisonKeys.choose(registration.tableName(), metadata.keyOptions(), null, snapshotKey);
+                ReplayDatabaseComparisonKeys.requireFields(registration.tableName(), chosen,
+                        registration.fields().stream().map(ReplayDbCompareField::columnName).toList());
+                if (registration.compareLimit() != null && !registration.orderingPrimaryKeyNames().isEmpty()
+                        && !registration.orderingPrimaryKeyNames().equals(chosen.columnNames())) {
+                    throw new IllegalArgumentException("比对键排序快照与所选索引不一致，请重新保存登记");
+                }
+            } catch (IllegalArgumentException | ReplayBasePrimaryKeysRequiredException exception) {
+                errors.add(gateError(registration, ReplayDbCompareMetadataStatus.ORDERING_PRIMARY_KEY_CHANGED,
+                        List.of(), exception.getMessage()));
+            }
+        } else if (registration.compareLimit() != null && metadata.columns().stream().anyMatch(ReplayBaseColumnOption::primaryKey)) {
             if (!hasCompletePrimaryKeyOrder(metadata.columns())) {
                 errors.add(gateError(registration, ReplayDbCompareMetadataStatus.MISSING_FIELDS,
                         List.of(), "配置比对条数时，母库表必须存在完整且有序的主键"));
@@ -311,7 +363,7 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
                 registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
-                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()));
+                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withComparisonKey(snapshotKey));
     }
 
     private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {

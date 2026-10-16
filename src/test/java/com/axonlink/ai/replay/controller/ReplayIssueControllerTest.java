@@ -1,5 +1,8 @@
 package com.axonlink.ai.replay.controller;
 
+import com.axonlink.ai.replay.dto.ReplayIssueQuery;
+import com.axonlink.ai.replay.dto.ReplayIssueStatus;
+
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dto.ReplayCoverageDetailRow;
@@ -119,6 +122,29 @@ class ReplayIssueControllerTest {
     private ReplayWeeklyReportMailService weeklyReportMailService;
     private ReplayReportMailBodyService reportMailBodyService;
     private ReplayIssueController controller;
+
+    @Test
+    void importPassesReleaseCutoffThroughToPendingVerificationMerge() throws Exception {
+        importService.importFile(ReplayIssueTestFixtures.validWorkbook(1));
+        var row=dao.list(new ReplayIssueQuery(10,0,null,null,null,null,null)).get(0);
+        long id=((Number)row.get("id")).longValue();
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='修复待验证' WHERE id=?",id);
+        dao.insertHistory(id,(String)row.get("issue_key"),"人工保存",LocalDateTime.of(2026,8,19,15,0),
+                ReplayIssueOperator.system(),LocalDate.of(2026,8,19),null,null,null,"{}","{}",null);
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                .file(ReplayIssueTestFixtures.validWorkbook(1)).header("X-DII-Trigger-Token","secret")
+                .param("releaseAt","2026-08-19 12:00:00"))
+                .andExpect(status().isOk());
+        assertEquals(ReplayIssueStatus.PENDING_VERIFICATION,dao.findCurrentByIdForUpdate(id).issueStatus());
+    }
+    @Test
+    void importRejectsAnExplicitBlankReleaseTime() throws Exception {
+        mvc.perform(multipart("/api/ai/parallel-replay/issues/import")
+                .file(ReplayIssueTestFixtures.validWorkbook(1)).header("X-DII-Trigger-Token","secret")
+                .param("releaseAt",""))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.message").value(containsString("发版时间")));
+        assertTrue(dao.listImportRounds().isEmpty());
+    }
 
     @Test
     void previewsReportMailBodyFromSelectedGeneratedReports() throws Exception {
@@ -797,6 +823,54 @@ class ReplayIssueControllerTest {
             assertEquals(2, workbook.getSheetAt(0).getPhysicalNumberOfRows());
             assertEquals("T-200", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
         }
+    }
+
+    @Test
+    void personalTaskFiltersUseLoginAliasesAcrossListCandidatesAndExport() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "DEV", "dev"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "TECH", "tech"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "COLLAB", "collab"),
+                ReplayIssueTestFixtures.row("公共组", false, 4, "OTHER", "other"),
+                ReplayIssueTestFixtures.row("公共组", false, 5, "FIXED", "fixed")), LocalDateTime.now());
+        jdbc.update("UPDATE dii_replay_issue SET defect_repair_date=NULL");
+        jdbc.update("UPDATE dii_replay_issue SET defect_repair_date='2026-10-09',cooperation_person_username='sunhy1' WHERE transaction_code='FIXED'");
+        jdbc.update("UPDATE dii_replay_issue SET cooperation_person_username='sunhy1' WHERE transaction_code='COLLAB'");
+        jdbc.update("UPDATE dii_replay_issue SET cooperation_person_username='other' WHERE transaction_code='OTHER'");
+        jdbc.update("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,developer_usernames,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?)",
+                "公共组", "DEV", "other、sunhy1", "", LocalDateTime.now());
+        jdbc.update("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,developer_usernames,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?)",
+                "公共组", "TECH", "other", "100001", LocalDateTime.now());
+        String payload = "{\"query\":{\"limit\":1,\"offset\":0,\"unverifiedOnly\":true,\"relatedToMe\":true,\"relatedAccounts\":[\"other\"]}}";
+        mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json").content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("DEV"));
+        mvc.perform(post("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .contentType("application/json")
+                        .content("{\"field\":\"transactionCode\",\"query\":{\"unverifiedOnly\":true,\"relatedToMe\":true}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(3))
+                .andExpect(jsonPath("$.data.candidateCount").value(3));
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-options")
+                        .param("field", "transactionCode").param("unverifiedOnly", "true").param("relatedToMe", "true"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(3));
+        mvc.perform(get("/api/ai/parallel-replay/issues/header-filter-option-counts")
+                        .param("field", "transactionCode").param("unverifiedOnly", "true").param("relatedToMe", "true"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.matchedIssueCount").value(3));
+        byte[] output = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                        .param("unverifiedOnly", "true").param("relatedToMe", "true"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(output))) {
+            assertEquals(4, workbook.getSheetAt(0).getPhysicalNumberOfRows());
+        }
+        resolvedUser = new UserPrincipalResolver.Resolved("UIAS", "100001", userDao().findByEmpNo("100001"));
+        mvc.perform(get("/api/ai/parallel-replay/issues").param("unverifiedOnly", "true").param("relatedToMe", "true"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(3));
+        resolvedUser = new UserPrincipalResolver.Resolved("ANONYMOUS", null, null);
+        mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json").content(payload))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
     }
 
     @Test

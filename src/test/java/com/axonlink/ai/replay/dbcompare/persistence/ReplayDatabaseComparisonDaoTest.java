@@ -53,12 +53,14 @@ class ReplayDatabaseComparisonDaoTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonDao(jdbc);
     }
@@ -84,8 +86,8 @@ class ReplayDatabaseComparisonDaoTest {
         assertEquals(2, page.globalTableCount());
         assertEquals(5, page.globalFieldCount());
         assertEquals(accountId, page.items().get(0).id());
-        assertEquals("张三", page.items().get(0).reviserName());
-        assertEquals("赵经理", page.items().get(0).groupOwnerName());
+        assertEquals("张三(001)", page.items().get(0).reviserName());
+        assertEquals("赵经理(101)", page.items().get(0).groupOwnerName());
         assertEquals(4, page.items().get(0).fieldCount());
         assertEquals(List.of("customer_no(客户号)", "acct_no(账号)", "status(状态)", "balance(余额)"),
                 page.items().get(0).fieldPreview());
@@ -317,6 +319,7 @@ class ReplayDatabaseComparisonDaoTest {
                 LocalDate.of(2026, 9, 10), false, field("acct_no", "账号", 1, 1));
         jdbc.update("UPDATE dii_replay_db_compare_registration SET reviser_username=? WHERE id=?",
                 "c-zhangs", registrationId);
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_master");
 
         ReplayDbCompareHeaderFilterResult tableResult = dao.headerFilterOptions(
                 new ReplayDbCompareHeaderFilterRequest(
@@ -352,6 +355,9 @@ class ReplayDatabaseComparisonDaoTest {
                 "c-zhangs", firstId);
         jdbc.update("UPDATE dii_replay_db_compare_registration SET reviser_username=? WHERE id=?",
                 "c-lisi", secondId);
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_a");
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_b");
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_empty");
 
         ReplayDbCompareQuery query = new ReplayDbCompareQuery(
                 null, null, List.of("存款组"), List.of(), List.of(), null, null, 0, 20, List.of(),
@@ -429,6 +435,8 @@ class ReplayDatabaseComparisonDaoTest {
                 "SYSTEM", "系统", CREATED_AT, List.of(field("customer_no", "客户号", 1, 1)));
         dao.insertRegistration(first);
         dao.insertRegistration(second);
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_a");
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "acct_b");
 
         ReplayDbCompareHeaderFilterResult options = dao.headerFilterOptions(
                 new ReplayDbCompareHeaderFilterRequest(
@@ -488,7 +496,9 @@ class ReplayDatabaseComparisonDaoTest {
                 groupOwnerEmpNo, groupOwnerName, registeredDate, deleted,
                 deleted ? "历史删除" : null, deleted ? "900" : null, deleted ? CREATED_AT : null,
                 0, "001", "张三", CREATED_AT, reviserEmpNo, reviserName, CREATED_AT, List.of(fields));
-        return dao.insertRegistration(registration);
+        long id = dao.insertRegistration(registration);
+        com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, tableName);
+        return id;
     }
 
     private ReplayDbCompareAuditEvent event(long registrationId, ReplayDbCompareAuditOperation operation,

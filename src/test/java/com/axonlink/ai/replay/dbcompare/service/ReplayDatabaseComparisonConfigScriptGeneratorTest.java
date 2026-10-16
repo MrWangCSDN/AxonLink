@@ -27,6 +27,22 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
+    @Test void selectedUniqueSnapshotControlsFlagAndLimitForBothTargets() {
+        var selected = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("ref_unique", "UNIQUE_INDEX", List.of("ref", "tenant"));
+        var table = new ReplayDbCompareVersionTableItem(1L, 1L, "base", "acct_master", "账户", "存款组", "100", "creator", "创建人", "101", "owner", "负责人",
+                null, null, 25L, LocalDate.of(2026, 10, 15), 3,
+                List.of(new ReplayDbCompareVersionField("id", "编号", 1, true, 1, 1),
+                        new ReplayDbCompareVersionField("tenant", "租户", 2, false, null, 2),
+                        new ReplayDbCompareVersionField("ref", "引用", 3, false, null, 3))).withComparisonKey(selected);
+        for (ConfigScriptTarget target : ConfigScriptTarget.values()) {
+            String result = target.convert(sql(generator.generate("v1", List.of(table))));
+            assertTrue(result.contains("order by ref,tenant limit 25"));
+            assertTrue(result.contains("(1,'id','1','编号','1','1','0','0')"));
+            assertTrue(result.contains("(1,'tenant','1','租户','2','2','1','0')"));
+            assertTrue(result.contains("(1,'ref','1','引用','3','3','1','0')"));
+        }
+    }
+
     @Test void exportsPerTableSampleLimitIncludingZero() {
         var table = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
         assertTrue(sql(generator.generate("v1", List.of(table.withSampleLimit(17)))).contains("'HASH',17)"));

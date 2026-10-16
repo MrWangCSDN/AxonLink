@@ -521,6 +521,51 @@ class ReplayIssueDaoTest {
     }
 
     @Test
+    void taskFiltersMatchAnyExactAccountAndComposeBeforePaginationAndExport() {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "DEV", "dev"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "TECH", "tech"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "COLLAB", "collab"),
+                ReplayIssueTestFixtures.row("公共组", false, 4, "PREFIX", "prefix"),
+                ReplayIssueTestFixtures.row("公共组", false, 5, "FIXED", "fixed"),
+                ReplayIssueTestFixtures.row("公共组", false, 6, "OTHER", "other")), IMPORTED_AT);
+        jdbc.update("UPDATE dii_replay_issue SET defect_repair_date=NULL");
+        jdbc.update("UPDATE dii_replay_issue SET defect_repair_date='2026-10-09' WHERE transaction_code='FIXED'");
+        jdbc.update("UPDATE dii_replay_issue SET cooperation_person_username='123' WHERE transaction_code='COLLAB'");
+        jdbc.batchUpdate("INSERT INTO dii_replay_transaction_person(domain,old_transaction_code,developer_usernames,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?)", List.of(
+                new Object[]{"公共组", "DEV", "another、 c-me; extra", "other", IMPORTED_AT},
+                new Object[]{"公共组", "TECH", "other", "100,123，200", IMPORTED_AT},
+                new Object[]{"公共组", "PREFIX", "c-me2", "1234", IMPORTED_AT},
+                new Object[]{"公共组", "FIXED", "c-me", "123", IMPORTED_AT},
+                new Object[]{"公共组", "OTHER", "cxme", "other", IMPORTED_AT}));
+        ReplayIssueQuery mine = ALL.withTaskFilters(true, true, List.of("c-me", "123"));
+        assertEquals(Set.of("DEV", "TECH", "COLLAB"), transactionCodes(dao.list(mine)));
+        assertEquals(3L, dao.count(mine));
+        assertEquals(3, dao.listForExport(mine).size());
+        assertEquals(3L, dao.headerFilterOptionCounts("transactionCode", mine, null).matchedIssueCount());
+        assertEquals(Set.of("DEV", "TECH", "COLLAB"), Set.copyOf(dao.headerFilterValues("transactionCode", mine, null)));
+        assertEquals(4L, dao.count(ALL.withTaskFilters(false, true, List.of("c-me", "123"))));
+        assertEquals(5L, dao.count(ALL.withTaskFilters(true, false, List.of())));
+        assertEquals(0L, dao.count(ALL.withTaskFilters(false, true, List.of())));
+        assertEquals(0L, dao.count(ALL.withTaskFilters(false, true, List.of("c.me"))));
+        assertEquals(6L, dao.count(ALL.withTaskFilters(false, false, List.of())));
+
+        jdbc.update("DELETE FROM dii_replay_issue_occurrence_batch");
+        insertOccurrenceBatch("DEV", "TASK-1");
+        insertOccurrenceBatch("FIXED", "TASK-1");
+        jdbc.update("INSERT INTO dii_replay_weekly_task_batch(batch_name) VALUES ('TASK-1')");
+        ReplayIssueQuery priority = new ReplayIssueQuery(1, 0, null, null, null, null,
+                null, null, null, null, null, null, null, null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), true)
+                .withTaskFilters(true, true, List.of("c-me", "123"));
+        assertEquals(Set.of("DEV"), transactionCodes(dao.list(priority)));
+        assertEquals(1L, dao.count(priority));
+        assertEquals(1, dao.listForExport(priority).size());
+        assertEquals(Boolean.TRUE, mine.forListSearch().unverifiedOnly());
+        assertEquals(List.of("c-me", "123"), mine.forHeaderFilterSearch().relatedAccounts());
+    }
+
+    @Test
     void weeklyTaskProjectionAndFilterUseOccurrenceBatchUnionWithoutDuplicates() {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("公共组", false, 1, "T-A", "weekly-a"),
@@ -649,7 +694,7 @@ class ReplayIssueDaoTest {
 
         assertIterableEquals(List.of("公共组", "贷款组"), options.groups());
         assertIterableEquals(List.of("交易级", "字段级"), options.issueLevels());
-        assertIterableEquals(List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题"), options.issueTypes());
+        assertIterableEquals(List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "需规问题", "其他问题"), options.issueTypes());
         assertIterableEquals(List.of("新建", "打开", "无需处理", "延后修复", "修复待验证", "重新打开", "已修复"), options.issueStatuses());
         assertEquals(3L, stats.get("total"));
         assertEquals(3L, stats.get("openTotal"));

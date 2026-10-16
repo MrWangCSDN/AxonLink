@@ -38,6 +38,11 @@ import java.util.Map;
 
 @Service
 public class ReplayDatabaseComparisonImportService {
+    private com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao;
+    @Autowired(required = false)
+    public void setTablePersonDao(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao) {
+        this.tablePersonDao = tablePersonDao;
+    }
 
     private static final Actor SYSTEM_ACTOR = new Actor("SYSTEM", "SYSTEM", "系统");
     private static final List<String> SHEET_ORDER = List.of("存款", "贷款", "公共", "结算");
@@ -112,6 +117,7 @@ public class ReplayDatabaseComparisonImportService {
         Map<String, ReplayDatabaseComparisonReviserResolver.Resolution> revisers = new LinkedHashMap<>();
         boolean revisersValid = true;
         for (ReplayDatabaseComparisonExcelParser.ParsedRow row : parsed.rows()) {
+            if (tablePersonDao != null) continue;
             if (row.reviserInput().isBlank()) {
                 continue;
             }
@@ -122,9 +128,14 @@ public class ReplayDatabaseComparisonImportService {
                 revisersValid = false;
             }
         }
-        ReplayDatabaseComparisonReviserResolver.Resolution reviser = parsed.reviserInput().isBlank()
+        ReplayDatabaseComparisonReviserResolver.Resolution reviser = tablePersonDao != null ? reviserResolver.resolve("") : parsed.reviserInput().isBlank()
                 ? reviserResolver.resolve("")
                 : revisers.get(parsed.reviserInput());
+        var person = tablePersonDao == null ? null : tablePersonDao.findByTableName(parsed.tableName());
+        if (tablePersonDao != null && person == null) {
+            parsed.rows().forEach(row -> errors.add(error(row, "该表未配置数据库表人员清单，请先导入人员清单")));
+            return;
+        }
 
         boolean metadataValid = true;
         for (ReplayDatabaseComparisonExcelParser.ParsedRow row : parsed.rows()) {
@@ -152,8 +163,11 @@ public class ReplayDatabaseComparisonImportService {
             ReplayBaseValidatedTable trusted = existing == null
                     ? incoming
                     : metadataService.requireTableWithColumns(parsed.tableName(), combinedNames);
+            if (existing == null) {
+                ReplayDatabaseComparisonKeys.choose(trusted.tableName(), trusted.keyOptions(), null, null);
+            }
             prepared.add(new PreparedImport(
-                    parsed, trusted, reviser.user(), existing,
+                    parsed, trusted, reviser.user(), person, existing,
                     trustedFields(trusted.columns(), combinedNames)));
         } catch (RuntimeException exception) {
             parsed.rows().forEach(row -> errors.add(error(row, safeMessage(exception))));
@@ -179,10 +193,11 @@ public class ReplayDatabaseComparisonImportService {
     private void writeCreate(PreparedImport item, LocalDateTime now) {
         ReplayDbCompareRegistration registration = new ReplayDbCompareRegistration(
                 null, item.metadata.schemaName(), item.metadata.tableName(), item.metadata.tableComment(),
-                item.parsed.domainName(), empNo(item.reviser), username(item.reviser), name(item.reviser),
-                null, null, LocalDate.now(clock), false, null, null, null, 0,
+                domain(item), developerEmpNo(item), developerUsername(item), developerName(item),
+                technologyEmpNo(item), technologyName(item), LocalDate.now(clock), false, null, null, null, 0,
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now,
-                SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields);
+                SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields)
+                .withComparisonKey(ReplayDatabaseComparisonKeys.choose(item.metadata.tableName(), item.metadata.keyOptions(), null, null));
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(null, state(registration), ReplayDbCompareAuditOperation.IMPORT);
         long id = dao.insertRegistration(registration);
@@ -196,12 +211,13 @@ public class ReplayDatabaseComparisonImportService {
         }
         ReplayDbCompareRegistration target = new ReplayDbCompareRegistration(
                 current.id(), current.schemaName(), current.tableName(), item.metadata.tableComment(),
-                item.parsed.domainName(), empNo(item.reviser), username(item.reviser), name(item.reviser),
-                current.groupOwnerEmpNo(), current.groupOwnerName(), current.registeredDate(),
+                domain(item), developerEmpNo(item), developerUsername(item), developerName(item),
+                item.person == null ? current.groupOwnerEmpNo() : technologyEmpNo(item),
+                item.person == null ? current.groupOwnerName() : technologyName(item), current.registeredDate(),
                 false, null, null, null, current.version() + 1,
                 current.createdBy(), current.createdName(), current.createdAt(),
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields,
-                current.whereCondition(), current.compareLimit(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit());
+                current.whereCondition(), current.compareLimit(), current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit()).withComparisonKey(current.comparisonKey());
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.IMPORT);
         if (details.isEmpty()) {
@@ -282,7 +298,7 @@ public class ReplayDatabaseComparisonImportService {
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), registration.deleted(), registration.fields(),
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames());
+                registration.orderingPrimaryKeyNames(), registration.comparisonKey());
     }
 
     private ReplayDbCompareImportError error(
@@ -337,9 +353,19 @@ public class ReplayDatabaseComparisonImportService {
             ReplayDatabaseComparisonExcelParser.ParsedTable parsed,
             ReplayBaseValidatedTable metadata,
             SysUser reviser,
+            com.axonlink.ai.replay.dto.ReplayDatabaseTablePersonRow person,
             ReplayDbCompareRegistration existing,
             List<ReplayDbCompareField> fields) {
     }
+
+    private String domain(PreparedImport item) { return item.person == null ? item.parsed.domainName() : item.person.domain(); }
+    private String developerEmpNo(PreparedImport item) { return item.person == null ? empNo(item.reviser) : value(item.person.developerEmpNos()); }
+    private String developerUsername(PreparedImport item) { return item.person == null ? username(item.reviser) : value(item.person.developerUsernames()); }
+    private String developerName(PreparedImport item) { return item.person == null ? name(item.reviser) : displayName(item.person.developer()); }
+    private String technologyEmpNo(PreparedImport item) { return item.person == null ? null : value(item.person.technologyOwnerEmpNos()); }
+    private String technologyName(PreparedImport item) { return item.person == null ? null : displayName(item.person.technologyOwner()); }
+    private String value(String text) { return text == null ? "" : text; }
+    private String displayName(String text) { return text == null ? "" : text.split("\\(", 2)[0]; }
 
     private static final class Counts {
         private int created;

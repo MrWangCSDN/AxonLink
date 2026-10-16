@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dto;
 
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 /** Server-side pagination and filters for the active replay issue snapshot. */
 public record ReplayIssueQuery(
@@ -43,9 +44,13 @@ public record ReplayIssueQuery(
         List<String> issueDescriptions,
         List<String> issueKeys,
         List<String> issueDomains,
-        ReplayIssueReplayType replayType) {
+        ReplayIssueReplayType replayType,
+        Boolean unverifiedOnly,
+        Boolean relatedToMe,
+        @JsonIgnore List<String> relatedAccounts) {
 
     public ReplayIssueQuery {
+        relatedAccounts = safe(relatedAccounts);
         transactionCodes = safe(transactionCodes);
         issueLevels = safe(issueLevels);
         developers = safe(developers);
@@ -70,6 +75,66 @@ public record ReplayIssueQuery(
         replayType = replayType == null ? ReplayIssueReplayType.ALL : replayType;
     }
 
+    public ReplayIssueQuery(
+        int limit,
+        int offset,
+        String groupName,
+        Boolean sandbox,
+        String issueLevel,
+        String issueType,
+        String keyword,
+        String issueStatus,
+        String developer,
+        String bankOwner,
+        String cooperationPerson,
+        String serialNo,
+        String globalSerialNo,
+        String defectRepairDate,
+        String coverageRound,
+        List<String> transactionCodes,
+        List<String> issueLevels,
+        List<String> developers,
+        List<String> bankOwners,
+        List<String> issueStatuses,
+        List<String> issueTypes,
+        List<String> cooperationPersons,
+        List<String> occurrenceBatches,
+        Boolean weeklyTask,
+        String reviewStatus,
+        List<String> reviewStatuses,
+        String issueId,
+        List<String> groupNames,
+        List<String> sandboxes,
+        List<String> plannedCompletionDates,
+        List<String> issueIds,
+        List<String> serialNos,
+        List<String> globalSerialNos,
+        List<String> defectRepairDates,
+        List<String> transactionNames,
+        List<String> fieldNames,
+        List<String> issueDescriptions,
+        List<String> issueKeys,
+        List<String> issueDomains,
+        ReplayIssueReplayType replayType
+    ) {
+        this(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus, developer, bankOwner,
+                cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound, transactionCodes,
+                issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons, occurrenceBatches,
+                weeklyTask, reviewStatus, reviewStatuses, issueId, groupNames, sandboxes, plannedCompletionDates,
+                issueIds, serialNos, globalSerialNos, defectRepairDates, transactionNames, fieldNames,
+                issueDescriptions, issueKeys, issueDomains, replayType, null, null, List.of());
+    }
+
+    public ReplayIssueQuery withTaskFilters(Boolean unverifiedOnly, Boolean relatedToMe, List<String> relatedAccounts) {
+        return new ReplayIssueQuery(limit, offset, groupName, sandbox, issueLevel, issueType, keyword, issueStatus,
+                developer, bankOwner, cooperationPerson, serialNo, globalSerialNo, defectRepairDate, coverageRound,
+                transactionCodes, issueLevels, developers, bankOwners, issueStatuses, issueTypes, cooperationPersons,
+                occurrenceBatches, weeklyTask, reviewStatus, reviewStatuses, issueId, groupNames, sandboxes,
+                plannedCompletionDates, issueIds, serialNos, globalSerialNos, defectRepairDates, transactionNames,
+                fieldNames, issueDescriptions, issueKeys, issueDomains, replayType, unverifiedOnly, relatedToMe,
+                relatedAccounts);
+    }
+
     public static ReplayIssueQuery empty() {
         return new ReplayIssueQuery(50, 0, null, null, null, null, null);
     }
@@ -90,7 +155,7 @@ public record ReplayIssueQuery(
                 issueStatuses, issueTypes, cooperationPersons, occurrenceBatches, weeklyTask, reviewStatus,
                 reviewStatuses, issueId, groupNames, sandboxes, plannedCompletionDates, issueIds, serialNos,
                 globalSerialNos, defectRepairDates, transactionNames, fieldNames, issueDescriptions, issueKeys,
-                issueDomains, replayType);
+                issueDomains, replayType, unverifiedOnly, relatedToMe, relatedAccounts);
     }
 
     private static List<String> safe(List<String> values) {

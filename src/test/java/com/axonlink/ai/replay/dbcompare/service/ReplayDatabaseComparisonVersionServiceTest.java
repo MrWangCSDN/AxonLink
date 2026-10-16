@@ -62,12 +62,14 @@ class ReplayDatabaseComparisonVersionServiceTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V66__replay_db_compare_person_username_snapshots.sql"),
                 new ClassPathResource("db/daoindex/V70__replay_db_compare_scope.sql"),
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
-                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
@@ -80,6 +82,62 @@ class ReplayDatabaseComparisonVersionServiceTest {
         service = new ReplayDatabaseComparisonVersionService(
                 registrationService, metadataService, registrationDao, versionDao,
                 new ReplayDatabaseComparisonConfigurationHasher(), userDao, jdbc, CLOCK);
+    }
+
+    @Test void legacyNullSelectionWithoutPhysicalPrimarySynchronizesUniqueAndFreezesItInNewVersion() {
+        insertRegistration("acct_master", "账户", List.of(field("ref", "引用", 2, false, 1)));
+        var key = new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("business_unique", "UNIQUE_INDEX", List.of("tenant", "ref"));
+        List<ReplayBaseColumnOption> columns = List.of(new ReplayBaseColumnOption("tenant", "租户", 1, false, null), new ReplayBaseColumnOption("ref", "引用", 2, false, null));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", new ReplayBaseMetadataSnapshot(true, "acct_master", "账户", columns, List.of(key))));
+        var version = service.generate("secret", "secret", operator());
+        var stored = versionDao.findCompleteSnapshot(versionDao.findStoredVersion(version.versionNo()).id()).get(0);
+        assertEquals("business_unique", stored.comparisonKey().indexName());
+        assertEquals(List.of("tenant", "ref"), stored.fields().stream().map(f -> f.columnName()).toList());
+        assertTrue(stored.fields().stream().noneMatch(f -> f.primaryKey()));
+        assertEquals(null, registrationDao.findAllActiveWithFields().get(0).comparisonKey());
+        String sql = new String(new ReplayDatabaseComparisonConfigScriptGenerator().generateNew("v", List.of(stored)).sqlContent(), java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(sql.contains("(1,'tenant','1','租户','1','1','1','0')"));
+        assertTrue(sql.contains("(1,'ref','1','引用','2','2','1','0')"));
+    }
+
+    @Test void generatedVersionFreezesCurrentPersonnelListValues() {
+        insertRegistration("acct_master", "账户", List.of(field("acct_no", "账号", 1, true, 1)));
+        var registration = registrationDao.findAllActiveWithFields().get(0);
+        jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,table_comment,developer_display,developer_usernames,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('acct_master','贷款组','账户','张三(dev1)','dev1','王五(owner1)','101',CURRENT_TIMESTAMP)");
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", metadataFor(registration)));
+        var version=service.generate("secret", "secret", operator());
+        var stored=versionDao.findCompleteSnapshot(versionDao.findStoredVersion(version.versionNo()).id()).get(0);
+        assertEquals("贷款组",stored.domainName());
+        assertEquals("张三",stored.reviserName());
+        assertEquals("dev1",stored.reviserUsername());
+        assertEquals("101",stored.groupOwnerEmpNo());
+        jdbc.update("UPDATE dii_replay_database_table_person SET domain_name='公共组',developer_display='李四(dev2)' WHERE table_name='acct_master'");
+        stored=versionDao.findCompleteSnapshot(versionDao.findStoredVersion(version.versionNo()).id()).get(0);
+        assertEquals("贷款组",stored.domainName());
+        assertEquals("张三",stored.reviserName());
+    }
+
+    @Test void blocksSelectedIndexDeletionAndColumnOrderDriftWithoutLimit() {
+        insertRegistration("acct_master", "账户", List.of(field("tenant", "租户", 1, false, 1), field("ref", "引用", 2, false, 2)));
+        var saved = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("business_unique", "UNIQUE_INDEX", List.of("ref", "tenant"));
+        var registration = registrationDao.findAllActiveWithFields().get(0).withComparisonKey(saved);
+        List<ReplayBaseColumnOption> columns = List.of(new ReplayBaseColumnOption("tenant", "租户", 1, false, null), new ReplayBaseColumnOption("ref", "引用", 2, false, null));
+        for (var keys : List.of(List.<com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption>of(),
+                List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption("business_unique", "UNIQUE_INDEX", List.of("tenant", "ref"))))) {
+            when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", new ReplayBaseMetadataSnapshot(true, "acct_master", "账户", columns, keys)));
+            var gate = service.validateAll(List.of(registration));
+            assertFalse(gate.valid());
+            assertTrue(gate.errors().get(0).reason().contains("比对键索引"));
+        }
+        var validKey = new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption(saved.indexName(), saved.indexType(), saved.columnNames());
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", new ReplayBaseMetadataSnapshot(true, "acct_master", "账户", columns, List.of(validKey))));
+        var gate = service.validateAll(List.of(registration));
+        assertTrue(gate.valid());
+        assertEquals(saved, gate.registrations().get(0).comparisonKey());
+        var hasher = new ReplayDatabaseComparisonConfigurationHasher();
+        assertFalse(hasher.hash(List.of(registration)).equals(hasher.hash(List.of(registration.withComparisonKey(
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("other_unique", "UNIQUE_INDEX", saved.columnNames()))))));
     }
 
     @Test
@@ -291,7 +349,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals(4, errors.size());
         assertTrue(errors.stream().anyMatch(item -> item.reason().contains("missing_status")));
         assertTrue(errors.stream().anyMatch(item -> item.reason().contains("BETWEEN")));
-        assertTrue(errors.stream().anyMatch(item -> item.reason().contains("完整且有序的主键")));
+        assertTrue(errors.stream().anyMatch(item -> item.reason().contains("没有主键或可用唯一索引")));
         assertEquals(0, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_db_compare_version", Integer.class));
     }

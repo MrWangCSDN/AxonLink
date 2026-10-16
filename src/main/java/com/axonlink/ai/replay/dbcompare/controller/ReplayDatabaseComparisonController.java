@@ -112,6 +112,13 @@ public class ReplayDatabaseComparisonController {
         return R.ok(service.search(query));
     }
 
+    @GetMapping("/technology-owners")
+    public R<List<com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareTechnologyOwnerOption>> technologyOwners(
+            @RequestParam(defaultValue = "") String keyword,
+            @RequestParam(defaultValue = "20") int limit) {
+        return R.ok(service.searchTechnologyOwners(keyword, limit));
+    }
+
     @GetMapping("/{id}")
     public R<ReplayDbCompareRegistration> detail(@PathVariable long id) {
         return R.ok(service.detail(id));
@@ -162,6 +169,11 @@ public class ReplayDatabaseComparisonController {
                 })
                 .toList();
         return R.ok(tables);
+    }
+
+    @GetMapping("/metadata/tables/{tableName}/keys")
+    public R<List<com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption>> keys(@PathVariable String tableName) {
+        return R.ok(metadataService.listKeys(tableName));
     }
 
     @GetMapping("/metadata/tables/{tableName}/columns")

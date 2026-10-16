@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseTableOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseValidatedTable;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Service;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -62,12 +64,12 @@ public class ReplayBaseMetadataService {
                    col_description(c.oid, a.attnum) AS column_comment,
                    format_type(a.atttypid, a.atttypmod) AS data_type,
                    a.attnum AS ordinal_position,
-                   pk.indkey::text AS primary_key_attnums
+                   array_to_string(pk.conkey, ' ') AS primary_key_attnums
               FROM pg_attribute a
               JOIN pg_class c ON c.oid = a.attrelid
               JOIN pg_namespace n ON n.oid = c.relnamespace
               CROSS JOIN filter_values f
-              LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
+              LEFT JOIN pg_constraint pk ON pk.conrelid = c.oid AND pk.contype = 'p'
              WHERE n.nspname = f.schema_name
                AND lower(c.relname) = lower(f.table_name)
                AND a.attnum > 0
@@ -166,6 +168,14 @@ public class ReplayBaseMetadataService {
         }
     }
 
+    public List<ReplayBaseKeyOption> listKeys(String tableName) {
+        ReplayBaseMetadataSnapshot snapshot = inspectTable(tableName);
+        if (!snapshot.tableExists()) {
+            throw new ReplayBaseTableNotFoundException(snapshot.tableName());
+        }
+        return snapshot.keyOptions();
+    }
+
     public ReplayBaseMetadataSnapshot inspectTable(String tableName) {
         String normalizedTable = requireIdentifier(tableName, "表英文名不能为空");
         try (Connection connection = registry.requireDataSource().getConnection()) {
@@ -173,9 +183,12 @@ public class ReplayBaseMetadataService {
             if (table == null) {
                 return new ReplayBaseMetadataSnapshot(false, normalizedTable, null, List.of());
             }
+            List<ReplayBaseColumnOption> columns = queryColumns(connection, normalizedTable, "%%");
+            List<ReplayBaseKeyOption> keys = queryKeysByTables(
+                    connection, Map.of(normalizedTable, columns)).getOrDefault(normalizedTable, List.of());
             return new ReplayBaseMetadataSnapshot(
                     true, table.tableName(), table.tableComment(),
-                    queryColumns(connection, normalizedTable, "%%"));
+                    columns, keys);
         } catch (SQLException exception) {
             throw unavailable();
         }
@@ -218,6 +231,7 @@ public class ReplayBaseMetadataService {
 
             Map<String, List<ReplayBaseColumnOption>> columnsByTable = queryColumnsByTables(
                     connection, existingTables.keySet());
+            Map<String, List<ReplayBaseKeyOption>> keysByTable = queryKeysByTables(connection, columnsByTable);
             LinkedHashMap<String, ReplayBaseMetadataSnapshot> result = new LinkedHashMap<>();
             for (String tableName : normalizedNames) {
                 boolean exists = existingTables.containsKey(tableName);
@@ -225,7 +239,8 @@ public class ReplayBaseMetadataService {
                         exists,
                         tableName,
                         existingTables.get(tableName),
-                        columnsByTable.getOrDefault(tableName, List.of())));
+                        columnsByTable.getOrDefault(tableName, List.of()),
+                        keysByTable.getOrDefault(tableName, List.of())));
             }
             return Collections.unmodifiableMap(result);
         } catch (SQLException exception) {
@@ -277,7 +292,7 @@ public class ReplayBaseMetadataService {
                 .toList();
         return new ReplayBaseValidatedTable(
                 schema(), snapshot.tableName(), snapshot.tableComment(),
-                selectedColumns, currentPrimaryKeys, allColumns);
+                selectedColumns, currentPrimaryKeys, allColumns, snapshot.keyOptions());
     }
 
     private ReplayBaseTableOption findTable(Connection connection, String tableName) throws SQLException {
@@ -343,11 +358,11 @@ public class ReplayBaseMetadataService {
                        col_description(c.oid, a.attnum) AS column_comment,
                        format_type(a.atttypid, a.atttypmod) AS data_type,
                        a.attnum AS ordinal_position,
-                       pk.indkey::text AS primary_key_attnums
+                       array_to_string(pk.conkey, ' ') AS primary_key_attnums
                   FROM pg_attribute a
                   JOIN pg_class c ON c.oid = a.attrelid
                   JOIN pg_namespace n ON n.oid = c.relnamespace
-                  LEFT JOIN pg_index pk ON pk.indrelid = c.oid AND pk.indisprimary
+                  LEFT JOIN pg_constraint pk ON pk.conrelid = c.oid AND pk.contype = 'p'
                  WHERE n.nspname = ?
                    AND lower(c.relname) IN (%s)
                    AND a.attnum > 0
@@ -379,6 +394,101 @@ public class ReplayBaseMetadataService {
             }
         }
         return result;
+    }
+
+    private Map<String, List<ReplayBaseKeyOption>> queryKeysByTables(
+            Connection connection,
+            Map<String, List<ReplayBaseColumnOption>> columnsByTable) throws SQLException {
+        if (columnsByTable.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(columnsByTable.size(), "?"));
+        // SELECT i.* exposes indnkeyatts only where the catalog supports INCLUDE columns (PG 11+).
+        // Naming that column in SQL would fail on older PostgreSQL and openGauss catalogs.
+        String sql = """
+                SELECT lower(c.relname) AS table_name,
+                       index_class.relname AS index_name,
+                       i.indkey::text AS index_attnums,
+                       i.*
+                  FROM pg_index i
+                  JOIN pg_class c ON c.oid = i.indrelid
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                  JOIN pg_class index_class ON index_class.oid = i.indexrelid
+                 WHERE n.nspname = ?
+                   AND lower(c.relname) IN (%s)
+                   AND i.indisunique
+                   AND i.indisvalid
+                   AND i.indisready
+                   AND i.indexprs IS NULL
+                   AND i.indpred IS NULL
+                 ORDER BY lower(c.relname), i.indisprimary DESC, index_class.relname
+                """.formatted(placeholders);
+        Map<String, Map<Integer, String>> columnNamesByTable = new LinkedHashMap<>();
+        columnsByTable.forEach((tableName, columns) -> {
+            Map<Integer, String> names = new LinkedHashMap<>();
+            columns.forEach(column -> names.put(column.ordinalPosition(), column.columnName()));
+            columnNamesByTable.put(tableName, names);
+        });
+        Map<String, List<ReplayBaseKeyOption>> result = new LinkedHashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, schema());
+            int parameter = 2;
+            for (String tableName : columnsByTable.keySet()) {
+                statement.setString(parameter++, tableName);
+            }
+            try (ResultSet rows = statement.executeQuery()) {
+                boolean hasKeyAttributeCount = hasColumn(rows.getMetaData(), "indnkeyatts");
+                while (rows.next()) {
+                    String tableName = normalizeIdentifier(rows.getString("table_name"));
+                    int keyCount = rows.getInt(hasKeyAttributeCount ? "indnkeyatts" : "indnatts");
+                    List<String> names = indexColumnNames(rows.getString("index_attnums"), keyCount,
+                            columnNamesByTable.getOrDefault(tableName, Map.of()));
+                    if (!names.isEmpty()) {
+                        result.computeIfAbsent(tableName, ignored -> new ArrayList<>()).add(
+                                new ReplayBaseKeyOption(rows.getString("index_name"),
+                                        rows.getBoolean("indisprimary") ? "PRIMARY_KEY" : "UNIQUE_INDEX", names));
+                    }
+                }
+            }
+        }
+        result.replaceAll((tableName, keys) -> keys.stream()
+                .sorted(Comparator.comparing((ReplayBaseKeyOption key) -> !"PRIMARY_KEY".equals(key.indexType()))
+                        .thenComparing(ReplayBaseKeyOption::indexName))
+                .toList());
+        return result;
+    }
+
+    private boolean hasColumn(ResultSetMetaData metadata, String columnName) throws SQLException {
+        for (int index = 1; index <= metadata.getColumnCount(); index++) {
+            if (columnName.equalsIgnoreCase(metadata.getColumnLabel(index))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> indexColumnNames(String indexAttnums, int keyCount, Map<Integer, String> columnsByAttnum) {
+        if (indexAttnums == null || indexAttnums.isBlank() || keyCount < 1) {
+            return List.of();
+        }
+        String[] attnums = indexAttnums.trim().split("\\s+");
+        if (attnums.length < keyCount) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        for (int position = 0; position < keyCount; position++) {
+            try {
+                int attnum = Integer.parseInt(attnums[position]);
+                String name = columnsByAttnum.get(attnum);
+                if (attnum <= 0 || name == null) {
+                    return List.of();
+                }
+                names.add(name);
+            } catch (NumberFormatException exception) {
+                return List.of();
+            }
+        }
+        return List.copyOf(names);
     }
 
     private LinkedHashSet<String> normalizedIdentifiers(Collection<String> values) {

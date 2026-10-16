@@ -99,6 +99,14 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void technologyOwnerAutocompleteHasDedicatedEndpoint() throws Exception {
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/technology-owners")
+                        .param("keyword", "101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").isArray());
+    }
+
+    @Test
     void partitioningRejectsCoercibleOrMissingVersionsBeforeUpdating() throws Exception {
         properties.setPartitionAdminEmpNos(List.of("200"));
         when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
@@ -554,7 +562,7 @@ class ReplayDatabaseComparisonControllerTest {
                                  "groupOwnerEmpNo":"101","fieldNames":["acct_no"],"version":0}
                                 """))
                 .andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.message").value("该表没有主键，请联系 DBA 创建表主键"))
+                .andExpect(jsonPath("$.message").value("该表没有主键或可用唯一索引，请联系 DBA 创建比对键索引"))
                 .andExpect(jsonPath("$.data.errorCode").value("BASE_PRIMARY_KEY_MISSING"))
                 .andExpect(jsonPath("$.data.tableName").value("acct_master"));
     }

@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Collection;
 
 /**
  * 用户基本信息 CRUD。仿 CodeRepoConfigDao 的 JdbcTemplate + @Repository 模式。
@@ -122,6 +123,31 @@ public class SysUserDao {
                         + " WHERE status = 1 AND (username LIKE ? OR real_name LIKE ?)"
                         + " ORDER BY real_name, username LIMIT ?",
                 MAPPER, like, like, boundedLimit);
+    }
+
+    /** Technology-owner lookup uses actual employee numbers, never account naming conventions. */
+    public List<SysUser> searchActiveEmployees(String keyword, int limit) {
+        int boundedLimit = Math.min(Math.max(limit, 1), 50);
+        String like = "%" + (keyword == null ? "" : keyword.trim()) + "%";
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE status = 1 AND emp_no IS NOT NULL AND TRIM(emp_no) <> ''"
+                        + " AND (username LIKE ? OR real_name LIKE ? OR emp_no LIKE ?)"
+                        + " ORDER BY real_name, username LIMIT ?",
+                MAPPER, like, like, like, boundedLimit);
+    }
+
+    /** Return all identity matches, including inactive users, so callers can reject ambiguity. */
+    public List<SysUser> findByUsernamesOrEmpNos(Collection<String> identities) {
+        if (identities == null || identities.isEmpty()) return List.of();
+        List<String> values = identities.stream().filter(value -> value != null && !value.isBlank())
+                .map(String::trim).distinct().toList();
+        if (values.isEmpty()) return List.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(values.size(), "?"));
+        List<Object> args = new java.util.ArrayList<>(values);
+        args.addAll(values);
+        return jdbc.query("SELECT " + SELECT_COLS + " FROM " + TBL
+                        + " WHERE username IN (" + placeholders + ") OR emp_no IN (" + placeholders + ")"
+                        + " ORDER BY id", MAPPER, args.toArray());
     }
 
     public List<SysUser> findActiveByExactRealName(String realName) {

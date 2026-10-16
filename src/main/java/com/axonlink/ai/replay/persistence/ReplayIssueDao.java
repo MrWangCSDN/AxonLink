@@ -645,7 +645,7 @@ public class ReplayIssueDao {
                 jdbc.queryForList("SELECT DISTINCT group_name FROM dii_replay_issue "
                         + "WHERE TRIM(group_name) <> '' ORDER BY group_name", String.class),
                 distinctNonBlank("issue_level"),
-                List.of("迁移问题", "防腐问题", "代码问题", "新核心下线", "参数问题", "平台问题", "合理差异", "规则性差异问题", "外围问题", "其他问题"),
+                com.axonlink.ai.replay.service.ReplayIssueTypes.ALL,
                 List.of("新建", "打开", "无需处理", "延后修复", "修复待验证", "重新打开", "已修复"),
                 coverageRounds(), List.of("待审核", "已审核（未填写原因）", "已审核（已填写原因）"));
     }
@@ -1176,6 +1176,33 @@ public class ReplayIssueDao {
         });
     }
 
+    private static void appendRelatedAccounts(StringBuilder sql, List<Object> args, List<String> accounts) {
+        if (accounts.isEmpty()) {
+            sql.append(" AND 1=0");
+            return;
+        }
+        sql.append(" AND (");
+        boolean wrote = false;
+        for (String account : accounts) {
+            if (wrote) sql.append(" OR ");
+            // Match complete account tokens, including lists imported with Chinese separators.
+            StringBuilder escaped = new StringBuilder();
+            for (char character : account.toCharArray()) {
+                if ("\\.^$|?*+()[]{}".indexOf(character) >= 0) escaped.append('\\');
+                escaped.append(character);
+            }
+            String pattern = "(^|[、,，;；\\s])" + escaped + "($|[、,，;；\\s])";
+            sql.append("COALESCE(tp.developer_usernames,'') REGEXP ? OR "
+                    + "COALESCE(tp.bank_owner_emp_nos,'') REGEXP ? OR "
+                    + "TRIM(COALESCE(i.cooperation_person_username,''))=?");
+            args.add(pattern);
+            args.add(pattern);
+            args.add(account);
+            wrote = true;
+        }
+        sql.append(")");
+    }
+
     private static void appendFilters(StringBuilder sql, List<Object> args, ReplayIssueQuery query) {
         if (hasText(query.groupName())) {
             sql.append(" AND i.group_name = ?");
@@ -1244,6 +1271,8 @@ public class ReplayIssueDao {
                     .append("?,".repeat(query.cooperationPersons().size()).replaceAll(",$", "")).append(")");
             args.addAll(query.cooperationPersons());
         }
+        if (Boolean.TRUE.equals(query.unverifiedOnly())) sql.append(" AND i.defect_repair_date IS NULL");
+        if (Boolean.TRUE.equals(query.relatedToMe())) appendRelatedAccounts(sql, args, query.relatedAccounts());
         appendReplayType(sql, args, query.replayType());
         appendOccurrenceBatches(sql, args, query.occurrenceBatches());
         if (Boolean.TRUE.equals(query.weeklyTask())) {
