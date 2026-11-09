@@ -13,9 +13,16 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.*;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Repository
 public class ReplayReopenDao {
@@ -23,6 +30,10 @@ public class ReplayReopenDao {
     private final TransactionTemplate transaction;
     private final TransactionTemplate writeTransaction;
     private static final String EVENTS = "dii_replay_reopen_event";
+    private static final Pattern BATCH_DATE_TIME =
+            Pattern.compile("^(?:RPT|DZ)(\\d{8})-(?:(\\d{6})(?:-|$))?.*$");
+    private static final DateTimeFormatter BATCH_CLOCK =
+            DateTimeFormatter.ofPattern("HHmmss").withResolverStyle(ResolverStyle.STRICT);
     private static final RowMapper<EventRow> MAPPER =
             (r, n) ->
                     new EventRow(
@@ -190,6 +201,8 @@ public class ReplayReopenDao {
                     .add(row.person());
         List<BatchStat> batchStats =
                 batches.stream()
+                        .sorted(Comparator.comparing(
+                                batch -> batchChronologyKey(batch.name()), Comparator.reverseOrder()))
                         .map(
                                 batch ->
                                         new BatchStat(
@@ -206,6 +219,28 @@ public class ReplayReopenDao {
     }
 
     private record BatchCount(String name, long count) {}
+
+    private static String batchChronologyKey(String batchName) {
+        String normalized = batchName == null ? "" : batchName.trim();
+        Matcher matcher = BATCH_DATE_TIME.matcher(normalized);
+        if (!matcher.matches()) return "";
+        LocalDate date;
+        try {
+            date = LocalDate.parse(matcher.group(1), DateTimeFormatter.BASIC_ISO_DATE);
+        } catch (DateTimeParseException invalidDate) {
+            return "";
+        }
+        LocalTime time = LocalTime.MIDNIGHT;
+        if (matcher.group(2) != null) {
+            try {
+                time = LocalTime.parse(matcher.group(2), BATCH_CLOCK);
+            } catch (DateTimeParseException invalidTime) {
+                // Historical suffixes can be sequence numbers instead of a valid clock time.
+            }
+        }
+        return date.format(DateTimeFormatter.BASIC_ISO_DATE) + time.format(BATCH_CLOCK)
+                + normalized.substring(matcher.start(1));
+    }
 
     private record PersonAggregate(String batchName, PersonStat person) {}
 

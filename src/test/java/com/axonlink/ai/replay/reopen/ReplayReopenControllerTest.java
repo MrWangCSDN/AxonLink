@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.contains;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -222,6 +223,53 @@ class ReplayReopenControllerTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(2));
         mvc.perform(get(BASE+"/statistics").param("replayType","ALL"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(5));
+    }
+
+    @Test
+    void batchStatisticsMixReplayTypesByEmbeddedDateAndTimeNewestFirst() throws Exception {
+        ReplayReopenTestSupport.event(jdbc,2,"ISS-B","DZ20261104-201323-3518","devb","开发乙","公共组");
+        ReplayReopenTestSupport.event(jdbc,3,"ISS-C","RPT20261104-194516-0435","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,4,"ISS-D","RPT20261105-000247-2239","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,5,"ISS-E","DZ20261103-235959-4883","devb","开发乙","公共组");
+        ReplayReopenTestSupport.event(jdbc,6,"ISS-F","DZ20261104-201323-3518","devb","开发乙","公共组");
+        jdbc.update("UPDATE dii_replay_reopen_event SET replay_type='DZ' WHERE id IN (2,5,6)");
+
+        mvc.perform(get(BASE+"/statistics").param("replayType","ALL"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalEvents").value(6))
+                .andExpect(jsonPath("$.data.batches[*].batchName").value(contains(
+                        "RPT20261105-000247-2239", "DZ20261104-201323-3518",
+                        "RPT20261104-194516-0435", "DZ20261103-235959-4883", "RPT20261022-01")))
+                .andExpect(jsonPath("$.data.batches[1].totalEvents").value(2))
+                .andExpect(jsonPath("$.data.batches[1].people[0].username").value("devb"))
+                .andExpect(jsonPath("$.data.batches[1].people[0].currentCount").value(2));
+
+        mvc.perform(get(BASE+"/statistics").param("batchNames","RPT20261104-194516-0435","DZ20261104-201323-3518"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.batches[*].batchName").value(contains(
+                        "DZ20261104-201323-3518", "RPT20261104-194516-0435")));
+    }
+
+    @Test
+    void batchStatisticsKeepDateOnlyHistoryAndPlaceUnparseableDatesLast() throws Exception {
+        jdbc.update("DELETE FROM dii_replay_reopen_event");
+        ReplayReopenTestSupport.event(jdbc,1,"ISS-A","DZ20261106-01","devb","开发乙","公共组");
+        ReplayReopenTestSupport.event(jdbc,2,"ISS-B","RPT20261105-235959-9999","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,3,"ISS-C","RPT20261106-120000-0001","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,4,"ISS-D","DZ20261106-240000-0001","devb","开发乙","公共组");
+        ReplayReopenTestSupport.event(jdbc,5,"ISS-E","RPT20260230-120000-0001","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,6,"ISS-F","LEGACY-BATCH","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,7,"ISS-G",null,"deva","开发甲","公共组");
+        jdbc.update("UPDATE dii_replay_reopen_event SET replay_type='DZ' WHERE id IN (1,4)");
+
+        mvc.perform(get(BASE+"/statistics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.batches[0].batchName").value("RPT20261106-120000-0001"))
+                .andExpect(jsonPath("$.data.batches[1].batchName").value("DZ20261106-240000-0001"))
+                .andExpect(jsonPath("$.data.batches[2].batchName").value("DZ20261106-01"))
+                .andExpect(jsonPath("$.data.batches[3].batchName").value("RPT20261105-235959-9999"))
+                .andExpect(jsonPath("$.data.batches.length()").value(7))
+                .andExpect(jsonPath("$.data.totalEvents").value(7));
     }
 
     @Test
