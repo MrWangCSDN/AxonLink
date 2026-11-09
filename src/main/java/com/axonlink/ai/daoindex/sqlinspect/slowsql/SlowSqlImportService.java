@@ -36,7 +36,8 @@ public class SlowSqlImportService {
 
     private static final Logger log = LoggerFactory.getLogger(SlowSqlImportService.class);
 
-    // v2 列序：A服务名 B抽象SQL C参数 D耗时 E来源文件
+    // v2 默认列序：A服务名 B抽象SQL C参数 D耗时 E来源文件。
+    // 兼容新导出：A slowSqlStatement B ServiceName，其余列不变。
     private static final int COL_SERVICE = 0;
     private static final int COL_ABSTRACT = 1;
     private static final int COL_PARAMS = 2;
@@ -216,10 +217,15 @@ public class SlowSqlImportService {
             if (wb.getNumberOfSheets() == 0) return;
             Sheet sheet = wb.getSheetAt(0);
             boolean header = true;
+            ColumnLayout layout = ColumnLayout.legacy();
             for (Row row : sheet) {
-                if (header) { header = false; continue; }   // 跳首行表头
+                if (header) {
+                    header = false;
+                    layout = columnLayout(cell(row, 0), cell(row, 1));
+                    continue;
+                }
                 addRow(agg, rawRows, skipped, filterPrefixes, filtered,
-                        cell(row, COL_SERVICE), cell(row, COL_ABSTRACT),
+                        cell(row, layout.serviceIndex()), cell(row, layout.abstractIndex()),
                         cell(row, COL_PARAMS), cell(row, COL_COST), cell(row, COL_LOCATION));
             }
         }
@@ -238,10 +244,15 @@ public class SlowSqlImportService {
                     .setAllowMissingColumnNames(true).build();
             try (org.apache.commons.csv.CSVParser parser = new org.apache.commons.csv.CSVParser(reader, fmt)) {
                 boolean header = true;
+                ColumnLayout layout = ColumnLayout.legacy();
                 for (org.apache.commons.csv.CSVRecord rec : parser) {
-                    if (header) { header = false; continue; }   // 跳首行表头
+                    if (header) {
+                        header = false;
+                        layout = columnLayout(get(rec, 0), get(rec, 1));
+                        continue;
+                    }
                     addRow(agg, rawRows, skipped, filterPrefixes, filtered,
-                            get(rec, COL_SERVICE), get(rec, COL_ABSTRACT),
+                            get(rec, layout.serviceIndex()), get(rec, layout.abstractIndex()),
                             get(rec, COL_PARAMS), get(rec, COL_COST), get(rec, COL_LOCATION));
                 }
             }
@@ -250,6 +261,39 @@ public class SlowSqlImportService {
 
     private static String get(org.apache.commons.csv.CSVRecord rec, int idx) {
         return rec.size() > idx ? rec.get(idx) : "";
+    }
+
+    /**
+     * 根据前两列表头识别导出版本。没有明确表头时保留历史行为，按 A=ServiceName、B=SQL 解析。
+     */
+    static ColumnLayout columnLayout(String first, String second) {
+        String a = normalizeHeader(first);
+        String b = normalizeHeader(second);
+        if (isSqlHeader(a) && isServiceHeader(b)) return new ColumnLayout(1, 0);
+        return ColumnLayout.legacy();
+    }
+
+    private static boolean isSqlHeader(String header) {
+        return "slowsqlstatement".equals(header)
+                || "abstractsql".equals(header)
+                || "抽象sql".equals(header);
+    }
+
+    private static boolean isServiceHeader(String header) {
+        return "servicename".equals(header)
+                || "service".equals(header)
+                || "微服务".equals(header);
+    }
+
+    private static String normalizeHeader(String value) {
+        return value == null ? "" : value.trim().replace("_", "")
+                .replace("-", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    record ColumnLayout(int serviceIndex, int abstractIndex) {
+        static ColumnLayout legacy() {
+            return new ColumnLayout(COL_SERVICE, COL_ABSTRACT);
+        }
     }
 
     /**

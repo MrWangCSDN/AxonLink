@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -277,6 +278,110 @@ class ReplayIssueDailyReportServiceTest {
     }
 
     @Test
+    void deductsOnlyApprovedTransactionLevelNoActionFromRatesAndRefreshesAfterApproval() throws Exception {
+        String previous = "RPT20260901-01", current = "RPT20260902-01";
+        seedDailyBatch(previous, LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        insertIssueWithOccurrence(201L, "公共组", false, "合理差异", "交易级", "无需处理", previous);
+        insertIssueWithOccurrence(202L, "公共组", false, "合理差异", "交易级", "无需处理", current);
+        insertIssueWithOccurrence(203L, "公共组", false, "合理差异", "交易级", "无需处理", current);
+        insertIssueWithOccurrence(204L, "公共组", false, "合理差异", "交易级", "无需处理", current);
+        insertIssueWithOccurrence(205L, "公共组", false, "合理差异", "交易级", "无需处理", current);
+        insertIssueWithOccurrence(206L, "公共组", false, "合理差异", "字段级", "无需处理", current);
+        insertIssueWithOccurrence(207L, "公共组", true, "合理差异", "交易级", "无需处理", current);
+        insertIssueWithOccurrence(208L, "公共组", false, "代码问题", "交易级", "打开", current);
+        jdbc.update("UPDATE dii_replay_issue SET review_status='APPROVED', affected_transaction_count='6' WHERE id=201");
+        jdbc.update("UPDATE dii_replay_issue SET review_status='APPROVED', affected_transaction_count='9' WHERE id=202");
+        jdbc.update("UPDATE dii_replay_issue SET review_status='PENDING', affected_transaction_count='2' WHERE id=203");
+        jdbc.update("UPDATE dii_replay_issue SET review_status=NULL, affected_transaction_count='3' WHERE id=204");
+        jdbc.update("UPDATE dii_replay_issue SET review_status='UNKNOWN', affected_transaction_count='4' WHERE id=205");
+        jdbc.update("UPDATE dii_replay_issue SET review_status='APPROVED', affected_transaction_count='50' WHERE id IN (206,207,208)");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='PREVIOUS-IFACE' WHERE id=201");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='CURRENT-IFACE' WHERE id IN (202,203,204,205,206,208)");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='UNMATCHED' WHERE id=207");
+        captureBatchStatistics(previous);
+        captureBatchStatistics(current);
+
+        byte[] generated = service.generate(current);
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(generated))) {
+            Sheet summary = workbook.getSheet("汇总信息");
+            var previousRow = findSummaryRow(summary, previous);
+            var currentRow = findSummaryRow(summary, current);
+            assertEquals(6d, previousRow.getCell(9).getNumericCellValue());
+            assertEquals(9d, currentRow.getCell(9).getNumericCellValue());
+            assertEquals(0.91111111d, currentRow.getCell(11).getNumericCellValue(), 0.000000001d);
+            assertEquals(0.87777778d, currentRow.getCell(12).getNumericCellValue(), 0.000000001d);
+            assertEquals(1d, currentRow.getCell(13).getNumericCellValue(), "问题统计仍排除全部无需处理");
+        }
+        var savedView = new ReplayReportSummaryCodec().decode(
+                dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        assertEquals(9L, savedView.totalRow().values().get("noAction"));
+        assertEquals(new BigDecimal("0.87777778"), savedView.totalRow().values().get("matchPassRate"));
+
+        jdbc.update("UPDATE dii_replay_issue SET review_status='APPROVED' WHERE id=203");
+        issueDao.updateLatestHistoryOccurrenceBatch(203L, LocalDateTime.of(2026, 9, 2, 10, 0), current);
+        assertArrayEquals(generated, service.generate(current), "已生成快照需显式重新生成");
+        byte[] regenerated = service.regenerate(current);
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(regenerated))) {
+            var currentRow = findSummaryRow(workbook.getSheet("汇总信息"), current);
+            assertEquals(11d, currentRow.getCell(9).getNumericCellValue());
+            assertEquals(0.89772727d, currentRow.getCell(12).getNumericCellValue(), 0.000000001d);
+        }
+        var refreshedView = new ReplayReportSummaryCodec().decode(
+                dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        assertEquals(11L, refreshedView.totalRow().values().get("noAction"));
+        assertEquals(new BigDecimal("0.89772727"), refreshedView.totalRow().values().get("matchPassRate"));
+    }
+
+    @Test
+    void countsAcceptedFieldDifferencesOnlyAfterEveryFieldHasARepairDate() throws Exception {
+        String previous = "RPT20260901-01", current = "RPT20260902-01";
+        seedDailyBatch(previous, LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        jdbc.update("UPDATE dii_replay_interface_comparison SET both_success_no_field_difference=60, "
+                + "both_success_with_field_difference=20 WHERE batch_no=?", previous);
+        jdbc.update("UPDATE dii_replay_interface_comparison SET both_success_no_field_difference=70, "
+                + "both_success_with_field_difference=10 WHERE batch_no=?", current);
+        insertIssueWithOccurrence(301L, "公共组", false, "合理差异", "字段级", "无需处理", previous);
+        insertIssueWithOccurrence(302L, "公共组", false, "合理差异", "字段级", "无需处理", current);
+        insertIssueWithOccurrence(303L, "公共组", false, "代码问题", "字段级", "打开", current);
+        insertIssueWithOccurrence(304L, "公共组", false, "规则性差异问题", "字段级", "无需处理", current);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='PREVIOUS-IFACE', review_status='APPROVED', "
+                + "defect_repair_date='2026-09-01' WHERE id=301");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='CURRENT-IFACE', review_status='APPROVED', "
+                + "defect_repair_date='2026-09-02' WHERE id IN (302,304)");
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='CURRENT-IFACE' WHERE id=303");
+        captureBatchStatistics(previous);
+        captureBatchStatistics(current);
+
+        byte[] first = service.generate(current);
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(first))) {
+            Sheet summary = workbook.getSheet("汇总信息");
+            assertEquals(0.82828283d, findSummaryRow(summary, previous).getCell(12).getNumericCellValue(), 0.000000001d);
+            assertEquals(0.72727273d, findSummaryRow(summary, current).getCell(12).getNumericCellValue(), 0.000000001d);
+            assertEquals(0d, findSummaryRow(summary, current).getCell(9).getNumericCellValue(), "字段级不扣分母");
+        }
+
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='已修复', defect_repair_date='2026-09-02' WHERE id=303");
+        issueDao.updateLatestHistoryOccurrenceBatch(303L, LocalDateTime.of(2026, 9, 2, 10, 0), current);
+        assertArrayEquals(first, service.generate(current));
+        byte[] regenerated = service.regenerate(current);
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(regenerated))) {
+            var row = findSummaryRow(workbook.getSheet("汇总信息"), current);
+            assertEquals(0.82828283d, row.getCell(12).getNumericCellValue(), 0.000000001d);
+            assertEquals(0.82828283d, row.getCell(11).getNumericCellValue(), 0.000000001d);
+        }
+        var view = new ReplayReportSummaryCodec().decode(
+                dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        assertEquals(new BigDecimal("0.82828283"), view.rows().get(0).values().get("matchPassRate"));
+        assertEquals(new BigDecimal("0.82828283"), view.totalRow().values().get("matchPassRate"));
+    }
+
+    @Test
     void generatesInterfaceAndCoverageSheetsFromSelectedBatchOnly() throws Exception {
         seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS-ONLY");
         seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "SELECTED-ONLY");
@@ -305,7 +410,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findComparisons(any())).thenReturn(List.of());
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
-        when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
+        when(projectionDao.findBatchReportIssueStatistics(any())).thenReturn(List.of());
         when(writer.write(any(), any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
         ReplayIssueDailyReportService orchestrator = new ReplayIssueDailyReportService(dataDao, projectionDao,
                 new ReplayDailyReportCalculator(), writer, jdbc);
@@ -313,8 +418,8 @@ class ReplayIssueDailyReportServiceTest {
         byte[] generated = orchestrator.generate("RPT20260902-01");
 
         assertArrayEquals(new byte[]{1, 2, 3}, generated);
-        verify(projectionDao).findDailyReportIssueStatistics("RPT20260901-01");
-        verify(projectionDao).findDailyReportIssueStatistics("RPT20260902-01");
+        verify(projectionDao).findBatchReportIssueStatistics("RPT20260901-01");
+        verify(projectionDao).findBatchReportIssueStatistics("RPT20260902-01");
         verify(dataDao).findComparisons("RPT20260902-01");
         verify(dataDao).findCoverageSummaries("RPT20260902-01");
         verify(dataDao).findCoverageDetails("RPT20260902-01");
@@ -398,7 +503,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findComparisons(any())).thenReturn(List.of());
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
-        when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
+        when(projectionDao.findBatchReportIssueStatistics(any())).thenReturn(List.of());
         when(writer.write(any(), any(), any(), any(), any())).thenReturn(new byte[]{1, 2, 3});
         Clock clock = Clock.fixed(LocalDateTime.of(2026, 9, 7, 10, 30)
                 .toInstant(ZoneOffset.UTC), ZoneOffset.UTC);
@@ -433,7 +538,7 @@ class ReplayIssueDailyReportServiceTest {
         when(dataDao.findComparisons(any())).thenReturn(List.of());
         when(dataDao.findCoverageSummaries(any())).thenReturn(List.of());
         when(dataDao.findCoverageDetails(any())).thenReturn(List.of());
-        when(projectionDao.findDailyReportIssueStatistics(any())).thenReturn(List.of());
+        when(projectionDao.findBatchReportIssueStatistics(any())).thenReturn(List.of());
         when(writer.write(any(), any(), any(), any(), any())).thenThrow(new IllegalStateException("write failed"));
         ReplayIssueDailyReportService orchestrator = new ReplayIssueDailyReportService(dataDao, projectionDao,
                 new ReplayDailyReportCalculator(), writer, jdbc);
@@ -472,7 +577,7 @@ class ReplayIssueDailyReportServiceTest {
             recordSnapshotConnection(snapshotJdbc, snapshotConnections);
             return List.of();
         });
-        when(projectionDao.findDailyReportIssueStatistics(any())).thenAnswer(invocation -> {
+        when(projectionDao.findBatchReportIssueStatistics(any())).thenAnswer(invocation -> {
             recordSnapshotConnection(snapshotJdbc, snapshotConnections);
             return List.of();
         });
@@ -486,7 +591,7 @@ class ReplayIssueDailyReportServiceTest {
 
         assertArrayEquals(new byte[]{1, 2, 3}, orchestrator.generate("RPT20260902-01"));
 
-        assertEquals(8, snapshotConnections.size());
+        assertEquals(9, snapshotConnections.size());
         Connection transactionConnection = snapshotConnections.get(0);
         assertTrue(snapshotConnections.stream().allMatch(connection -> connection == transactionConnection));
     }
@@ -501,15 +606,157 @@ class ReplayIssueDailyReportServiceTest {
     }
 
     @Test
-    void rejectsSelectedBatchWithoutSameFamilyPreviousBatch() {
+    void generatesInitialDailyWithoutSameFamilyPreviousBatch() throws Exception {
         seedDailyBatch("DZ20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "DZ-FIRST");
         seedDailyBatch("RPT20260902-01", LocalDateTime.of(2026, 9, 2, 9, 0), "RPT-FIRST");
 
-        ReplayIssueDailyReportService.PreviousBatchNotFoundException exception = assertThrows(
-                ReplayIssueDailyReportService.PreviousBatchNotFoundException.class,
-                () -> service.generate("RPT20260902-01"));
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(assertDoesNotThrow(() -> service.generate("RPT20260902-01"))))) {
+            assertTrue(sheetText(workbook.getSheet("汇总信息")).contains("本批次为统计起点"));
+            assertEquals(100d, findSummaryRow(workbook.getSheet("汇总信息"), "RPT20260902-01").getCell(3).getNumericCellValue());
+        }
+    }
 
-        assertEquals("没有上批次数据", exception.getMessage());
+    @Test
+    void missingPreviousHistoryPreservesBothBatchRateTablesAndTheNextBatchNeedsNoEarlierReport() throws Exception {
+        String previous = "RPT20260901-01", current = "RPT20260902-01", next = "RPT20260903-01";
+        seedDailyBatch(previous, LocalDateTime.of(2026, 9, 1, 9, 0), "OLD");
+        jdbc.update("DELETE FROM dii_replay_issue_statistics_batch WHERE batch_no=?", previous);
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+
+        byte[] bytes = assertDoesNotThrow(() -> service.generate(current));
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("汇总信息");
+            assertTrue(sheetText(sheet).contains("历史问题统计未建立"));
+            assertFalse(sheetText(sheet).contains("本批次为统计起点"), "上一批原始数据存在时保留两批表");
+            var previousRow = findSummaryRow(sheet, previous);
+            assertEquals(100d, previousRow.getCell(3).getNumericCellValue());
+            assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, previousRow.getCell(9).getCellType());
+            assertEquals(0.82828283d, previousRow.getCell(11).getNumericCellValue(), 0.000000001d);
+            assertEquals(0.79797980d, previousRow.getCell(12).getNumericCellValue(), 0.000000001d);
+            for (int column = 13; column <= 24; column++) {
+                assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, previousRow.getCell(column).getCellType());
+            }
+            var row = findSummaryRow(sheet, current);
+            assertEquals(100d, row.getCell(3).getNumericCellValue());
+            assertEquals(0.82828283d, row.getCell(11).getNumericCellValue(), 0.000000001d);
+            for (int column = 14; column <= 20; column++) {
+                assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, row.getCell(column).getCellType());
+                assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, sheet.getRow(sheet.getLastRowNum()).getCell(column).getCellType());
+            }
+            long totals = 0;
+            for (var sheetRow : sheet) if (sheetRow.getCell(1) != null && "合计".equals(sheetRow.getCell(1).toString())) totals++;
+            assertEquals(2L, totals, "上一批原始数量和旧算法率仍须保留");
+        }
+        var view = new ReplayReportSummaryCodec().decode(dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        var extracted = new ReplayLegacySummaryExtractor().extract(bytes,
+                com.axonlink.ai.replay.dto.ReplayReportPeriod.DAILY, null, current);
+        for (String key : List.of("previousUnresolvedTotal", "previousResolutionRate", "unanalyzed", "analyzedPendingFix",
+                "notFullyFixed", "dataMigrationIssue", "codeNotReleased")) {
+            assertTrue(view.rows().get(0).values().containsKey(key));
+            assertEquals(null, view.rows().get(0).values().get(key));
+            assertEquals(null, view.totalRow().values().get(key));
+            assertEquals(null, extracted.rows().get(0).values().get(key));
+        }
+        jdbc.update("DELETE FROM dii_replay_daily_report_snapshot WHERE batch_no=?", current);
+        seedDailyBatch(next, LocalDateTime.of(2026, 9, 3, 9, 0), "NEXT");
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(service.generate(next)))) {
+            assertEquals(100d, findSummaryRow(workbook.getSheet("汇总信息"), current).getCell(3).getNumericCellValue());
+            assertFalse(sheetText(workbook.getSheet("汇总信息")).contains("历史问题统计未建立"));
+            assertFalse(sheetText(workbook.getSheet("汇总信息")).contains("本批次为统计起点"));
+        }
+    }
+
+    @Test
+    void legacyCurrentWithoutHistoryGeneratesOriginalRatesWithoutChangingImportedData() throws Exception {
+        String current = "RPT20260902-01";
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        jdbc.update("DELETE FROM dii_replay_issue_statistics_batch WHERE batch_no=?", current);
+        var originalSummaries = dailyDataDao.findSummaries(current);
+        var originalComparisons = dailyDataDao.findComparisons(current);
+
+        byte[] bytes = assertDoesNotThrow(() -> service.generate(current));
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            var row = findSummaryRow(workbook.getSheet("汇总信息"), current);
+            assertEquals(100d, row.getCell(3).getNumericCellValue());
+            assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, row.getCell(9).getCellType());
+            assertEquals(0.82828283d, row.getCell(11).getNumericCellValue(), 0.000000001d);
+            assertEquals(0.79797980d, row.getCell(12).getNumericCellValue(), 0.000000001d,
+                    "旧算法先反推并四舍五入无字段差异数量，再除以原始基数");
+            assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, row.getCell(13).getCellType());
+        }
+        var view = new ReplayReportSummaryCodec().decode(
+                dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        assertEquals(new BigDecimal("0.82828283"), view.rows().get(0).values().get("successRate"));
+        assertEquals(new BigDecimal("0.79797980"), view.rows().get(0).values().get("matchPassRate"));
+        assertEquals(new BigDecimal("0.79797980"), view.totalRow().values().get("matchPassRate"));
+        assertEquals(null, view.rows().get(0).values().get("noAction"));
+        assertEquals(null, view.rows().get(0).values().get("issueTotal"));
+        assertArrayEquals(bytes, service.generate(current), "已生成日报继续使用永久快照");
+        assertEquals(originalSummaries, dailyDataDao.findSummaries(current));
+        assertEquals(originalComparisons, dailyDataDao.findComparisons(current));
+    }
+
+    @Test
+    void mixesLegacyPreviousRatesWithCurrentSplitCountsWithoutApplyingCurrentConclusionsToHistory() throws Exception {
+        String previous = "RPT20260901-01", current = "RPT20260902-01";
+        seedDailyBatch(previous, LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        jdbc.update("DELETE FROM dii_replay_issue_statistics_batch WHERE batch_no=?", previous);
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        jdbc.update("UPDATE dii_replay_interface_comparison SET both_success_no_field_difference=70, "
+                + "both_success_with_field_difference=10 WHERE batch_no=?", current);
+        insertIssueWithOccurrence(901L, "公共组", false, "合理差异", "字段级", "无需处理", current);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='CURRENT-IFACE', review_status='APPROVED', "
+                + "defect_repair_date='2026-09-02' WHERE id=901");
+        captureBatchStatistics(current);
+
+        byte[] bytes = service.generate(current);
+
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            var previousRow = findSummaryRow(workbook.getSheet("汇总信息"), previous);
+            var currentRow = findSummaryRow(workbook.getSheet("汇总信息"), current);
+            assertEquals(0.79797980d, previousRow.getCell(12).getNumericCellValue(), 0.000000001d);
+            assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, previousRow.getCell(9).getCellType());
+            assertEquals(0.82828283d, currentRow.getCell(12).getNumericCellValue(), 0.000000001d,
+                    "当前批次使用70无差异+10已认可字段差异+2同码失败");
+            assertEquals(0d, currentRow.getCell(9).getNumericCellValue());
+            for (int column = 14; column <= 20; column++) {
+                assertEquals(org.apache.poi.ss.usermodel.CellType.BLANK, currentRow.getCell(column).getCellType());
+            }
+        }
+        var view = new ReplayReportSummaryCodec().decode(
+                dailyDataDao.findReportSnapshot(current).orElseThrow().summaryViewJson());
+        assertEquals(new BigDecimal("0.82828283"), view.rows().get(0).values().get("matchPassRate"));
+    }
+
+    @Test
+    void unexpectedCurrentReadFailureIsNotTreatedAsLegacyCompatibility() {
+        String current = "RPT20260902-01";
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        var failingDao = org.mockito.Mockito.spy(issueDao);
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("unavailable"))
+                .when(failingDao).findBatchReportIssueStatistics(current);
+        var failingService = new ReplayIssueDailyReportService(dailyDataDao, failingDao,
+                new ReplayDailyReportCalculator(), new ReplayDailyReportWorkbookWriter(), jdbc);
+
+        assertThrows(org.springframework.dao.DataAccessResourceFailureException.class,
+                () -> failingService.generate(current));
+        assertTrue(dailyDataDao.findReportSnapshot(current).isEmpty());
+    }
+
+    @Test
+    void unexpectedPreviousReadFailureIsNotTurnedIntoABaseline() {
+        String previous = "RPT20260901-01", current = "RPT20260902-01";
+        seedDailyBatch(previous, LocalDateTime.of(2026, 9, 1, 9, 0), "PREVIOUS");
+        seedDailyBatch(current, LocalDateTime.of(2026, 9, 2, 9, 0), "CURRENT");
+        var failingDao = org.mockito.Mockito.spy(issueDao);
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("unavailable"))
+                .when(failingDao).findBatchReportIssueStatistics(previous);
+        var failingService = new ReplayIssueDailyReportService(dailyDataDao, failingDao,
+                new ReplayDailyReportCalculator(), new ReplayDailyReportWorkbookWriter(), jdbc);
+
+        assertThrows(org.springframework.dao.DataAccessResourceFailureException.class, () -> failingService.generate(current));
+        assertTrue(dailyDataDao.findReportSnapshot(current).isEmpty());
     }
 
     @Test
@@ -544,6 +791,7 @@ class ReplayIssueDailyReportServiceTest {
     }
 
     private void seedDailyBatch(String batchNo, LocalDateTime importedAt, String marker) {
+        issueDao.beginBatchStatistics(batchNo, importedAt);
         dailyDataDao.replaceBatch(new ReplayDailyWorkbookData(batchNo,
                 List.of(new ReplayDailySummaryRow(batchNo, "公共组", 10L, 100L,
                         2L, 80L, 1L, new BigDecimal("0.80"), 3L, 1, marker)),
@@ -577,6 +825,22 @@ class ReplayIssueDailyReportServiceTest {
                         + "first_occurred_at,last_occurred_at,last_status,created_at,updated_at) "
                         + "VALUES(?,?,?,?,?,?,?,?)",
                 issueId, "key-" + issueId, batch, now, now, status, now, now);
+        if (batch.startsWith("RPT") || batch.startsWith("DZ")) {
+            jdbc.update("UPDATE dii_replay_issue SET transaction_code=? WHERE id=?", "T-" + issueId, issueId);
+            issueDao.beginBatchStatistics(batch, now);
+            issueDao.upsertOccurrenceBatch(issueId, "key-" + issueId, batch, now,
+                    com.axonlink.ai.replay.dto.ReplayIssueStatus.fromDisplayValue(status));
+        }
+    }
+
+    private void captureBatchStatistics(String batch) {
+        issueDao.beginBatchStatistics(batch, LocalDateTime.of(2026, 9, 2, 9, 0));
+        for (var row : jdbc.queryForList("SELECT i.id,i.issue_key,i.issue_status FROM dii_replay_issue i "
+                + "JOIN dii_replay_issue_occurrence_batch ob ON ob.replay_issue_id=i.id WHERE ob.batch_name=?", batch)) {
+            issueDao.upsertOccurrenceBatch(((Number) row.get("id")).longValue(), row.get("issue_key").toString(),
+                    batch, LocalDateTime.of(2026, 9, 2, 9, 0),
+                    com.axonlink.ai.replay.dto.ReplayIssueStatus.fromDisplayValue(row.get("issue_status").toString()));
+        }
     }
 
     private static String sheetText(Sheet sheet) {

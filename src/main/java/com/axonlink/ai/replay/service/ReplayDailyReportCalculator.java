@@ -3,15 +3,20 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryCalculatedRow;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
+import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
+import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
+import com.axonlink.ai.replay.dto.ReplayDailyRowType;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public final class ReplayDailyReportCalculator {
@@ -33,13 +38,48 @@ public final class ReplayDailyReportCalculator {
                                       List<ReplayDailyIssueStatisticRow> previousIssues,
                                       List<ReplayDailySummaryRow> currentSummaries,
                                       List<ReplayDailyIssueStatisticRow> currentIssues) {
+        return calculate(previousSummaries, previousIssues, List.of(), currentSummaries, currentIssues, List.of());
+    }
+
+    public CalculatedReport calculate(List<ReplayDailySummaryRow> previousSummaries,
+                                      List<ReplayDailyIssueStatisticRow> previousIssues,
+                                      List<ReplayInterfaceComparisonRow> previousComparisons,
+                                      List<ReplayDailySummaryRow> currentSummaries,
+                                      List<ReplayDailyIssueStatisticRow> currentIssues,
+                                      List<ReplayInterfaceComparisonRow> currentComparisons) {
+        return calculate(previousSummaries, previousIssues, previousComparisons,
+                currentSummaries, currentIssues, currentComparisons, previousIssues, currentIssues);
+    }
+
+    /** Weekly replay may use latest conclusions while retaining historical problem statistics. */
+    public CalculatedReport calculate(List<ReplayDailySummaryRow> previousSummaries,
+                                      List<ReplayDailyIssueStatisticRow> previousIssues,
+                                      List<ReplayInterfaceComparisonRow> previousComparisons,
+                                      List<ReplayDailySummaryRow> currentSummaries,
+                                      List<ReplayDailyIssueStatisticRow> currentIssues,
+                                      List<ReplayInterfaceComparisonRow> currentComparisons,
+                                      List<ReplayDailyIssueStatisticRow> previousMetricIssues,
+                                      List<ReplayDailyIssueStatisticRow> currentMetricIssues) {
+        return calculate(previousSummaries, previousIssues, previousComparisons, currentSummaries, currentIssues,
+                currentComparisons, previousMetricIssues, currentMetricIssues, null);
+    }
+
+    public CalculatedReport calculate(List<ReplayDailySummaryRow> previousSummaries,
+                                      List<ReplayDailyIssueStatisticRow> previousIssues,
+                                      List<ReplayInterfaceComparisonRow> previousComparisons,
+                                      List<ReplayDailySummaryRow> currentSummaries,
+                                      List<ReplayDailyIssueStatisticRow> currentIssues,
+                                      List<ReplayInterfaceComparisonRow> currentComparisons,
+                                      List<ReplayDailyIssueStatisticRow> previousMetricIssues,
+                                      List<ReplayDailyIssueStatisticRow> currentMetricIssues,
+                                      ReplayReportCalculationContext context) {
         List<ReplayDailySummaryRow> safePreviousSummaries = copy(previousSummaries);
         List<ReplayDailyIssueStatisticRow> safePreviousIssues = copy(previousIssues);
         List<ReplayDailySummaryRow> safeCurrentSummaries = copy(currentSummaries);
         List<ReplayDailyIssueStatisticRow> safeCurrentIssues = copy(currentIssues);
 
-        Map<String, List<ReplayDailyIssueStatisticRow>> previousByDomain = indexIssues(safePreviousIssues);
-        Map<String, List<ReplayDailyIssueStatisticRow>> currentByDomain = indexIssues(safeCurrentIssues);
+        Map<String, List<ReplayDailyIssueStatisticRow>> previousByTransaction = indexTransactions(copy(previousMetricIssues));
+        Map<String, List<ReplayDailyIssueStatisticRow>> currentByTransaction = indexTransactions(copy(currentMetricIssues));
         Map<String, List<ReplayDailyIssueStatisticRow>> reportablePreviousByDomain =
                 indexIssues(reportableIssues(safePreviousIssues));
         Map<String, List<ReplayDailyIssueStatisticRow>> reportableCurrentByDomain =
@@ -50,9 +90,13 @@ public final class ReplayDailyReportCalculator {
                 safePreviousSummaries, reportablePreviousByDomain, unresolvedByDomain);
 
         List<RowCalculation> previousCalculations = calculateRows(
-                safePreviousSummaries, previousByDomain, reportablePreviousByDomain, unresolvedByDomain);
+                safePreviousSummaries, reportablePreviousByDomain, unresolvedByDomain,
+                indexComparisons(copy(previousComparisons)), previousByTransaction,
+                context == null ? ReplayReportCalculationContext.Side.complete() : context.previous());
         List<RowCalculation> currentCalculations = calculateRows(
-                safeCurrentSummaries, currentByDomain, reportableCurrentByDomain, unresolvedByDomain);
+                safeCurrentSummaries, reportableCurrentByDomain, unresolvedByDomain,
+                indexComparisons(copy(currentComparisons)), currentByTransaction,
+                context == null ? ReplayReportCalculationContext.Side.complete() : context.current());
 
         List<ReplayDailySummaryCalculatedRow> previousRows = rows(previousCalculations);
         List<ReplayDailySummaryCalculatedRow> currentRows = rows(currentCalculations);
@@ -63,19 +107,29 @@ public final class ReplayDailyReportCalculator {
 
     private List<RowCalculation> calculateRows(
             List<ReplayDailySummaryRow> summaries,
-            Map<String, List<ReplayDailyIssueStatisticRow>> issuesByDomain,
             Map<String, List<ReplayDailyIssueStatisticRow>> reportableIssuesByDomain,
-            Map<String, PreviousUnresolved> unresolvedByDomain) {
+            Map<String, PreviousUnresolved> unresolvedByDomain,
+            Map<ComparisonDomain, List<ReplayInterfaceComparisonRow>> comparisonsByDomain,
+            Map<String, List<ReplayDailyIssueStatisticRow>> issuesByTransaction,
+            ReplayReportCalculationContext.Side availability) {
         List<RowCalculation> result = new ArrayList<>(summaries.size());
         for (ReplayDailySummaryRow summary : summaries) {
             String domain = displayDomain(summary.domain());
-            List<ReplayDailyIssueStatisticRow> issues = issuesByDomain.getOrDefault(domain, List.of());
             List<ReplayDailyIssueStatisticRow> reportableIssues =
                     reportableIssuesByDomain.getOrDefault(domain, List.of());
             long issueTotal = reportableIssues.size();
             IssueStatistics statistics = issueStatistics(reportableIssues, issueTotal);
             PreviousUnresolved unresolved = unresolvedByDomain.getOrDefault(domain, PreviousUnresolved.empty());
-            result.add(calculateRow(summary, domain, issues, issueTotal, statistics, unresolved));
+            List<ReplayInterfaceComparisonRow> comparisons = comparisonsByDomain.getOrDefault(
+                    new ComparisonDomain(normalizeText(summary.batchNo()), domain), List.of());
+            Set<String> codes = new LinkedHashSet<>();
+            comparisons.forEach(row -> {
+                String code = normalizeText(row.transactionCode());
+                if (!code.isEmpty()) codes.add(code);
+            });
+            List<ReplayDailyIssueStatisticRow> matchedIssues = new ArrayList<>();
+            codes.forEach(code -> matchedIssues.addAll(issuesByTransaction.getOrDefault(code, List.of())));
+            result.add(calculateRow(summary, domain, matchedIssues, comparisons, issueTotal, statistics, unresolved, availability));
         }
         return List.copyOf(result);
     }
@@ -83,15 +137,18 @@ public final class ReplayDailyReportCalculator {
     private RowCalculation calculateRow(ReplayDailySummaryRow summary,
                                         String domain,
                                         List<ReplayDailyIssueStatisticRow> issues,
+                                        List<ReplayInterfaceComparisonRow> comparisons,
                                         long issueTotal,
                                         IssueStatistics statistics,
-                                        PreviousUnresolved unresolved) {
+                                        PreviousUnresolved unresolved,
+                                        ReplayReportCalculationContext.Side availability) {
         long c528SuccessCcbsFail = affectedCount(issues, FIELD_528_SUCCESS_CCBS_FAIL);
         long c528FailCcbsSuccess = affectedCount(issues, FIELD_528_FAIL_CCBS_SUCCESS);
         long bothFailDiffCode = affectedCount(issues, FIELD_BOTH_FAIL_DIFF_CODE);
         long noAction = issues.stream()
                 .filter(ReplayDailyReportCalculator::isTransactionLevel)
                 .filter(issue -> NO_ACTION.equals(normalizeText(issue.issueStatus())))
+                .filter(issue -> issue.reviewStatus() == ReplayIssueReviewStatus.APPROVED)
                 .mapToLong(ReplayDailyIssueStatisticRow::affectedTransactionCount)
                 .sum();
 
@@ -99,16 +156,21 @@ public final class ReplayDailyReportCalculator {
         long sameFail = value(summary.bothFailSameCode());
         long bothSuccess = value(summary.bothSuccess());
         long ignored = value(summary.codeIgnored());
+        boolean legacy = availability.useLegacyRate(domain, false);
+        // Unknown amounts are represented as zero in metric inputs; retain every confirmed approved amount.
         long adjustedDenominator = sent - ignored - noAction;
-        long noFieldDifference = inferNoFieldDifference(summary.matchPassRate(), sent, ignored,
-                sameFail, bothSuccess);
+        long inferred = inferNoFieldDifference(summary.matchPassRate(), sent, ignored, sameFail, bothSuccess);
+        FieldDifferenceCounts fieldCounts = legacy ? new FieldDifferenceCounts(inferred, 0L)
+                : fieldDifferenceCounts(issues, comparisons, inferred);
+        long noFieldDifference = fieldCounts.noFieldDifference();
 
         ReplayDailySummaryCalculatedRow row = new ReplayDailySummaryCalculatedRow(
                 summary.batchNo(), domain, summary.coveredInterfaceCount(), summary.sentTransactionCount(),
                 c528SuccessCcbsFail, c528FailCcbsSuccess, summary.bothFailSameCode(), bothFailDiffCode,
                 summary.bothSuccess(), noAction, summary.codeIgnored(), noFieldDifference,
                 rate(sameFail + bothSuccess, adjustedDenominator),
-                rate(noFieldDifference + sameFail, adjustedDenominator), issueTotal,
+                rate(Math.addExact(Math.addExact(noFieldDifference, sameFail), fieldCounts.accepted()),
+                        adjustedDenominator), issueTotal,
                 statistics.codeIssueCount(), statistics.parameterIssueCount(),
                 statistics.reasonableDifferenceIssueCount(), statistics.peripheralIssueCount(),
                 statistics.platformIssueCount(), statistics.newCoreOfflineIssueCount(),
@@ -118,7 +180,78 @@ public final class ReplayDailyReportCalculator {
                 unresolved.analyzedPendingFix(), unresolved.notFullyFixed(),
                 unresolved.dataMigrationIssue(), unresolved.codeNotReleased(), unresolved.total(),
                 unresolved.resolutionRate(), summary.sourceRow(), summary.rawJson());
-        return new RowCalculation(row, statistics.analyzedCount());
+        return new RowCalculation(row, statistics.analyzedCount(), fieldCounts.accepted(), adjustedDenominator);
+    }
+
+    private Map<ComparisonDomain, List<ReplayInterfaceComparisonRow>> indexComparisons(
+            List<ReplayInterfaceComparisonRow> comparisons) {
+        Map<ComparisonDomain, List<ReplayInterfaceComparisonRow>> result = new LinkedHashMap<>();
+        Map<ComparisonTransaction, String> domainsByTransaction = new LinkedHashMap<>();
+        for (ReplayInterfaceComparisonRow row : comparisons) {
+            if (row.rowType() != ReplayDailyRowType.DETAIL || normalizeText(row.domain()).isEmpty()) {
+                continue;
+            }
+            ComparisonDomain key = new ComparisonDomain(normalizeText(row.batchNo()), displayDomain(row.domain()));
+            String code = normalizeText(row.transactionCode());
+            if (!code.isEmpty()) {
+                String previousDomain = domainsByTransaction.putIfAbsent(
+                        new ComparisonTransaction(key.batchNo(), code), key.domain());
+                if (previousDomain != null && !previousDomain.equals(key.domain())) {
+                    throw new IllegalArgumentException("接口比对明细交易码所属领域不唯一：" + key.batchNo() + " / " + code);
+                }
+            }
+            result.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
+        }
+        return result;
+    }
+
+    private Map<String, List<ReplayDailyIssueStatisticRow>> indexTransactions(List<ReplayDailyIssueStatisticRow> issues) {
+        Map<Long, ReplayDailyIssueStatisticRow> unique = new LinkedHashMap<>();
+        issues.forEach(issue -> unique.putIfAbsent(issue.issueId(), issue));
+        Map<String, List<ReplayDailyIssueStatisticRow>> result = new LinkedHashMap<>();
+        unique.values().forEach(issue -> {
+            String code = normalizeText(issue.transactionCode());
+            if (!code.isEmpty()) result.computeIfAbsent(code, ignored -> new ArrayList<>()).add(issue);
+        });
+        return result;
+    }
+
+    private FieldDifferenceCounts fieldDifferenceCounts(List<ReplayDailyIssueStatisticRow> issues,
+                                                       List<ReplayInterfaceComparisonRow> comparisons,
+                                                       long legacyNoFieldDifference) {
+        boolean complete = !comparisons.isEmpty() && comparisons.stream().allMatch(row ->
+                row.bothSuccessNoFieldDifference() != null && row.bothSuccessNoFieldDifference() >= 0
+                        && row.bothSuccessWithFieldDifference() != null && row.bothSuccessWithFieldDifference() >= 0);
+        if (!complete) {
+            return new FieldDifferenceCounts(legacyNoFieldDifference, 0L);
+        }
+
+        Map<String, List<ReplayDailyIssueStatisticRow>> fieldsByTransaction = new LinkedHashMap<>();
+        for (ReplayDailyIssueStatisticRow issue : issues) {
+            String code = normalizeText(issue.transactionCode());
+            if ("字段级".equals(normalizeText(issue.issueLevel())) && !code.isEmpty()) {
+                fieldsByTransaction.computeIfAbsent(code, ignored -> new ArrayList<>()).add(issue);
+            }
+        }
+        Set<String> acceptedTransactions = new LinkedHashSet<>();
+        fieldsByTransaction.forEach((code, fields) -> {
+            boolean hasApprovedNoAction = fields.stream().anyMatch(issue ->
+                    NO_ACTION.equals(normalizeText(issue.issueStatus()))
+                            && issue.reviewStatus() == ReplayIssueReviewStatus.APPROVED);
+            if (hasApprovedNoAction && fields.stream().allMatch(issue -> issue.defectRepairDate() != null)) {
+                acceptedTransactions.add(code);
+            }
+        });
+
+        long noFieldDifference = 0L;
+        long accepted = 0L;
+        for (ReplayInterfaceComparisonRow row : comparisons) {
+            noFieldDifference = Math.addExact(noFieldDifference, row.bothSuccessNoFieldDifference());
+            if (acceptedTransactions.contains(normalizeText(row.transactionCode()))) {
+                accepted = Math.addExact(accepted, row.bothSuccessWithFieldDifference());
+            }
+        }
+        return new FieldDifferenceCounts(noFieldDifference, accepted);
     }
 
     private long affectedCount(List<ReplayDailyIssueStatisticRow> issues, String expectedField) {
@@ -242,6 +375,8 @@ public final class ReplayDailyReportCalculator {
         long noAction = 0L;
         long codeIgnored = 0L;
         long noFieldDifference = 0L;
+        long acceptedFieldDifference = 0L;
+        long denominator = 0L;
         long issueTotal = 0L;
         long codeIssueCount = 0L;
         long parameterIssueCount = 0L;
@@ -270,7 +405,9 @@ public final class ReplayDailyReportCalculator {
             bothSuccess += value(row.bothSuccess());
             noAction += row.noAction();
             codeIgnored += value(row.codeIgnored());
-            noFieldDifference += row.bothSuccessNoFieldDifference();
+            noFieldDifference = Math.addExact(noFieldDifference, row.bothSuccessNoFieldDifference());
+            acceptedFieldDifference = Math.addExact(acceptedFieldDifference, calculation.acceptedFieldDifference());
+            denominator = Math.addExact(denominator, calculation.rateDenominator());
             issueTotal += value(row.issueTotal());
             codeIssueCount += row.codeIssueCount();
             parameterIssueCount += row.parameterIssueCount();
@@ -285,13 +422,13 @@ public final class ReplayDailyReportCalculator {
             analyzedCount += calculation.analyzedCount();
         }
 
-        long denominator = sentTransactionCount - codeIgnored - noAction;
         return new ReplayDailySummaryCalculatedRow(
                 batchNo, "合计", coveredInterfaceCount, sentTransactionCount,
                 c528SuccessCcbsFail, c528FailCcbsSuccess, bothFailSameCode, bothFailDiffCode,
                 bothSuccess, noAction, codeIgnored, noFieldDifference,
                 rate(bothFailSameCode + bothSuccess, denominator),
-                rate(noFieldDifference + bothFailSameCode, denominator), issueTotal,
+                rate(Math.addExact(Math.addExact(noFieldDifference, bothFailSameCode), acceptedFieldDifference),
+                        denominator), issueTotal,
                 codeIssueCount, parameterIssueCount, reasonableDifferenceIssueCount,
                 peripheralIssueCount, platformIssueCount, newCoreOfflineIssueCount,
                 ruleDifferenceIssueCount, migrationIssueCount, antiCorrosionIssueCount,
@@ -408,7 +545,17 @@ public final class ReplayDailyReportCalculator {
         }
     }
 
-    private record RowCalculation(ReplayDailySummaryCalculatedRow row, long analyzedCount) {
+    private record RowCalculation(ReplayDailySummaryCalculatedRow row, long analyzedCount,
+                                  long acceptedFieldDifference, long rateDenominator) {
+    }
+
+    private record ComparisonDomain(String batchNo, String domain) {
+    }
+
+    private record ComparisonTransaction(String batchNo, String transactionCode) {
+    }
+
+    private record FieldDifferenceCounts(long noFieldDifference, long accepted) {
     }
 
     private record IssueStatistics(

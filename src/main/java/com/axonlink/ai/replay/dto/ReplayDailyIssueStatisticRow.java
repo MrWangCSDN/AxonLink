@@ -1,5 +1,7 @@
 package com.axonlink.ai.replay.dto;
 
+import java.time.LocalDate;
+
 public record ReplayDailyIssueStatisticRow(
         long issueId,
         String groupName,
@@ -9,5 +11,8 @@ public record ReplayDailyIssueStatisticRow(
         String fieldName,
         String issueStatus,
         long affectedTransactionCount,
-        boolean reopenedAfterFixed) {
+        boolean reopenedAfterFixed,
+        ReplayIssueReviewStatus reviewStatus,
+        String transactionCode,
+        LocalDate defectRepairDate) {
 }

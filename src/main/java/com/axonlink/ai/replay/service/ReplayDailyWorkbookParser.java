@@ -40,14 +40,22 @@ public class ReplayDailyWorkbookParser {
     static final String SUMMARY_SHEET = "汇总信息";
     static final String INTERFACE_SHEET = "接口比对明细";
     static final String COVERAGE_SHEET = "回放交易覆盖情况";
+    private static final String BOTH_SUCCESS_HEADER = "二者均成功";
+    private static final String BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER = "二者均成功且无字段差异";
+    private static final String BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER = "二者均成功且有字段差异";
 
     private static final List<String> REQUIRED_SHEETS = List.of(SUMMARY_SHEET, INTERFACE_SHEET, COVERAGE_SHEET);
     private static final List<String> SUMMARY_HEADERS = List.of("批次", "领域", "覆盖528接口", "发送交易量",
             "二者均失败响应码一致", "二者均成功", "响应码忽略", "比对通过率", "问题总数");
     private static final List<String> INTERFACE_HEADERS = List.of("批次号", "交易码", "S码", "交易描述", "开发负责人",
             "行内负责人", "领域", "发送交易量", "528成功/CCBS失败", "528失败/CCBS成功",
-            "二者均失败响应码一致", "二者均失败响应码不一致", "二者均成功", "响应码忽略", "交易成功率",
-            "接口比对通过率", "528平均耗时", "CCBS平均耗时");
+            "二者均失败响应码一致", "二者均失败响应码不一致", BOTH_SUCCESS_HEADER, "响应码忽略", "交易成功率",
+            "接口比对通过率", "528平均耗时", "CCBS平均耗时", BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER,
+            BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER);
+    private static final Set<String> INTERFACE_SUCCESS_HEADERS = Set.of(BOTH_SUCCESS_HEADER,
+            BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER, BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER);
+    private static final List<String> INTERFACE_REQUIRED_HEADERS = INTERFACE_HEADERS.stream()
+            .filter(header -> !INTERFACE_SUCCESS_HEADERS.contains(header)).toList();
     private static final List<String> COVERAGE_SUMMARY_HEADERS = List.of("业务领域汇总", "全量交易数", "本次已发送",
             "本次未发送", "不回放", "近期无交易", "待分析", "覆盖率");
     private static final List<String> COVERAGE_DETAIL_HEADERS = List.of("交易码", "交易描述", "业务领域", "S码", "关联码",
@@ -176,7 +184,8 @@ public class ReplayDailyWorkbookParser {
     private List<ReplayInterfaceComparisonRow> parseComparisons(Sheet sheet, DataFormatter formatter,
                                                                  FormulaEvaluator evaluator, ReplayIssueImportMode mode,
                                                                  String canonicalBatch) {
-        HeaderRegion header = findHeader(sheet, INTERFACE_HEADERS, formatter, evaluator, INTERFACE_SHEET);
+        HeaderRegion header = findComparisonHeader(sheet, formatter, evaluator);
+        boolean splitSuccess = header.columns().containsKey(BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER);
         List<ReplayInterfaceComparisonRow> result = new ArrayList<>();
         for (int rowIndex = header.dataStartRow(); rowIndex <= sheet.getLastRowNum(); rowIndex++) {
             Row row = sheet.getRow(rowIndex);
@@ -190,6 +199,15 @@ public class ReplayDailyWorkbookParser {
                 throw new IllegalArgumentException("页签“接口比对明细”第" + (rowIndex + 1)
                         + "行批次与汇总信息不一致：" + rowBatch);
             }
+            Long noFieldDifference = splitSuccess
+                    ? count(raw.get(BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER), INTERFACE_SHEET,
+                    rowIndex, BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER) : null;
+            Long withFieldDifference = splitSuccess
+                    ? count(raw.get(BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER), INTERFACE_SHEET,
+                    rowIndex, BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER) : null;
+            Long bothSuccess = splitSuccess
+                    ? sumSplitSuccessCounts(noFieldDifference, withFieldDifference, rowIndex)
+                    : count(raw.get(BOTH_SUCCESS_HEADER), INTERFACE_SHEET, rowIndex, BOTH_SUCCESS_HEADER);
             result.add(new ReplayInterfaceComparisonRow(canonicalBatch,
                     total ? ReplayDailyRowType.TOTAL : ReplayDailyRowType.DETAIL,
                     total ? null : text(raw.get("交易码")), total ? null : text(raw.get("S码")),
@@ -200,18 +218,53 @@ public class ReplayDailyWorkbookParser {
                     count(raw.get("528失败/CCBS成功"), INTERFACE_SHEET, rowIndex, "528失败/CCBS成功"),
                     count(raw.get("二者均失败响应码一致"), INTERFACE_SHEET, rowIndex, "二者均失败响应码一致"),
                     count(raw.get("二者均失败响应码不一致"), INTERFACE_SHEET, rowIndex, "二者均失败响应码不一致"),
-                    count(raw.get("二者均成功"), INTERFACE_SHEET, rowIndex, "二者均成功"),
+                    bothSuccess,
                     count(raw.get("响应码忽略"), INTERFACE_SHEET, rowIndex, "响应码忽略"),
                     rate(raw.get("交易成功率"), INTERFACE_SHEET, rowIndex, "交易成功率"),
                     rate(raw.get("接口比对通过率"), INTERFACE_SHEET, rowIndex, "接口比对通过率"),
                     decimal(raw.get("528平均耗时"), INTERFACE_SHEET, rowIndex, "528平均耗时"),
                     decimal(raw.get("CCBS平均耗时"), INTERFACE_SHEET, rowIndex, "CCBS平均耗时"),
-                    rowIndex + 1, json(raw)));
+                    rowIndex + 1, json(raw), noFieldDifference, withFieldDifference));
         }
         if (result.isEmpty()) {
             throw new IllegalArgumentException("页签“接口比对明细”没有可导入数据");
         }
         return List.copyOf(result);
+    }
+
+    private HeaderRegion findComparisonHeader(Sheet sheet, DataFormatter formatter, FormulaEvaluator evaluator) {
+        for (int rowIndex = 0; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Map<String, Integer> columns = headers(sheet.getRow(rowIndex), INTERFACE_HEADERS, formatter, evaluator);
+            if (!columns.keySet().containsAll(INTERFACE_REQUIRED_HEADERS)) {
+                continue;
+            }
+            boolean hasNoFieldDifference = columns.containsKey(BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER);
+            boolean hasWithFieldDifference = columns.containsKey(BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER);
+            if (hasNoFieldDifference != hasWithFieldDifference) {
+                String missing = hasNoFieldDifference
+                        ? BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER : BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER;
+                throw new IllegalArgumentException("页签“" + INTERFACE_SHEET + "”第" + (rowIndex + 1)
+                        + "行成功拆分表头必须同时存在，缺少“" + missing + "”");
+            }
+            if (hasNoFieldDifference || columns.containsKey(BOTH_SUCCESS_HEADER)) {
+                return new HeaderRegion(rowIndex, rowIndex + 1, columns);
+            }
+        }
+        throw new IllegalArgumentException("页签“" + INTERFACE_SHEET + "”缺少必要表头");
+    }
+
+    private Long sumSplitSuccessCounts(Long noFieldDifference, Long withFieldDifference, int rowIndex) {
+        if (noFieldDifference == null || withFieldDifference == null) {
+            return null;
+        }
+        try {
+            return Math.addExact(noFieldDifference, withFieldDifference);
+        } catch (ArithmeticException exception) {
+            throw new IllegalArgumentException("页签“" + INTERFACE_SHEET + "”第" + (rowIndex + 1)
+                    + "行字段“" + BOTH_SUCCESS_NO_FIELD_DIFFERENCE_HEADER + " + "
+                    + BOTH_SUCCESS_WITH_FIELD_DIFFERENCE_HEADER + "”成功交易合计超出整数范围："
+                    + noFieldDifference + " + " + withFieldDifference, exception);
+        }
     }
 
     private HeaderRegion findHeader(Sheet sheet, List<String> required, DataFormatter formatter,

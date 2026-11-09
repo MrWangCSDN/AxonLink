@@ -11,6 +11,7 @@ import com.axonlink.ai.replay.service.ReplayDailyReportCalculator.PreviousUnreso
 import org.apache.poi.ss.usermodel.BorderStyle;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.HorizontalAlignment;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -20,6 +21,8 @@ import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.usermodel.XSSFCellStyle;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
@@ -108,25 +111,61 @@ class ReplayDailyReportWorkbookWriterTest {
             Sheet sheet = workbook.getSheet("接口比对明细");
 
             assertEquals(0, sheet.getNumMergedRegions());
-            assertDarkTealBand(sheet.getRow(0), 18);
+            assertDarkTealBand(sheet.getRow(0), 19);
             assertEquals(List.of("批次号", "交易码", "S码", "交易描述", "开发负责人", "行内负责人", "领域",
-                            "发送交易量", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致",
-                            "二者均失败响应码不一致", "二者均成功", "响应码忽略", "交易成功率", "接口比对通过率",
+                            "发送交易量", "二者均成功且无字段差异", "二者均成功且有字段差异", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致",
+                            "二者均失败响应码不一致", "响应码忽略", "交易成功率", "接口比对通过率",
                             "528平均耗时", "CCBS平均耗时"),
-                    rowValues(sheet.getRow(0), 18));
+                    rowValues(sheet.getRow(0), 19));
             assertEquals("TX-EARLY", sheet.getRow(1).getCell(1).getStringCellValue());
             assertEquals("TX-LATE", sheet.getRow(2).getCell(1).getStringCellValue());
             assertEquals("合计", sheet.getRow(3).getCell(0).getStringCellValue());
             assertNumericValues(sheet.getRow(3), 7,
-                    777d, 1d, 2d, 3d, 4d, 5d, 6d, 0.4567d, 0.7654d, 7.654321d, 8.765432d);
-            assertEquals("0.00%", sheet.getRow(3).getCell(14).getCellStyle().getDataFormatString());
-            assertEquals("0.000000", sheet.getRow(3).getCell(16).getCellStyle().getDataFormatString());
+                    777d, 4d, 1d, 1d, 2d, 3d, 4d, 6d, 0.4567d, 0.7654d, 7.654321d, 8.765432d);
+            assertEquals("0.00%", sheet.getRow(3).getCell(15).getCellStyle().getDataFormatString());
+            assertEquals("0.000000", sheet.getRow(3).getCell(17).getCellStyle().getDataFormatString());
             assertEquals("B7E1F0", fillRgb(sheet.getRow(1).getCell(0)));
             assertEquals("FFFFFF", fillRgb(sheet.getRow(2).getCell(0)));
             assertEquals(BorderStyle.THIN, sheet.getRow(1).getCell(0).getCellStyle().getBorderBottom());
-            assertEquals("A1:R1", ((XSSFSheet) sheet).getCTWorksheet().getAutoFilter().getRef());
+            assertEquals("A1:S1", ((XSSFSheet) sheet).getCTWorksheet().getAutoFilter().getRef());
             assertTrue(sheet.getColumnWidth(3) > sheet.getDefaultColumnWidth() * 256);
             assertTrue(sheet.getRow(0).getHeightInPoints() > sheet.getDefaultRowHeightInPoints());
+        }
+    }
+
+    @Test
+    void leavesHistoricalSuccessSplitUnknownInsteadOfAssigningTheLegacyTotal() throws Exception {
+        ReplayInterfaceComparisonRow legacy = new ReplayInterfaceComparisonRow("RPT-OLD", ReplayDailyRowType.DETAIL,
+                "TX-OLD", "S-OLD", "旧交易", "开发", "行内", "公共组", 500L,
+                50L, 50L, 0L, 150L, 250L, 0L, new BigDecimal("0.50"),
+                new BigDecimal("0.50"), BigDecimal.ONE, BigDecimal.TEN, 2, "{}");
+        byte[] bytes = writer.write(summary(), List.of(legacy), coverageSummaries(), coverageDetails());
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = workbook.getSheet("接口比对明细");
+            assertEquals("二者均成功且无字段差异", sheet.getRow(0).getCell(8).getStringCellValue());
+            assertEquals("二者均成功且有字段差异", sheet.getRow(0).getCell(9).getStringCellValue());
+            assertEquals("", new DataFormatter().formatCellValue(sheet.getRow(1).getCell(8)));
+            assertEquals("", new DataFormatter().formatCellValue(sheet.getRow(1).getCell(9)));
+            assertEquals(50d, sheet.getRow(1).getCell(10).getNumericCellValue());
+            assertEquals(0.50d, sheet.getRow(1).getCell(15).getNumericCellValue());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {9007199254740993L, Long.MAX_VALUE, Long.MIN_VALUE})
+    void preservesLargeSplitCountsAsExactDecimalText(long count) throws Exception {
+        ReplayInterfaceComparisonRow exact = new ReplayInterfaceComparisonRow("RPT-EXACT", ReplayDailyRowType.DETAIL,
+                "TX-EXACT", "S-EXACT", "精确计数", "开发", "行内", "公共组", 500L,
+                50L, 50L, 0L, 150L, count, 0L, new BigDecimal("0.50"),
+                new BigDecimal("0.50"), BigDecimal.ONE, BigDecimal.TEN, 2, "{}", count, 0L);
+        byte[] bytes = writer.write(summary(), List.of(exact), coverageSummaries(), coverageDetails());
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            Row row = workbook.getSheet("接口比对明细").getRow(1);
+            assertEquals(CellType.STRING, row.getCell(8).getCellType());
+            assertEquals(Long.toString(count), row.getCell(8).getStringCellValue());
+            assertEquals(count, Long.parseLong(new DataFormatter().formatCellValue(row.getCell(8))));
+            assertEquals(CellType.NUMERIC, row.getCell(9).getCellType());
+            assertEquals(0d, row.getCell(9).getNumericCellValue());
         }
     }
 
@@ -225,7 +264,7 @@ class ReplayDailyReportWorkbookWriterTest {
                 transactionCode == null ? null : "开发", transactionCode == null ? null : "行内",
                 transactionCode == null ? null : "公共组", sent, 1L, 2L, 3L, 4L, 5L, 6L,
                 new BigDecimal(successRate), new BigDecimal("0.7654"), new BigDecimal(duration),
-                new BigDecimal("8.765432"), sourceRow, "{}");
+                new BigDecimal("8.765432"), sourceRow, "{}", 4L, 1L);
     }
 
     private static List<ReplayCoverageSummaryRow> coverageSummaries() {

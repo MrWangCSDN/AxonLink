@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
 import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.reopen.ReplayReopenRecorder;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,13 +33,26 @@ public class ReplayIssueMergeService {
     private final ReplayIssueDao dao;
     private final Clock clock;
     private final ObjectMapper objectMapper;
+    private final ReplayReopenRecorder reopenRecorder;
+
+    private record MergeCounts(long roundId, int created, int updated, int ignored,
+                               int autoRepaired, int reopened, int inheritedReopened) {}
 
     @Autowired
+    public ReplayIssueMergeService(ReplayIssueDao dao, ReplayReopenRecorder reopenRecorder) {
+        this(dao, Clock.systemDefaultZone(), new ObjectMapper().findAndRegisterModules(), reopenRecorder);
+    }
+
     public ReplayIssueMergeService(ReplayIssueDao dao) {
-        this(dao, Clock.systemDefaultZone(), new ObjectMapper().findAndRegisterModules());
+        this(dao, Clock.systemDefaultZone(), new ObjectMapper().findAndRegisterModules(), null);
     }
 
     ReplayIssueMergeService(ReplayIssueDao dao, Clock clock, ObjectMapper objectMapper) {
+        this(dao, clock, objectMapper, null);
+    }
+
+    ReplayIssueMergeService(ReplayIssueDao dao, Clock clock, ObjectMapper objectMapper, ReplayReopenRecorder reopenRecorder) {
+        this.reopenRecorder = reopenRecorder;
         this.dao = dao;
         this.clock = clock;
         this.objectMapper = objectMapper;
@@ -100,11 +114,14 @@ public class ReplayIssueMergeService {
         LocalDateTime operationAt = LocalDateTime.now(clock);
         Set<String> incomingKeys = workbook.rows().stream().map(row -> row.issueKey().trim()).collect(java.util.stream.Collectors.toSet());
 
-        java.util.function.Function<ReplayIssueDao, int[]> mergeOperation = currentDao -> {
+        java.util.function.Function<ReplayIssueDao, MergeCounts> mergeOperation = currentDao -> {
+            currentDao.beginBatchStatistics(occurrenceBatchName, operationAt);
             long roundId = currentDao.insertImportRound(coverageRound, operationAt, effectiveOperator, workbook.rows().size());
             int created = 0;
             int updated = 0;
             int ignored = 0;
+            int reopened = 0;
+            int inheritedReopened = 0;
             for (ReplayIssueRow incoming : workbook.rows()) {
                 String key = incoming.issueKey().trim();
                 ReplayIssueRow current = currentDao.findCurrentByIssueKeyForUpdate(key);
@@ -157,17 +174,26 @@ public class ReplayIssueMergeService {
                 }
                 boolean pendingVerificationNeedsReopen = status == ReplayIssueStatus.PENDING_VERIFICATION
                         && ReplayReleaseTime.canReopen(currentDao.findLatestManualSaveAt(current.id()), releaseTime);
+                if (pendingVerificationNeedsReopen) reopened++;
+                else if (status == ReplayIssueStatus.REOPENED) inheritedReopened++;
                 ReplayIssueStatus nextStatus = pendingVerificationNeedsReopen
                         ? ReplayIssueStatus.REOPENED : status == ReplayIssueStatus.FIXED ? ReplayIssueStatus.NEW : status;
                 boolean resetImportDate = status == ReplayIssueStatus.FIXED;
                 ReplayIssueRow refreshed = refreshed(current, incoming, nextStatus,
                         resetImportDate ? effectiveDate : current.importDate());
+                if (status == ReplayIssueStatus.FIXED) {
+                    refreshed = clearFieldsForFixedReappearance(refreshed);
+                }
                 currentDao.updateCurrent(refreshed);
                 currentDao.updateCoverageRound(current.id(), coverageRound);
                 String actionType = pendingVerificationNeedsReopen ? "重新打开并继承" : "数据继承";
                 currentDao.insertIssueRound(roundId, current.id(), key, true, status, nextStatus,
                         actionType, incoming.sourceSheet(), incoming.rowOrder() + 1, operationAt,
                         snapshot(incoming), incoming.batchNo());
+                if (pendingVerificationNeedsReopen && reopenRecorder != null) {
+                    reopenRecorder.record(current, refreshed, roundId, incoming.batchNo(), operationAt,
+                            releaseTime, effectiveOperator);
+                }
                 currentDao.upsertOccurrenceBatch(current.id(), key, incoming.batchNo(), operationAt, nextStatus);
                 String beforeSnapshot = snapshot(current);
                 String afterSnapshot = snapshot(refreshed);
@@ -197,11 +223,12 @@ public class ReplayIssueMergeService {
                 autoRepaired++;
             }
             currentDao.updateImportRoundStats(roundId, created, updated, ignored, autoRepaired);
-            return new int[] {created, updated, ignored, autoRepaired};
+            return new MergeCounts(roundId, created, updated, ignored, autoRepaired, reopened, inheritedReopened);
         };
-        int[] counts = mergeOperation.apply(transactionDao);
+        MergeCounts counts = mergeOperation.apply(transactionDao);
         return new ReplayIssueImportResult(workbook.rows().size(), workbook.rowsBySheet(), workbook.sandboxRows(),
-                workbook.nonSandboxRows(), operationAt, counts[0], counts[1], counts[2], counts[3], 0, coverageRound);
+                workbook.nonSandboxRows(), operationAt, counts.created(), counts.updated(), counts.ignored(),
+                counts.autoRepaired(), 0, coverageRound, counts.reopened(), counts.inheritedReopened(), counts.roundId());
     }
 
     private String incomingBatchName(List<ReplayIssueRow> rows) {
@@ -293,6 +320,19 @@ public class ReplayIssueMergeService {
                 current.cooperationPersonUsername(), current.cooperationPersonRealName(), incoming.globalSerialNo(),
                 current.reviewStatus(), current.reviewerUsername(), current.reviewerRealName(), current.reviewedAt(),
                 current.reviewReason(), current.plannedCompletionDate());
+    }
+
+    /** A fixed issue that appears again starts a new handling cycle without carrying over its old analysis. */
+    private ReplayIssueRow clearFieldsForFixedReappearance(ReplayIssueRow row) {
+        return new ReplayIssueRow(row.id(), row.sourceSheet(), row.groupName(), row.sandbox(), row.rowOrder(),
+                row.domain(), row.sequenceNo(), row.batchNo(), row.transactionCode(), row.transactionName(),
+                row.issueLevel(), row.registeredDate(), row.fieldName(), row.issueDescription(), row.transactionOwner(),
+                "", "", "", row.resolvedDate(), row.cooperationGroup(), row.resolver(), row.serialNo(),
+                row.dataRepairDate(), "", row.affectedTransactionCount(), row.issueId(), row.issueKey(),
+                row.historicalOccurrenceCount(), row.firstOccurrenceDate(), row.lastOccurrenceDate(), row.importedAt(),
+                row.issueStatus(), row.importDate(), row.defectRepairDate(), null, null, row.globalSerialNo(),
+                row.reviewStatus(), row.reviewerUsername(), row.reviewerRealName(), row.reviewedAt(),
+                row.reviewReason(), row.plannedCompletionDate());
     }
 
     private LocalDate inheritedDefectRepairDate(ReplayIssueRow current, ReplayIssueStatus status) {

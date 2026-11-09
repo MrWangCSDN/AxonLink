@@ -36,6 +36,6 @@ public record ReplayDailyBatch(
 
     @JsonProperty("canGenerate")
     public boolean canGenerate() {
-        return previousBatchNo != null;
+        return isStandardBatchNo(batchNo);
     }
 }

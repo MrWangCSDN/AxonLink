@@ -335,14 +335,17 @@ class ReplayDatabaseComparisonServiceTest {
     @Test void personnelListOverridesLegacyRegistrationValues() {
         var people = mock(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao.class);
         when(people.findByTableName("acct_master")).thenReturn(new com.axonlink.ai.replay.dto.ReplayDatabaseTablePersonRow(
-                1L, "贷款组", "acct_master", "账户", "张三(dev1)", "dev1", "", "王五(owner1)", "owner1", "101", java.time.LocalDateTime.now()));
+                1L, "贷款组", "acct_master", "账户", "张三(dev1)", "dev1", "", "王五(owner1)、赵六(owner2)", "owner1、owner2", "101、102", java.time.LocalDateTime.now()));
         service.setTablePersonDao(people);
         var created = service.create(save("acct_master", "存款组", "错误人员", List.of("acct_no"), null),
                 new ReplayIssueOperator("creator", "创建人"));
         assertEquals("贷款组", created.domainName());
         assertEquals("张三", created.reviserName());
         assertEquals("dev1", created.reviserUsername());
-        assertEquals("101", created.groupOwnerEmpNo());
+        assertEquals("101、102", created.groupOwnerEmpNo());
+        assertEquals("王五(owner1)、赵六(owner2)",created.groupOwnerName());
+        when(metadataService.inspectTable("acct_master")).thenReturn(new ReplayBaseMetadataSnapshot(false,"acct_master",null,List.of()));
+        assertEquals("王五(owner1)、赵六(owner2)",service.detail(created.id()).groupOwnerName());
     }
 
     @Test void newRegistrationRequiresPersonnelListRow() {

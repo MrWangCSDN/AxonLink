@@ -52,8 +52,12 @@ public class ReplayReportMailHtmlRenderer {
     private static void renderSummary(StringBuilder html, ReplayReportSummaryView summary) {
         html.append("<div style=\"margin:0 0 20px 0;overflow-x:auto;\">")
                 .append("<div style=\"font-size:16px;font-weight:700;margin:0 0 8px 0;\">")
-                .append(escape(summary.reportName())).append("</div>")
-                .append("<table style=\"border-collapse:collapse;font-size:12px;min-width:100%;\"><thead><tr>");
+                .append(escape(summary.reportName())).append("</div>");
+        for (String notice : ReplayReportCalculationContext.from(summary).notices()) {
+            html.append("<div style=\"line-height:1.7;margin:0 0 8px 0;\">")
+                    .append(escape(notice)).append("</div>");
+        }
+        html.append("<table style=\"border-collapse:collapse;font-size:12px;min-width:100%;\"><thead><tr>");
         List<ReplayReportSummaryColumn> columns = summary.columns();
         for (int index = 0; index < columns.size();) {
             ReplayReportSummaryColumn column = columns.get(index);

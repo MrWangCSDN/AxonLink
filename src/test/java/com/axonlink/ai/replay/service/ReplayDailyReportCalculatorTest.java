@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.service;
 import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryCalculatedRow;
 import com.axonlink.ai.replay.dto.ReplayDailySummaryRow;
+import com.axonlink.ai.replay.dto.ReplayIssueReviewStatus;
 import com.axonlink.ai.replay.service.ReplayDailyReportCalculator.CalculatedReport;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,7 @@ class ReplayDailyReportCalculatorTest {
         ReplayDailyIssueStatisticRow openIssue = issue(2L, "存款组", true, "参数问题",
                 "交易级", "任意", "打开", 1L, false);
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(previous), List.of(newIssue, openIssue, openIssue),
                 List.of(summary("RPT-CURRENT", "沙箱-存款组", 20L, 1L, 10L, 0L, "0.55", 999L)),
                 List.of(issue(3L, "存款组", true, "代码问题",
@@ -46,15 +47,15 @@ class ReplayDailyReportCalculatorTest {
         ReplayDailySummaryRow current = summary("RPT-CURRENT", "公共组",
                 20L, 1L, 10L, 0L, "0.55", 99L);
         List<ReplayDailyIssueStatisticRow> previousIssues = List.of(
-                issue(1L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 7L, false),
+                issue(1L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 7L, false, ReplayIssueReviewStatus.APPROVED),
                 issue(2L, "公共组", false, "代码问题", "字段级", "任意", "已修复", 1L, false),
                 issue(3L, "公共组", false, "参数问题", "字段级", "任意", "打开", 1L, false));
         List<ReplayDailyIssueStatisticRow> currentIssues = List.of(
-                issue(4L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 9L, false),
+                issue(4L, "公共组", false, "合理差异", "交易级", "任意", "无需处理", 9L, false, ReplayIssueReviewStatus.APPROVED),
                 issue(5L, "公共组", false, "外围问题", "字段级", "任意", "已修复", 1L, false),
                 issue(6L, "公共组", false, "平台问题", "字段级", "任意", "新建", 1L, false));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(previous), previousIssues, List.of(current), currentIssues);
         ReplayDailySummaryCalculatedRow previousRow = report.previousRows().get(0);
         ReplayDailySummaryCalculatedRow currentRow = report.currentRows().get(0);
@@ -83,11 +84,11 @@ class ReplayDailyReportCalculatorTest {
                 issue(1L, "存款组", true, "代码问题", "交易级", "528成功/CCBS失败", "打开", 7L, false),
                 issue(2L, "存款组", true, "参数问题", "交易级", "528失败ccbs成功", "打开", 5L, false),
                 issue(3L, "存款组", true, "外围问题", "交易级", "二者都失败响应码不一致", "打开", 3L, false),
-                issue(4L, "存款组", true, "代码问题", "交易级", "528成功ccbs失败", "无需处理", 11L, false),
+                issue(4L, "存款组", true, "代码问题", "交易级", "528成功ccbs失败", "无需处理", 11L, false, ReplayIssueReviewStatus.APPROVED),
                 issue(5L, "存款组", true, "代码问题", "字段级", "528成功ccbs失败", "打开", 100L, false),
                 issue(6L, "存款组", false, "代码问题", "交易级", "528成功ccbs失败", "打开", 13L, false));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(summary("RPT-PREVIOUS", "存款组", 1L, 0L, 1L, 0L, "1", 0L)),
                 List.of(), List.of(currentSummary), currentIssues);
         ReplayDailySummaryCalculatedRow current = report.currentRows().get(0);
@@ -108,7 +109,7 @@ class ReplayDailyReportCalculatorTest {
                 summary("RPT-CURRENT", "上限", 10L, 2L, 5L, 0L, "1", 0L),
                 summary("RPT-CURRENT", "下限", 10L, 2L, 5L, 0L, "0.10", 0L));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(summary("RPT-PREVIOUS", "四舍五入", 1L, 0L, 1L, 0L, "1", 0L)),
                 List.of(), current, List.of());
 
@@ -125,9 +126,9 @@ class ReplayDailyReportCalculatorTest {
         ReplayDailySummaryRow current = summary("RPT-CURRENT", "公共组",
                 10L, 2L, 5L, 4L, "0.75", 0L);
         ReplayDailyIssueStatisticRow noAction = issue(1L, "公共组", false, "合理差异", "交易级",
-                "其他字段", "无需处理", 6L, false);
+                "其他字段", "无需处理", 6L, false, ReplayIssueReviewStatus.APPROVED);
 
-        ReplayDailySummaryCalculatedRow row = calculator.calculate(
+        ReplayDailySummaryCalculatedRow row = calculate(
                 List.of(summary("RPT-PREVIOUS", "公共组", 1L, 0L, 1L, 0L, "1", 0L)),
                 List.of(), List.of(current), List.of(noAction)).currentRows().get(0);
 
@@ -153,7 +154,7 @@ class ReplayDailyReportCalculatorTest {
                 analyzedIssue(11L, "未识别类型"),
                 analyzedIssue(12L, "规则差异问题"));
 
-        ReplayDailySummaryCalculatedRow row = calculator.calculate(
+        ReplayDailySummaryCalculatedRow row = calculate(
                 List.of(previous), issues,
                 List.of(summary("RPT-CURRENT", "公共组", 1L, 0L, 1L, 0L, "1", 0L)), List.of())
                 .previousRows().get(0);
@@ -178,7 +179,7 @@ class ReplayDailyReportCalculatorTest {
         List<ReplayDailyIssueStatisticRow> previousIssues = List.of(
                 issue(1L, "公共组", false, "代码问题", "交易级", "任意", "新建", 1L, true));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(previous), previousIssues,
                 List.of(summary("RPT-CURRENT", "公共组", 2L, 0L, 2L, 0L, "1", 0L)), List.of());
 
@@ -200,7 +201,7 @@ class ReplayDailyReportCalculatorTest {
                 unresolvedIssue(5L, "修复待验证"),
                 unresolvedIssue(6L, "已修复"));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(previous), previousIssues,
                 List.of(summary("RPT-CURRENT", "公共组", 10L, 0L, 10L, 0L, "1", 0L)), List.of());
         ReplayDailyReportCalculator.PreviousUnresolved unresolved = report.previousUnresolved();
@@ -223,7 +224,7 @@ class ReplayDailyReportCalculatorTest {
                 summary("RPT-CURRENT", "甲", 10L, 0L, 10L, 0L, "1", 0L),
                 summary("RPT-CURRENT", "乙", 30L, 0L, 0L, 0L, "0", 0L));
 
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(summary("RPT-PREVIOUS", "甲", 1L, 0L, 1L, 0L, "1", 0L)),
                 List.of(), current, List.of());
 
@@ -233,7 +234,7 @@ class ReplayDailyReportCalculatorTest {
 
     @Test
     void zeroIssueTotalProducesZeroProgressAndResolutionRate() {
-        CalculatedReport report = calculator.calculate(
+        CalculatedReport report = calculate(
                 List.of(summary("RPT-PREVIOUS", "公共组", 1L, 0L, 1L, 0L, "1", 0L)),
                 List.of(),
                 List.of(summary("RPT-CURRENT", "公共组", 1L, 0L, 1L, 0L, "1", 0L)),
@@ -241,6 +242,22 @@ class ReplayDailyReportCalculatorTest {
 
         assertEquals(BigDecimal.ZERO, report.previousRows().get(0).investigationProgress());
         assertEquals(BigDecimal.ZERO, report.previousUnresolved().resolutionRate());
+    }
+
+    private CalculatedReport calculate(List<ReplayDailySummaryRow> previous, List<ReplayDailyIssueStatisticRow> previousIssues,
+                                       List<ReplayDailySummaryRow> current, List<ReplayDailyIssueStatisticRow> currentIssues) {
+        return calculator.calculate(previous, previousIssues, comparisonMembership(previous, previousIssues),
+                current, currentIssues, comparisonMembership(current, currentIssues));
+    }
+
+    private static List<com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow> comparisonMembership(
+            List<ReplayDailySummaryRow> summaries, List<ReplayDailyIssueStatisticRow> issues) {
+        if (summaries.isEmpty()) return List.of();
+        return issues.stream().map(issue -> new com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow(
+                summaries.get(0).batchNo(), com.axonlink.ai.replay.dto.ReplayDailyRowType.DETAIL,
+                issue.transactionCode(), "S1", "交易", "开发", "行内",
+                (issue.sandbox() ? "沙箱-" : "") + issue.groupName(),
+                null, null, null, null, null, null, null, null, null, null, null, 1, "{}")).toList();
     }
 
     private static ReplayDailySummaryRow summary(String batch, String domain, long sent, long sameFail,
@@ -261,7 +278,14 @@ class ReplayDailyReportCalculatorTest {
     private static ReplayDailyIssueStatisticRow issue(long issueId, String groupName, boolean sandbox,
                                                        String issueType, String issueLevel, String fieldName,
                                                        String status, long affectedCount, boolean reopened) {
+        return issue(issueId, groupName, sandbox, issueType, issueLevel, fieldName, status, affectedCount, reopened, null);
+    }
+
+    private static ReplayDailyIssueStatisticRow issue(long issueId, String groupName, boolean sandbox,
+                                                       String issueType, String issueLevel, String fieldName,
+                                                       String status, long affectedCount, boolean reopened,
+                                                       ReplayIssueReviewStatus reviewStatus) {
         return new ReplayDailyIssueStatisticRow(issueId, groupName, sandbox, issueType, issueLevel,
-                fieldName, status, affectedCount, reopened);
+                fieldName, status, affectedCount, reopened, reviewStatus, Long.toString(issueId), null);
     }
 }

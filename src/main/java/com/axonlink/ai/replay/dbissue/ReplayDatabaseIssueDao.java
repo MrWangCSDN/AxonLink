@@ -15,7 +15,7 @@ import java.util.function.Supplier;
 public class ReplayDatabaseIssueDao {
     private record HeaderFilter(String field,String parameter,String column,boolean numeric) {
         String columnSql(){return field.equals("domain")?DOMAIN_SQL:field.equals("owner")?OWNER_SQL:"i."+column;}
-        String valueSql(){return field.equals("reviewStatus")?REVIEW_DISPLAY_SQL:numeric?"CONCAT('',"+columnSql()+")":"COALESCE("+columnSql()+",'')";}
+        String valueSql(){return field.equals("plannedCompletionDate")?"COALESCE(CAST(i.planned_completion_date AS CHAR(10)),'')":field.equals("reviewStatus")?REVIEW_DISPLAY_SQL:numeric?"CONCAT('',"+columnSql()+")":"COALESCE("+columnSql()+",'')";}
     }
     private static final String REVIEW_DISPLAY_SQL="CASE WHEN i.review_status='待审核' THEN '待审核' WHEN i.review_status='已审核' AND TRIM(COALESCE(i.review_reason,''))='' THEN '已审核（未填写原因）' WHEN i.review_status='已审核' THEN '已审核（已填写原因）' ELSE '' END";
     private static final List<HeaderFilter> HEADER_FILTERS=List.of(
@@ -28,6 +28,7 @@ public class ReplayDatabaseIssueDao {
             new HeaderFilter("issueLevel","issueLevels","issue_level",false),
             new HeaderFilter("fieldName","fieldNames","field_name",false),
             new HeaderFilter("differenceCount","differenceCounts","difference_count",true),
+            new HeaderFilter("plannedCompletionDate","plannedCompletionDates","planned_completion_date",false),
             new HeaderFilter("defectRepairDate","defectRepairDates","defect_repair_date",false),
             new HeaderFilter("batchNo","batchNos","batch_no",false),
             new HeaderFilter("issueStatus","issueStatuses","issue_status",false),
@@ -37,13 +38,17 @@ public class ReplayDatabaseIssueDao {
         static TableIdentity of(Map<String,Object> row){return new TableIdentity(text(row.get("tableName")).toLowerCase(Locale.ROOT));}
     }
     public record TechnologyOwnerRegistration(TableIdentity table,String identity,String name,String domain,String owner,String tableComment) {}
+    public record RegistrationVersion(long id, String versionNo, java.time.LocalDateTime generatedAt,
+                                      String generatedName, int tableCount, int fieldCount) {}
     private static final int MAX_FILTER_CANDIDATES=500;
     private static final String DOMAIN_SQL="COALESCE(registration.domain_name,'')";
     private static final String OWNER_SQL="COALESCE(registration.developer_display,'')";
     private static final String ISSUE_FROM=" FROM dii_replay_database_issue i LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER(i.table_name)";
+    private static final String VISIBLE_ISSUE_SQL="i.issue_status<>'不参与比对'";
     // Automatic repairs retain the last actual batch_no, so it also covers rows without import history.
     private static final String OCCURRENCES_SQL="SELECT issue_id AS issue_row_id,batch_no FROM dii_replay_database_issue_history WHERE import_event=1 AND incoming_snapshot IS NOT NULL UNION SELECT id AS issue_row_id,batch_no FROM dii_replay_database_issue";
     private record QueryWhere(String sql,List<Object> args) {}
+    private static final String PLAN_DATE_COUNT_SQL = "(SELECT COUNT(*) FROM dii_replay_database_issue_plan_date_change pc WHERE pc.replay_issue_id=i.id) AS plan_date_change_count";
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final ObjectMapper json=new ObjectMapper();
@@ -51,23 +56,23 @@ public class ReplayDatabaseIssueDao {
         jdbc=diiResultJdbcTemplate;tx=new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
     }
     public <T>T writing(Supplier<T> work){return tx.execute(status->{jdbc.queryForObject("SELECT id FROM dii_replay_database_issue_write_lock WHERE id=1 FOR UPDATE",Integer.class);return work.get();});}
-    public Map<String,Object> find(long id){var rows=jdbc.query("SELECT * FROM dii_replay_database_issue WHERE id=?",this::row,id);return rows.isEmpty()?null:rows.get(0);}
-    public Map<String,Object> findByIssueId(String issueId){var rows=jdbc.query("SELECT * FROM dii_replay_database_issue WHERE issue_id=?",this::row,issueId);return rows.isEmpty()?null:rows.get(0);}
-    public List<Map<String,Object>> current(){return jdbc.query("SELECT * FROM dii_replay_database_issue ORDER BY id",this::row);}
+    public Map<String,Object> find(long id){var rows=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+" FROM dii_replay_database_issue i WHERE i.id=?",this::row,id);return rows.isEmpty()?null:rows.get(0);}
+    public Map<String,Object> findByIssueId(String issueId){var rows=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+" FROM dii_replay_database_issue i WHERE i.issue_id=?",this::row,issueId);return rows.isEmpty()?null:rows.get(0);}
+    public List<Map<String,Object>> current(){return jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+" FROM dii_replay_database_issue i ORDER BY i.id",this::row);}
     public void insert(Map<String,Object> r){
         var keys=new GeneratedKeyHolder();
-        jdbc.update(connection->{var ps=connection.prepareStatement("INSERT INTO dii_replay_database_issue(issue_id,table_name,table_comment,domain_name,owner_display,issue_level,field_name,difference_count,batch_no,batch_date,issue_status,issue_type,review_status,review_reason,defect_repair_date,cooperation_person_display,data_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS);
+        jdbc.update(connection->{var ps=connection.prepareStatement("INSERT INTO dii_replay_database_issue(issue_id,table_name,table_comment,domain_name,owner_display,issue_level,field_name,difference_count,total_528,total_ccbs,batch_no,batch_date,issue_status,issue_type,review_status,review_reason,defect_repair_date,cooperation_person_display,planned_completion_date,data_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",Statement.RETURN_GENERATED_KEYS);
             Object[] values=values(r);for(int i=0;i<values.length;i++)ps.setObject(i+1,values[i]);return ps;},keys);
         r.put("id",Objects.requireNonNull(keys.getKey()).longValue());r.put("version",0L);
     }
     public void update(Map<String,Object> r){
         Object[] values=values(r);var args=new ArrayList<>(Arrays.asList(values));args.add(r.get("id"));args.add(r.get("version"));
-        int changed=jdbc.update("UPDATE dii_replay_database_issue SET issue_id=?,table_name=?,table_comment=?,domain_name=?,owner_display=?,issue_level=?,field_name=?,difference_count=?,batch_no=?,batch_date=?,issue_status=?,issue_type=?,review_status=?,review_reason=?,defect_repair_date=?,cooperation_person_display=?,data_snapshot=?,version=version+1 WHERE id=? AND version=?",args.toArray());
+        int changed=jdbc.update("UPDATE dii_replay_database_issue SET issue_id=?,table_name=?,table_comment=?,domain_name=?,owner_display=?,issue_level=?,field_name=?,difference_count=?,total_528=?,total_ccbs=?,batch_no=?,batch_date=?,issue_status=?,issue_type=?,review_status=?,review_reason=?,defect_repair_date=?,cooperation_person_display=?,planned_completion_date=?,data_snapshot=?,version=version+1 WHERE id=? AND version=?",args.toArray());
         if(changed!=1)throw new ReplayDatabaseIssueConflictException();
         r.put("version",((Number)r.get("version")).longValue()+1);
     }
-    private Object[] values(Map<String,Object> r){return new Object[]{r.get("issueId"),r.get("tableName"),r.get("tableComment"),r.get("domain"),r.get("owner"),r.get("issueLevel"),r.get("fieldName"),r.get("differenceCount"),r.get("batchNo"),java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate((String)r.get("batchNo"))),r.get("issueStatus"),r.get("issueType"),text(r.get("reviewStatus")),text(r.get("reviewReason")),text(r.get("defectRepairDate")),text(r.get("cooperationPerson")),encode(r)};}
-    private Map<String,Object> row(ResultSet rs,int n)throws SQLException{var r=decode(rs.getString("data_snapshot"));r.put("id",rs.getLong("id"));r.put("version",rs.getLong("version"));r.put("differenceCount",rs.getLong("difference_count"));r.put("reviewStatus",text(rs.getString("review_status")));r.put("reviewReason",text(rs.getString("review_reason")));r.put("defectRepairDate",text(rs.getString("defect_repair_date")));r.put("cooperationPerson",text(rs.getString("cooperation_person_display")));return r;}
+    private Object[] values(Map<String,Object> r){return new Object[]{r.get("issueId"),r.get("tableName"),r.get("tableComment"),r.get("domain"),r.get("owner"),r.get("issueLevel"),r.get("fieldName"),r.get("differenceCount"),r.getOrDefault("total528",0L),r.getOrDefault("totalCcbs",0L),r.get("batchNo"),java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate((String)r.get("batchNo"))),r.get("issueStatus"),r.get("issueType"),text(r.get("reviewStatus")),text(r.get("reviewReason")),text(r.get("defectRepairDate")),text(r.get("cooperationPerson")),text(r.get("plannedCompletionDate")).isBlank()?null:java.sql.Date.valueOf(text(r.get("plannedCompletionDate"))),encode(r)};}
+    private Map<String,Object> row(ResultSet rs,int n)throws SQLException{var r=decode(rs.getString("data_snapshot"));r.put("plannedCompletionDate",text(rs.getDate("planned_completion_date")));r.put("plannedCompletionDateChangeCount",rs.getLong("plan_date_change_count"));r.put("id",rs.getLong("id"));r.put("version",rs.getLong("version"));r.put("differenceCount",rs.getLong("difference_count"));r.put("total528",rs.getLong("total_528"));r.put("totalCcbs",rs.getLong("total_ccbs"));r.put("reviewStatus",text(rs.getString("review_status")));r.put("reviewReason",text(rs.getString("review_reason")));r.put("defectRepairDate",text(rs.getString("defect_repair_date")));r.put("cooperationPerson",text(rs.getString("cooperation_person_display")));return r;}
     private Map<String,Object> joinedRow(ResultSet rs,int n)throws SQLException{var r=row(rs,n);r.put("domain",rs.getString("mapped_domain"));r.put("owner",rs.getString("mapped_owner"));return r;}
     public static String reviewDisplay(Map<String,Object> row){String state=text(row.get("reviewStatus"));return state.equals("待审核")?state:state.equals("已审核")?(text(row.get("reviewReason")).trim().isEmpty()?"已审核（未填写原因）":"已审核（已填写原因）"):"";}
     public Map<String,Object> list(Map<String,?> criteria){
@@ -75,7 +80,7 @@ public class ReplayDatabaseIssueDao {
         long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+ISSUE_FROM+where.sql(),Long.class,args.toArray()));
         int limit=Math.max(1,Math.min(integer(first(criteria.get("limit")),50),200)),offset=Math.max(0,integer(first(criteria.get("offset")),0));
         args.add(limit);args.add(offset);
-        var items=jdbc.query("SELECT i.*,"+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL+" AS mapped_owner"+ISSUE_FROM+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
+        var items=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+","+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL+" AS mapped_owner"+ISSUE_FROM+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
         addOccurrenceBatches(items);
         items.forEach(item->item.put("reviewStatusDisplay",reviewDisplay(item)));
         return Map.of("items",items,"total",total,"limit",limit,"offset",offset);
@@ -138,7 +143,7 @@ public class ReplayDatabaseIssueDao {
         return Map.of("items",items,"candidateCount",candidateCount,"matchedIssueCount",matchedIssueCount,"truncated",candidateCount>MAX_FILTER_CANDIDATES);
     }
     private QueryWhere where(Map<String,?> criteria,String excludedField){
-        var where=new StringBuilder(" WHERE 1=1");var args=new ArrayList<Object>();
+        var where=new StringBuilder(" WHERE "+VISIBLE_ISSUE_SQL);var args=new ArrayList<Object>();
         for(var filter:HEADER_FILTERS) {
             if(filter.field().equals(excludedField))continue;
             var values=selected(criteria.get(filter.parameter()));
@@ -183,7 +188,7 @@ public class ReplayDatabaseIssueDao {
     }
     public List<String> distinct(String column){
         String expression=switch(column){case "domain_name"->DOMAIN_SQL;case "owner_display"->OWNER_SQL;case "batch_no"->"i.batch_no";default->throw new IllegalArgumentException();};
-        return jdbc.queryForList("SELECT DISTINCT "+expression+" AS candidate_value"+ISSUE_FROM+" WHERE TRIM(COALESCE("+expression+",''))<>'' ORDER BY candidate_value",String.class);
+        return jdbc.queryForList("SELECT DISTINCT "+expression+" AS candidate_value"+ISSUE_FROM+" WHERE "+VISIBLE_ISSUE_SQL+" AND TRIM(COALESCE("+expression+",''))<>'' ORDER BY candidate_value",String.class);
     }
     public Map<String,String> metadata(String table){
         var rows=technologyOwners(List.of(new TableIdentity(table.toLowerCase(Locale.ROOT))));
@@ -193,8 +198,8 @@ public class ReplayDatabaseIssueDao {
     public List<TechnologyOwnerRegistration> technologyOwners(Collection<TableIdentity> tables){
         if(tables.isEmpty())return List.of();
         var names=new LinkedHashSet<String>();tables.forEach(table->names.add(table.tableName()));
-        return jdbc.query("SELECT table_name,domain_name,technology_owner_emp_nos,technology_owner_display,developer_display,table_comment FROM dii_replay_database_table_person WHERE table_name IN ("+String.join(",",Collections.nCopies(names.size(),"?"))+")",
-                (rs,n)->new TechnologyOwnerRegistration(new TableIdentity(rs.getString("table_name")),text(rs.getString("technology_owner_emp_nos")),text(rs.getString("technology_owner_display")),text(rs.getString("domain_name")),text(rs.getString("developer_display")),text(rs.getString("table_comment"))),names.toArray());
+        return jdbc.query("SELECT table_name,domain_name,COALESCE(NULLIF(TRIM(technology_owner_usernames),''),technology_owner_emp_nos) AS technology_owner_identity,technology_owner_display,developer_display,table_comment FROM dii_replay_database_table_person WHERE table_name IN ("+String.join(",",Collections.nCopies(names.size(),"?"))+")",
+                (rs,n)->new TechnologyOwnerRegistration(new TableIdentity(rs.getString("table_name")),text(rs.getString("technology_owner_identity")),text(rs.getString("technology_owner_display")),text(rs.getString("domain_name")),text(rs.getString("developer_display")),text(rs.getString("table_comment"))),names.toArray());
     }
     public void checkTableDates(Set<String> tables,java.time.LocalDate date){
         for(String table:tables){var dates=jdbc.queryForList("SELECT batch_date FROM dii_replay_database_issue_table_state WHERE table_name=?",java.sql.Date.class,table);
@@ -204,8 +209,66 @@ public class ReplayDatabaseIssueDao {
         for(String table:tables){jdbc.update("DELETE FROM dii_replay_database_issue_table_state WHERE table_name=?",table);jdbc.update("INSERT INTO dii_replay_database_issue_table_state(table_name,batch_date,batch_no) VALUES (?,?,?)",table,java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate(batch)),batch);}
     }
     public void batch(String batch,String filename,String at,String username,String name,int input,int created,int updated,int repaired){
-        jdbc.update("DELETE FROM dii_replay_database_issue_batch WHERE batch_no=?",batch);
-        jdbc.update("INSERT INTO dii_replay_database_issue_batch(batch_no,batch_date,filename,imported_at,operator_username,operator_name,input_rows,created_rows,updated_rows,auto_repaired_rows) VALUES (?,?,?,?,?,?,?,?,?,?)",batch,java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate(batch)),filename,Timestamp.valueOf(at),username,name,input,created,updated,repaired);
+        batch(batch, filename, at, username, name, input, created, updated, repaired, null);
+    }
+    public void batch(String batch, String filename, String at, String username, String name,
+                      int input, int created, int updated, int repaired, Long registrationVersionId) {
+        jdbc.update("""
+                INSERT INTO dii_replay_database_issue_batch
+                    (batch_no,batch_date,filename,imported_at,operator_username,operator_name,
+                     input_rows,created_rows,updated_rows,auto_repaired_rows,registration_version_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE batch_date=VALUES(batch_date),filename=VALUES(filename),
+                    imported_at=VALUES(imported_at),operator_username=VALUES(operator_username),
+                    operator_name=VALUES(operator_name),input_rows=VALUES(input_rows),
+                    created_rows=VALUES(created_rows),updated_rows=VALUES(updated_rows),
+                    auto_repaired_rows=VALUES(auto_repaired_rows),
+                    registration_version_id=COALESCE(registration_version_id,VALUES(registration_version_id))
+                """, batch, java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate(batch)), filename,
+                Timestamp.valueOf(at), username, name, input, created, updated, repaired, registrationVersionId);
+    }
+    public Long batchRegistrationVersionId(String batchNo) {
+        return batchRegistrationVersionId(batchNo, false);
+    }
+    public Long lockBatchRegistrationVersionId(String batchNo) {
+        return batchRegistrationVersionId(batchNo, true);
+    }
+    private Long batchRegistrationVersionId(String batchNo, boolean lock) {
+        var rows = jdbc.query("SELECT registration_version_id FROM dii_replay_database_issue_batch WHERE batch_no=?"
+                        + (lock ? " FOR UPDATE" : ""),
+                (rs, index) -> rs.getObject("registration_version_id", Long.class), batchNo);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+    public RegistrationVersion registrationVersion(String versionNo) {
+        var rows = jdbc.query("SELECT id,version_no,generated_at,generated_name,table_count,field_count "
+                        + "FROM dii_replay_db_compare_version WHERE version_no=?", this::mapRegistrationVersion, versionNo);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+    public RegistrationVersion registrationVersion(long versionId) {
+        var rows = jdbc.query("SELECT id,version_no,generated_at,generated_name,table_count,field_count "
+                        + "FROM dii_replay_db_compare_version WHERE id=?", this::mapRegistrationVersion, versionId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+    private RegistrationVersion mapRegistrationVersion(ResultSet rs, int index) throws SQLException {
+        return new RegistrationVersion(rs.getLong("id"), rs.getString("version_no"),
+                rs.getTimestamp("generated_at").toLocalDateTime(), rs.getString("generated_name"),
+                rs.getInt("table_count"), rs.getInt("field_count"));
+    }
+    public Map<String, Long> registrationVersionTableCounts(long versionId, Set<String> tableNames) {
+        Map<String, Long> result = new LinkedHashMap<>();
+        List<String> tables = new ArrayList<>(tableNames);
+        for (int start = 0; start < tables.size(); start += 200) {
+            List<String> selected = tables.subList(start, Math.min(start + 200, tables.size()));
+            List<Object> arguments = new ArrayList<>();
+            arguments.add(versionId);
+            arguments.addAll(selected);
+            String sql = "SELECT LOWER(table_name) AS table_name,COUNT(*) AS matches "
+                    + "FROM dii_replay_db_compare_version_table WHERE version_id=? AND LOWER(table_name) IN ("
+                    + String.join(",", Collections.nCopies(selected.size(), "?")) + ") GROUP BY LOWER(table_name)";
+            jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+                    result.put(rs.getString("table_name"), rs.getLong("matches")), arguments.toArray());
+        }
+        return result;
     }
     public void history(Map<String,Object> before,Map<String,Object> after,Map<String,Object> incoming,String batch,String operation,String at,String username,String name,boolean importEvent){
         // A same-batch absence must preserve any earlier actual appearance used by occurrence filters.
@@ -216,6 +279,25 @@ public class ReplayDatabaseIssueDao {
     public List<Map<String,Object>> history(long id){return jdbc.query("SELECT * FROM dii_replay_database_issue_history WHERE issue_id=? ORDER BY batch_no DESC,operation_at DESC,id DESC",(rs,n)->{
         Map<String,Object> r=new LinkedHashMap<>();r.put("id",rs.getLong("id"));r.put("batchNo",rs.getString("batch_no"));r.put("operationType",rs.getString("operation_type"));r.put("operationAt",rs.getTimestamp("operation_at").toLocalDateTime().toString().replace('T',' '));r.put("operatorUsername",rs.getString("operator_username"));r.put("operatorName",rs.getString("operator_name"));r.put("before",decode(rs.getString("before_snapshot")));r.put("after",decode(rs.getString("after_snapshot")));r.put("incoming",decode(rs.getString("incoming_snapshot")));return r;
     },id);}
+    public Set<String> developerTables(String username,Collection<String> tables){
+        if(tables.isEmpty())return Set.of();
+        var args=new ArrayList<Object>(tables);
+        return new LinkedHashSet<>(jdbc.query("SELECT table_name,developer_usernames FROM dii_replay_database_table_person WHERE table_name IN ("+String.join(",",Collections.nCopies(tables.size(),"?"))+")",
+                (rs,n)->Map.entry(rs.getString("table_name"),text(rs.getString("developer_usernames"))),args.toArray()).stream()
+                .filter(entry->Arrays.stream(entry.getValue().split("[、,，;；\\s]+" )).anyMatch(username::equals))
+                .map(Map.Entry::getKey).toList());
+    }
+    public void insertPlanDateChange(long id,java.time.LocalDate date,com.axonlink.ai.replay.dto.ReplayIssueOperator actor,java.time.LocalDateTime at){
+        jdbc.update("INSERT INTO dii_replay_database_issue_plan_date_change(replay_issue_id,planned_completion_date,operator_username,operator_real_name,changed_at) VALUES (?,?,?,?,?)",
+                id,date==null?null:java.sql.Date.valueOf(date),actor.username(),actor.realName(),Timestamp.valueOf(at));
+    }
+    public List<Map<String,Object>> planDateChanges(long id){
+        return jdbc.query("SELECT * FROM dii_replay_database_issue_plan_date_change WHERE replay_issue_id=? ORDER BY changed_at DESC,id DESC",(rs,n)->{
+            var item=new LinkedHashMap<String,Object>();item.put("plannedCompletionDate",text(rs.getDate("planned_completion_date")));
+            item.put("operatorUsername",rs.getString("operator_username"));item.put("operatorRealName",rs.getString("operator_real_name"));
+            item.put("changedAt",rs.getTimestamp("changed_at").toLocalDateTime().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));return item;
+        },id);
+    }
     public String encode(Map<String,Object> r){try{return json.writeValueAsString(r);}catch(Exception e){throw new IllegalStateException("生成数据库问题快照失败",e);}}
     private Map<String,Object> decode(String s){try{return s==null?new LinkedHashMap<>():json.readValue(s,new TypeReference<LinkedHashMap<String,Object>>(){});}catch(Exception e){throw new IllegalStateException("读取数据库问题快照失败",e);}}
     private static int integer(Object v,int fallback){if(v==null||v.toString().isBlank())return fallback;try{return Integer.parseInt(v.toString());}catch(Exception e){throw new IllegalArgumentException("分页参数不是有效整数");}}

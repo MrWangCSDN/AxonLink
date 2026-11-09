@@ -103,7 +103,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
     @Test void generatedVersionFreezesCurrentPersonnelListValues() {
         insertRegistration("acct_master", "账户", List.of(field("acct_no", "账号", 1, true, 1)));
         var registration = registrationDao.findAllActiveWithFields().get(0);
-        jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,table_comment,developer_display,developer_usernames,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('acct_master','贷款组','账户','张三(dev1)','dev1','王五(owner1)','101',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,table_comment,developer_display,developer_usernames,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('acct_master','贷款组','账户','张三(dev1)','dev1','王五(owner1)、赵六(owner2)','101、102',CURRENT_TIMESTAMP)");
         service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
         when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", metadataFor(registration)));
         var version=service.generate("secret", "secret", operator());
@@ -111,7 +111,8 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals("贷款组",stored.domainName());
         assertEquals("张三",stored.reviserName());
         assertEquals("dev1",stored.reviserUsername());
-        assertEquals("101",stored.groupOwnerEmpNo());
+        assertEquals("101、102",stored.groupOwnerEmpNo());
+        assertEquals("王五(owner1)、赵六(owner2)",stored.groupOwnerName());
         jdbc.update("UPDATE dii_replay_database_table_person SET domain_name='公共组',developer_display='李四(dev2)' WHERE table_name='acct_master'");
         stored=versionDao.findCompleteSnapshot(versionDao.findStoredVersion(version.versionNo()).id()).get(0);
         assertEquals("贷款组",stored.domainName());

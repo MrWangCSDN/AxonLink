@@ -23,14 +23,14 @@ class ReplayDatabaseIssueControllerTest {
         jdbc=ReplayIssueTestFixtures.newJdbc();
         ReplayDatabaseIssueReviewProjectionTest.installJsonHelpers(jdbc);
         new ResourceDatabasePopulator(new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
-                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),new ClassPathResource("db/daoindex/V79__replay_database_issue_repair_date_projection.sql"),new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql")).execute(jdbc.getDataSource());
+                new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),new ClassPathResource("db/daoindex/V79__replay_database_issue_repair_date_projection.sql"),new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql"),new ClassPathResource("db/daoindex/V81__replay_database_issue_completion_totals.sql"),new ClassPathResource("db/daoindex/V83__replay_database_issue_plan_date.sql"),new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql")).execute(jdbc.getDataSource());
         dao=new ReplayDatabaseIssueDao(jdbc);
         new ResourceDatabasePopulator(new ClassPathResource("db/user/01_user_ddl.sql")).execute(jdbc.getDataSource());
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('editor','编辑人','E001',1),('other','编辑人','E002',1)");
         users=spy(new SysUserDao(jdbc));
         var service=new ReplayDatabaseIssueService(new ReplayDatabaseIssueExcelParser(),dao,users);
         resolver=mock(UserPrincipalResolver.class);when(resolver.resolve(any())).thenReturn(new UserPrincipalResolver.Resolved("LDAP","editor",null));
-        mvc=MockMvcBuilders.standaloneSetup(new ReplayDatabaseIssueController(dao,service,resolver)).build();
+        mvc=MockMvcBuilders.standaloneSetup(new ReplayDatabaseIssueController(dao,service,resolver,new com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties())).build();
     }
     @Test void oldReleaseProtectsPendingVerificationDespiteNewBatchDate() throws Exception {
         assertReleaseBoundary("2026-10-14 12:00:01", "修复待验证");
@@ -77,9 +77,9 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.createdRows").value(3));
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueLevel","仅ccbs"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.items[0].differenceCount").value(3));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"打开\",\"issueType\":\"需规问题\",\"remark\":\"处理\"}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.issueLevel").value("仅ccbs")).andExpect(jsonPath("$.data.issueType").value("需规问题"));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueType\":\"代码问题\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"打开\",\"issueType\":\"其他问题\",\"remark\":\"处理\"}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.issueLevel").value("仅ccbs")).andExpect(jsonPath("$.data.issueType").value("其他问题"));
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueType\":\"修改代码\"}"))
             .andExpect(status().isConflict());
         mvc.perform(get("/api/ai/parallel-replay/database-issues/1/tracking"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].batchNo").value("DB20261012-01")).andExpect(jsonPath("$.data[0].events.length()").value(2));
@@ -132,7 +132,7 @@ class ReplayDatabaseIssueControllerTest {
         mvc.perform(get("/api/ai/parallel-replay/database-issues")
                 .param("issueIds","extra_table-ccbs").param("tableNames","extra_table").param("tableComments","账户,明细")
                 .param("owners","张三,李四").param("differenceCounts","8").param("batchNos","DB20261012-01")
-                .param("issueStatuses","新建").param("issueTypes","代码问题").param("domains","存款组").param("issueLevels","仅ccbs").param("fieldNames",""))
+                .param("issueStatuses","新建").param("issueTypes","修改代码").param("domains","存款组").param("issueLevels","仅ccbs").param("fieldNames",""))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
             .andExpect(jsonPath("$.data.items[0].issueId").value("extra_table-ccbs"));
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("owners","张三","李四"))
@@ -459,7 +459,7 @@ class ReplayDatabaseIssueControllerTest {
         importBatch("DB20261012-01",3,0,0);
         registerTechnologyOwner("public","koba_off_sheet_acct","贷款组","E001");
         mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json")
-                .content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"外围问题\"}"))
+                .content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"不参与比对\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("待审核"))
             .andExpect(jsonPath("$.data.reviewStatusDisplay").value("待审核"))
             .andExpect(jsonPath("$.data.technologyOwnerUsername").value("editor"))
@@ -475,12 +475,12 @@ class ReplayDatabaseIssueControllerTest {
         mvc.perform(post("/api/ai/parallel-replay/database-issues/1/review").contentType("application/json").content("{\"version\":1,\"reason\":\"合理\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("已审核"))
             .andExpect(jsonPath("$.data.reviewStatusDisplay").value("已审核（已填写原因）"))
-            .andExpect(jsonPath("$.data.issueType").value("合理差异"))
+            .andExpect(jsonPath("$.data.issueType").value("规则性差异"))
             .andExpect(jsonPath("$.data.canReview").value(true)).andExpect(jsonPath("$.data.canEdit").value(true));
         when(resolver.resolve(any())).thenReturn(new UserPrincipalResolver.Resolved("LDAP","other",null));
         mvc.perform(get("/api/ai/parallel-replay/database-issues"))
             .andExpect(jsonPath("$.data.items[0].canReview").value(false)).andExpect(jsonPath("$.data.items[0].canEdit").value(false));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":2,\"issueType\":\"合理差异\",\"canEdit\":true}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":2,\"issueType\":\"规则性差异\",\"canEdit\":true}"))
             .andExpect(status().isForbidden());
     }
     @Test void technologyOwnerIdentityNeverComesFromDomainReviserNameOrAmbiguousRegistration() throws Exception {
@@ -510,7 +510,7 @@ class ReplayDatabaseIssueControllerTest {
         jdbc.update("UPDATE ccbs_ai_sys_user SET emp_no=NULL WHERE username='editor'");
         registerTechnologyOwner("public","koba_off_sheet_acct","贷款组","editor");
         importBatch("DB20261012-01",3,0,0);
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"外围问题\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"不参与比对\"}"))
             .andExpect(status().isOk());
         mvc.perform(post("/api/ai/parallel-replay/database-issues/1/review").contentType("application/json").content("{\"version\":1,\"reason\":\"理由\"}"))
             .andExpect(status().isOk());
@@ -519,11 +519,11 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(2));
         assertEquals(approved.get("reviewedAt"),dao.find(1).get("reviewedAt"));assertEquals(approved.get("defectRepairDate"),dao.find(1).get("defectRepairDate"));
         assertEquals(history,dao.history(1).size());assertEquals("审核通过",dao.history(1).get(0).get("operationType"));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":2,\"issueStatus\":\"无需处理\",\"issueType\":\"合理差异\",\"remark\":\"修改备注\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":2,\"issueStatus\":\"无需处理\",\"issueType\":\"规则性差异\",\"remark\":\"修改备注\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("已审核")).andExpect(jsonPath("$.data.reviewReason").value("理由"));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":3,\"issueStatus\":\"打开\",\"issueType\":\"代码问题\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":3,\"issueStatus\":\"打开\",\"issueType\":\"修改代码\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("")).andExpect(jsonPath("$.data.defectRepairDate").value(""));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":4,\"issueStatus\":\"无需处理\",\"issueType\":\"外围问题\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":4,\"issueStatus\":\"无需处理\",\"issueType\":\"不参与比对\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("待审核")).andExpect(jsonPath("$.data.reviewReason").value(""));
     }
     @Test void reviewFacetAndExportUseTheThreeDisplayStatusesWithoutChangingRawValues() throws Exception {
@@ -587,7 +587,7 @@ class ReplayDatabaseIssueControllerTest {
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("domains","最新领域").param("owners","登记修订人(R002)"))
             .andExpect(jsonPath("$.data.total").value(3)).andExpect(jsonPath("$.data.items[0].owner").value("登记修订人(R002)"));
-        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"合理差异\"}"))
+        mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"规则性差异\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.domain").value("最新领域")).andExpect(jsonPath("$.data.owner").value("登记修订人(R002)"))
             .andExpect(jsonPath("$.data.canReview").value(true));
         mvc.perform(post("/api/ai/parallel-replay/database-issues/1/review").contentType("application/json").content("{\"version\":1,\"reason\":\"已核实\"}"))
@@ -642,6 +642,6 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(status().isOk());
         var row=new LinkedHashMap<String,Object>(dao.findByIssueId("koba_off_sheet_acct-ccbs"));
         row.put("issueId","extra_table-ccbs");row.put("tableName","extra_table");row.put("tableComment","账户,明细");
-        row.put("domain","存款组");row.put("owner","张三,李四");row.put("differenceCount",8L);row.put("issueType","代码问题");dao.insert(row);
+        row.put("domain","存款组");row.put("owner","张三,李四");row.put("differenceCount",8L);row.put("issueType","修改代码");dao.insert(row);
     }
 }

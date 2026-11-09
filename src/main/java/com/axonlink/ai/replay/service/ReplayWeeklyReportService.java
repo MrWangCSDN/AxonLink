@@ -24,6 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -136,10 +137,11 @@ public class ReplayWeeklyReportService {
         ReportSnapshot snapshot = Objects.requireNonNull(readSnapshotTransaction.execute(
                 status -> loadSnapshot(startBatchNo, endBatchNo)));
         var calculated = calculator.calculate(
-                snapshot.startSummaries(), snapshot.startIssues(),
-                snapshot.endSummaries(), snapshot.endIssues());
+                snapshot.startSummaries(), snapshot.startIssues(), snapshot.startComparisons(),
+                snapshot.endSummaries(), snapshot.endIssues(), snapshot.comparisons(),
+                snapshot.startMetrics().metricIssues(), snapshot.endMetrics().metricIssues(), snapshot.context());
         ReplayReportSummaryView summaryView = summaryViewFactory.create(
-                ReplayReportPeriod.WEEKLY, startBatchNo, endBatchNo, calculated);
+                ReplayReportPeriod.WEEKLY, startBatchNo, endBatchNo, calculated, snapshot.context());
         byte[] bytes = workbookWriter.write(calculated, summaryView, snapshot.comparisons(),
                 snapshot.coverageSummaries(), snapshot.coverageDetails());
         return new ReplayWeeklyReportSnapshot(
@@ -156,19 +158,22 @@ public class ReplayWeeklyReportService {
     }
 
     private ReportSnapshot loadSnapshot(String startBatchNo, String endBatchNo) {
-        List<ReplayDailySummaryRow> startSummaries = dailyDataDao.findSummaries(startBatchNo);
-        List<ReplayDailySummaryRow> endSummaries = dailyDataDao.findSummaries(endBatchNo);
-        if (startSummaries.isEmpty() || endSummaries.isEmpty()) {
+        var latestIssues = issueDao.findCurrentReportIssues(startBatchNo, endBatchNo);
+        var loader = new ReplayReportCalculationDataLoader(dailyDataDao, issueDao);
+        var start = loader.loadLatest(startBatchNo, latestIssues);
+        var end = loader.loadLatest(endBatchNo, latestIssues);
+        if (start.summaries().isEmpty() || end.summaries().isEmpty()) {
             throw new BatchDataNotFoundException();
         }
-        return new ReportSnapshot(
-                startSummaries,
-                issueDao.findDailyReportIssueStatistics(startBatchNo),
-                endSummaries,
-                issueDao.findDailyReportIssueStatistics(endBatchNo),
-                dailyDataDao.findComparisons(endBatchNo),
-                dailyDataDao.findCoverageSummaries(endBatchNo),
-                dailyDataDao.findCoverageDetails(endBatchNo));
+        List<String> notices = new ArrayList<>();
+        notices.add("周报按各批次数据选择新旧算法；完整新数据按同类全部批次最新审核／修复结论回算，历史数据沿用原算法。数量分别取所选两个批次，不累加历史数量。");
+        notices.addAll(start.notices());
+        notices.addAll(end.notices());
+        var context = new ReplayReportCalculationContext(start.availability(), end.availability(), notices);
+        return new ReportSnapshot(start.summaries(), start.historicalIssues(), start.comparisons(),
+                end.summaries(), end.historicalIssues(), end.comparisons(),
+                dailyDataDao.findCoverageSummaries(endBatchNo), dailyDataDao.findCoverageDetails(endBatchNo),
+                start, end, context);
     }
 
     private static void validateRange(String startBatchNo, String endBatchNo,
@@ -226,15 +231,20 @@ public class ReplayWeeklyReportService {
     private record ReportSnapshot(
             List<ReplayDailySummaryRow> startSummaries,
             List<ReplayDailyIssueStatisticRow> startIssues,
+            List<ReplayInterfaceComparisonRow> startComparisons,
             List<ReplayDailySummaryRow> endSummaries,
             List<ReplayDailyIssueStatisticRow> endIssues,
             List<ReplayInterfaceComparisonRow> comparisons,
             List<ReplayCoverageSummaryRow> coverageSummaries,
-            List<ReplayCoverageDetailRow> coverageDetails) {
+            List<ReplayCoverageDetailRow> coverageDetails,
+            ReplayReportCalculationDataLoader.SideData startMetrics,
+            ReplayReportCalculationDataLoader.SideData endMetrics,
+            ReplayReportCalculationContext context) {
 
         private ReportSnapshot {
             startSummaries = List.copyOf(startSummaries);
             startIssues = List.copyOf(startIssues);
+            startComparisons = List.copyOf(startComparisons);
             endSummaries = List.copyOf(endSummaries);
             endIssues = List.copyOf(endIssues);
             comparisons = List.copyOf(comparisons);
@@ -242,4 +252,5 @@ public class ReplayWeeklyReportService {
             coverageDetails = List.copyOf(coverageDetails);
         }
     }
+
 }

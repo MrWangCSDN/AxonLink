@@ -91,6 +91,7 @@ class ReplayIssueImportServiceTest {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             context.registerBean(ReplayIssueExcelParser.class, () -> parser);
             context.registerBean(ReplayIssueDao.class, () -> dao);
+            context.registerBean(ReplayIssueMergeService.class, () -> new ReplayIssueMergeService(dao));
             context.registerBean(ReplayIssueImportGate.class, () -> new ReplayIssueImportGate());
             context.registerBean(ReplayIssueSummaryParser.class, ReplayIssueSummaryParser::new);
             context.registerBean(ReplayIssueDailyReportService.class, () -> dailyReportService);

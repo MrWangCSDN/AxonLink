@@ -69,7 +69,7 @@ public final class ReplayIssueTestFixtures {
                 + "transaction_owner VARCHAR(128), issue_type VARCHAR(128), initial_analysis MEDIUMTEXT,"
                 + "final_solution MEDIUMTEXT, resolved_date VARCHAR(64), cooperation_group VARCHAR(256),"
                 + "resolver VARCHAR(128), serial_no VARCHAR(512), global_serial_no VARCHAR(512), data_repair_date VARCHAR(64),"
-                + "remark MEDIUMTEXT, affected_transaction_count VARCHAR(32), issue_id VARCHAR(64),"
+                + "remark MEDIUMTEXT, sent_transaction_count BIGINT, affected_transaction_count VARCHAR(32), issue_id VARCHAR(64),"
                 + "issue_key VARCHAR(1024) NOT NULL, historical_occurrence_count VARCHAR(32),"
                 + "first_occurrence_date VARCHAR(64), last_occurrence_date VARCHAR(64),"
                 + "imported_at DATETIME NOT NULL, coverage_round VARCHAR(64),"
@@ -98,7 +98,13 @@ public final class ReplayIssueTestFixtures {
                 + "INDEX idx_replay_history_key_time (issue_key, operation_at, id),"
                 + "INDEX idx_replay_history_issue_time (replay_issue_id, operation_at, id))");
         new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V88__replay_issue_batch_statistics_snapshot.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
                 "db/daoindex/V56__dii_replay_daily_import_data.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V86__replay_interface_success_field_difference.sql"))
                 .execute(jdbc.getDataSource());
         new ResourceDatabasePopulator(new ClassPathResource(
                 "db/daoindex/V57__dii_replay_daily_report_snapshot.sql"))

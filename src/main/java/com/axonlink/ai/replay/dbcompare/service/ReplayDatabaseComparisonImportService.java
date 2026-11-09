@@ -363,7 +363,7 @@ public class ReplayDatabaseComparisonImportService {
     private String developerUsername(PreparedImport item) { return item.person == null ? username(item.reviser) : value(item.person.developerUsernames()); }
     private String developerName(PreparedImport item) { return item.person == null ? name(item.reviser) : displayName(item.person.developer()); }
     private String technologyEmpNo(PreparedImport item) { return item.person == null ? null : value(item.person.technologyOwnerEmpNos()); }
-    private String technologyName(PreparedImport item) { return item.person == null ? null : displayName(item.person.technologyOwner()); }
+    private String technologyName(PreparedImport item) { return item.person == null ? null : value(item.person.technologyOwner()); }
     private String value(String text) { return text == null ? "" : text; }
     private String displayName(String text) { return text == null ? "" : text.split("\\(", 2)[0]; }
 

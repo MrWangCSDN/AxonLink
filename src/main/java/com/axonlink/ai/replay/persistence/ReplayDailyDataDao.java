@@ -90,7 +90,9 @@ public class ReplayDailyDataDao {
                         + "transaction_description,developer,bank_owner,domain,sent_transaction_count,"
                         + "c528_success_ccbs_fail,c528_fail_ccbs_success,both_fail_same_code,both_fail_diff_code,"
                         + "both_success,code_ignored,transaction_success_rate,match_pass_rate,c528_avg_duration,"
-                        + "ccbs_avg_duration,source_row,raw_json,imported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "ccbs_avg_duration,source_row,raw_json,imported_at,"
+                        + "both_success_no_field_difference,both_success_with_field_difference) "
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 rows, rows.size(), (statement, row) -> {
                     statement.setString(1, row.batchNo());
                     statement.setString(2, row.rowType().name());
@@ -114,6 +116,8 @@ public class ReplayDailyDataDao {
                     statement.setInt(20, row.sourceRow());
                     statement.setString(21, row.rawJson());
                     statement.setTimestamp(22, Timestamp.valueOf(importedAt));
+                    statement.setObject(23, row.bothSuccessNoFieldDifference());
+                    statement.setObject(24, row.bothSuccessWithFieldDifference());
                 });
     }
 
@@ -190,7 +194,9 @@ public class ReplayDailyDataDao {
                         longValue(resultSet.getObject("both_success")), longValue(resultSet.getObject("code_ignored")),
                         decimal(resultSet.getBigDecimal("transaction_success_rate")), decimal(resultSet.getBigDecimal("match_pass_rate")),
                         decimal(resultSet.getBigDecimal("c528_avg_duration")), decimal(resultSet.getBigDecimal("ccbs_avg_duration")),
-                        resultSet.getInt("source_row"), jsonValue(resultSet.getString("raw_json"))), batch);
+                        resultSet.getInt("source_row"), jsonValue(resultSet.getString("raw_json")),
+                        longValue(resultSet.getObject("both_success_no_field_difference")),
+                        longValue(resultSet.getObject("both_success_with_field_difference"))), batch);
     }
 
     public List<ReplayCoverageSummaryRow> findCoverageSummaries(String batch) {

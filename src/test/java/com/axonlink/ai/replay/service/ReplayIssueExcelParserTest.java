@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,6 +32,20 @@ class ReplayIssueExcelParserTest {
     @BeforeEach
     void setUp() {
         parser = new ReplayIssueExcelParser();
+    }
+
+    @Test
+    void extraSentCountColumnIsNotAnIssueImportField() throws Exception {
+        List<String> headers = new ArrayList<>(ReplayIssueTestFixtures.HEADERS);
+        headers.add(0, "发送交易量");
+        MockMultipartFile file = ReplayIssueTestFixtures.workbook(
+                ReplayIssueTestFixtures.oneRowPerTargetSheet(Map.of("发送交易量", "此列不作为导入来源")),
+                headers, false);
+
+        var parsed = assertDoesNotThrow(() -> parser.parse(file));
+
+        assertEquals(8, parsed.rows().size());
+        assertEquals("6208", parsed.rows().get(0).transactionCode());
     }
 
     @Test

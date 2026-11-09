@@ -963,7 +963,7 @@ public class ReplayDatabaseComparisonService {
         Owner groupOwner = person == null
                 ? technologyOwner(requireText(groupOwnerEmpNo, "科技负责人不能为空"), current)
                 : new Owner(person.technologyOwnerEmpNos() == null ? "" : person.technologyOwnerEmpNos(),
-                        person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0]);
+                        person.technologyOwner() == null ? "" : person.technologyOwner());
         List<String> normalizedFields = normalizeFields(fieldNames);
         ReplayBaseValidatedTable table = metadataService.requireTableWithColumns(tableName, normalizedFields);
         ReplayDbCompareKeySelection comparisonKey = ReplayDatabaseComparisonKeys.choose(table.tableName(),
@@ -1157,7 +1157,7 @@ public class ReplayDatabaseComparisonService {
         String developerName = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
         String developerUsername = person == null ? "" : person.developerUsernames();
         String developerEmpNo = person == null ? "" : person.developerEmpNos();
-        String ownerName = person == null || person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0];
+        String ownerName = person == null || person.technologyOwner() == null ? "" : person.technologyOwner();
         String ownerEmpNo = person == null ? "" : person.technologyOwnerEmpNos();
         return new ReplayDbCompareRegistration(
                 registration.id(), registration.schemaName(), registration.tableName(), registration.tableComment(),

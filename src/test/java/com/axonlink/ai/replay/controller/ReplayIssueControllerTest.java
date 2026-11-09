@@ -922,6 +922,290 @@ class ReplayIssueControllerTest {
     }
 
     @Test
+    void globalSerialNoOrderIsStableNullsLastAcrossListPagingAndExport() throws Exception {
+        var codes = List.of("T-NULL", "T-EMPTY", "T-SPACES", "T-HIGH", "T-LOW", "T-TIE", "T-PREFIX", "T-LONG");
+        var rows = new ArrayList<ReplayIssueRow>();
+        for (int index = 0; index < codes.size(); index++) {
+            rows.add(ReplayIssueTestFixtures.row("公共组", false, index + 1, codes.get(index), codes.get(index)));
+        }
+        dao.replaceAll(rows, LocalDateTime.of(2026, 10, 19, 10, 0));
+        String[] values = {null, "", "   ", "B-002", "A-001", " A-001 ", "0001", "9999999999999999999999999999999999999999999999999999999999999999"};
+        for (int index = 0; index < codes.size(); index++) {
+            jdbc.update("UPDATE dii_replay_issue SET global_serial_no=? WHERE transaction_code=?", values[index], codes.get(index));
+        }
+        List<String> ascending = List.of("T-PREFIX", "T-LONG", "T-LOW", "T-TIE", "T-HIGH", "T-NULL", "T-EMPTY", "T-SPACES");
+        List<String> descending = List.of("T-HIGH", "T-LOW", "T-TIE", "T-LONG", "T-PREFIX", "T-NULL", "T-EMPTY", "T-SPACES");
+        for (String direction : List.of("ASC", "DESC")) {
+            List<String> expected = direction.equals("ASC") ? ascending : descending;
+            var listed = mvc.perform(get("/api/ai/parallel-replay/issues").param("globalSerialNoOrder", direction))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items.length()").value(8));
+            for (int index = 0; index < expected.size(); index++) {
+                listed.andExpect(jsonPath("$.data.items[" + index + "].transaction_code").value(expected.get(index)));
+            }
+            mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json")
+                            .content("{\"query\":{\"limit\":2,\"offset\":2},\"globalSerialNoOrder\":\"" + direction + "\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items.length()").value(2))
+                    .andExpect(jsonPath("$.data.items[0].transaction_code").value(expected.get(2)))
+                    .andExpect(jsonPath("$.data.items[1].transaction_code").value(expected.get(3)))
+                    .andExpect(jsonPath("$.data.total").value(8));
+            byte[] body = mvc.perform(get("/api/ai/parallel-replay/issues/export").param("globalSerialNoOrder", direction))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(body))) {
+                var sheet = workbook.getSheetAt(0);
+                List<String> actualCodes = new ArrayList<>();
+                for (int index = 1; index <= sheet.getLastRowNum(); index++) actualCodes.add(sheet.getRow(index).getCell(2).getStringCellValue());
+                assertEquals(expected, actualCodes);
+            }
+        }
+        var defaults = mvc.perform(get("/api/ai/parallel-replay/issues")).andExpect(status().isOk());
+        for (int index = 0; index < codes.size(); index++) {
+            defaults.andExpect(jsonPath("$.data.items[" + index + "].transaction_code").value(codes.get(index)));
+        }
+    }
+
+    @Test
+    void invalidGlobalSerialNoOrderIsRejected() throws Exception {
+        for (String path : List.of("/api/ai/parallel-replay/issues", "/api/ai/parallel-replay/issues/export")) {
+            mvc.perform(get(path).param("globalSerialNoOrder", "SIDEWAYS")).andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json")
+                        .content("{\"globalSerialNoOrder\":\"SIDEWAYS\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void sentTransactionCountOrderIsNumericStableAndNullsLastAcrossListPagingAndExport() throws Exception {
+        List<String> codes = List.of("T-NULL-Z", "T-10", "T-2-C", "T-MAX", "T-ZERO",
+                "T-2-SANDBOX", "T-2-ROW-LATE", "T-2-ID-FIRST", "T-2-ID-SECOND", "T-2-A", "T-NULL-A");
+        List<ReplayIssueRow> rows = new ArrayList<>();
+        for (int index = 0; index < codes.size(); index++) {
+            rows.add(ReplayIssueTestFixtures.row("B", false, index + 1, codes.get(index), codes.get(index)));
+        }
+        dao.replaceAll(rows, LocalDateTime.of(2026, 11, 4, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=2 WHERE transaction_code LIKE 'T-2-%'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=10,row_order=20 WHERE transaction_code='T-10'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=?,row_order=40 WHERE transaction_code='T-MAX'", Long.MAX_VALUE);
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=0,row_order=50 WHERE transaction_code='T-ZERO'");
+        jdbc.update("UPDATE dii_replay_issue SET group_name='A',row_order=1 WHERE transaction_code='T-2-A'");
+        jdbc.update("UPDATE dii_replay_issue SET group_name='A' WHERE transaction_code='T-NULL-A'");
+        jdbc.update("UPDATE dii_replay_issue SET group_name='Z' WHERE transaction_code='T-NULL-Z'");
+        jdbc.update("UPDATE dii_replay_issue SET group_name='C',row_order=1 WHERE transaction_code='T-2-C'");
+        jdbc.update("UPDATE dii_replay_issue SET is_sandbox=TRUE,row_order=0 WHERE transaction_code='T-2-SANDBOX'");
+        jdbc.update("UPDATE dii_replay_issue SET row_order=2 WHERE transaction_code='T-2-ROW-LATE'");
+        jdbc.update("UPDATE dii_replay_issue SET row_order=1 WHERE transaction_code IN ('T-2-ID-FIRST','T-2-ID-SECOND')");
+
+        List<String> ascending = List.of("T-ZERO", "T-2-A", "T-2-ID-FIRST", "T-2-ID-SECOND",
+                "T-2-ROW-LATE", "T-2-SANDBOX", "T-2-C", "T-10", "T-MAX", "T-NULL-A", "T-NULL-Z");
+        List<String> descending = List.of("T-MAX", "T-10", "T-2-A", "T-2-ID-FIRST", "T-2-ID-SECOND",
+                "T-2-ROW-LATE", "T-2-SANDBOX", "T-2-C", "T-ZERO", "T-NULL-A", "T-NULL-Z");
+        for (String direction : List.of("ASC", "DESC")) {
+            List<String> expected = direction.equals("ASC") ? ascending : descending;
+            var listed = mvc.perform(get("/api/ai/parallel-replay/issues").param("sentTransactionCountOrder", direction))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(11));
+            for (int index = 0; index < expected.size(); index++) {
+                listed.andExpect(jsonPath("$.data.items[" + index + "].transaction_code").value(expected.get(index)));
+            }
+            for (int offset : List.of(0, 3, 6, 9)) {
+                List<String> expectedPage = expected.subList(offset, Math.min(offset + 3, expected.size()));
+                for (var request : List.of(
+                        get("/api/ai/parallel-replay/issues").param("limit", "3").param("offset", Integer.toString(offset))
+                                .param("sentTransactionCountOrder", direction),
+                        post("/api/ai/parallel-replay/issues").contentType("application/json")
+                                .content("{\"query\":{\"limit\":3,\"offset\":" + offset + "},\"sentTransactionCountOrder\":\"" + direction + "\"}"))) {
+                    var page = mvc.perform(request).andExpect(status().isOk())
+                            .andExpect(jsonPath("$.data.total").value(11))
+                            .andExpect(jsonPath("$.data.items.length()").value(expectedPage.size()));
+                    for (int index = 0; index < expectedPage.size(); index++) {
+                        page.andExpect(jsonPath("$.data.items[" + index + "].transaction_code").value(expectedPage.get(index)));
+                    }
+                }
+            }
+            byte[] bytes = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                            .param("sentTransactionCountOrder", direction))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+                var sheet = workbook.getSheetAt(0);
+                List<String> exportedCodes = new ArrayList<>();
+                List<String> headers = new ArrayList<>();
+                sheet.getRow(0).forEach(cell -> headers.add(cell.getStringCellValue()));
+                int sentCountColumn = headers.indexOf("发送交易量");
+                for (int index = 1; index <= sheet.getLastRowNum(); index++) {
+                    exportedCodes.add(sheet.getRow(index).getCell(2).getStringCellValue());
+                }
+                assertEquals(expected, exportedCodes);
+                assertEquals(Long.toString(Long.MAX_VALUE),
+                        sheet.getRow(expected.indexOf("T-MAX") + 1).getCell(sentCountColumn).getStringCellValue());
+                assertEquals("0", sheet.getRow(expected.indexOf("T-ZERO") + 1).getCell(sentCountColumn).getStringCellValue());
+                assertEquals("", sheet.getRow(expected.indexOf("T-NULL-A") + 1).getCell(sentCountColumn).getStringCellValue());
+            }
+        }
+        List<String> defaultOrder = List.of("T-2-A", "T-NULL-A", "T-2-ID-FIRST", "T-2-ID-SECOND",
+                "T-2-ROW-LATE", "T-10", "T-MAX", "T-ZERO", "T-2-SANDBOX", "T-2-C", "T-NULL-Z");
+        for (var request : List.of(get("/api/ai/parallel-replay/issues"),
+                post("/api/ai/parallel-replay/issues").contentType("application/json").content("{}"))) {
+            var defaults = mvc.perform(request).andExpect(status().isOk());
+            for (int index = 0; index < defaultOrder.size(); index++) {
+                defaults.andExpect(jsonPath("$.data.items[" + index + "].transaction_code").value(defaultOrder.get(index)));
+            }
+        }
+    }
+
+    @Test
+    void sentTransactionCountOrderFiltersBeforePagingAndExportsEveryMatchBeyondThePageLimit() throws Exception {
+        List<ReplayIssueRow> rows = new ArrayList<>();
+        for (int index = 1; index <= 205; index++) {
+            rows.add(ReplayIssueTestFixtures.row(index <= 201 ? "Included" : "Excluded", false,
+                    index, "TX-" + index, "row " + index));
+        }
+        dao.replaceAll(rows, LocalDateTime.of(2026, 11, 4, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=202-row_order");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=? WHERE group_name='Excluded'", Long.MAX_VALUE);
+
+        for (String direction : List.of("ASC", "DESC")) {
+            List<String> expectedPage = direction.equals("ASC") ? List.of("TX-200", "TX-199") : List.of("TX-2", "TX-3");
+            for (var request : List.of(
+                    get("/api/ai/parallel-replay/issues").param("groupName", "Included")
+                            .param("limit", "2").param("offset", "1").param("sentTransactionCountOrder", direction),
+                    post("/api/ai/parallel-replay/issues").contentType("application/json")
+                            .content("{\"query\":{\"groupName\":\"Included\",\"limit\":2,\"offset\":1},\"sentTransactionCountOrder\":\"" + direction + "\"}"))) {
+                mvc.perform(request).andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.total").value(201))
+                        .andExpect(jsonPath("$.data.items.length()").value(2))
+                        .andExpect(jsonPath("$.data.items[0].transaction_code").value(expectedPage.get(0)))
+                        .andExpect(jsonPath("$.data.items[1].transaction_code").value(expectedPage.get(1)));
+            }
+            byte[] bytes = mvc.perform(get("/api/ai/parallel-replay/issues/export").param("groupName", "Included")
+                            .param("limit", "2").param("offset", "1").param("sentTransactionCountOrder", direction))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+                var sheet = workbook.getSheetAt(0);
+                assertEquals(201, sheet.getLastRowNum());
+                for (int index = 1; index <= 201; index++) {
+                    int sourceRow = direction.equals("ASC") ? 202 - index : index;
+                    assertEquals("TX-" + sourceRow, sheet.getRow(index).getCell(2).getStringCellValue());
+                }
+            }
+        }
+    }
+
+    @Test
+    void sentTransactionCountOrderTakesPriorityAndLegacySortPrecedenceIsPreserved() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-A", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-B", "second"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "T-C", "third")),
+                LocalDateTime.of(2026, 11, 4, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=10,global_serial_no='A',affected_transaction_count='2' WHERE transaction_code='T-A'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=2,global_serial_no='B',affected_transaction_count='3' WHERE transaction_code='T-B'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=0,global_serial_no='C',affected_transaction_count='1' WHERE transaction_code='T-C'");
+
+        for (var request : List.of(
+                get("/api/ai/parallel-replay/issues").param("affectedTransactionCountOrder", "ASC")
+                        .param("globalSerialNoOrder", "ASC").param("sentTransactionCountOrder", "ASC"),
+                post("/api/ai/parallel-replay/issues").contentType("application/json")
+                        .content("{\"affectedTransactionCountOrder\":\"ASC\",\"globalSerialNoOrder\":\"ASC\",\"sentTransactionCountOrder\":\"ASC\"}"))) {
+            mvc.perform(request).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-C"))
+                    .andExpect(jsonPath("$.data.items[1].transaction_code").value("T-B"))
+                    .andExpect(jsonPath("$.data.items[2].transaction_code").value("T-A"));
+        }
+        mvc.perform(get("/api/ai/parallel-replay/issues").param("affectedTransactionCountOrder", "ASC")
+                        .param("globalSerialNoOrder", "ASC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-A"))
+                .andExpect(jsonPath("$.data.items[1].transaction_code").value("T-B"))
+                .andExpect(jsonPath("$.data.items[2].transaction_code").value("T-C"));
+        mvc.perform(get("/api/ai/parallel-replay/issues").param("affectedTransactionCountOrder", "ASC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-C"))
+                .andExpect(jsonPath("$.data.items[1].transaction_code").value("T-A"))
+                .andExpect(jsonPath("$.data.items[2].transaction_code").value("T-B"));
+    }
+
+    @Test
+    void invalidSentTransactionCountOrderIsRejectedAcrossGetPostAndExport() throws Exception {
+        for (String value : List.of("SIDEWAYS", "asc", "0")) {
+            for (String path : List.of("/api/ai/parallel-replay/issues", "/api/ai/parallel-replay/issues/export")) {
+                mvc.perform(get(path).param("sentTransactionCountOrder", value))
+                        .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+            }
+            mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json")
+                            .content("{\"sentTransactionCountOrder\":\"" + value + "\"}"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        }
+        mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json")
+                        .content("{\"sentTransactionCountOrder\":0}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void sentTransactionCountOrderTreatsNullAndBlankAsDefault() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "T-10", "first"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "T-2", "second")),
+                LocalDateTime.of(2026, 11, 4, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=10 WHERE transaction_code='T-10'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=2 WHERE transaction_code='T-2'");
+
+        for (String value : List.of("", "   ")) {
+            for (var request : List.of(
+                    get("/api/ai/parallel-replay/issues").param("sentTransactionCountOrder", value),
+                    post("/api/ai/parallel-replay/issues").contentType("application/json")
+                            .content("{\"sentTransactionCountOrder\":\"" + value + "\"}"))) {
+                mvc.perform(request).andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-10"))
+                        .andExpect(jsonPath("$.data.items[1].transaction_code").value("T-2"));
+            }
+            byte[] bytes = mvc.perform(get("/api/ai/parallel-replay/issues/export")
+                            .param("sentTransactionCountOrder", value))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+                assertEquals("T-10", workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
+                assertEquals("T-2", workbook.getSheetAt(0).getRow(2).getCell(2).getStringCellValue());
+            }
+        }
+        mvc.perform(post("/api/ai/parallel-replay/issues").contentType("application/json")
+                        .content("{\"sentTransactionCountOrder\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].transaction_code").value("T-10"))
+                .andExpect(jsonPath("$.data.items[1].transaction_code").value("T-2"));
+    }
+
+    @Test
+    void listsAndExportsSentTransactionCountsPreciselyBeforeOccurrenceCounts() throws Exception {
+        dao.replaceAll(List.of(
+                ReplayIssueTestFixtures.row("公共组", false, 1, "TX-ZERO", "zero"),
+                ReplayIssueTestFixtures.row("公共组", false, 2, "TX-LARGE", "large"),
+                ReplayIssueTestFixtures.row("公共组", false, 3, "TX-EMPTY", "empty")),
+                LocalDateTime.of(2026, 11, 4, 11, 0));
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=0 WHERE transaction_code='TX-ZERO'");
+        jdbc.update("UPDATE dii_replay_issue SET sent_transaction_count=? WHERE transaction_code='TX-LARGE'", Long.MAX_VALUE);
+
+        for (var request : List.of(get("/api/ai/parallel-replay/issues"),
+                post("/api/ai/parallel-replay/issues").contentType("application/json").content("{\"query\":{\"limit\":50,\"offset\":0}}"))) {
+            mvc.perform(request).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[0].sent_transaction_count").isString())
+                    .andExpect(jsonPath("$.data.items[0].sent_transaction_count").value("0"))
+                    .andExpect(jsonPath("$.data.items[1].sent_transaction_count").value(Long.toString(Long.MAX_VALUE)))
+                    .andExpect(jsonPath("$.data.items[2].sent_transaction_count").value(org.hamcrest.Matchers.nullValue()));
+        }
+        byte[] bytes = mvc.perform(get("/api/ai/parallel-replay/issues/export"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            var sheet = workbook.getSheetAt(0);
+            List<String> headers = new ArrayList<>();
+            sheet.getRow(0).forEach(cell -> headers.add(cell.getStringCellValue()));
+            int index = headers.indexOf("发送交易量");
+            assertEquals(headers.indexOf("出现笔数") - 1, index);
+            assertEquals("0", sheet.getRow(1).getCell(index).getStringCellValue());
+            assertEquals(Long.toString(Long.MAX_VALUE), sheet.getRow(2).getCell(index).getStringCellValue());
+            assertEquals("", sheet.getRow(3).getCell(index).getStringCellValue());
+        }
+    }
+
+    @Test
     void affectedTransactionCountOrderAppliesToListAndExport() throws Exception {
         dao.replaceAll(List.of(
                 ReplayIssueTestFixtures.row("公共组", false, 1, "T-2", "two"),
@@ -1134,7 +1418,7 @@ class ReplayIssueControllerTest {
                 .andExpect(jsonPath("$.data[0].generated").value(true))
                 .andExpect(jsonPath("$.data[0].generatedAt").value("2026-09-02T10:30:00"))
                 .andExpect(jsonPath("$.data[1].batchNo").value("DZ20260901-01"))
-                .andExpect(jsonPath("$.data[1].canGenerate").value(false))
+                .andExpect(jsonPath("$.data[1].canGenerate").value(true))
                 .andExpect(jsonPath("$.data[1].generated").value(false))
                 .andExpect(jsonPath("$.data[1].generatedAt").value(nullValue()));
     }
@@ -1415,13 +1699,19 @@ class ReplayIssueControllerTest {
     }
 
     @Test
-    void dailyReportReturnsConflictWithoutPreviousBatch() throws Exception {
+    void dailyReportCreatesStatisticalBaselineWithoutPreviousBatch() throws Exception {
         seedDailyBatch("RPT20260901-01", LocalDateTime.of(2026, 9, 1, 9, 0), "FIRST");
 
-        mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
+        byte[] bytes = mvc.perform(get("/api/ai/parallel-replay/issues/daily-report")
                         .param("batchNo", "RPT20260901-01"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("没有上批次数据"));
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = org.apache.poi.ss.usermodel.WorkbookFactory.create(new java.io.ByteArrayInputStream(bytes))) {
+            boolean baselineTitle = false;
+            for (var row : workbook.getSheet("汇总信息")) {
+                if (row.getCell(0) != null && row.getCell(0).toString().contains("本批次为统计起点")) baselineTitle = true;
+            }
+            assertTrue(baselineTitle);
+        }
     }
 
     @Test
@@ -1437,6 +1727,29 @@ class ReplayIssueControllerTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.message").value("日报生成失败"))
                 .andExpect(content().string(not(containsString("sensitive database detail"))));
+    }
+
+    @Test
+    void reportGenerationAndRegenerationExposeTheMissingHistoricalBatch() throws Exception {
+        String batch = "RPT20260901-01", end = "RPT20260908-01";
+        var incomplete = new com.axonlink.ai.replay.persistence.ReplayIssueBatchStatisticsIncompleteException(batch);
+        ReplayIssueDailyReportService failingDaily = mock(ReplayIssueDailyReportService.class);
+        when(failingDaily.generate(end)).thenThrow(incomplete);
+        when(failingDaily.regenerate(end)).thenThrow(incomplete);
+        when(weeklyReportService.generate(batch, end)).thenThrow(incomplete);
+        when(weeklyReportService.regenerate(batch, end)).thenThrow(incomplete);
+        ReflectionTestUtils.setField(controller, "dailyReportService", failingDaily);
+        mvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        for (var request : List.of(
+                get("/api/ai/parallel-replay/issues/daily-report").param("batchNo", end),
+                post("/api/ai/parallel-replay/issues/daily-report/regenerate").param("batchNo", end),
+                get("/api/ai/parallel-replay/issues/weekly-report").param("startBatchNo", batch).param("endBatchNo", end),
+                post("/api/ai/parallel-replay/issues/weekly-report/regenerate").param("startBatchNo", batch).param("endBatchNo", end))) {
+            mvc.perform(request.header("X-DII-Trigger-Token", "secret"))
+                    .andExpect(status().isInternalServerError())
+                    .andExpect(jsonPath("$.message", containsString("批次历史统计不完整：" + batch)));
+        }
     }
 
     @Test
@@ -2247,6 +2560,7 @@ class ReplayIssueControllerTest {
     }
 
     private void seedDailyBatch(String batchNo, LocalDateTime importedAt, String marker) {
+        dao.beginBatchStatistics(batchNo, importedAt);
         dailyDataDao.replaceBatch(new ReplayDailyWorkbookData(batchNo,
                 List.of(new ReplayDailySummaryRow(batchNo, "公共组", 10L, 100L,
                         2L, 80L, 1L, new BigDecimal("0.80"), 3L, 1, marker)),

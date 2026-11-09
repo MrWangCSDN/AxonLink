@@ -168,7 +168,7 @@ public class ReplayIssuePlanDateService {
                 .anyMatch(identity::equals);
     }
 
-    private static LocalDate parse(String value) {
+    public static LocalDate parse(String value) {
         if (value == null || value.isBlank()) return null;
         String normalized = value.trim();
         if (!normalized.matches("\\d{4}-\\d{2}-\\d{2}")) {
@@ -181,7 +181,7 @@ public class ReplayIssuePlanDateService {
         }
     }
 
-    private static void validateOccurrenceBoundary(String firstOccurrenceValue, LocalDate plannedDate) {
+    public static void validateOccurrenceBoundary(String firstOccurrenceValue, LocalDate plannedDate) {
         if (plannedDate == null) return;
         LocalDate firstOccurrenceDate = parseFirstOccurrenceDate(firstOccurrenceValue);
         if (firstOccurrenceDate == null) {

@@ -15,9 +15,18 @@ public class ReplayDatabaseIssueExcelParser {
     private static final Pattern BATCH=Pattern.compile("^DB(\\d{8})-[A-Za-z0-9_-]+$");
     private static final int MAX_ROWS=200000;
     public record IssueInput(String issueId,String tableName,String domain,String owner,String issueLevel,
-                             String fieldName,long differenceCount,String tableComment) {}
+                             String fieldName,long differenceCount,String tableComment,
+                             long total528,long totalCcbs,long only528,long onlyCcbs,
+                             Long sameKeyDifferentRowCount) {
+        public IssueInput(String issueId,String tableName,String domain,String owner,String issueLevel,
+                          String fieldName,long differenceCount,String tableComment,
+                          long total528,long totalCcbs,long only528,long onlyCcbs) {
+            this(issueId,tableName,domain,owner,issueLevel,fieldName,differenceCount,tableComment,
+                    total528,totalCcbs,only528,onlyCcbs,null);
+        }
+    }
     public record ParsedWorkbook(List<IssueInput> issues,Set<String> tables,String batchNo,LocalDate batchDate) {}
-    private record TableRow(String comment,long different) {}
+    private record TableRow(String comment,long different,long total528,long totalCcbs,long only528,long onlyCcbs) {}
 
     public ParsedWorkbook parse(MultipartFile file,String suppliedBatch) {
         if(file==null||file.isEmpty())throw new IllegalArgumentException("请选择非空Excel文件");
@@ -35,12 +44,13 @@ public class ReplayDatabaseIssueExcelParser {
                 String table=identifier(text(row,headers,"表",formatter),row,"表英文名");
                 String comment=optional(text(row,headers,"表中文名称",formatter),1000,row,"表中文名称");
                 long ccbs=count(row,headers,"仅ccbs存在",formatter),other=count(row,headers,"仅528存在",formatter);
+                long total528=optionalCount(row,headers,formatter,"528总量","528数据总量");
+                long totalCcbs=optionalCount(row,headers,formatter,"ccbs总量","ccbs数据总量");
                 long different=count(row,headers,"主键相同、字段不同",formatter);
-                if(tables.putIfAbsent(table,new TableRow(comment,different))!=null)
+                if(tables.putIfAbsent(table,new TableRow(comment,different,total528,totalCcbs,other,ccbs))!=null)
                     throw invalid(row,"同名表重复，当前issue_id规则无法区分多配置或多连接对："+table);
                 addBatch(row,headers,formatter,batches);
-                if(ccbs>0)add(issues,new IssueInput(table+"-ccbs",table,"","","仅ccbs","",ccbs,comment),row);
-                if(other>0)add(issues,new IssueInput(table+"-528",table,"","","仅528","",other,comment),row);
+                add(issues,new IssueInput(table,table,"","","表级","",other+ccbs,comment,total528,totalCcbs,other,ccbs,different),row);
             });
             if(tables.isEmpty())throw new IllegalArgumentException("表明细没有成功核对的表，未更改任何问题状态");
             var fieldTotals=new HashMap<String,BigDecimal>();
@@ -52,7 +62,9 @@ public class ReplayDatabaseIssueExcelParser {
                 if(source==null)throw invalid(row,"字段明细没有对应的表明细："+table);
                 if(different>source.different)throw invalid(row,"字段差异数量超过表的主键相同、字段不同数量："+table);
                 addBatch(row,headers,formatter,batches);
-                if(different>0){fieldTotals.merge(table,BigDecimal.valueOf(different),BigDecimal::add);add(issues,new IssueInput(table+"-"+field,table,"","","字段级",field,different,source.comment),row);}
+                fieldTotals.merge(table,BigDecimal.valueOf(different),BigDecimal::add);
+                add(issues,new IssueInput(table+"-"+field,table,"","","字段级",field,different,source.comment,
+                        source.total528,source.totalCcbs,source.only528,source.onlyCcbs),row);
             });
             // Every differing row contributes to at least one field count. A smaller sum proves truncation.
             for(var entry:tables.entrySet())if(fieldTotals.getOrDefault(entry.getKey(),BigDecimal.ZERO).compareTo(BigDecimal.valueOf(entry.getValue().different))<0)
@@ -103,6 +115,10 @@ public class ReplayDatabaseIssueExcelParser {
         String value=cell!=null&&cell.getCellType()==CellType.NUMERIC?BigDecimal.valueOf(cell.getNumericCellValue()).toPlainString():text(row,h,name,f).replace(",","").replace("，","");
         try{long number=new BigDecimal(value).longValueExact();if(number<0||number>9007199254740992L)throw new ArithmeticException();return number;}
         catch(Exception e){throw invalid(row,name+"必须为非负整数且不超过Excel精确整数范围");}
+    }
+    private static long optionalCount(Row row,Map<String,Integer> h,DataFormatter f,String... names){
+        for(String name:names){Integer col=h.get(name.toLowerCase(Locale.ROOT));if(col!=null)return count(row,h,name,f);}
+        return 0;
     }
     private static String identifier(String value,Row row,String label){String result=required(value,256,row,label).toLowerCase(Locale.ROOT);if(!result.matches("[a-z_][a-z0-9_$]*"))throw invalid(row,label+"不是合法英文标识符："+value);return result;}
     private static String required(String value,int max,Row row,String label){if(value.isBlank())throw invalid(row,label+"不能为空");return optional(value,max,row,label);}

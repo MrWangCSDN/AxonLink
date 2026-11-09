@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 class ReplayReportSummaryViewFactoryTest {
 
@@ -36,6 +37,21 @@ class ReplayReportSummaryViewFactoryTest {
         assertEquals(current.noAction(), view.rows().get(0).values().get("noAction"));
         assertEquals("TOTAL", view.totalRow().rowType());
         assertEquals("合计", view.totalRow().domain());
+    }
+
+    @Test
+    void initialDailyKeepsUnknownPreviousStatisticsNullInRowsAndTotal() {
+        var current = row("RPT20260916-090000", "公共组", 2);
+        var report = new CalculatedReport(List.of(), row(null, "合计", 0), List.of(current), current,
+                new PreviousUnresolved(0, 0, 0, 0, 0, 0, BigDecimal.ZERO));
+        var view = new ReplayReportSummaryViewFactory().create(ReplayReportPeriod.DAILY, null, current.batchNo(), report);
+
+        for (String key : List.of("previousUnresolvedTotal", "previousResolutionRate", "unanalyzed", "analyzedPendingFix",
+                "notFullyFixed", "dataMigrationIssue", "codeNotReleased")) {
+            assertNull(view.rows().get(0).values().get(key), key);
+            assertNull(view.totalRow().values().get(key), key);
+        }
+        assertEquals(current.noAction(), view.rows().get(0).values().get("noAction"));
     }
 
     private static ReplayDailySummaryCalculatedRow row(String batch, String domain, long seed) {

@@ -2,7 +2,10 @@ package com.axonlink.ai.replay.persistence;
 
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
+import com.axonlink.ai.replay.dto.ReplayIssueGlobalSerialNoOrder;
+import com.axonlink.ai.replay.dto.ReplayIssueSentTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayDailyIssueStatisticRow;
+import com.axonlink.ai.replay.dto.ReplayBatchOriginalIssueQuantity;
 import com.axonlink.ai.replay.dto.ReplayIssueDomainTransferEntry;
 import com.axonlink.ai.replay.dto.ReplayIssueQuery;
 import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
@@ -71,12 +74,14 @@ public class ReplayIssueDao {
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate txTemplate;
+    private final ReplayIssueBatchStatisticsDao batchStatisticsDao;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public ReplayIssueDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
         this.txTemplate = new TransactionTemplate(
                 new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
+        this.batchStatisticsDao = new ReplayIssueBatchStatisticsDao(diiResultJdbcTemplate);
     }
 
     /** 暴露结果库 JdbcTemplate（供测试构造关联 DAO 使用）。 */
@@ -163,12 +168,14 @@ public class ReplayIssueDao {
                         + "last_occurred_at=VALUES(last_occurred_at),last_status=VALUES(last_status),updated_at=VALUES(updated_at)",
                 issueId, issueKey, normalized, Timestamp.valueOf(occurredAt), Timestamp.valueOf(occurredAt),
                 status == null ? null : status.displayValue(), Timestamp.valueOf(occurredAt), Timestamp.valueOf(occurredAt));
+        batchStatisticsDao.captureCurrent(issueId, normalized, occurredAt);
     }
 
     public void updateLatestHistoryOccurrenceBatch(long issueId, LocalDateTime operationAt, String batchName) {
         if (batchName == null || batchName.isBlank()) return;
         jdbc.update("UPDATE dii_replay_issue_history SET occurrence_batch_name=? WHERE replay_issue_id=? AND operation_at=? AND id=(SELECT id FROM (SELECT id FROM dii_replay_issue_history WHERE replay_issue_id=? AND operation_at=? ORDER BY id DESC LIMIT 1) latest)",
                 batchName.trim(), issueId, Timestamp.valueOf(operationAt), issueId, Timestamp.valueOf(operationAt));
+        batchStatisticsDao.captureCurrent(issueId, batchName, operationAt);
     }
 
     public boolean occurrenceBatchExists(long issueId, String batchName) {
@@ -278,6 +285,38 @@ public class ReplayIssueDao {
     public void updatePlannedCompletionDate(long id, LocalDate value) {
         jdbc.update("UPDATE dii_replay_issue SET planned_completion_date = ? WHERE id = ?",
                 value == null ? null : java.sql.Date.valueOf(value), id);
+    }
+
+    /** Replaces the imported workbook's actual batch-family counts, including NULL for unmatched codes. */
+    public void replaceSentTransactionCounts(String batchPrefix, Map<String, Long> counts) {
+        if (!"RPT".equals(batchPrefix) && !"DZ".equals(batchPrefix)) {
+            throw new IllegalArgumentException("发送交易量覆盖仅支持 RPT 或 DZ 批次前缀");
+        }
+        if (counts == null) throw new IllegalArgumentException("发送交易量映射不能为空");
+        record Target(long id, String transactionCode) { }
+        List<Target> targets = jdbc.query(
+                "SELECT id,transaction_code FROM dii_replay_issue WHERE UPPER(TRIM(batch_no)) LIKE ?",
+                (rs, rowNum) -> new Target(rs.getLong("id"), rs.getString("transaction_code")), batchPrefix + "%");
+        for (int from = 0; from < targets.size(); from += BATCH_SIZE) {
+            List<Target> batch = targets.subList(from, Math.min(from + BATCH_SIZE, targets.size()));
+            jdbc.batchUpdate("UPDATE dii_replay_issue SET sent_transaction_count=? WHERE id=?",
+                    new BatchPreparedStatementSetter() {
+                        @Override
+                        public void setValues(PreparedStatement statement, int index) throws SQLException {
+                            Target target = batch.get(index);
+                            String code = target.transactionCode() == null ? "" : target.transactionCode().trim();
+                            Long count = code.isEmpty() ? null : counts.get(code);
+                            if (count == null) statement.setNull(1, java.sql.Types.BIGINT);
+                            else statement.setLong(1, count);
+                            statement.setLong(2, target.id());
+                        }
+
+                        @Override
+                        public int getBatchSize() {
+                            return batch.size();
+                        }
+                    });
+        }
     }
 
     public IssueDomainState findIssueDomainStateForUpdate(long id) {
@@ -556,26 +595,54 @@ public class ReplayIssueDao {
     }
 
     public List<Map<String, Object>> list(ReplayIssueQuery query) {
-        return list(query, null, true);
+        return list(query, null, null, null);
     }
 
     public List<Map<String, Object>> list(
             ReplayIssueQuery query, ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
-        return list(query, affectedTransactionCountOrder, true);
+        return list(query, affectedTransactionCountOrder, null, null);
     }
 
     public List<Map<String, Object>> listForExport(ReplayIssueQuery query) {
-        return list(query, null, false);
+        return listForExport(query, null, null, null);
     }
 
     public List<Map<String, Object>> listForExport(
             ReplayIssueQuery query, ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
-        return list(query, affectedTransactionCountOrder, false);
+        return listForExport(query, affectedTransactionCountOrder, null, null);
+    }
+
+    public List<Map<String, Object>> list(ReplayIssueQuery query,
+            ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder) {
+        return list(query, affectedTransactionCountOrder, globalSerialNoOrder, null);
+    }
+
+    public List<Map<String, Object>> listForExport(ReplayIssueQuery query,
+            ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder) {
+        return listForExport(query, affectedTransactionCountOrder, globalSerialNoOrder, null);
+    }
+
+    public List<Map<String, Object>> list(ReplayIssueQuery query,
+            ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            ReplayIssueSentTransactionCountOrder sentTransactionCountOrder) {
+        return list(query, affectedTransactionCountOrder, globalSerialNoOrder, sentTransactionCountOrder, true);
+    }
+
+    public List<Map<String, Object>> listForExport(ReplayIssueQuery query,
+            ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            ReplayIssueSentTransactionCountOrder sentTransactionCountOrder) {
+        return list(query, affectedTransactionCountOrder, globalSerialNoOrder, sentTransactionCountOrder, false);
     }
 
     private List<Map<String, Object>> list(
             ReplayIssueQuery query,
             ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            ReplayIssueSentTransactionCountOrder sentTransactionCountOrder,
             boolean paged) {
         StringBuilder sql = new StringBuilder("SELECT i.*, " + REVIEW_STATUS_DISPLAY_SQL + " AS review_status_display, "
                 + "tp.developer AS matched_developer, tp.bank_owner AS matched_bank_owner, "
@@ -589,7 +656,20 @@ public class ReplayIssueDao {
                 + "ON tp.old_transaction_code = i.transaction_code WHERE 1=1");
         List<Object> args = new ArrayList<>();
         appendFilters(sql, args, query);
-        appendAffectedTransactionCountOrder(sql, affectedTransactionCountOrder);
+        if (sentTransactionCountOrder != null) {
+            sql.append(" ORDER BY CASE WHEN i.sent_transaction_count IS NULL THEN 1 ELSE 0 END, ")
+                    .append("i.sent_transaction_count")
+                    .append(sentTransactionCountOrder == ReplayIssueSentTransactionCountOrder.ASC ? " ASC" : " DESC")
+                    .append(", i.group_name, i.is_sandbox, i.row_order, i.id");
+        } else if (globalSerialNoOrder != null) {
+            // Keep the blank marker ascending in both directions; serials are identifiers, not numbers.
+            String serial = "NULLIF(TRIM(i.global_serial_no),'')";
+            sql.append(" ORDER BY CASE WHEN ").append(serial).append(" IS NULL THEN 1 ELSE 0 END, ")
+                    .append(serial).append(globalSerialNoOrder == ReplayIssueGlobalSerialNoOrder.ASC ? " ASC" : " DESC")
+                    .append(", i.group_name, i.is_sandbox, i.row_order, i.id");
+        } else {
+            appendAffectedTransactionCountOrder(sql, affectedTransactionCountOrder);
+        }
         if (paged) {
             sql.append(" LIMIT ? OFFSET ?");
             args.add(clampLimit(query.limit()));
@@ -628,6 +708,8 @@ public class ReplayIssueDao {
         if (row.get("planned_completion_date") instanceof java.sql.Date date) {
             row.put("planned_completion_date", date.toLocalDate());
         }
+        Object sentTransactionCount = row.get("sent_transaction_count");
+        row.put("sent_transaction_count", sentTransactionCount == null ? null : sentTransactionCount.toString());
         return row;
     }
 
@@ -863,10 +945,48 @@ public class ReplayIssueDao {
                 rs.getString("current_status")), batchName.trim());
     }
 
+    public void beginBatchStatistics(String batchNo, LocalDateTime at) {
+        batchStatisticsDao.beginBatch(batchNo, at);
+    }
+
+    public List<ReplayDailyIssueStatisticRow> findBatchReportIssueStatistics(String batchNo) {
+        return batchStatisticsDao.find(batchNo);
+    }
+
+    /** Current conclusions from the selected replay family; endpoint quantities are read separately. */
+    public List<ReplayIssueRow> findCurrentReportIssues(String startBatchNo, String endBatchNo) {
+        String family = reportBatchFamily(startBatchNo);
+        if (!family.equals(reportBatchFamily(endBatchNo))) {
+            throw new IllegalArgumentException("周报起止批次必须属于同一回放类型");
+        }
+        return jdbc.query("""
+                SELECT i.* FROM dii_replay_issue i
+                 WHERE UPPER(TRIM(i.batch_no)) LIKE ? AND EXISTS (
+                     SELECT 1 FROM dii_replay_interface_comparison c
+                      WHERE c.batch_no IN (?,?) AND c.row_type='DETAIL'
+                        AND TRIM(COALESCE(c.transaction_code,''))<>''
+                        AND TRIM(c.transaction_code)=TRIM(i.transaction_code)
+                 )
+                 ORDER BY i.imported_at DESC,i.id DESC
+                """, this::mapRow, family + "%", startBatchNo.trim(), endBatchNo.trim());
+    }
+
+    public List<ReplayBatchOriginalIssueQuantity> findBatchOriginalReportQuantities(String batchNo) {
+        return new ReplayBatchOriginalIssueQuantityReader(jdbc).find(batchNo);
+    }
+
+    private static String reportBatchFamily(String batchNo) {
+        if (batchNo == null || batchNo.isBlank()) throw new IllegalArgumentException("批次号不能为空");
+        String batch = batchNo.trim().toUpperCase(java.util.Locale.ROOT);
+        if (batch.startsWith("RPT")) return "RPT";
+        if (batch.startsWith("DZ")) return "DZ";
+        throw new IllegalArgumentException("批次号必须以RPT或DZ开头");
+    }
+
     public List<ReplayDailyIssueStatisticRow> findDailyReportIssueStatistics(String occurrenceBatchNo) {
         return jdbc.query("""
                 SELECT i.id, i.group_name, i.is_sandbox, i.issue_type, i.issue_level,
-                       i.field_name, i.issue_status,
+                       i.field_name, i.issue_status, i.review_status, i.transaction_code, i.defect_repair_date,
                        COALESCE(i.affected_transaction_count, 0) AS affected_transaction_count,
                        CASE WHEN EXISTS (
                            SELECT 1 FROM dii_replay_issue_history h
@@ -881,7 +1001,51 @@ public class ReplayIssueDao {
                 rs.getLong("id"), rs.getString("group_name"), rs.getBoolean("is_sandbox"),
                 rs.getString("issue_type"), rs.getString("issue_level"), rs.getString("field_name"),
                 rs.getString("issue_status"), parseAffectedTransactionCount(rs.getString("affected_transaction_count")),
-                rs.getBoolean("reopened_after_fixed")), occurrenceBatchNo);
+                rs.getBoolean("reopened_after_fixed"),
+                ReplayIssueReviewStatus.fromValue(rs.getString("review_status")),
+                rs.getString("transaction_code"), localDate(rs.getDate("defect_repair_date"))), occurrenceBatchNo);
+    }
+
+    /** Legacy problem classification uses batch members and today's conclusion, never today's transaction quantity. */
+    public List<ReplayDailyIssueStatisticRow> findLegacyReportIssueStatistics(String batchNo) {
+        String batch = reportMemberBatch(batchNo);
+        return jdbc.query("""
+                SELECT i.id,i.group_name,i.is_sandbox,i.issue_type,i.issue_level,i.field_name,
+                       i.issue_status,i.review_status,i.transaction_code,i.defect_repair_date,
+                       CASE WHEN EXISTS (
+                           SELECT 1 FROM dii_replay_issue_history h
+                            WHERE h.replay_issue_id=i.id AND h.operation_type='已修复问题重新新建'
+                       ) THEN 1 ELSE 0 END AS reopened_after_fixed
+                  FROM dii_replay_issue i
+                 WHERE EXISTS (
+                     SELECT 1 FROM dii_replay_issue_occurrence_batch ob
+                      WHERE ob.replay_issue_id=i.id AND TRIM(ob.batch_name)=?
+                 ) OR TRIM(i.batch_no)=?
+                 ORDER BY i.id
+                """, (rs, rowNum) -> new ReplayDailyIssueStatisticRow(
+                rs.getLong("id"), rs.getString("group_name"), rs.getBoolean("is_sandbox"),
+                rs.getString("issue_type"), rs.getString("issue_level"), rs.getString("field_name"),
+                rs.getString("issue_status"), 0L, rs.getBoolean("reopened_after_fixed"),
+                ReplayIssueReviewStatus.fromValue(rs.getString("review_status")),
+                rs.getString("transaction_code"), localDate(rs.getDate("defect_repair_date"))), batch, batch);
+    }
+
+    /** Original-quantity resolution needs full current identities for this exact batch's members. */
+    public List<ReplayIssueRow> findCurrentIssueMembersByBatch(String batchNo) {
+        String batch = reportMemberBatch(batchNo);
+        return jdbc.query("""
+                SELECT i.* FROM dii_replay_issue i
+                 WHERE EXISTS (
+                     SELECT 1 FROM dii_replay_issue_occurrence_batch ob
+                      WHERE ob.replay_issue_id=i.id AND TRIM(ob.batch_name)=?
+                 ) OR TRIM(i.batch_no)=?
+                 ORDER BY i.id
+                """, this::mapRow, batch, batch);
+    }
+
+    private static String reportMemberBatch(String batchNo) {
+        if (batchNo == null || batchNo.isBlank()) throw new IllegalArgumentException("批次号不能为空");
+        return batchNo.trim();
     }
 
     private static long parseAffectedTransactionCount(String value) {

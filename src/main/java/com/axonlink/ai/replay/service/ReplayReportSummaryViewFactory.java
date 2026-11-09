@@ -49,8 +49,15 @@ public class ReplayReportSummaryViewFactory {
                                           String startBatchNo,
                                           String endBatchNo,
                                           CalculatedReport report) {
+        return create(period, startBatchNo, endBatchNo, report, null);
+    }
+
+    public ReplayReportSummaryView create(ReplayReportPeriod period, String startBatchNo, String endBatchNo,
+                                          CalculatedReport report, ReplayReportCalculationContext context) {
         String family = endBatchNo != null && endBatchNo.startsWith("DZ") ? "DZ" : "RPT";
         String reportName = reportName(period, family, startBatchNo, endBatchNo);
+        boolean previousAvailable = (period != ReplayReportPeriod.DAILY || hasPreviousHistory(report))
+                && (context == null || context.previous().issueStatisticsAvailable());
         return new ReplayReportSummaryView(
                 1,
                 period,
@@ -59,8 +66,13 @@ public class ReplayReportSummaryViewFactory {
                 endBatchNo,
                 reportName,
                 COLUMNS,
-                report.currentRows().stream().map(row -> row(row, false)).toList(),
-                row(report.currentTotal(), true));
+                report.currentRows().stream().map(row -> row(row, false, previousAvailable, context)).toList(),
+                row(report.currentTotal(), true, previousAvailable, context));
+    }
+
+    static boolean hasPreviousHistory(CalculatedReport report) {
+        return !report.previousRows().isEmpty() || (report.previousTotal() != null
+                && report.previousTotal().batchNo() != null && !report.previousTotal().batchNo().isBlank());
     }
 
     private static String reportName(ReplayReportPeriod period, String family,
@@ -75,7 +87,8 @@ public class ReplayReportSummaryViewFactory {
         }
     }
 
-    private static ReplayReportSummaryRow row(ReplayDailySummaryCalculatedRow value, boolean total) {
+    private static ReplayReportSummaryRow row(ReplayDailySummaryCalculatedRow value, boolean total,
+                                              boolean previousAvailable, ReplayReportCalculationContext context) {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("batchNo", total ? "" : value.batchNo());
         values.put("domain", total ? "合计" : value.domain());
@@ -91,13 +104,26 @@ public class ReplayReportSummaryViewFactory {
         values.put("successRate", value.successRate());
         values.put("matchPassRate", value.matchPassRate());
         values.put("issueTotal", value.issueTotal());
-        values.put("previousUnresolvedTotal", value.previousUnresolvedTotal());
-        values.put("previousResolutionRate", value.previousResolutionRate());
-        values.put("unanalyzed", value.unanalyzed());
-        values.put("analyzedPendingFix", value.analyzedPendingFix());
-        values.put("notFullyFixed", value.notFullyFixed());
-        values.put("dataMigrationIssue", value.dataMigrationIssue());
-        values.put("codeNotReleased", value.codeNotReleased());
+        values.put("previousUnresolvedTotal", previousAvailable ? value.previousUnresolvedTotal() : null);
+        values.put("previousResolutionRate", previousAvailable ? value.previousResolutionRate() : null);
+        values.put("unanalyzed", previousAvailable ? value.unanalyzed() : null);
+        values.put("analyzedPendingFix", previousAvailable ? value.analyzedPendingFix() : null);
+        values.put("notFullyFixed", previousAvailable ? value.notFullyFixed() : null);
+        values.put("dataMigrationIssue", previousAvailable ? value.dataMigrationIssue() : null);
+        values.put("codeNotReleased", previousAvailable ? value.codeNotReleased() : null);
+        if (context != null) {
+            var side = context.current();
+            if (!side.issueStatisticsAvailable()) values.put("issueTotal", null);
+            if (side.hideBreakdown(value.domain(), total)) {
+                for (String key : List.of("c528SuccessCcbsFail", "c528FailCcbsSuccess", "bothFailDiffCode")) values.put(key, null);
+            }
+            if (side.hideNoAction(value.domain(), total)) {
+                values.put("noAction", null);
+            }
+            if (side.hideSuccessRate(value.domain(), total)) values.put("successRate", null);
+            if (side.hideMatchRate(value.domain(), total)) values.put("matchPassRate", null);
+            if (total) values.put("calculationContext", context.toMap());
+        }
         return new ReplayReportSummaryRow(total ? "合计" : value.domain(), total ? "TOTAL" : "DETAIL", values);
     }
 

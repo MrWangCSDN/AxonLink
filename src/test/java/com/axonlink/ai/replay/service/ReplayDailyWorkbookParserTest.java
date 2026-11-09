@@ -14,15 +14,21 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -43,6 +49,198 @@ class ReplayDailyWorkbookParserTest {
         assertEquals(700L, data.comparisons().get(1).sentTransactionCount());
         assertEquals("RPT20260904-094201-5355", data.comparisons().get(1).batchNo());
         assertTrue(data.comparisons().get(0).rawJson().contains("6208"));
+    }
+
+    @Test
+    void parsesSplitSuccessCountsForScreenshotDetailsAndTotalWithoutLegacyColumn() throws Exception {
+        ReplayDailyWorkbookData data = parser.parse(splitSuccessWorkbook(), ReplayIssueImportMode.QUERY);
+
+        assertEquals(List.of(ReplayDailyRowType.DETAIL, ReplayDailyRowType.DETAIL, ReplayDailyRowType.TOTAL),
+                data.comparisons().stream().map(ReplayInterfaceComparisonRow::rowType).toList());
+        assertEquals(List.of(249L, 250L, 499L), data.comparisons().stream()
+                .map(ReplayInterfaceComparisonRow::bothSuccessNoFieldDifference).toList());
+        assertEquals(List.of(1L, 0L, 1L), data.comparisons().stream()
+                .map(ReplayInterfaceComparisonRow::bothSuccessWithFieldDifference).toList());
+        assertEquals(List.of(250L, 250L, 500L), data.comparisons().stream()
+                .map(ReplayInterfaceComparisonRow::bothSuccess).toList());
+        assertEquals(List.of(2, 3, 4), data.comparisons().stream()
+                .map(ReplayInterfaceComparisonRow::sourceRow).toList());
+        assertTrue(data.comparisons().get(0).rawJson().contains("\"二者均成功且无字段差异\":\"249\""));
+        assertTrue(data.comparisons().get(0).rawJson().contains("\"二者均成功且有字段差异\":\"1\""));
+        assertFalse(data.comparisons().get(0).rawJson().contains("\"二者均成功\":"));
+        assertEquals(5000L, data.summaries().get(0).bothSuccess());
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {9007199254740993L, Long.MAX_VALUE})
+    void preservesLargeSplitSuccessCountsWhenImportingWrittenWorkbook(long count) throws Exception {
+        ReplayInterfaceComparisonRow comparison = new ReplayInterfaceComparisonRow(
+                "RPT20260904-094201-5355", ReplayDailyRowType.DETAIL,
+                "0126", "S0126", "交易0126", "开发", "行内", "公共组",
+                100L, 0L, 0L, 0L, 0L, count, 0L, new BigDecimal("0.9"),
+                new BigDecimal("0.95"), new BigDecimal("1.2"), new BigDecimal("1.3"),
+                1, "{}", count, 0L);
+        byte[] bytes = new ReplayDailyReportWorkbookWriter().write(generatedSummary(),
+                List.of(comparison), generatedCoverageSummaries(), generatedCoverageDetails());
+        MockMultipartFile file = new MockMultipartFile("file", "large-split-success.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes);
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        assertEquals(1, data.comparisons().size());
+        ReplayInterfaceComparisonRow imported = data.comparisons().get(0);
+        assertEquals(count, imported.bothSuccessNoFieldDifference());
+        assertEquals(0L, imported.bothSuccessWithFieldDifference());
+        assertEquals(count, imported.bothSuccess());
+    }
+
+    @Test
+    void readsSplitSuccessCountsByNormalizedHeadersAfterColumnReordering() throws Exception {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("接口比对明细");
+            List<List<String>> values = new ArrayList<>();
+            for (Row row : sheet) {
+                List<String> cells = new ArrayList<>();
+                for (int column = 0; column < row.getLastCellNum(); column++) {
+                    cells.add(row.getCell(column).getStringCellValue());
+                }
+                values.add(cells);
+            }
+            int[] reordered = {13, 2, 18, 7, 0, 12, 1, 3, 4, 5, 6, 8, 9, 10, 11, 14, 15, 16, 17};
+            for (int rowIndex = 0; rowIndex < values.size(); rowIndex++) {
+                Row row = sheet.getRow(rowIndex);
+                row.createCell(0).setCellValue(rowIndex == 0 ? "无关说明" : "仅供展示");
+                for (int column = 0; column < reordered.length; column++) {
+                    row.createCell(column + 1).setCellValue(values.get(rowIndex).get(reordered[column]));
+                }
+            }
+            Row header = sheet.getRow(0);
+            header.getCell(1).setCellValue(" 二者均成功且有 字段差异\n");
+            header.getCell(6).setCellValue(" 二者均成功且无\n字段差异 ");
+            header.getCell(3).setCellValue(" ccbs 平均耗时 ");
+            header.getCell(13).setCellValue("528失败/ccbs成功");
+        });
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        assertEquals(249L, data.comparisons().get(0).bothSuccessNoFieldDifference());
+        assertEquals(1L, data.comparisons().get(0).bothSuccessWithFieldDifference());
+        assertEquals(500L, data.comparisons().get(2).bothSuccess());
+        assertEquals(new BigDecimal("1.3"), data.comparisons().get(0).ccbsAvgDuration());
+        assertEquals("6208", data.comparisons().get(0).transactionCode());
+        assertFalse(data.comparisons().get(0).rawJson().contains("无关说明"));
+    }
+
+    @Test
+    void keepsLegacySuccessCountWithUnknownSplitCountsForOldTemplate() throws Exception {
+        ReplayDailyWorkbookData data = parser.parse(ReplayIssueTestFixtures.dailyWorkbook(), ReplayIssueImportMode.QUERY);
+
+        assertEquals(120L, data.comparisons().get(0).bothSuccess());
+        assertEquals(1200L, data.comparisons().get(1).bothSuccess());
+        for (ReplayInterfaceComparisonRow row : data.comparisons()) {
+            assertNull(row.bothSuccessNoFieldDifference());
+            assertNull(row.bothSuccessWithFieldDifference());
+        }
+        assertTrue(data.comparisons().get(0).rawJson().contains("\"二者均成功\":\"120\""));
+    }
+
+    @Test
+    void prefersCompleteSplitColumnsEvenWhenLegacyColumnContainsMalformedValues() throws Exception {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("接口比对明细");
+            sheet.getRow(0).createCell(19).setCellValue("二者均成功");
+            for (int rowIndex = 1; rowIndex <= 3; rowIndex++) {
+                sheet.getRow(rowIndex).createCell(19).setCellValue("旧值不再使用");
+            }
+        });
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        assertEquals(List.of(250L, 250L, 500L), data.comparisons().stream()
+                .map(ReplayInterfaceComparisonRow::bothSuccess).toList());
+        assertEquals(249L, data.comparisons().get(0).bothSuccessNoFieldDifference());
+        assertEquals(1L, data.comparisons().get(2).bothSuccessWithFieldDifference());
+        assertTrue(data.comparisons().get(0).rawJson().contains("\"二者均成功\":\"旧值不再使用\""));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"二者均成功且无字段差异", "二者均成功且有字段差异"})
+    void rejectsOnlyOneSplitHeaderInsteadOfFallingBackToLegacy(String missingHeader) {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("接口比对明细");
+            Row header = sheet.getRow(0);
+            for (int column = 0; column < header.getLastCellNum(); column++) {
+                if (missingHeader.equals(header.getCell(column).getStringCellValue())) {
+                    header.getCell(column).setCellValue("二者均成功");
+                }
+            }
+        });
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("接口比对明细"));
+        assertTrue(exception.getMessage().contains(missingHeader));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"12,二者均成功且无字段差异,249笔", "13,二者均成功且有字段差异,1.5"})
+    void rejectsMalformedSplitCountWithSheetRowAndField(int column, String field, String invalidValue) {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> workbook
+                .getSheet("接口比对明细").getRow(1).getCell(column).setCellValue(invalidValue));
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("接口比对明细"));
+        assertTrue(exception.getMessage().contains("第2行"));
+        assertTrue(exception.getMessage().contains(field));
+        assertTrue(exception.getMessage().contains(invalidValue));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 3})
+    void rejectsSplitSuccessTotalOverflowWithSheetRowAndFields(int rowIndex) {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> {
+            Row row = workbook.getSheet("接口比对明细").getRow(rowIndex);
+            row.getCell(12).setCellValue("9223372036854775807");
+            row.getCell(13).setCellValue("1");
+        });
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("接口比对明细"));
+        assertTrue(exception.getMessage().contains("第" + (rowIndex + 1) + "行"));
+        assertTrue(exception.getMessage().contains("二者均成功且无字段差异"));
+        assertTrue(exception.getMessage().contains("二者均成功且有字段差异"));
+        assertTrue(exception.getMessage().contains("成功交易合计超出整数范围"));
+    }
+
+    @ParameterizedTest
+    @CsvSource(value = {"<empty>|1", "249|<empty>", "<empty>|<empty>", "-|1", "249|-"}, delimiter = '|')
+    void keepsUnknownSplitValuesAndTotalNullInsteadOfZero(String noDifference, String withDifference) throws Exception {
+        MockMultipartFile file = mutate(splitSuccessWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("接口比对明细");
+            sheet.getRow(0).createCell(19).setCellValue("二者均成功");
+            for (int rowIndex = 1; rowIndex <= 3; rowIndex++) {
+                sheet.getRow(rowIndex).createCell(19).setCellValue("999");
+            }
+            for (int rowIndex : List.of(1, 3)) {
+                Row row = sheet.getRow(rowIndex);
+                row.getCell(12).setCellValue("<empty>".equals(noDifference) ? "" : noDifference);
+                row.getCell(13).setCellValue("<empty>".equals(withDifference) ? "" : withDifference);
+            }
+        });
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        for (int rowIndex : List.of(0, 2)) {
+            ReplayInterfaceComparisonRow row = data.comparisons().get(rowIndex);
+            assertEquals("249".equals(noDifference) ? 249L : null, row.bothSuccessNoFieldDifference());
+            assertEquals("1".equals(withDifference) ? 1L : null, row.bothSuccessWithFieldDifference());
+            assertNull(row.bothSuccess());
+        }
     }
 
     @Test
@@ -291,6 +489,27 @@ class ReplayDailyWorkbookParserTest {
                 generatedComparisons(), generatedCoverageSummaries(), generatedCoverageDetails());
         return new MockMultipartFile("file", "generated-replay-daily.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes);
+    }
+
+    private static MockMultipartFile splitSuccessWorkbook() {
+        return mutate(workbook -> {
+            int sheetIndex = workbook.getSheetIndex("接口比对明细");
+            workbook.removeSheetAt(sheetIndex);
+            Sheet sheet = workbook.createSheet("接口比对明细");
+            workbook.setSheetOrder("接口比对明细", sheetIndex);
+            writeHeader(sheet.createRow(0), "批次号", "交易码", "S码", "交易描述", "开发负责人", "行内负责人", "领域",
+                    "发送交易量", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致", "二者均失败响应码不一致",
+                    "二者均成功且无字段差异", "二者均成功且有字段差异", "响应码忽略", "交易成功率", "接口比对通过率",
+                    "528平均耗时", "CCBS平均耗时");
+            writeHeader(sheet.createRow(1), "RPT20260904-094201-5355", "6208", "S120033800", "查询交易",
+                    "张三", "李四", "公共组", "250", "0", "0", "0", "0", "249", "1", "0",
+                    "100%", "99.6%", "1.2", "1.3");
+            writeHeader(sheet.createRow(2), "RPT20260904-094201-5355", "6209", "S120033801", "存款查询",
+                    "张三", "李四", "存款组", "250", "0", "0", "0", "0", "250", "0", "0",
+                    "100%", "100%", "1.2", "1.3");
+            writeHeader(sheet.createRow(3), "合计", "", "", "", "", "", "", "500", "0", "0", "0", "0",
+                    "499", "1", "0", "100%", "99.8%", "1.2", "1.3");
+        });
     }
 
     private static MockMultipartFile screenshotCoverageWorkbook() {

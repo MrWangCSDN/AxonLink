@@ -44,6 +44,9 @@ class ReplayDailyDataDaoTest {
                 "db/daoindex/V56__dii_replay_daily_import_data.sql"))
                 .execute(jdbc.getDataSource());
         new ResourceDatabasePopulator(new ClassPathResource(
+                "db/daoindex/V86__replay_interface_success_field_difference.sql"))
+                .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource(
                 "db/daoindex/V57__dii_replay_daily_report_snapshot.sql"))
                 .execute(jdbc.getDataSource());
         new ResourceDatabasePopulator(new ClassPathResource(
@@ -78,6 +81,68 @@ class ReplayDailyDataDaoTest {
         assertEquals(List.of(ReplayDailyRowType.DOMAIN_DETAIL, ReplayDailyRowType.DOMAIN_TOTAL,
                         ReplayDailyRowType.GROUP_DETAIL, ReplayDailyRowType.GROUP_TOTAL),
                 dao.findCoverageSummaries("RPT-BATCH").stream().map(ReplayCoverageSummaryRow::rowType).toList());
+    }
+
+    @Test
+    void persistsAndReadsSplitSuccessCountsForDetailsAndTotalIncludingExplicitZero() {
+        String batch = "RPT20261104-01";
+        ReplayDailyWorkbookData data = comparisonsOnly(batch, List.of(
+                comparison(batch, ReplayDailyRowType.DETAIL, "A001", 2, 250L, 249L, 1L),
+                comparison(batch, ReplayDailyRowType.DETAIL, "A002", 3, 250L, 250L, 0L),
+                comparison(batch, ReplayDailyRowType.TOTAL, null, 4, 500L, 499L, 1L)));
+
+        dao.replaceBatch(data, LocalDateTime.of(2026, 11, 4, 9, 0));
+
+        assertEquals(List.of(249L, 250L, 499L), jdbc.queryForList(
+                "SELECT both_success_no_field_difference FROM dii_replay_interface_comparison "
+                        + "WHERE batch_no=? ORDER BY source_row", Long.class, batch));
+        assertEquals(List.of(1L, 0L, 1L), jdbc.queryForList(
+                "SELECT both_success_with_field_difference FROM dii_replay_interface_comparison "
+                        + "WHERE batch_no=? ORDER BY source_row", Long.class, batch));
+        List<ReplayInterfaceComparisonRow> saved = dao.findComparisons(batch);
+        assertEquals(data.comparisons(), saved);
+        assertEquals(ReplayDailyRowType.TOTAL, saved.get(2).rowType());
+        assertEquals(500L, saved.get(2).bothSuccess());
+    }
+
+    @Test
+    void replacesSplitCountsWithoutAccumulatingOrChangingOtherBatches() {
+        LocalDateTime importedAt = LocalDateTime.of(2026, 11, 4, 9, 0);
+        ReplayDailyWorkbookData other = comparisonsOnly("RPT-OTHER", List.of(
+                comparison("RPT-OTHER", ReplayDailyRowType.DETAIL, "A001", 2, 200L, 199L, 1L)));
+        dao.replaceBatch(other, importedAt);
+        dao.replaceBatch(comparisonsOnly("RPT-BATCH", List.of(
+                comparison("RPT-BATCH", ReplayDailyRowType.DETAIL, "A001", 2, 250L, 249L, 1L),
+                comparison("RPT-BATCH", ReplayDailyRowType.TOTAL, null, 3, 250L, 249L, 1L))), importedAt);
+        ReplayDailyWorkbookData replacement = comparisonsOnly("RPT-BATCH", List.of(
+                comparison("RPT-BATCH", ReplayDailyRowType.DETAIL, "A001", 2, 250L, 250L, 0L),
+                comparison("RPT-BATCH", ReplayDailyRowType.TOTAL, null, 3, 250L, 250L, 0L)));
+
+        dao.replaceBatch(replacement, importedAt.plusMinutes(1));
+
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_interface_comparison "
+                + "WHERE batch_no='RPT-BATCH'", Integer.class));
+        assertEquals(replacement.comparisons(), dao.findComparisons("RPT-BATCH"));
+        assertEquals(other.comparisons(), dao.findComparisons("RPT-OTHER"));
+    }
+
+    @Test
+    void keepsLegacySuccessTotalAndUnknownSplitCountsNull() {
+        String batch = "RPT20261104-LEGACY";
+        ReplayInterfaceComparisonRow legacy = new ReplayInterfaceComparisonRow(batch,
+                ReplayDailyRowType.DETAIL, "A001", null, null, null, null, null,
+                250L, null, null, null, null, 250L, null, null, null, null, null, 2, "{}");
+
+        dao.replaceBatch(comparisonsOnly(batch, List.of(legacy)), LocalDateTime.of(2026, 11, 4, 9, 0));
+
+        ReplayInterfaceComparisonRow saved = dao.findComparisons(batch).get(0);
+        assertEquals(250L, saved.bothSuccess());
+        assertNull(saved.bothSuccessNoFieldDifference());
+        assertNull(saved.bothSuccessWithFieldDifference());
+        assertNull(jdbc.queryForObject("SELECT both_success_no_field_difference "
+                + "FROM dii_replay_interface_comparison WHERE batch_no=?", Long.class, batch));
+        assertNull(jdbc.queryForObject("SELECT both_success_with_field_difference "
+                + "FROM dii_replay_interface_comparison WHERE batch_no=?", Long.class, batch));
     }
 
     @Test
@@ -205,6 +270,18 @@ class ReplayDailyDataDaoTest {
         return new ReplayDailyReportSnapshot(batchNo, batchNo + "日报.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 content, content.length, "{\"schemaVersion\":1}", generatedAt);
+    }
+
+    private static ReplayDailyWorkbookData comparisonsOnly(String batch, List<ReplayInterfaceComparisonRow> rows) {
+        return new ReplayDailyWorkbookData(batch, List.of(), rows, List.of(), List.of());
+    }
+
+    private static ReplayInterfaceComparisonRow comparison(String batch, ReplayDailyRowType rowType,
+                                                           String code, int sourceRow, Long bothSuccess,
+                                                           Long noFieldDifference, Long withFieldDifference) {
+        return new ReplayInterfaceComparisonRow(batch, rowType, code, null, null, null, null, null,
+                bothSuccess, null, null, null, null, bothSuccess, null, null, null, null, null, sourceRow, "{}",
+                noFieldDifference, withFieldDifference);
     }
 
     private static ReplayDailyWorkbookData data(String batch, int seed) {

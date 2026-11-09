@@ -30,7 +30,9 @@ class ReplayDatabaseTablePersonMappingTest {
                 new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),
                 new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),
                 new ClassPathResource("db/daoindex/V79__replay_database_issue_repair_date_projection.sql"),
-                new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql"))
+                new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql"),
+                new ClassPathResource("db/daoindex/V81__replay_database_issue_completion_totals.sql"),
+                new ClassPathResource("db/daoindex/V83__replay_database_issue_plan_date.sql"))
                 .execute(jdbc.getDataSource());
         jdbc.update("INSERT INTO dii_replay_db_compare_registration(schema_name,table_name,table_comment,domain_name,reviser_name,registered_date,created_by,created_name,created_at,updated_by,updated_name,updated_at) VALUES ('public','KOBA_A','旧中文名','旧领域','旧修订人',CURRENT_DATE,'sys','系统',CURRENT_TIMESTAMP,'sys','系统',CURRENT_TIMESTAMP)");
         jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,table_comment,developer_display,developer_usernames,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('koba_a','贷款组','新中文名','张三(dev1)','dev1','王五(owner1)','2001',CURRENT_TIMESTAMP)");

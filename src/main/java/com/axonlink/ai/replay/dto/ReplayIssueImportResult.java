@@ -15,7 +15,19 @@ public record ReplayIssueImportResult(
         int ignoredRows,
         int autoRepairedRows,
         int rejectedRows,
-        String coverageRound) {
+        String coverageRound,
+        int reopenedRows,
+        int inheritedReopenedRows,
+        Long importRoundId) {
+
+    public ReplayIssueImportResult(int totalRows, Map<String, Integer> rowsBySheet,
+                                   int sandboxRows, int nonSandboxRows, LocalDateTime importedAt,
+                                   int createdRows, int updatedRows, int ignoredRows,
+                                   int autoRepairedRows, int rejectedRows, String coverageRound) {
+        this(totalRows, rowsBySheet, sandboxRows, nonSandboxRows, importedAt,
+                createdRows, updatedRows, ignoredRows, autoRepairedRows, rejectedRows, coverageRound,
+                0, 0, null);
+    }
 
     public ReplayIssueImportResult(int totalRows, Map<String, Integer> rowsBySheet,
                                    int sandboxRows, int nonSandboxRows, LocalDateTime importedAt) {

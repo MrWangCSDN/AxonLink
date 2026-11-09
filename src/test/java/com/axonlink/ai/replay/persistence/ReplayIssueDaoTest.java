@@ -895,11 +895,14 @@ class ReplayIssueDaoTest {
     void dailyReportProjectionUsesOccurrenceMembershipAndCurrentValues() {
         insertIssueWithOccurrence(1L, "RPT20260901-01", "公共组", false,
                 "代码问题", "交易级", "528成功ccbs失败", "打开", 7L);
+        jdbc.update("UPDATE dii_replay_issue SET transaction_code='006208', defect_repair_date='2026-09-01' WHERE id=1");
 
         ReplayDailyIssueStatisticRow row = dao.findDailyReportIssueStatistics("RPT20260901-01").get(0);
 
         assertEquals(7L, row.affectedTransactionCount());
         assertEquals("528成功ccbs失败", row.fieldName());
+        assertEquals("006208", row.transactionCode());
+        assertEquals(LocalDate.of(2026, 9, 1), row.defectRepairDate());
         assertFalse(row.reopenedAfterFixed());
     }
 

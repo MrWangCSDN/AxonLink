@@ -48,8 +48,8 @@ public class ReplayDailyReportWorkbookWriter {
             "未分析", "已分析待修复", "未完全修复", "数据迁移问题", "代码未发版");
     private static final List<String> INTERFACE_HEADERS = List.of(
             "批次号", "交易码", "S码", "交易描述", "开发负责人", "行内负责人", "领域",
-            "发送交易量", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致",
-            "二者均失败响应码不一致", "二者均成功", "响应码忽略", "交易成功率", "接口比对通过率",
+            "发送交易量", "二者均成功且无字段差异", "二者均成功且有字段差异", "528成功/CCBS失败", "528失败/CCBS成功", "二者均失败响应码一致",
+            "二者均失败响应码不一致", "响应码忽略", "交易成功率", "接口比对通过率",
             "528平均耗时", "CCBS平均耗时");
     private static final List<String> COVERAGE_DOMAIN_HEADERS = List.of(
             "业务领域", "全量清单交易数", "本次已发送", "本次未发送", "不回放",
@@ -94,41 +94,55 @@ public class ReplayDailyReportWorkbookWriter {
     private void writeSummarySheet(XSSFWorkbook workbook, StylePalette styles, CalculatedReport report,
                                    ReplayReportSummaryView lowerSummary) {
         Sheet sheet = workbook.createSheet(ReplayDailyWorkbookParser.SUMMARY_SHEET);
-        int upperTotalRow = writeUpperSummary(sheet, styles, report);
-        writeLowerSummary(sheet, styles, report, lowerSummary, upperTotalRow + 3);
-        configureSummarySheet(sheet);
+        ReplayReportCalculationContext context = ReplayReportCalculationContext.from(lowerSummary);
+        boolean baseline = lowerSummary.period() == ReplayReportPeriod.DAILY
+                && !ReplayReportSummaryViewFactory.hasPreviousHistory(report);
+        int firstTableRow = 0;
+        for (String notice : context.notices()) {
+            writeMergedTitle(sheet, firstTableRow++, 0, 24, notice, styles.classificationHeader());
+        }
+        int upperTotalRow = writeUpperSummary(sheet, styles, report, baseline, firstTableRow, context.previous());
+        writeLowerSummary(sheet, styles, report, lowerSummary, upperTotalRow + 3, baseline);
+        configureSummarySheet(sheet, context.notices().isEmpty() ? 3 : 0);
     }
 
-    private int writeUpperSummary(Sheet sheet, StylePalette styles, CalculatedReport report) {
+    private int writeUpperSummary(Sheet sheet, StylePalette styles, CalculatedReport report, boolean baseline,
+                                  int startRow, ReplayReportCalculationContext.Side availability) {
         int lastColumn = 24;
-        String previousBatch = batchOf(report.previousTotal(), report.previousRows());
-        writeMergedTitle(sheet, 0, 0, lastColumn,
-                "批次号：" + previousBatch + "（上批次）", styles.upperTitle());
-        writeSummaryHeaderBase(sheet, 1, lastColumn, styles.upperHeader(), styles.classificationHeader(), 13);
-        mergeParent(sheet, 1, 4, 10, "交易核对分类统计", styles.upperHeader());
-        mergeParent(sheet, 1, 14, 23, "已解决问题分类统计", styles.classificationHeader());
-        writeCommonVerticalHeaders(sheet, 1, styles.upperHeader(), styles.upperHeader());
-        setVerticalHeader(sheet, 1, 13, "问题总数", styles.classificationHeader());
-        setVerticalHeader(sheet, 1, 24, "问题排查进度", styles.classificationHeader());
-        writeChildren(sheet.getRow(2), 4, TRANSACTION_HEADERS, styles.upperHeader());
-        writeChildren(sheet.getRow(2), 14, ISSUE_HEADERS, styles.classificationHeader());
-
-        int rowIndex = 3;
-        for (ReplayDailySummaryCalculatedRow value : report.previousRows()) {
-            writeUpperSummaryRow(sheet.createRow(rowIndex++), styles, value, false);
+        if (baseline) {
+            writeMergedTitle(sheet, startRow, 0, lastColumn,
+                    "上一批次历史统计未建立（本批次为统计起点）", styles.upperTitle());
+            return startRow;
         }
-        writeUpperSummaryRow(sheet.createRow(rowIndex), styles, report.previousTotal(), true);
+        String previousBatch = batchOf(report.previousTotal(), report.previousRows());
+        writeMergedTitle(sheet, startRow, 0, lastColumn,
+                "批次号：" + previousBatch + "（上批次）", styles.upperTitle());
+        int headerRow = startRow + 1;
+        writeSummaryHeaderBase(sheet, headerRow, lastColumn, styles.upperHeader(), styles.classificationHeader(), 13);
+        mergeParent(sheet, headerRow, 4, 10, "交易核对分类统计", styles.upperHeader());
+        mergeParent(sheet, headerRow, 14, 23, "已解决问题分类统计", styles.classificationHeader());
+        writeCommonVerticalHeaders(sheet, headerRow, styles.upperHeader(), styles.upperHeader());
+        setVerticalHeader(sheet, headerRow, 13, "问题总数", styles.classificationHeader());
+        setVerticalHeader(sheet, headerRow, 24, "问题排查进度", styles.classificationHeader());
+        writeChildren(sheet.getRow(headerRow + 1), 4, TRANSACTION_HEADERS, styles.upperHeader());
+        writeChildren(sheet.getRow(headerRow + 1), 14, ISSUE_HEADERS, styles.classificationHeader());
+
+        int rowIndex = headerRow + 2;
+        for (ReplayDailySummaryCalculatedRow value : report.previousRows()) {
+            writeUpperSummaryRow(sheet.createRow(rowIndex++), styles, value, false, availability);
+        }
+        writeUpperSummaryRow(sheet.createRow(rowIndex), styles, report.previousTotal(), true, availability);
         return rowIndex;
     }
 
     private void writeLowerSummary(Sheet sheet, StylePalette styles, CalculatedReport report,
-                                   ReplayReportSummaryView summaryView, int startRow) {
+                                   ReplayReportSummaryView summaryView, int startRow, boolean baseline) {
         int lastColumn = 20;
         String currentBatch = batchOf(report.currentTotal(), report.currentRows());
         String previousBatch = batchOf(report.previousTotal(), report.previousRows());
         Row title = createStyledRow(sheet, startRow, 26, lastColumn, styles.lowerTitle());
         setText(title, 0, "批次号：" + currentBatch + "（本批次）", styles.lowerTitle());
-        setText(title, 14, "批次号：" + previousBatch + "（上批次）", styles.lowerTitle());
+        setText(title, 14, baseline ? "历史统计未建立" : "批次号：" + previousBatch + "（上批次）", styles.lowerTitle());
         sheet.addMergedRegion(new CellRangeAddress(startRow, startRow, 0, 13));
         sheet.addMergedRegion(new CellRangeAddress(startRow, startRow, 14, 20));
 
@@ -184,7 +198,8 @@ public class ReplayDailyReportWorkbookWriter {
     }
 
     private void writeUpperSummaryRow(Row row, StylePalette styles,
-                                      ReplayDailySummaryCalculatedRow value, boolean total) {
+                                      ReplayDailySummaryCalculatedRow value, boolean total,
+                                      ReplayReportCalculationContext.Side availability) {
         row.setHeightInPoints(24);
         CellStyle textStyle = total ? styles.totalText() : styles.bodyText();
         CellStyle integerStyle = total ? styles.totalInteger() : styles.bodyInteger();
@@ -202,6 +217,17 @@ public class ReplayDailyReportWorkbookWriter {
             setNumber(row, 14 + index, issueCounts[index], issueInteger);
         }
         setDecimal(row, 24, value.investigationProgress(), issuePercent);
+        if (availability.hideBreakdown(value.domain(), total)) {
+            for (int column : List.of(4, 5, 7)) row.getCell(column).setBlank();
+        }
+        if (availability.hideNoAction(value.domain(), total)) {
+            row.getCell(9).setBlank();
+        }
+        if (availability.hideSuccessRate(value.domain(), total)) row.getCell(11).setBlank();
+        if (availability.hideMatchRate(value.domain(), total)) row.getCell(12).setBlank();
+        if (!availability.issueStatisticsAvailable()) {
+            for (int column = 13; column <= 24; column++) row.getCell(column).setBlank();
+        }
     }
 
     private void writeLowerSummaryRow(Row row, StylePalette styles,
@@ -217,23 +243,23 @@ public class ReplayDailyReportWorkbookWriter {
         setText(row, 1, text(values, "domain"), textStyle);
         setNullableNumber(row, 2, number(values, "coveredInterfaceCount"), integerStyle);
         setNullableNumber(row, 3, number(values, "sentTransactionCount"), integerStyle);
-        setNumber(row, 4, numberOrZero(values, "c528SuccessCcbsFail"), integerStyle);
-        setNumber(row, 5, numberOrZero(values, "c528FailCcbsSuccess"), integerStyle);
+        setNullableNumber(row, 4, number(values, "c528SuccessCcbsFail"), integerStyle);
+        setNullableNumber(row, 5, number(values, "c528FailCcbsSuccess"), integerStyle);
         setNullableNumber(row, 6, number(values, "bothFailSameCode"), integerStyle);
-        setNumber(row, 7, numberOrZero(values, "bothFailDiffCode"), integerStyle);
+        setNullableNumber(row, 7, number(values, "bothFailDiffCode"), integerStyle);
         setNullableNumber(row, 8, number(values, "bothSuccess"), integerStyle);
-        setNumber(row, 9, numberOrZero(values, "noAction"), integerStyle);
+        setNullableNumber(row, 9, number(values, "noAction"), integerStyle);
         setNullableNumber(row, 10, number(values, "codeIgnored"), integerStyle);
         setDecimal(row, 11, decimal(values, "successRate"), percentStyle);
         setDecimal(row, 12, decimal(values, "matchPassRate"), percentStyle);
         setNullableNumber(row, 13, number(values, "issueTotal"), integerStyle);
-        setNumber(row, 14, numberOrZero(values, "previousUnresolvedTotal"), issueInteger);
+        setNullableNumber(row, 14, number(values, "previousUnresolvedTotal"), issueInteger);
         setDecimal(row, 15, decimal(values, "previousResolutionRate"), issuePercent);
-        setNumber(row, 16, numberOrZero(values, "unanalyzed"), issueInteger);
-        setNumber(row, 17, numberOrZero(values, "analyzedPendingFix"), issueInteger);
-        setNumber(row, 18, numberOrZero(values, "notFullyFixed"), issueInteger);
-        setNumber(row, 19, numberOrZero(values, "dataMigrationIssue"), issueInteger);
-        setNumber(row, 20, numberOrZero(values, "codeNotReleased"), issueInteger);
+        setNullableNumber(row, 16, number(values, "unanalyzed"), issueInteger);
+        setNullableNumber(row, 17, number(values, "analyzedPendingFix"), issueInteger);
+        setNullableNumber(row, 18, number(values, "notFullyFixed"), issueInteger);
+        setNullableNumber(row, 19, number(values, "dataMigrationIssue"), issueInteger);
+        setNullableNumber(row, 20, number(values, "codeNotReleased"), issueInteger);
     }
 
     private static String text(Map<String, Object> values, String key) {
@@ -244,11 +270,6 @@ public class ReplayDailyReportWorkbookWriter {
     private static Long number(Map<String, Object> values, String key) {
         Object value = values.get(key);
         return value instanceof Number number ? number.longValue() : null;
-    }
-
-    private static long numberOrZero(Map<String, Object> values, String key) {
-        Long value = number(values, key);
-        return value == null ? 0L : value;
     }
 
     private static BigDecimal decimal(Map<String, Object> values, String key) {
@@ -307,16 +328,17 @@ public class ReplayDailyReportWorkbookWriter {
         setText(row, 5, total ? null : value.bankOwner(), textStyle);
         setText(row, 6, total ? null : value.domain(), textStyle);
         setNullableNumber(row, 7, value.sentTransactionCount(), integerStyle);
-        setNullableNumber(row, 8, value.c528SuccessCcbsFail(), integerStyle);
-        setNullableNumber(row, 9, value.c528FailCcbsSuccess(), integerStyle);
-        setNullableNumber(row, 10, value.bothFailSameCode(), integerStyle);
-        setNullableNumber(row, 11, value.bothFailDiffCode(), integerStyle);
-        setNullableNumber(row, 12, value.bothSuccess(), integerStyle);
-        setNullableNumber(row, 13, value.codeIgnored(), integerStyle);
-        setDecimal(row, 14, value.transactionSuccessRate(), percentStyle);
-        setDecimal(row, 15, value.matchPassRate(), percentStyle);
-        setDecimal(row, 16, value.c528AvgDuration(), durationStyle);
-        setDecimal(row, 17, value.ccbsAvgDuration(), durationStyle);
+        setExactSplitCount(row, 8, value.bothSuccessNoFieldDifference(), integerStyle);
+        setExactSplitCount(row, 9, value.bothSuccessWithFieldDifference(), integerStyle);
+        setNullableNumber(row, 10, value.c528SuccessCcbsFail(), integerStyle);
+        setNullableNumber(row, 11, value.c528FailCcbsSuccess(), integerStyle);
+        setNullableNumber(row, 12, value.bothFailSameCode(), integerStyle);
+        setNullableNumber(row, 13, value.bothFailDiffCode(), integerStyle);
+        setNullableNumber(row, 14, value.codeIgnored(), integerStyle);
+        setDecimal(row, 15, value.transactionSuccessRate(), percentStyle);
+        setDecimal(row, 16, value.matchPassRate(), percentStyle);
+        setDecimal(row, 17, value.c528AvgDuration(), durationStyle);
+        setDecimal(row, 18, value.ccbsAvgDuration(), durationStyle);
     }
 
     private void writeCoverageSheet(XSSFWorkbook workbook, StylePalette styles,
@@ -451,16 +473,16 @@ public class ReplayDailyReportWorkbookWriter {
         sheet.addMergedRegion(new CellRangeAddress(rowIndex, rowIndex, firstColumn, lastColumn));
     }
 
-    private void configureSummarySheet(Sheet sheet) {
+    private void configureSummarySheet(Sheet sheet, int frozenRows) {
         int[] widths = {28, 18, 14, 16, 18, 18, 22, 22, 16, 14, 14, 14, 14,
                 14, 18, 18, 14, 14, 14, 16, 16, 14, 14, 14, 16};
         setWidths(sheet, widths);
-        sheet.createFreezePane(2, 3);
+        sheet.createFreezePane(2, frozenRows);
         configurePrint(sheet);
     }
 
     private void configureInterfaceSheet(Sheet sheet, int headerRow) {
-        int[] widths = {28, 14, 24, 34, 18, 18, 16, 14, 18, 18, 22, 22, 16, 14, 14, 16, 16, 16};
+        int[] widths = {28, 14, 24, 34, 18, 18, 16, 14, 22, 22, 18, 18, 22, 22, 14, 14, 16, 16, 16};
         setWidths(sheet, widths);
         sheet.createFreezePane(0, headerRow + 1);
         sheet.setAutoFilter(new CellRangeAddress(headerRow, headerRow, 0, INTERFACE_HEADERS.size() - 1));
@@ -512,19 +534,34 @@ public class ReplayDailyReportWorkbookWriter {
 
     private static void setNullableNumber(Row row, int column, Long value, CellStyle style) {
         if (value == null) {
-            setText(row, column, "", style);
+            setBlank(row, column, style);
         } else {
             setNumber(row, column, value, style);
         }
     }
 
+    private static void setExactSplitCount(Row row, int column, Long value, CellStyle style) {
+        // Excel retains 15 significant decimal digits in numeric cells.
+        if (value != null && (value > 999_999_999_999_999L || value < -999_999_999_999_999L)) {
+            setText(row, column, value.toString(), style);
+        } else {
+            setNullableNumber(row, column, value, style);
+        }
+    }
+
     private static void setDecimal(Row row, int column, BigDecimal value, CellStyle style) {
         if (value == null) {
-            setText(row, column, "", style);
+            setBlank(row, column, style);
             return;
         }
         Cell cell = row.getCell(column, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
         cell.setCellValue(value.doubleValue());
+        cell.setCellStyle(style);
+    }
+
+    private static void setBlank(Row row, int column, CellStyle style) {
+        Cell cell = row.getCell(column, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+        cell.setBlank();
         cell.setCellStyle(style);
     }
 

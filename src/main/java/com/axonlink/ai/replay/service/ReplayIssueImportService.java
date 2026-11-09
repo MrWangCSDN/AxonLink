@@ -1,6 +1,8 @@
 package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayDailyWorkbookData;
+import com.axonlink.ai.replay.dto.ReplayDailyRowType;
+import com.axonlink.ai.replay.dto.ReplayInterfaceComparisonRow;
 import com.axonlink.ai.replay.dto.ReplayIssueImportResult;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.replay.dto.ReplayIssueRow;
@@ -14,6 +16,11 @@ import java.io.IOException;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /** Serializes replay issue imports while atomically replacing the active snapshot. */
 @Service
@@ -32,10 +39,11 @@ public class ReplayIssueImportService {
     @Autowired
     public ReplayIssueImportService(ReplayIssueExcelParser parser,
                                     ReplayIssueDao dao,
+                                    ReplayIssueMergeService mergeService,
                                     ReplayDailyWorkbookParser dailyWorkbookParser,
                                     ReplayDailyDataDao dailyDataDao,
                                     ReplayIssueImportGate importGate) {
-        this(parser, dao, new ReplayIssueMergeService(dao), dailyWorkbookParser, dailyDataDao,
+        this(parser, dao, mergeService, dailyWorkbookParser, dailyDataDao,
                 Clock.systemDefaultZone(), importGate);
     }
 
@@ -110,23 +118,63 @@ public class ReplayIssueImportService {
                 throw new IllegalArgumentException("缺少可导入的问题清单页签");
             }
             validateDailyBatch(parsed, dailyData);
+            Map<String, Long> sentTransactionCounts = sentTransactionCounts(dailyData);
+            String sentTransactionCountBatchPrefix = sentTransactionCountBatchPrefix(parsed, dailyData);
             LocalDateTime importedAt = LocalDateTime.now(clock);
             if (releaseAt != null) ReplayReleaseTime.resolve(releaseAt, importedAt.toLocalDate());
             String coverageRound = importedAt.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
-            if (dailyData == null) {
-                return mergeService.merge(parsed, importedAt.toLocalDate(),
-                        ReplayIssueOperator.system(), coverageRound, releaseAt);
-            }
             return dao.inTransaction(currentDao -> {
-                ReplayIssueImportResult result = parsed.hasIssueSheets()
+                if (dailyData != null) currentDao.beginBatchStatistics(dailyData.batchNo(), importedAt);
+                ReplayIssueImportResult result = dailyData == null || parsed.hasIssueSheets()
                         ? mergeService.mergeWithinTransaction(currentDao, parsed, importedAt.toLocalDate(),
-                                ReplayIssueOperator.system(), coverageRound, dailyData.batchNo(), releaseAt)
+                                ReplayIssueOperator.system(), coverageRound,
+                                dailyData == null ? null : dailyData.batchNo(), releaseAt)
                         : new ReplayIssueImportResult(0, parsed.rowsBySheet(), 0, 0, importedAt,
                                 0, 0, 0, 0, 0, coverageRound);
-                dailyDataDao.replaceBatch(dailyData, importedAt);
+                if (dailyData != null) dailyDataDao.replaceBatch(dailyData, importedAt);
+                if (sentTransactionCountBatchPrefix != null) {
+                    currentDao.replaceSentTransactionCounts(sentTransactionCountBatchPrefix, sentTransactionCounts);
+                }
                 return result;
             });
         });
+    }
+
+    private String sentTransactionCountBatchPrefix(ReplayIssueExcelParser.ParsedWorkbook parsed,
+                                                   ReplayDailyWorkbookData dailyData) {
+        String batch = dailyData == null
+                ? parsed.rows().stream().map(ReplayIssueRow::batchNo)
+                        .filter(value -> value != null && !value.isBlank()).findFirst().orElse(null)
+                : dailyData.batchNo();
+        if (batch == null) return null;
+        String normalized = batch.trim().toUpperCase(Locale.ROOT);
+        if (normalized.startsWith("RPT")) return "RPT";
+        if (normalized.startsWith("DZ")) return "DZ";
+        return null;
+    }
+
+    private Map<String, Long> sentTransactionCounts(ReplayDailyWorkbookData dailyData) {
+        if (dailyData == null) return Map.of();
+        Set<String> unknownCodes = new HashSet<>();
+        for (ReplayInterfaceComparisonRow row : dailyData.comparisons()) {
+            if (row.rowType() != ReplayDailyRowType.DETAIL || row.transactionCode() == null) continue;
+            String code = row.transactionCode().trim();
+            if (!code.isEmpty() && row.sentTransactionCount() == null) unknownCodes.add(code);
+        }
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (ReplayInterfaceComparisonRow row : dailyData.comparisons()) {
+            if (row.rowType() != ReplayDailyRowType.DETAIL || row.transactionCode() == null) continue;
+            String code = row.transactionCode().trim();
+            if (code.isEmpty() || unknownCodes.contains(code)) continue;
+            try {
+                counts.merge(code, row.sentTransactionCount(), Math::addExact);
+            } catch (ArithmeticException exception) {
+                throw new IllegalArgumentException("页签“接口比对明细”交易码“" + code
+                        + "”发送交易量合计超出整数范围", exception);
+            }
+        }
+        unknownCodes.forEach(code -> counts.put(code, null));
+        return counts;
     }
 
     private void validateDailyBatch(ReplayIssueExcelParser.ParsedWorkbook issues,

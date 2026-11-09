@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.time.Clock;
@@ -124,10 +125,11 @@ public class ReplayIssueDailyReportService {
         ReportSnapshot snapshot = Objects.requireNonNull(readSnapshotTransaction.execute(
                 status -> loadSnapshot(batchNo)));
         var calculated = calculator.calculate(
-                snapshot.previousSummaries(), snapshot.previousIssues(),
-                snapshot.currentSummaries(), snapshot.currentIssues());
+                snapshot.previousSummaries(), snapshot.previousIssues(), snapshot.previousComparisons(),
+                snapshot.currentSummaries(), snapshot.currentIssues(), snapshot.comparisons(),
+                snapshot.previousMetricIssues(), snapshot.currentMetricIssues(), snapshot.context());
         ReplayReportSummaryView summaryView = summaryViewFactory.create(
-                ReplayReportPeriod.DAILY, null, batchNo, calculated);
+                ReplayReportPeriod.DAILY, null, batchNo, calculated, snapshot.context());
         byte[] workbook = workbookWriter.write(calculated, summaryView, snapshot.comparisons(),
                 snapshot.coverageSummaries(), snapshot.coverageDetails());
         return new GeneratedReport(workbook, summaryView);
@@ -145,18 +147,27 @@ public class ReplayIssueDailyReportService {
                 .findFirst()
                 .orElseThrow(BatchNotFoundException::new);
         String previousBatchNo = selected.previousBatchNo();
-        if (previousBatchNo == null) {
-            throw new PreviousBatchNotFoundException();
-        }
+        var loader = new ReplayReportCalculationDataLoader(dailyDataDao, issueDao);
+        var current = loader.loadHistorical(batchNo);
+        var previous = previousBatchNo == null ? null : loader.loadHistorical(previousBatchNo);
+        List<String> notices = new ArrayList<>();
+        if (previous != null) notices.addAll(previous.notices());
+        notices.addAll(current.notices());
+        var context = new ReplayReportCalculationContext(
+                previous == null ? ReplayReportCalculationContext.Side.complete() : previous.availability(),
+                current.availability(), notices);
 
         return new ReportSnapshot(
-                dailyDataDao.findSummaries(previousBatchNo),
-                issueDao.findDailyReportIssueStatistics(previousBatchNo),
-                dailyDataDao.findSummaries(batchNo),
-                issueDao.findDailyReportIssueStatistics(batchNo),
-                dailyDataDao.findComparisons(batchNo),
+                previous == null ? List.of() : previous.summaries(),
+                previous == null ? List.of() : previous.historicalIssues(),
+                previous == null ? List.of() : previous.comparisons(),
+                current.summaries(),
+                current.historicalIssues(),
+                current.comparisons(),
                 dailyDataDao.findCoverageSummaries(batchNo),
-                dailyDataDao.findCoverageDetails(batchNo));
+                dailyDataDao.findCoverageDetails(batchNo),
+                previous == null ? List.of() : previous.metricIssues(),
+                current.metricIssues(), context);
     }
 
     private static void validateBatchNo(String batchNo) {
@@ -192,20 +203,28 @@ public class ReplayIssueDailyReportService {
     private record ReportSnapshot(
             List<ReplayDailySummaryRow> previousSummaries,
             List<ReplayDailyIssueStatisticRow> previousIssues,
+            List<ReplayInterfaceComparisonRow> previousComparisons,
             List<ReplayDailySummaryRow> currentSummaries,
             List<ReplayDailyIssueStatisticRow> currentIssues,
             List<ReplayInterfaceComparisonRow> comparisons,
             List<ReplayCoverageSummaryRow> coverageSummaries,
-            List<ReplayCoverageDetailRow> coverageDetails) {
+            List<ReplayCoverageDetailRow> coverageDetails,
+            List<ReplayDailyIssueStatisticRow> previousMetricIssues,
+            List<ReplayDailyIssueStatisticRow> currentMetricIssues,
+            ReplayReportCalculationContext context) {
 
         private ReportSnapshot {
             previousSummaries = List.copyOf(previousSummaries);
             previousIssues = List.copyOf(previousIssues);
+            previousComparisons = List.copyOf(previousComparisons);
             currentSummaries = List.copyOf(currentSummaries);
             currentIssues = List.copyOf(currentIssues);
             comparisons = List.copyOf(comparisons);
             coverageSummaries = List.copyOf(coverageSummaries);
             coverageDetails = List.copyOf(coverageDetails);
+            previousMetricIssues = List.copyOf(previousMetricIssues);
+            currentMetricIssues = List.copyOf(currentMetricIssues);
+            context = Objects.requireNonNull(context);
         }
     }
 

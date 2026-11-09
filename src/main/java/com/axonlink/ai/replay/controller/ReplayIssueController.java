@@ -3,6 +3,8 @@ package com.axonlink.ai.replay.controller;
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.ai.replay.dto.ReplayIssueFilterOptions;
 import com.axonlink.ai.replay.dto.ReplayIssueAffectedTransactionCountOrder;
+import com.axonlink.ai.replay.dto.ReplayIssueGlobalSerialNoOrder;
+import com.axonlink.ai.replay.dto.ReplayIssueSentTransactionCountOrder;
 import com.axonlink.ai.replay.dto.ReplayDailyBatch;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailSendRequest;
 import com.axonlink.ai.replay.dto.ReplayDailyReportMailView;
@@ -460,6 +462,8 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> issueKeys,
             @RequestParam(required = false) String replayType,
             @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            @RequestParam(required = false) ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            @RequestParam(required = false) String sentTransactionCountOrder,
             @RequestParam(required = false) Boolean unverifiedOnly,
             @RequestParam(required = false) Boolean relatedToMe,
             HttpServletRequest httpRequest) {
@@ -472,7 +476,8 @@ public class ReplayIssueController {
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
         query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
-        return executeList(query, affectedTransactionCountOrder);
+        return executeList(query, affectedTransactionCountOrder, globalSerialNoOrder,
+                ReplayIssueSentTransactionCountOrder.parse(sentTransactionCountOrder));
     }
 
     @PostMapping
@@ -481,12 +486,16 @@ public class ReplayIssueController {
                 ? new ReplayIssueListSearchRequest(null, null)
                 : request;
         return executeList(resolveTaskFilters(safeRequest.normalizedQuery(), httpRequest),
-                safeRequest.affectedTransactionCountOrder());
+                safeRequest.affectedTransactionCountOrder(), safeRequest.globalSerialNoOrder(),
+                safeRequest.sentTransactionCountOrder());
     }
 
     private R<Map<String, Object>> executeList(
-            ReplayIssueQuery query, ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder) {
-        List<Map<String, Object>> items = dao.list(query, affectedTransactionCountOrder).stream()
+            ReplayIssueQuery query, ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            ReplayIssueSentTransactionCountOrder sentTransactionCountOrder) {
+        List<Map<String, Object>> items = dao.list(query, affectedTransactionCountOrder, globalSerialNoOrder,
+                        sentTransactionCountOrder).stream()
                 .map(ReplayIssueController::lowercaseKeys)
                 .toList();
         return R.ok(Map.of("total", dao.count(query), "items", items));
@@ -832,6 +841,8 @@ public class ReplayIssueController {
             @RequestParam(required = false) List<String> issueKeys,
             @RequestParam(required = false) String replayType,
             @RequestParam(required = false) ReplayIssueAffectedTransactionCountOrder affectedTransactionCountOrder,
+            @RequestParam(required = false) ReplayIssueGlobalSerialNoOrder globalSerialNoOrder,
+            @RequestParam(required = false) String sentTransactionCountOrder,
             @RequestParam(required = false) Boolean unverifiedOnly,
             @RequestParam(required = false) Boolean relatedToMe,
             HttpServletRequest httpRequest) {
@@ -843,22 +854,23 @@ public class ReplayIssueController {
                 safe(transactionNames), safe(fieldNames), safe(issueDescriptions), safe(issueKeys), safe(issueDomains),
                 ReplayIssueReplayType.parse(replayType));
         query = resolveTaskFilters(query.withTaskFilters(unverifiedOnly, relatedToMe, List.of()), httpRequest);
+        ReplayIssueSentTransactionCountOrder sentCountOrder = ReplayIssueSentTransactionCountOrder.parse(sentTransactionCountOrder);
         try (SXSSFWorkbook workbook = new SXSSFWorkbook(200); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             workbook.setCompressTempFiles(true);
             Sheet sheet = workbook.createSheet("回放问题清单");
             String[] headers = {"issue_id", "是否沙箱", "交易码", "交易名称", "问题级别", "字段名", "问题描述",
                     "优先任务", "领域", "问题所属领域", "计划验证日期", "缺陷修复日期", "开发负责人", "科技负责人", "问题状态", "审核状态", "审核人", "审核时间", "问题类型", "需协同人", "初步问题分析", "最终处理方案", "备注",
-                    "出现笔数", "issue_key", "首次出现日期", "流水号", "全局流水号", "出现批次"};
+                    "发送交易量", "出现笔数", "issue_key", "首次出现日期", "流水号", "全局流水号", "出现批次"};
             Row header = sheet.createRow(0);
             for (int i = 0; i < headers.length; i++) header.createCell(i).setCellValue(headers[i]);
             int rowIndex = 1;
-            for (Map<String, Object> item : dao.listForExport(query, affectedTransactionCountOrder)) {
+            for (Map<String, Object> item : dao.listForExport(query, affectedTransactionCountOrder, globalSerialNoOrder, sentCountOrder)) {
                 Row row = sheet.createRow(rowIndex++);
                 Object[] values = {text(item.get("issue_id")), sandboxText(item.get("is_sandbox")), text(item.get("transaction_code")),
                         text(item.get("transaction_name")), text(item.get("issue_level")), text(item.get("field_name")),
                         text(item.get("issue_description")), weeklyTaskText(item.get("weekly_task")), text(item.get("domain")), text(item.get("issue_domain")),
                         text(item.get("planned_completion_date")), text(item.get("defect_repair_date")), text(item.get("matched_developer")), text(item.get("matched_bank_owner")), text(item.get("issue_status")), text(item.get("review_status")), text(item.get("reviewer_real_name")), text(item.get("reviewed_at")), text(item.get("issue_type")), personText(item), text(item.get("initial_analysis")),
-                        text(item.get("final_solution")), text(item.get("remark")), text(item.get("affected_transaction_count")), text(item.get("issue_key")),
+                        text(item.get("final_solution")), text(item.get("remark")), text(item.get("sent_transaction_count")), text(item.get("affected_transaction_count")), text(item.get("issue_key")),
                         dateOnlyText(item.get("first_occurrence_date")), text(item.get("serial_no")), text(item.get("global_serial_no")), text(item.get("occurrence_rounds"))};
                 for (int i = 0; i < values.length; i++) row.createCell(i).setCellValue(String.valueOf(values[i]));
             }
@@ -921,6 +933,8 @@ public class ReplayIssueController {
             return error(HttpStatus.NOT_FOUND, "批次数据不存在");
         } catch (ReplayIssueDailyReportService.PreviousBatchNotFoundException exception) {
             return error(HttpStatus.CONFLICT, "没有上批次数据");
+        } catch (com.axonlink.ai.replay.persistence.ReplayIssueBatchStatisticsIncompleteException exception) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage());
         } catch (RuntimeException exception) {
             log.error("[replay-issue] daily report generation failed batchNo={}", batchNo, exception);
             return error(HttpStatus.INTERNAL_SERVER_ERROR, "日报生成失败");
@@ -1009,6 +1023,8 @@ public class ReplayIssueController {
             return error(HttpStatus.NOT_FOUND, "批次数据不存在");
         } catch (ReplayIssueDailyReportService.PreviousBatchNotFoundException exception) {
             return error(HttpStatus.CONFLICT, "没有上批次数据");
+        } catch (com.axonlink.ai.replay.persistence.ReplayIssueBatchStatisticsIncompleteException exception) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage());
         } catch (RuntimeException exception) {
             log.error("[replay-issue] daily report regeneration failed batchNo={}", batchNo, exception);
             return error(HttpStatus.INTERNAL_SERVER_ERROR, "日报重新生成失败");
@@ -1074,6 +1090,8 @@ public class ReplayIssueController {
             return error(HttpStatus.CONFLICT, "结束批次周报已生成");
         } catch (ReplayWeeklyReportService.BatchDataNotFoundException exception) {
             return error(HttpStatus.NOT_FOUND, "所选批次没有日报数据");
+        } catch (com.axonlink.ai.replay.persistence.ReplayIssueBatchStatisticsIncompleteException exception) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage());
         } catch (RuntimeException exception) {
             log.error("[replay-issue] weekly report generation failed startBatchNo={} endBatchNo={}",
                     startBatchNo, endBatchNo, exception);
@@ -1122,6 +1140,8 @@ public class ReplayIssueController {
             return error(HttpStatus.NOT_FOUND, "周报尚未生成");
         } catch (ReplayWeeklyReportService.BatchDataNotFoundException exception) {
             return error(HttpStatus.NOT_FOUND, "所选批次没有日报数据");
+        } catch (com.axonlink.ai.replay.persistence.ReplayIssueBatchStatisticsIncompleteException exception) {
+            return error(HttpStatus.INTERNAL_SERVER_ERROR, exception.getMessage());
         } catch (RuntimeException exception) {
             log.error("[replay-issue] weekly report regeneration failed startBatchNo={} endBatchNo={}",
                     startBatchNo, endBatchNo, exception);

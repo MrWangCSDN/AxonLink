@@ -442,7 +442,7 @@ class ReplayIssueMergeServiceTest {
     }
 
     @Test
-    void fixedReappearanceRetainsManualFieldsAndClearsDefectDate() {
+    void fixedReappearanceClearsManualFieldsAndKeepsTheClearInHistory() {
         ReplayIssueRow seed = lifecycle(row("FIXED-2", "old"), ReplayIssueStatus.FIXED, "代码问题", "a", "s", "alice");
         seed = new ReplayIssueRow(seed.id(), seed.sourceSheet(), seed.groupName(), seed.sandbox(), seed.rowOrder(), seed.domain(), seed.sequenceNo(),
                 seed.batchNo(), seed.transactionCode(), seed.transactionName(), seed.issueLevel(), seed.registeredDate(), seed.fieldName(), seed.issueDescription(),
@@ -454,11 +454,20 @@ class ReplayIssueMergeServiceTest {
         merge.merge(workbook(row("FIXED-2", "new")), LocalDate.of(2026, 8, 5), ReplayIssueOperator.system());
         Map<String, Object> current = dao.list(new com.axonlink.ai.replay.dto.ReplayIssueQuery(10, 0, null, null, null, null, null)).get(0);
         assertEquals("新建", current.get("issue_status"));
-        assertEquals("代码问题", current.get("issue_type"));
-        assertEquals("a", current.get("initial_analysis"));
-        assertEquals("s", current.get("final_solution"));
-        assertEquals("alice", current.get("cooperation_person_username"));
+        assertEquals("", current.get("issue_type"));
+        assertEquals("", current.get("initial_analysis"));
+        assertEquals("", current.get("final_solution"));
+        assertEquals("", current.get("remark"));
+        org.junit.jupiter.api.Assertions.assertNull(current.get("cooperation_person_username"));
         org.junit.jupiter.api.Assertions.assertNull(current.get("defect_repair_date"));
+        var history = dao.findHistoryByIssueId(((Number) current.get("id")).longValue(), 10);
+        assertEquals(1, history.size());
+        assertEquals("已修复问题重新新建", history.get(0).operationType());
+        assertTrue(history.get(0).afterSnapshot().contains("\"issueType\":\"\""));
+        assertTrue(history.get(0).afterSnapshot().contains("\"initialAnalysis\":\"\""));
+        assertTrue(history.get(0).afterSnapshot().contains("\"finalSolution\":\"\""));
+        assertTrue(history.get(0).afterSnapshot().contains("\"remark\":\"\""));
+        assertTrue(history.get(0).afterSnapshot().contains("\"cooperationPersonUsername\":null"));
     }
 
     @Test

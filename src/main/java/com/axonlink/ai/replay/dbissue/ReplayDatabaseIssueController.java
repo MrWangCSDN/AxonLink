@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbissue;
 
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
+import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.common.R;
 import com.axonlink.security.UserPrincipalResolver;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,14 +26,23 @@ import static com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueDao.text;
 public class ReplayDatabaseIssueController {
     private static final Logger log=LoggerFactory.getLogger(ReplayDatabaseIssueController.class);
     private final ReplayDatabaseIssueDao dao;private final ReplayDatabaseIssueService service;private final UserPrincipalResolver resolver;
-    public ReplayDatabaseIssueController(ReplayDatabaseIssueDao dao,ReplayDatabaseIssueService service,UserPrincipalResolver resolver){this.dao=dao;this.service=service;this.resolver=resolver;}
+    private final DaoIndexAnalysisProperties properties;
+    public ReplayDatabaseIssueController(ReplayDatabaseIssueDao dao,ReplayDatabaseIssueService service,UserPrincipalResolver resolver,DaoIndexAnalysisProperties properties){this.dao=dao;this.service=service;this.resolver=resolver;this.properties=properties;}
+    @org.springframework.beans.factory.annotation.Autowired private ReplayDatabaseIssuePlanDateService planDates;
+    @PatchMapping("/{id}/planned-completion-date") public R<Map<String,Object>> updatePlanDate(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(planDates.update(id,body,actor(request)));}
+    @GetMapping("/{id}/planned-completion-date-changes") public R<Map<String,Object>> planDateChanges(@PathVariable long id){return R.ok(planDates.changes(id));}
     @GetMapping public R<Map<String,Object>> list(@RequestParam MultiValueMap<String,String> criteria,HttpServletRequest request){return R.ok(service.list(criteria,optionalActor(request)));}
     @PostMapping public R<Map<String,Object>> listJson(@RequestBody Map<String,Object> criteria,HttpServletRequest request){return R.ok(service.list(criteria,optionalActor(request)));}
     @GetMapping("/filter-options") public R<Map<String,Object>> filterOptions(@RequestParam String field,@RequestParam MultiValueMap<String,String> criteria){return R.ok(dao.filterOptions(field,criteria));}
     @PostMapping("/filter-options") public R<Map<String,Object>> filterOptionsJson(@RequestBody Map<String,Object> criteria){return R.ok(dao.filterOptions(text(criteria.get("field")),criteria));}
     @GetMapping("/options") public R<Map<String,Object>> options(HttpServletRequest request){return R.ok(service.options(optionalActor(request)));}
+    @GetMapping("/import-context") public R<Map<String,Object>> importContext(@RequestParam(required=false)String batchNo,HttpServletRequest request){actor(request);return R.ok(service.importContext(batchNo));}
     @PostMapping(value="/import",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
-    public R<Map<String,Object>> importFile(@RequestPart(value="file",required=false)MultipartFile file,@RequestParam(required=false)String batchNo,@RequestParam(required=false)String releaseAt,HttpServletRequest request){return R.ok(service.importFile(file,batchNo,actor(request),releaseAt));}
+    public ResponseEntity<R<Object>> importFile(@RequestPart(value="file",required=false)MultipartFile file,@RequestParam(required=false)String batchNo,@RequestParam(required=false)String releaseAt,@RequestParam(required=false)String registrationVersionNo,@RequestHeader(value="X-DII-Trigger-Token",required=false)String token,HttpServletRequest request){
+        String expected=properties.getBatchTrigger().getToken();
+        if(expected!=null&&!expected.trim().isEmpty()&&!expected.equals(token))return error(HttpStatus.UNAUTHORIZED,"口令错误");
+        return ResponseEntity.ok(R.ok(service.importFile(file,batchNo,actor(request),releaseAt,registrationVersionNo)));
+    }
     @PatchMapping("/{id}") public R<Map<String,Object>> update(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(service.update(id,body,actor(request)));}
     @PostMapping("/{id}/review") public R<Map<String,Object>> review(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(service.approve(id,body,actor(request)));}
     @GetMapping("/{id}/tracking") public R<List<Map<String,Object>>> tracking(@PathVariable long id){return R.ok(service.tracking(id));}
@@ -42,7 +52,7 @@ public class ReplayDatabaseIssueController {
         byte[] body=dao.writing(()->{
             try(var workbook=new XSSFWorkbook();var out=new ByteArrayOutputStream()){
                 var sheet=workbook.createSheet("数据库问题清单");
-                String[][] columns={{"tableName","表英文名/中文名"},{"domain","领域"},{"owner","开发负责人"},{"technologyOwnerDisplay","科技负责人"},{"issueLevel","问题级别"},{"fieldName","字段英文名"},{"differenceCount","差异笔数"},{"defectRepairDate","缺陷修复日期"},{"issueId","issue_id"},{"issueStatus","问题状态"},{"reviewStatusDisplay","审核状态"},{"issueType","问题类型"},{"cooperationPerson","需协同人"},{"initialAnalysis","初步问题分析"},{"finalSolution","最终处理方案"},{"remark","备注"},{"occurrenceBatches","出现批次"}};
+                String[][] columns={{"tableName","表英文名/中文名"},{"domain","领域"},{"owner","开发负责人"},{"technologyOwnerDisplay","科技负责人"},{"issueLevel","问题级别"},{"total528","528总量"},{"totalCcbs","ccbs总量"},{"only528Count","仅528存在数量"},{"onlyCcbsCount","仅ccbs存在数量"},{"fieldName","字段英文名"},{"differenceCount","差异笔数"},{"plannedCompletionDate","计划验证日期"},{"defectRepairDate","缺陷修复日期"},{"issueId","issue_id"},{"issueStatus","问题状态"},{"reviewStatusDisplay","审核状态"},{"issueType","问题类型"},{"cooperationPerson","需协同人"},{"initialAnalysis","初步问题分析"},{"finalSolution","最终处理方案"},{"remark","备注"},{"occurrenceBatches","出现批次"}};
                 var header=sheet.createRow(0);for(int i=0;i<columns.length;i++){header.createCell(i).setCellValue(columns[i][1]);sheet.setColumnWidth(i,(i==0||i==8?35:24)*256);}
                 var wrap=workbook.createCellStyle();wrap.setWrapText(true);
                 var query=new LinkedHashMap<String,Object>(criteria);query.put("limit",200);int offset=0,rowIndex=1;
@@ -66,7 +76,8 @@ public class ReplayDatabaseIssueController {
     private ReplayIssueOperator optionalActor(HttpServletRequest request){var resolved=resolver.resolve(request);if(resolved==null||text(resolved.principal).isBlank())return null;String username=resolved.user==null?resolved.principal:text(resolved.user.getUsername());if(username.isBlank())username=resolved.principal;String name=resolved.user==null?username:text(resolved.user.getRealName());return new ReplayIssueOperator(username,name.isBlank()?username:name);}
     @ExceptionHandler(AuthenticationCredentialsNotFoundException.class)public ResponseEntity<R<Object>> unauth(Exception e){return error(HttpStatus.UNAUTHORIZED,e.getMessage());}
     @ExceptionHandler(SecurityException.class)public ResponseEntity<R<Object>> forbidden(Exception e){return error(HttpStatus.FORBIDDEN,e.getMessage());}
-    @ExceptionHandler(ReplayDatabaseIssueConflictException.class)public ResponseEntity<R<Object>> conflict(Exception e){return error(HttpStatus.CONFLICT,e.getMessage());}
+    @ExceptionHandler({ReplayDatabaseIssueConflictException.class,ReplayDatabaseIssueService.RegistrationVersionConflictException.class})public ResponseEntity<R<Object>> conflict(Exception e){return error(HttpStatus.CONFLICT,e.getMessage());}
+    @ExceptionHandler(ReplayDatabaseIssueService.RegistrationVersionNotFoundException.class)public ResponseEntity<R<Object>> notFound(Exception e){return error(HttpStatus.NOT_FOUND,e.getMessage());}
     @ExceptionHandler({IllegalArgumentException.class,MethodArgumentTypeMismatchException.class,HttpMessageNotReadableException.class})public ResponseEntity<R<Object>> invalid(Exception e){return error(HttpStatus.BAD_REQUEST,e instanceof IllegalArgumentException?e.getMessage():"请求参数格式不正确");}
     @ExceptionHandler(Exception.class)public ResponseEntity<R<Object>> failure(Exception e){log.error("[replay-database-issues] operation failed",e);return error(HttpStatus.INTERNAL_SERVER_ERROR,"操作失败，请联系管理员检查日志");}
     private ResponseEntity<R<Object>> error(HttpStatus status,String message){return ResponseEntity.status(status).body(R.fail(status.value(),message,null));}

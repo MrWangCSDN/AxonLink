@@ -115,7 +115,7 @@ public class ReplayDatabaseComparisonVersionService {
             String domain = person == null ? "" : person.domain();
             String developer = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
             String username = person == null ? "" : person.developerUsernames();
-            String technologyOwner = person == null || person.technologyOwner() == null ? "" : person.technologyOwner().split("\\(", 2)[0];
+            String technologyOwner = person == null || person.technologyOwner() == null ? "" : person.technologyOwner();
             String technologyEmpNo = person == null ? "" : person.technologyOwnerEmpNos();
             return new ReplayDbCompareRegistration(
                     registration.id(), registration.schemaName(), registration.tableName(), registration.tableComment(),
