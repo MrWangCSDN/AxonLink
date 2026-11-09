@@ -44,6 +44,31 @@ public class ReplayReopenWorkflowDao {
 
     public ReplayReopenWorkflowDao(ReplayReopenDao eventDao) { this.jdbc = eventDao.jdbc(); }
 
+    public CountTransferRow findCountTransfer(String requestId) {
+        return jdbc.query("SELECT request_id,request_fingerprint,operator_username,source_owner_username,"
+                        + "target_owner_username,transfer_count,occurred_at FROM dii_replay_reopen_count_transfer WHERE request_id=?",
+                (r,n) -> new CountTransferRow(r.getString("request_id"),r.getString("request_fingerprint"),
+                        r.getString("operator_username"),r.getString("source_owner_username"),
+                        r.getString("target_owner_username"),r.getInt("transfer_count"),time(r,"occurred_at")),
+                requestId).stream().findFirst().orElse(null);
+    }
+
+    public void insertCountTransfer(CountTransferRequest request, String fingerprint, SysUser actor,
+                                    String batchNamesJson, LocalDateTime at) {
+        jdbc.update("INSERT INTO dii_replay_reopen_count_transfer"
+                        + " (request_id,request_fingerprint,operator_username,operator_name,source_owner_username,"
+                        + "target_owner_username,transfer_count,replay_type,batch_names,reason,event_ids,occurred_at)"
+                        + " VALUES (?,?,?,?,?,?,?,?,?,?,'[]',?)",
+                request.requestId(),fingerprint,actor.getUsername(),actor.getRealName(),request.sourceOwnerUsername(),
+                request.targetOwnerUsername(),request.count().intValueExact(),request.replayType(),batchNamesJson,request.reason(),at);
+    }
+
+    public void completeCountTransfer(String requestId, String sourceName, String targetName, String eventIdsJson) {
+        changed(jdbc.update("UPDATE dii_replay_reopen_count_transfer"
+                        + " SET source_owner_name=?,target_owner_name=?,event_ids=? WHERE request_id=?",
+                sourceName,targetName,eventIdsJson,requestId));
+    }
+
     public Policy findPolicy(String domain, boolean forUpdate) {
         return jdbc.query("SELECT * FROM " + POLICIES + " WHERE issue_domain=?" + (forUpdate ? " FOR UPDATE" : ""),
                 POLICY_MAPPER, domain).stream().findFirst().orElse(null);

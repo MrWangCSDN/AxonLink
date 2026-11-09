@@ -62,7 +62,7 @@ public class ReplayReopenPreviewServer {
             return jdbc;
         }
         @Bean SysUserDao users(JdbcTemplate jdbc){return new SysUserDao(jdbc);}
-        @Bean ReplayReopenProperties properties(){ReplayReopenProperties p=new ReplayReopenProperties();p.setEnabled(true);p.setAdminEmpNos(List.of("900"));return p;}
+        @Bean ReplayReopenProperties properties(){ReplayReopenProperties p=new ReplayReopenProperties();p.setEnabled(true);p.setAdminEmpNos(List.of("900"));p.setCountTransferEmpNos(List.of("900","101"));return p;}
         @Bean ReplayReopenDao events(JdbcTemplate jdbc){return new ReplayReopenDao(jdbc);}
         @Bean ReplayReopenWorkflowDao workflow(ReplayReopenDao events){return new ReplayReopenWorkflowDao(events);}
         @Bean ReplayTransactionPersonDao persons(JdbcTemplate jdbc){return new ReplayTransactionPersonDao(jdbc);}

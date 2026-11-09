@@ -64,6 +64,12 @@ public class ReplayReopenController {
         return R.ok(service.statistics(filter(query),operator(request)));
     }
 
+    @PostMapping("/count-transfers")
+    public R<CountTransferResult> transferCounts(@RequestBody(required=false) CountTransferRequest body,
+                                                HttpServletRequest request) {
+        return R.ok(service.transferCounts(body,operator(request)));
+    }
+
     @GetMapping("/appeals")
     public R<Page<AppealView>> appeals(@RequestParam MultiValueMap<String,String> query,HttpServletRequest request) {
         return R.ok(service.appeals(filter(query),query.getFirst("status"),bool(query,"onlyMine"),bool(query,"assignedToMe"),operator(request)));

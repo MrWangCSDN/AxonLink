@@ -120,6 +120,19 @@ public class ReplayReopenDao {
                 f.pageSize());
     }
 
+    public List<EventRow> countTransferCandidates(Filter filter, String sourceOwnerUsername, int count) {
+        Where scope = where(normalize(filter));
+        String ownerCondition = sourceOwnerUsername == null
+                ? " AND (e.current_owner_username IS NULL OR e.current_owner_username='')"
+                : " AND e.current_owner_username=?";
+        List<Object> args = new ArrayList<>(scope.args());
+        if (sourceOwnerUsername != null) args.add(sourceOwnerUsername);
+        args.add(count);
+        return jdbc.query("SELECT e.* FROM " + EVENTS + " e" + scope.sql() + ownerCondition
+                        + " AND e.pending_appeal_id IS NULL ORDER BY e.id LIMIT ?",
+                MAPPER, args.toArray());
+    }
+
     public Map<String, Long> issueCounts(List<String> keys) {
         Map<String, Long> result = new LinkedHashMap<>();
         if (keys == null || keys.isEmpty()) return result;
@@ -216,7 +229,7 @@ public class ReplayReopenDao {
                 source
                         + " JOIN dii_replay_reopen_audit a ON a.event_id=e.id"
                         + w.sql()
-                        + " AND a.action IN ('APPEAL_APPROVED','OWNER_ASSIGNED') AND"
+                        + " AND a.action IN ('APPEAL_APPROVED','OWNER_ASSIGNED','COUNT_TRANSFERRED') AND"
                         + " (COALESCE(a.from_owner_username,'')<>COALESCE(a.to_owner_username,''))";
         String inbound =
                 "SELECT e.batch_name,a.to_owner_username,a.to_owner_name,0,1,0,0,0,NULL"
