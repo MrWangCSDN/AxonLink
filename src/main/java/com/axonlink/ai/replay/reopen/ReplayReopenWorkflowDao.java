@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.reopen;
 
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
 import com.axonlink.ai.user.entity.SysUser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -15,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static com.axonlink.ai.replay.reopen.ReplayReopenDtos.*;
@@ -163,9 +165,19 @@ public class ReplayReopenWorkflowDao {
         where.append(" AND EXISTS (SELECT 1 FROM ").append(ITEMS).append(" i JOIN dii_replay_reopen_event e ON e.id=i.event_id WHERE i.appeal_id=a.id");
         add(where,args,"e.issue_key",scope.issueKey());
         add(where,args,"e.batch_name",scope.batchName());
+        if (scope.batchNames() != null && !scope.batchNames().isEmpty()) {
+            where.append(" AND e.batch_name IN (")
+                    .append(String.join(",",Collections.nCopies(scope.batchNames().size(),"?")))
+                    .append(')');
+            args.addAll(scope.batchNames());
+        }
         add(where,args,"e.issue_domain",scope.issueDomain());
         add(where,args,"e.current_owner_username",scope.ownerUsername());
-        if (!"ALL".equals(scope.replayType())) add(where,args,"e.replay_type",scope.replayType());
+        if (scope.replayType() != null && !scope.replayType().isBlank() && !"ALL".equals(scope.replayType())) {
+            add(where,args,"e.replay_type",scope.replayType());
+            where.append(" AND e.batch_name LIKE ?");
+            args.add(ReplayIssueReplayType.parse(scope.replayType()).batchPrefix()+"%");
+        }
         if (scope.eventId() != null) { where.append(" AND e.id=?"); args.add(scope.eventId()); }
         if (scope.sourceRoundId() != null) { where.append(" AND e.source_round_id=?"); args.add(scope.sourceRoundId()); }
         where.append(')');

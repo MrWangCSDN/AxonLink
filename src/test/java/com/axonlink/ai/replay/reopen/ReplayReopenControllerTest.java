@@ -143,6 +143,103 @@ class ReplayReopenControllerTest {
     }
 
     @Test
+    void multipleBatchSelectionsScopeEventsStatisticsAndAppealsToTheirUnion() throws Exception {
+        ReplayReopenTestSupport.event(jdbc,2,"ISS-B","RPT20261023-01","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,3,"ISS-A","RPT20261024-01","deva","开发甲","公共组");
+        login("deva","LDAP","deva");
+        String selected = json.writeValueAsString(Map.of("requestId",UUID.randomUUID().toString(),"eventIds",List.of(1,2),
+                "expectedVersions",Map.of("1",1,"2",1),"kind","APPEAL","suggestedOwnerUsername","devb",
+                "reason","所选两批修复遗漏申请调整","evidence","两批回放日志和提交"));
+        String appealResponse = mvc.perform(post(BASE+"/appeals").contentType(MediaType.APPLICATION_JSON).content(selected))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long appealId = json.readTree(appealResponse).path("data").path("id").asLong();
+        String excluded = json.writeValueAsString(Map.of("requestId",UUID.randomUUID().toString(),"eventIds",List.of(3),
+                "expectedVersions",Map.of("3",1),"kind","APPEAL","suggestedOwnerUsername","devb",
+                "reason","其他批次申请调整","evidence","其他批次回放日志和提交"));
+        mvc.perform(post(BASE+"/appeals").contentType(MediaType.APPLICATION_JSON).content(excluded))
+                .andExpect(status().isOk());
+
+        mvc.perform(get(BASE+"/events").param("batchNames","RPT20261022-01","RPT20261023-01").param("pageSize","1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(1));
+        mvc.perform(get(BASE+"/statistics").param("batchNames"," RPT20261022-01 ","RPT20261023-01","RPT20261023-01","").param("pageSize","1"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(2))
+                .andExpect(jsonPath("$.data.distinctIssues").value(2))
+                .andExpect(jsonPath("$.data.pendingEvents").value(2))
+                .andExpect(jsonPath("$.data.people[0].defaultCount").value(2))
+                .andExpect(jsonPath("$.data.people[0].currentCount").value(2))
+                .andExpect(jsonPath("$.data.people[0].pendingCount").value(2))
+                .andExpect(jsonPath("$.data.batches.length()").value(2))
+                .andExpect(jsonPath("$.data.batches[0].totalEvents").value(1))
+                .andExpect(jsonPath("$.data.batches[1].totalEvents").value(1));
+        mvc.perform(get(BASE+"/appeals").param("batchNames","RPT20261022-01","RPT20261023-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].items.length()").value(2));
+        mvc.perform(get(BASE+"/statistics").param("batchName","RPT20261022-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(1));
+        mvc.perform(get(BASE+"/statistics").param("batchNames","RPTmissing') OR 1=1 --"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(0));
+        mvc.perform(get(BASE+"/statistics").param("batchName","RPT20261024-01").param("batchNames","RPT20261022-01","RPT20261023-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(0));
+        login("leader","LDAP","leader");
+        mvc.perform(post(BASE+"/appeals/"+appealId+"/decisions").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedVersion\":1,\"decision\":\"APPROVE\",\"finalOwnerUsername\":\"devb\",\"reason\":\"核查两批后同意调整\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(get(BASE+"/statistics").param("batchNames","RPT20261022-01","RPT20261023-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(2))
+                .andExpect(jsonPath("$.data.pendingEvents").value(0))
+                .andExpect(jsonPath("$.data.people[0].username").value("deva"))
+                .andExpect(jsonPath("$.data.people[0].adjustedOut").value(2))
+                .andExpect(jsonPath("$.data.people[1].username").value("devb"))
+                .andExpect(jsonPath("$.data.people[1].adjustedIn").value(2))
+                .andExpect(jsonPath("$.data.people[1].currentCount").value(2));
+        login("deva","LDAP","deva");
+        mvc.perform(get(BASE+"/statistics").param("onlyMine","true").param("batchNames","RPT20261022-01","RPT20261023-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(0));
+    }
+
+    @Test
+    void transactionTypesApplyMatchingBatchPrefixesToChoicesAndAllBatchStatistics() throws Exception {
+        ReplayReopenTestSupport.event(jdbc,2,"ISS-B","DZ20261023-01","devb","开发乙","公共组");
+        ReplayReopenTestSupport.event(jdbc,3,"ISS-A","LEGACY-BATCH","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,4,"ISS-B","DZ20261024-WRONG-TYPE","deva","开发甲","公共组");
+        ReplayReopenTestSupport.event(jdbc,5,"ISS-B","RPT20261025-WRONG-TYPE","devb","开发乙","公共组");
+        jdbc.update("UPDATE dii_replay_reopen_event SET replay_type='DZ' WHERE id IN (2,5)");
+
+        mvc.perform(get(BASE+"/filters").param("replayType","QUERY"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batchNames.length()").value(1))
+                .andExpect(jsonPath("$.data.batchNames[0]").value("RPT20261022-01"));
+        mvc.perform(get(BASE+"/filters").param("replayType","DZ"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batchNames.length()").value(1))
+                .andExpect(jsonPath("$.data.batchNames[0]").value("DZ20261023-01"));
+        mvc.perform(get(BASE+"/filters").param("replayType","ALL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.batchNames.length()").value(5));
+        mvc.perform(get(BASE+"/statistics").param("replayType","QUERY").param("batchNames",""))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(1));
+        mvc.perform(get(BASE+"/statistics").param("replayType","DZ"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(1));
+        mvc.perform(get(BASE+"/statistics").param("replayType","ALL").param("batchNames","RPT20261022-01","DZ20261023-01"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(2));
+        mvc.perform(get(BASE+"/statistics").param("replayType","ALL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalEvents").value(5));
+    }
+
+    @Test
+    void crossTypeAndOversizedBatchSelectionsReturnStructuredValidationErrors() throws Exception {
+        for (String path : List.of("/events","/statistics","/appeals")) {
+            mvc.perform(get(BASE+path).param("replayType","QUERY").param("batchNames","RPT20261022-01","DZ20261023-01"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.data.errorCode").value("VALIDATION"));
+            mvc.perform(get(BASE+path).param("replayType","DZ").param("batchNames","RPT20261022-01"))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.data.errorCode").value("VALIDATION"));
+            mvc.perform(get(BASE+path).param("batchNames","RPT"+"x".repeat(126)))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.data.errorCode").value("VALIDATION"));
+        }
+        String[] tooMany = java.util.stream.IntStream.range(0,201).mapToObj(i -> "RPT"+i).toArray(String[]::new);
+        mvc.perform(get(BASE+"/statistics").param("batchNames",tooMany))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.data.errorCode").value("VALIDATION"));
+    }
+
+    @Test
     void disabledFeatureReturnsReadablePermissionsAnd503ForData() throws Exception {
         properties.setEnabled(false);
         mvc.perform(get(BASE+"/permissions")).andExpect(status().isOk()).andExpect(jsonPath("$.data.enabled").value(false));

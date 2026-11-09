@@ -98,7 +98,7 @@ public class ReplayReopenService {
         String applicant=onlyMine||scope.onlyMine()?actor.getUsername():null;
         String leader=assignedToMe?actor.getUsername():null;
         Filter appealScope=new Filter(scope.issueKey(),scope.batchName(),scope.issueDomain(),scope.replayType(),
-                filter==null?null:optional(filter.ownerUsername(),128),scope.eventId(),onlyMine||scope.onlyMine(),scope.page(),scope.pageSize(),scope.sourceRoundId());
+                filter==null?null:optional(filter.ownerUsername(),128),scope.eventId(),onlyMine||scope.onlyMine(),scope.page(),scope.pageSize(),scope.sourceRoundId(),scope.batchNames());
         Page<AppealRow> page=store.appeals(appealScope,normalizedStatus,applicant,leader);
         return new Page<>(page.items().stream().map(a->view(a,operator)).toList(),page.total(),page.page(),page.pageSize());
     }
@@ -376,8 +376,22 @@ public class ReplayReopenService {
         SysUser actor=f.onlyMine()?permissions.active(operator):null;
         if(f.eventId()!=null&&f.eventId()<=0) throw ReplayReopenException.invalid("重开记录编号不合法");
         if(f.sourceRoundId()!=null&&f.sourceRoundId()<=0) throw ReplayReopenException.invalid("来源导入轮次必须是正整数");
-        return new Filter(optional(f.issueKey(),1024),optional(f.batchName(),128),optional(f.issueDomain(),64),replayType(f.replayType()),
-                f.onlyMine()?(actor==null?null:actor.getUsername()):optional(f.ownerUsername(),128),f.eventId(),f.onlyMine(),Math.max(1,f.page()),f.pageSize()<=0?20:Math.min(200,f.pageSize()),f.sourceRoundId());
+        String type = replayType(f.replayType());
+        String batchName = optional(f.batchName(),128);
+        List<String> requestedBatches = f.batchNames() == null ? List.of() : f.batchNames();
+        if (requestedBatches.size() > 200) throw ReplayReopenException.invalid("每次最多选择200个发生批次");
+        List<String> batchNames = requestedBatches.stream()
+                .map(batch -> optional(batch,128))
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        String prefix = ReplayIssueReplayType.parse(type).batchPrefix();
+        if (prefix != null && ((batchName != null && !batchName.startsWith(prefix))
+                || batchNames.stream().anyMatch(batch -> !batch.startsWith(prefix)))) {
+            throw ReplayReopenException.invalid("所选交易类型仅支持"+prefix+"开头的发生批次");
+        }
+        return new Filter(optional(f.issueKey(),1024),batchName,optional(f.issueDomain(),64),type,
+                f.onlyMine()?(actor==null?null:actor.getUsername()):optional(f.ownerUsername(),128),f.eventId(),f.onlyMine(),Math.max(1,f.page()),f.pageSize()<=0?20:Math.min(200,f.pageSize()),f.sourceRoundId(),batchNames);
     }
 
     private List<String> issueDomains() {

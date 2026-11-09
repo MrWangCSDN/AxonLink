@@ -121,7 +121,7 @@ public class ReplayReopenController {
 
     private static Filter filter(MultiValueMap<String,String> query) {
         return new Filter(query.getFirst("issueKey"),query.getFirst("batchName"),query.getFirst("issueDomain"),query.getFirst("replayType"),
-                query.getFirst("ownerUsername"),number(query,"eventId"),bool(query,"onlyMine"),integer(query,"page",1),integer(query,"pageSize",20),number(query,"sourceRoundId"));
+                query.getFirst("ownerUsername"),number(query,"eventId"),bool(query,"onlyMine"),integer(query,"page",1),integer(query,"pageSize",20),number(query,"sourceRoundId"),query.get("batchNames"));
     }
 
     private static int integer(MultiValueMap<String,String> query,String name,int fallback) {

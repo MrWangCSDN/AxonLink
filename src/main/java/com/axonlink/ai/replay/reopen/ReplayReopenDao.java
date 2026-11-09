@@ -2,6 +2,8 @@ package com.axonlink.ai.replay.reopen;
 
 import static com.axonlink.ai.replay.reopen.ReplayReopenDtos.*;
 
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
+
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -318,7 +320,8 @@ public class ReplayReopenDao {
                 f.onlyMine(),
                 Math.max(1, f.page()),
                 f.pageSize() <= 0 ? 20 : Math.min(200, f.pageSize()),
-                f.sourceRoundId());
+                f.sourceRoundId(),
+                f.batchNames());
     }
 
     private record Where(String sql, List<Object> args) {}
@@ -328,9 +331,18 @@ public class ReplayReopenDao {
         List<Object> args = new ArrayList<>();
         add(sql, args, "e.issue_key", f.issueKey());
         add(sql, args, "e.batch_name", f.batchName());
+        if (f.batchNames() != null && !f.batchNames().isEmpty()) {
+            sql.append(" AND e.batch_name IN (")
+                    .append(String.join(",", Collections.nCopies(f.batchNames().size(), "?")))
+                    .append(')');
+            args.addAll(f.batchNames());
+        }
         add(sql, args, "e.issue_domain", f.issueDomain());
-        if (f.replayType() != null && !f.replayType().isBlank() && !"ALL".equals(f.replayType()))
+        if (f.replayType() != null && !f.replayType().isBlank() && !"ALL".equals(f.replayType())) {
             add(sql, args, "e.replay_type", f.replayType());
+            sql.append(" AND e.batch_name LIKE ?");
+            args.add(ReplayIssueReplayType.parse(f.replayType()).batchPrefix() + "%");
+        }
         add(sql, args, "e.current_owner_username", f.ownerUsername());
         if (f.onlyMine() && (f.ownerUsername() == null || f.ownerUsername().isBlank()))
             sql.append(" AND 1=0");

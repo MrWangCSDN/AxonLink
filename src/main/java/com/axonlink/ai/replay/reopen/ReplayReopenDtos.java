@@ -17,7 +17,15 @@ public final class ReplayReopenDtos {
             boolean onlyMine,
             int page,
             int pageSize,
-            Long sourceRoundId) {
+            Long sourceRoundId,
+            List<String> batchNames) {
+        public Filter(String issueKey, String batchName, String issueDomain, String replayType,
+                      String ownerUsername, Long eventId, boolean onlyMine, int page, int pageSize,
+                      Long sourceRoundId) {
+            this(issueKey, batchName, issueDomain, replayType, ownerUsername, eventId, onlyMine,
+                    page, pageSize, sourceRoundId, List.of());
+        }
+
         public Filter(String issueKey, String batchName, String issueDomain, String replayType,
                       String ownerUsername, Long eventId, boolean onlyMine, int page, int pageSize) {
             this(issueKey, batchName, issueDomain, replayType, ownerUsername, eventId, onlyMine,
