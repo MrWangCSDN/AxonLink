@@ -395,6 +395,33 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void returnsDomainMappingErrorsWhenGeneratingVersion() throws Exception {
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        ReplayDbCompareVersionGateError gateError = new ReplayDbCompareVersionGateError(
+                "base_schema", "kdpb_cb_corp_cptl_ermtbk", "企业资本表",
+                null, null, null, null, null,
+                ReplayDbCompareMetadataStatus.valueOf("DOMAIN_MAPPING_MISSING"),
+                List.of(), "领域无法映射：");
+        when(versionService.generate(eq("secret"), eq("secret"), any()))
+                .thenThrow(new ReplayDatabaseComparisonGenerationException(
+                        HttpStatus.UNPROCESSABLE_ENTITY,
+                        "VERSION_GATE_BLOCKED",
+                        "1 张表未通过版本生成门禁",
+                        Map.of("errors", List.of(gateError))));
+
+        mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/versions/generate")
+                        .header("X-DII-Trigger-Token", "secret"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value(422))
+                .andExpect(jsonPath("$.data.errorCode").value("VERSION_GATE_BLOCKED"))
+                .andExpect(jsonPath("$.data.errors.length()").value(1))
+                .andExpect(jsonPath("$.data.errors[0].tableName").value("kdpb_cb_corp_cptl_ermtbk"))
+                .andExpect(jsonPath("$.data.errors[0].status").value("DOMAIN_MAPPING_MISSING"))
+                .andExpect(jsonPath("$.data.errors[0].missingFieldNames").isEmpty())
+                .andExpect(jsonPath("$.data.errors[0].reason").value("领域无法映射："));
+    }
+
+    @Test
     void allowsTokenOnlyVersionGenerationAsSystem() throws Exception {
         when(resolver.resolve(any())).thenReturn(new UserPrincipalResolver.Resolved("UNKNOWN", "dii-token", null));
         ReplayDbCompareVersionSummary summary = new ReplayDbCompareVersionSummary(

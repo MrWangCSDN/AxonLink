@@ -224,6 +224,29 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         assertEquals(200, count(sql, "INSERT INTO tss_bcomp_field"));
     }
 
+
+    @Test
+    void blankHistoricalDomainsReturnReadableValidationErrorsForBothTargets() {
+        for (String domain : java.util.Arrays.asList(null, "", "   ")) {
+            List<ReplayDbCompareVersionTableItem> snapshot = List.of(table(
+                    "acct_master", "账户主表", domain, field("acct_no", "账号", true, 1)));
+            ReplayDatabaseComparisonGenerationException legacy = assertThrows(
+                    ReplayDatabaseComparisonGenerationException.class,
+                    () -> generator.generate("v1", snapshot));
+            ReplayDatabaseComparisonGenerationException current = assertThrows(
+                    ReplayDatabaseComparisonGenerationException.class,
+                    () -> generator.generateNew("v1", snapshot));
+            for (var error : List.of(legacy, current)) {
+                assertEquals("CONFIG_SCRIPT_VALIDATION_FAILED", error.errorCode());
+                List<?> errors = (List<?>) ((Map<?, ?>) error.data()).get("errors");
+                var failure = (ReplayDbCompareConfigScriptValidationError) errors.get(0);
+                assertEquals("acct_master", failure.tableName());
+                assertTrue(failure.reason().contains("领域为空"));
+                assertTrue(failure.reason().contains("人员清单"));
+            }
+        }
+    }
+
     private ReplayDbCompareVersionTableItem table(
             String tableName,
             String tableComment,

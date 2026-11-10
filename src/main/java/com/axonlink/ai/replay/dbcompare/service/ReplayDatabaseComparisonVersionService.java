@@ -277,6 +277,12 @@ public class ReplayDatabaseComparisonVersionService {
         Map<String, ReplayBaseColumnOption> columns = new LinkedHashMap<>();
         metadata.columns().forEach(column -> columns.put(normalize(column.columnName()), column));
         int originalErrorCount = errors.size();
+        String domainError = ReplayDatabaseComparisonConfigScriptGenerator.domainMappingError(
+                registration.domainName());
+        if (domainError != null) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.DOMAIN_MAPPING_MISSING,
+                    List.of(), domainError));
+        }
         List<String> missing = registration.fields().stream()
                 .map(ReplayDbCompareField::columnName)
                 .filter(name -> !columns.containsKey(normalize(name)))

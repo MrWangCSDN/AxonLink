@@ -19,6 +19,9 @@ import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
@@ -491,6 +494,112 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals("20260914-110701", generated.versionNo());
         assertEquals(3, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_db_compare_version", Integer.class));
+    }
+
+
+    @Test
+    void missingPersonnelMappingBlocksGenerationBeforeAnyVersionSnapshotIsWritten() {
+        insertRegistration("kdpb_cb_corp_cptl_ermtbk", "对公账户开户登记簿",
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals("VERSION_GATE_BLOCKED", error.errorCode());
+        assertEquals(422, error.status().value());
+        List<ReplayDbCompareVersionGateError> errors = gateErrors(error);
+        assertEquals(1, errors.size());
+        assertEquals(registration.tableName(), errors.get(0).tableName());
+        assertEquals("DOMAIN_MAPPING_MISSING", errors.get(0).status().name());
+        assertTrue(errors.get(0).reason().contains("领域为空"));
+        assertTrue(errors.get(0).reason().contains("人员清单"));
+        assertNoVersionSnapshots();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   ", "未知组"})
+    void invalidPersonnelDomainBlocksVersionAndAllSnapshots(String domain) {
+        insertRegistration("acct_master", "账户主表", List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                registration.tableName(), domain);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals("VERSION_GATE_BLOCKED", error.errorCode());
+        assertEquals("DOMAIN_MAPPING_MISSING", gateErrors(error).get(0).status().name());
+        assertTrue(gateErrors(error).get(0).reason().contains("领域"));
+        assertNoVersionSnapshots();
+    }
+
+    @Test
+    void aggregatesAllUnmappedTablesWithoutPersistingTheValidSubset() {
+        List<ReplayDbCompareField> fields = List.of(field("id", "标识", 1, true, 1));
+        insertRegistration("missing_a", "缺少映射甲", fields);
+        insertRegistration("missing_b", "缺少映射乙", fields);
+        insertRegistration("valid_table", "有效表", fields);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES ('valid_table', '存款组', CURRENT_TIMESTAMP)");
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        Map<String, ReplayBaseMetadataSnapshot> metadata = new LinkedHashMap<>();
+        registrationDao.findAllActiveWithFields().forEach(item -> metadata.put(item.tableName(), metadataFor(item)));
+        when(metadataService.inspectTables(any())).thenReturn(metadata);
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals(List.of("missing_a", "missing_b"), gateErrors(error).stream()
+                .map(ReplayDbCompareVersionGateError::tableName).toList());
+        assertTrue(gateErrors(error).stream().allMatch(item ->
+                "DOMAIN_MAPPING_MISSING".equals(item.status().name())));
+        assertNoVersionSnapshots();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"存款组,dept", "贷款组,loan", "公共组,comm", "结算组,sett", "平台组,platform"})
+    void supportedDomainPassesVersionGateAndBothSqlTargets(String domain, String module) {
+        insertRegistration("acct_master", "账户主表", List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                registration.tableName(), domain);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDbCompareVersionSummary generated = service.generate("secret", "secret", operator());
+        var snapshot = versionDao.findCompleteSnapshot(versionDao.findStoredVersion(generated.versionNo()).id());
+        assertEquals(domain, snapshot.get(0).domainName());
+        ReplayDatabaseComparisonConfigScriptGenerator generator = new ReplayDatabaseComparisonConfigScriptGenerator();
+        for (var script : List.of(generator.generate(generated.versionNo(), snapshot),
+                generator.generateNew(generated.versionNo(), snapshot))) {
+            assertTrue(new String(script.sqlContent(), java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("'" + module + "'"));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<ReplayDbCompareVersionGateError> gateErrors(ReplayDatabaseComparisonGenerationException error) {
+        return (List<ReplayDbCompareVersionGateError>) ((Map<?, ?>) error.data()).get("errors");
+    }
+
+    private void assertNoVersionSnapshots() {
+        for (String table : List.of("dii_replay_db_compare_version", "dii_replay_db_compare_version_table",
+                "dii_replay_db_compare_version_field")) {
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class), table);
+        }
     }
 
     private void insertRegistration(String tableName, String tableComment, List<ReplayDbCompareField> fields) {

@@ -94,8 +94,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             if (newTarget && table.reviserUsername() != null && table.reviserUsername().trim().length() > 100) {
                 errors.add(error(tableName, null, "修订人账号不能超过100个字符"));
             }
-            if (!DOMAIN_MODULES.containsKey(table.domainName())) {
-                errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
+            String domainError = domainMappingError(table.domainName());
+            if (domainError != null) {
+                errors.add(error(tableName, null, domainError));
             }
             if (!validIdentifier(tableName)) {
                 errors.add(error(tableName, null, "表英文名不是合法数据库标识符"));
@@ -131,6 +132,14 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     errors.size() + " 项配置无法生成生产脚本",
                     Map.of("errors", List.copyOf(errors)));
         }
+    }
+
+    /** Shared by version generation and both SQL targets to keep domain eligibility consistent. */
+    static String domainMappingError(String domainName) {
+        if (domainName == null || domainName.isBlank()) {
+            return "领域为空，缺少生产模块映射，请先维护表级人员清单中的领域";
+        }
+        return DOMAIN_MODULES.containsKey(domainName) ? null : "领域无法映射：" + domainName;
     }
 
     private void validateLimitedTable(
