@@ -19,6 +19,7 @@ import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class FlowtranChainExportServiceImplTest {
@@ -33,7 +34,7 @@ class FlowtranChainExportServiceImplTest {
     }
 
     @Test
-    void exportsFourSheetsSortedByTransactionAndNodeCode() throws Exception {
+    void exportsFiveSheetsSortedByTransactionAndNodeCode() throws Exception {
         flowtranService.setTransactions(List.of(
                 transaction("TX002", "交易二"),
                 transaction("TX001", "交易一")));
@@ -50,7 +51,7 @@ class FlowtranChainExportServiceImplTest {
         FlowtranChainExportService.ExportFile file = exportService.exportDomain("public");
 
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.getContent()))) {
-            assertEquals(List.of("交易清单", "服务清单", "构件清单", "数据库表清单"),
+            assertEquals(List.of("交易清单", "服务清单", "构件清单", "数据库表清单", "DAO方法清单"),
                     IntStream.range(0, workbook.getNumberOfSheets())
                             .mapToObj(i -> workbook.getSheetAt(i).getSheetName()).toList());
 
@@ -129,6 +130,128 @@ class FlowtranChainExportServiceImplTest {
         }
     }
 
+    @Test
+    void exportsEachCalledDaoMethodInItsOwnRowWithMatchingTableMetadata() throws Exception {
+        flowtranService.setTransactions(List.of(transaction("TX001", "交易一")));
+        Map<String, Object> specialDao = new LinkedHashMap<>(dao("TAB-A", "readA"));
+        specialDao.put("code", "com.example.SpecialDao#readA");
+        specialDao.put("daoClassName", "com.example.SpecialDao");
+        specialDao.put("domainKey", "other");
+        specialDao.put("domain", "其他领域");
+        Map<String, Object> writeDao = new LinkedHashMap<>(dao("TAB-A", "writeA"));
+        writeDao.put("name", "displayNameOnly");
+        flowtranService.setChain("TX001", chain("TX001", "交易一", List.of(), List.of(),
+                List.of(table("TAB-A", "表A"), table("TAB-B", "表B"), table("TAB-A", "表A")),
+                List.of(writeDao, dao("TAB-A", " readA "), dao("TAB-A", "readA"),
+                        dao("TAB-B", "readB"), specialDao,
+                        Map.of("tableCode", "TAB-A", "methodName", " ", "name", "fallbackA", "daoClassName", "com.example.PublicDao"),
+                        Map.of("tableCode", "TAB-A", "methodName", " ", "name", " "))));
+
+        var file = exportService.exportDomain("public");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.getContent()))) {
+            Sheet sheet = workbook.getSheet("DAO方法清单");
+            assertNotNull(sheet);
+            assertEquals(List.of("交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名", "DAO方法名"),
+                    IntStream.range(0, sheet.getRow(0).getLastCellNum()).mapToObj(index -> text(sheet, 0, index)).toList());
+            assertEquals(6, sheet.getPhysicalNumberOfRows());
+            assertEquals("TX001", text(sheet, 1, 0));
+            assertEquals("TAB-A", text(sheet, 1, 2));
+            assertEquals("表A", text(sheet, 1, 3));
+            assertEquals("public", text(sheet, 1, 4));
+            assertEquals("公共领域", text(sheet, 1, 5));
+            assertEquals("public-online", text(sheet, 1, 6));
+            assertEquals("com.example.PublicDao", text(sheet, 1, 7));
+            assertEquals(List.of("fallbackA", "readA", "writeA", "readA", "readB"),
+                    IntStream.rangeClosed(1, 5).mapToObj(index -> text(sheet, index, 8)).toList());
+            assertEquals("com.example.SpecialDao", text(sheet, 4, 7));
+            assertEquals("public", text(sheet, 4, 4));
+            assertEquals("公共领域", text(sheet, 4, 5));
+            assertEquals("TAB-B", text(sheet, 5, 2));
+            assertEquals("A1:I6", workbook.getSheet("DAO方法清单").getCTWorksheet().getAutoFilter().getRef());
+            assertEquals(8, workbook.getSheet("数据库表清单").getRow(0).getLastCellNum());
+            assertEquals(3, workbook.getSheet("数据库表清单").getPhysicalNumberOfRows());
+        }
+    }
+
+    @Test
+    void keepsSharedDaoMethodsAndTableMatchesSeparateAcrossTransactions() throws Exception {
+        flowtranService.setTransactions(List.of(transaction("TX001", "交易一"), transaction("TX002", "交易二")));
+        flowtranService.setChain("TX001", chain("TX001", "交易一", List.of(), List.of(), List.of(table("TAB-A", "表A")),
+                List.of(dao("TAB-A", "sharedRead"), dao("TAB-A", "readA"))));
+        flowtranService.setChain("TX002", chain("TX002", "交易二", List.of(), List.of(), List.of(table("TAB-A", "表A")),
+                List.of(dao("TAB-A", "sharedRead"), dao("TAB-A", "writeA"))));
+
+        var file = exportService.exportDomain("public");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.getContent()))) {
+            Sheet sheet = workbook.getSheet("DAO方法清单");
+            assertNotNull(sheet);
+            assertEquals(5, sheet.getPhysicalNumberOfRows());
+            assertEquals(List.of("TX001", "TX001", "TX002", "TX002"),
+                    IntStream.rangeClosed(1, 4).mapToObj(index -> text(sheet, index, 0)).toList());
+            assertEquals(List.of("readA", "sharedRead", "sharedRead", "writeA"),
+                    IntStream.rangeClosed(1, 4).mapToObj(index -> text(sheet, index, 8)).toList());
+        }
+    }
+
+    @Test
+    void exportsDaoSheetHeadersWhenLegacyChainHasNoDaoLayer() throws Exception {
+        flowtranService.setTransactions(List.of(transaction("TX001", "交易一")));
+        Map<String, Object> result = chain("TX001", "交易一", List.of(), List.of(), List.of(table("TAB-A", "表A")));
+        ((Map<String, Object>) result.get("chain")).put("data", Map.of("table", List.of(table("TAB-A", "表A"))));
+        flowtranService.setChain("TX001", result);
+
+        var file = exportService.exportDomain("public");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.getContent()))) {
+            Sheet sheet = workbook.getSheet("DAO方法清单");
+            assertNotNull(sheet);
+            assertEquals(1, sheet.getPhysicalNumberOfRows());
+            assertEquals(9, sheet.getRow(0).getLastCellNum());
+            assertEquals("TAB-A", text(workbook.getSheet("数据库表清单"), 1, 2));
+        }
+    }
+
+    @Test
+    void preservesNamedDaoMethodsWhenTableMetadataOrNodeIdentifiersAreMissing() throws Exception {
+        flowtranService.setTransactions(List.of(transaction("TX001", "交易一")));
+        Map<String, Object> legacyTable = Map.of("tableId", "LEGACY-TAB", "tableLongname", "旧表", "domainKey", "legacy",
+                "domain", "旧领域", "projectName", "legacy-project", "daoClassName", "com.example.LegacyDao");
+        Map<String, Object> legacyDao = Map.of("tableCode", "LEGACY-TAB", "name", "legacyRead");
+        flowtranService.setChain("TX001", chain("TX001", "交易一", List.of(), List.of(), List.of(legacyTable),
+                List.of(legacyDao, legacyDao, dao("MISSING-TABLE", "unmappedRead"),
+                        Map.of("methodName", "noTableMethod", "daoClassName", "com.example.OtherDao"))));
+
+        var file = exportService.exportDomain("public");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file.getContent()))) {
+            Sheet sheet = workbook.getSheet("DAO方法清单");
+            assertNotNull(sheet);
+            assertEquals(4, sheet.getPhysicalNumberOfRows());
+            assertEquals("noTableMethod", text(sheet, 1, 8));
+            assertEquals("", text(sheet, 1, 2));
+            assertEquals("", text(sheet, 1, 6));
+            assertEquals("LEGACY-TAB", text(sheet, 2, 2));
+            assertEquals("旧表", text(sheet, 2, 3));
+            assertEquals("legacy", text(sheet, 2, 4));
+            assertEquals("legacy-project", text(sheet, 2, 6));
+            assertEquals("com.example.LegacyDao", text(sheet, 2, 7));
+            assertEquals("legacyRead", text(sheet, 2, 8));
+            assertEquals("MISSING-TABLE", text(sheet, 3, 2));
+            assertEquals("", text(sheet, 3, 3));
+            assertEquals("public", text(sheet, 3, 4));
+            assertEquals("", text(sheet, 3, 6));
+            assertEquals("unmappedRead", text(sheet, 3, 8));
+        }
+    }
+
+    private static Map<String, Object> dao(String tableCode, String methodName) {
+        return Map.of("code", "com.example.PublicDao#" + methodName.trim(),
+                "methodName", methodName, "name", methodName, "tableCode", tableCode,
+                "daoClassName", "com.example.PublicDao", "domainKey", "public", "domain", "公共领域");
+    }
+
     private static String text(Sheet sheet, int rowIndex, int cellIndex) {
         return sheet.getRow(rowIndex).getCell(cellIndex).getStringCellValue();
     }
@@ -148,10 +271,19 @@ class FlowtranChainExportServiceImplTest {
                                              List<Map<String, Object>> services,
                                              List<Map<String, Object>> components,
                                              List<Map<String, Object>> tables) {
+        return chain(id, name, services, components, tables, List.of());
+    }
+
+    private static Map<String, Object> chain(String id,
+                                             String name,
+                                             List<Map<String, Object>> services,
+                                             List<Map<String, Object>> components,
+                                             List<Map<String, Object>> tables,
+                                             List<Map<String, Object>> daos) {
         Map<String, Object> chain = new LinkedHashMap<>();
         chain.put("service", services);
         chain.put("component", components);
-        chain.put("data", Map.of("table", tables, "dao", List.of()));
+        chain.put("data", Map.of("table", tables, "dao", daos));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", id);

@@ -43,6 +43,9 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
     private static final String[] TABLE_HEADERS = {
             "交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名"
     };
+    private static final String[] DAO_HEADERS = {
+            "交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名", "DAO方法名"
+    };
 
     private final FlowtranService flowtranService;
 
@@ -69,6 +72,7 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
         Map<String, NodeRow> serviceRows = new TreeMap<>();
         Map<String, NodeRow> componentRows = new TreeMap<>();
         Map<String, TableRow> tableRows = new TreeMap<>();
+        Map<String, DaoRow> daoRows = new LinkedHashMap<>();
         String domainName = resolveDomainName(normalizedDomain);
 
         for (FlowtranTransaction transaction : transactions) {
@@ -89,9 +93,15 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
                     componentRows.putIfAbsent(row.key(), row);
                 }
                 Map<String, Object> data = map(chain.get("data"));
+                Map<String, TableRow> transactionTables = new LinkedHashMap<>();
                 for (Map<String, Object> node : maps(data.get("table"))) {
                     TableRow row = TableRow.from(transaction, node);
                     tableRows.putIfAbsent(row.key(), row);
+                    transactionTables.putIfAbsent(row.code, row);
+                }
+                for (Map<String, Object> node : maps(data.get("dao"))) {
+                    DaoRow row = DaoRow.from(transaction, node, transactionTables);
+                    if (!row.methodName.isBlank()) daoRows.putIfAbsent(row.key(), row);
                 }
                 transactionRows.add(TransactionRow.success(transaction, domainName,
                         number(result.get("serviceCount")),
@@ -104,7 +114,8 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
         }
 
         byte[] content = buildWorkbook(transactionRows, serviceRows.values().stream().toList(),
-                componentRows.values().stream().toList(), tableRows.values().stream().toList());
+                componentRows.values().stream().toList(), tableRows.values().stream().toList(),
+                daoRows.values().stream().sorted(Comparator.comparing(DaoRow::sortKey)).toList());
         String fileName = safeFilePart(domainName) + "-全量交易链路-" + FILE_TIME.format(LocalDateTime.now()) + ".xlsx";
         return new ExportFile(fileName, content);
     }
@@ -137,7 +148,8 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
     private byte[] buildWorkbook(List<TransactionRow> transactions,
                                  List<NodeRow> services,
                                  List<NodeRow> components,
-                                 List<TableRow> tables) {
+                                 List<TableRow> tables,
+                                 List<DaoRow> daos) {
         SXSSFWorkbook workbook = new SXSSFWorkbook(100);
         workbook.setCompressTempFiles(true);
         try (workbook; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
@@ -146,6 +158,7 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
             writeNodes(workbook, headerStyle, "服务清单", SERVICE_HEADERS, services);
             writeNodes(workbook, headerStyle, "构件清单", COMPONENT_HEADERS, components);
             writeTables(workbook, headerStyle, tables);
+            writeDaos(workbook, headerStyle, daos);
             workbook.write(output);
             return output.toByteArray();
         } catch (IOException exception) {
@@ -198,6 +211,19 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
                     item.domainName, item.projectName, item.daoClassName);
         }
         finishSheet(sheet, TABLE_HEADERS.length, index);
+    }
+
+    private static void writeDaos(SXSSFWorkbook workbook, CellStyle headerStyle, List<DaoRow> rows) {
+        Sheet sheet = createSheet(workbook, "DAO方法清单", DAO_HEADERS, headerStyle);
+        sheet.setColumnWidth(8, 50 * 256);
+        int index = 1;
+        for (DaoRow item : rows) {
+            TableRow table = item.metadata;
+            Row row = sheet.createRow(index++);
+            strings(row, table.txId, table.txName, table.code, table.name, table.domainKey,
+                    table.domainName, table.projectName, table.daoClassName, item.methodName);
+        }
+        finishSheet(sheet, DAO_HEADERS.length, index);
     }
 
     private static Sheet createSheet(SXSSFWorkbook workbook,
@@ -317,6 +343,33 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
 
         String key() {
             return txId + '\u0000' + code;
+        }
+    }
+
+    private record DaoRow(TableRow metadata, String methodName, String nodeCode) {
+        static DaoRow from(FlowtranTransaction tx, Map<String, Object> node, Map<String, TableRow> tables) {
+            String tableCode = text(node.get("tableCode"));
+            TableRow table = tables.get(tableCode);
+            if (table == null) {
+                table = new TableRow(text(tx.getId()), text(tx.getLongname()), tableCode, "", "", "", "", "");
+            }
+            TableRow metadata = new TableRow(table.txId, table.txName, table.code, table.name,
+                    firstNonBlank(table.domainKey, text(node.get("domainKey"))),
+                    firstNonBlank(table.domainName, text(node.get("domain"))), table.projectName,
+                    firstNonBlank(text(node.get("daoClassName")), table.daoClassName));
+            String methodName = firstNonBlank(text(node.get("methodName")), text(node.get("name")));
+            String nodeCode = firstNonBlank(text(node.get("code")),
+                    tableCode + '\u0000' + metadata.daoClassName + '\u0000' + methodName);
+            return new DaoRow(metadata, methodName, nodeCode);
+        }
+
+        String key() {
+            return metadata.txId + '\u0000' + nodeCode;
+        }
+
+        String sortKey() {
+            return metadata.txId + '\u0000' + metadata.code + '\u0000' + metadata.daoClassName
+                    + '\u0000' + methodName + '\u0000' + nodeCode;
         }
     }
 }
