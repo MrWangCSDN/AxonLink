@@ -1,8 +1,6 @@
 package com.axonlink.ai.daoindex.errorcode.scan;
 
 import com.axonlink.ai.daoindex.errorcode.dto.ErrorCodeThrow;
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.JavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import org.junit.jupiter.api.Test;
 
@@ -17,9 +15,8 @@ class ThrowStmtVisitorTest {
 
     /** 解析源码字符串，跑 visitor，返回命中的错误码明细。 */
     private List<ErrorCodeThrow> scan(String src) {
-        ParserConfiguration cfg = new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
-        CompilationUnit cu = new JavaParser(cfg).parse(src).getResult().orElseThrow();
+        CompilationUnit cu = ErrorCodeExceptionTypeResolver.createParser(List.of())
+                .parse(src).getResult().orElseThrow();
         ThrowStmtVisitor v = new ThrowStmtVisitor(cu, "/abs/Test.java", "loan-bcc", new AtomicLong(0));
         v.visit(cu, null);
         return v.getResults();
@@ -208,4 +205,203 @@ class ThrowStmtVisitorTest {
                 + " void n(){ throw CmError.E0003(\"b\"); } }");
         assertEquals(List.of("E001", "E0003"), codes(rs));
     }
+
+    @Test
+    void consumedExceptionIsExcluded() {
+        assertTrue(scan("class A { void m() { try { throw Codes.E0001(); }"
+                + " catch (Throwable e) { System.out.println(\"handled\"); } } }").isEmpty());
+    }
+
+    @Test
+    void replacementKeepsOnlyCatchThrow() {
+        assertEquals(List.of("E0002"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); }"
+                + " catch (Throwable e) { throw Codes.E0002(e.getMessage()); } } }")));
+    }
+
+    @Test
+    void sameCodeRecreatedInCatchKeepsOnlyReplacementSite() {
+        List<ErrorCodeThrow> rows = scan("class A { void m() {"
+                + " try { throw Codes.E1654(\"original\"); }"
+                + " catch (Throwable e) { throw Codes.E1654(e.getMessage()); } } }");
+        assertEquals(1, rows.size());
+        assertTrue(rows.get(0).getThrowText().contains("e.getMessage()"));
+    }
+
+    @Test
+    void directAndConditionalRethrowsKeepOriginalCode() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { throw e; } } }")));
+        assertEquals(List.of("E0001"), codes(scan("class A { void m(boolean flag) {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { if(flag) throw e; } } }")));
+    }
+
+    @Test
+    void exceptionAliasesAndUnknownCallsKeepOriginalCode() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { Throwable alias=e; throw alias; } } }")));
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { handle(e); } } }")));
+    }
+
+    @Test
+    void unknownEarlierCatchPreventsFilteringByLaterCatch() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch (Unknown e) { throw e; }"
+                + " catch (Throwable e) { return; } } }")));
+    }
+
+    @Test
+    void catchDoesNotCatchItsOwnReplacementThrow() {
+        assertEquals(List.of("E0002"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { throw Codes.E0002(); } } }")));
+    }
+
+    @Test
+    void outerCatchConsumesReplacementFromInnerCatch() {
+        assertTrue(scan("class A { void m() { try {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { throw Codes.E0002(); }"
+                + " } catch (Throwable e) { return; } } }").isEmpty());
+    }
+
+    @Test
+    void outerCatchConsumesAnOriginalRethrownByInnerCatch() {
+        assertTrue(scan("class A { void m() { try {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { throw e; }"
+                + " } catch (Throwable e) { return; } } }").isEmpty());
+    }
+
+    @Test
+    void unconditionalFinallyReturnSuppressesOriginalThrow() {
+        assertTrue(scan("class A { void m() { try { throw Codes.E0001(); } finally { return; } } }")
+                .isEmpty());
+    }
+
+    @Test
+    void conditionalFinallyReturnKeepsPossibleOriginalThrow() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m(boolean flag) {"
+                + " try { throw Codes.E0001(); } finally { if(flag) return; } } }")));
+    }
+
+    @Test
+    void finallyReplacementSuppressesOriginalAndRemainsExportable() {
+        assertEquals(List.of("E0002"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } finally { throw Codes.E0002(); } } }")));
+    }
+
+    @Test
+    void deferredLambdaIsNotCaughtByTryAroundItsCreation() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() { try {"
+                + " Runnable r=()->{ throw Codes.E0001(); };"
+                + " } catch (Throwable e) { return; } } }")));
+    }
+
+    @Test
+    void catchInsideLambdaCanConsumeItsOwnThrow() {
+        assertTrue(scan("class A { void m() { Runnable r=()->{"
+                + " try { throw Codes.E0001(); } catch (Throwable e) { return; } }; } }").isEmpty());
+    }
+
+    @Test
+    void anonymousAndLocalClassMethodsHaveIndependentCatchScopes() {
+        assertEquals(List.of("E0001", "E0002"), codes(scan("class A { void m() { try {"
+                + " Runnable r=new Runnable(){ public void run(){ throw Codes.E0001(); } };"
+                + " class Local { void run(){ throw Codes.E0002(); } }"
+                + " } catch (Throwable e) { return; } } }")));
+    }
+
+    @Test
+    void anonymousInitializerIsConservativelyRetained() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() { try {"
+                + " Object r=new Object(){ { throw Codes.E0001(); } };"
+                + " } catch (Throwable e) { return; } } }")));
+    }
+
+    @Test
+    void tryFinallyReturnDoesNotSuppressDeferredLambdaThrow() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() { try {"
+                + " Runnable r=()->{ throw Codes.E0001(); }; } finally { return; } } }")));
+    }
+
+
+    @Test
+    void rethrowConsumedByNestedHandlerInCatchIsExcluded() {
+        assertTrue(scan("class A { void m() { try { throw Codes.E0001(); }"
+                + " catch (Throwable e) { try { throw e; } catch (Throwable inner) { return; } } } }")
+                .isEmpty());
+    }
+
+    @Test
+    void unconditionalFinallyOverridesACatchRethrow() {
+        assertTrue(scan("class A { void m() { try { throw Codes.E0001(); }"
+                + " catch (Throwable e) { throw e; } finally { return; } } }").isEmpty());
+    }
+
+    @Test
+    void deferredRethrowCannotBeConsumedByOuterCatch() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() { try {"
+                + " try { throw Codes.E0001(); } catch (Throwable e) {"
+                + " Runnable later=()->{ throw (RuntimeException)e; }; }"
+                + " } catch(Throwable outer) { return; } } }")));
+    }
+
+    @Test
+    void filteredThrowStillVisitsItsDeferredArguments() {
+        assertEquals(List.of("E0002"), codes(scan("class A { void m() { try {"
+                + " throw Codes.E0001(()->{ throw Codes.E0002(); });"
+                + " } catch(Throwable e) { return; } } }")));
+    }
+
+    @Test
+    void unknownVariableThrownFromFinallyKeepsOriginalConservatively() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m(Throwable prior) {"
+                + " try { throw Codes.E0001(); } finally { throw prior; } } }")));
+    }
+
+    @Test
+    void conditionalUnknownFinallyExitKeepsOriginalConservatively() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m(Throwable prior,boolean flag) {"
+                + " try { throw Codes.E0001(); } finally { if(flag) throw prior; return; } } }")));
+    }
+
+
+    @Test
+    void finallyReturnDoesNotDiscardAnExceptionCapturedByDeferredCode() {
+        assertEquals(List.of("E0001"), codes(scan("class A { Runnable later; void m() {"
+                + " try { throw Codes.E0001(); } catch(Throwable e) {"
+                + " later=()->{ throw (RuntimeException)e; }; } finally { return; } } }")));
+    }
+
+    @Test
+    void finallyReturnKeepsExceptionPassedToUnknownHelper() {
+        assertEquals(List.of("E0001"), codes(scan("class A { void m() {"
+                + " try { throw Codes.E0001(); } catch(Throwable e) { handle(e); }"
+                + " finally { return; } } }")));
+    }
+
+
+    @Test
+    void unrelatedCatchIsSkippedBeforeMatchingBroadCatch() {
+        assertTrue(scan("class Codes { static IllegalStateException E0001(){return null;} }"
+                + "class A { void m() { try { throw Codes.E0001(); }"
+                + " catch(java.io.IOException e) { throw e; } catch(Exception e) { return; } } }")
+                .isEmpty());
+    }
+
+    @Test
+    void potentiallyMatchingNarrowCatchPreventsFilteringByLaterCatch() {
+        assertEquals(List.of("E0001"), codes(scan("class Codes {"
+                + " static RuntimeException E0001(){return null;} }"
+                + "class A { void m() { try { throw Codes.E0001(); }"
+                + " catch(IllegalStateException e) { throw e; } catch(Exception e) { return; } } }")));
+    }
+
+    @Test
+    void multiCatchConsumesResolvedSourceFactoryException() {
+        assertTrue(scan("class Codes { static IllegalStateException E0001(){return null;} }"
+                + "class A { void m() { try { throw Codes.E0001(); }"
+                + " catch(java.io.IOException | IllegalStateException e) { return; } } }")
+                .isEmpty());
+    }
+
 }

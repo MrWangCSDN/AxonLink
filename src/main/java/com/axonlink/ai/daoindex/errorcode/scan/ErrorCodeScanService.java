@@ -5,7 +5,7 @@ import com.axonlink.ai.daoindex.errorcode.dao.DiiErrorCodeDao;
 import com.axonlink.ai.daoindex.errorcode.dto.ErrorCodeThrow;
 import com.axonlink.service.Neo4jGraphBuildCompletedEvent;
 import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
+import com.github.javaparser.ParseResult;
 import com.github.javaparser.ast.CompilationUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +18,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
@@ -31,18 +33,13 @@ import java.util.stream.Stream;
  *       物化 dii_tx_error_code（此刻图已就绪，避免与图构建的时序竞态）；</li>
  *   <li>手动 rescan → 全量。</li>
  * </ul>
- * 复用 JavaParser(JAVA_17) + ThreadLocal；不挂入 ProjectIndexer（单一职责）。
+ * 每轮构建带类型解析的 JavaParser，扫描完成即释放；不挂入 ProjectIndexer。
  * 缺表（SQLException）→ WARN 跳过，不 crash 启动（契约 §3.1/§4.6）。
  */
 @Component
 public class ErrorCodeScanService {
 
     private static final Logger log = LoggerFactory.getLogger(ErrorCodeScanService.class);
-
-    /** JavaParser 非线程安全，每线程独立实例。 */
-    private static final ThreadLocal<JavaParser> PARSER = ThreadLocal.withInitial(() ->
-            new JavaParser(new ParserConfiguration()
-                    .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17)));
 
     private final DiiErrorCodeDao dao;                          // Task 5
     private final ErrorCodeAttributionService attribution;     // Task 6
@@ -139,31 +136,42 @@ public class ErrorCodeScanService {
         }
         try {
             long t0 = System.currentTimeMillis();
-            List<ErrorCodeThrow> throwDetails = scanAllSources();
+            ScanResult scan = scanAllSources();
             // ── 空结果拒绝覆盖（2026-07-15 内网事故守卫）──
             // ① 收集到 0 个源文件（scanAllSources 返回 null）：源码目录大概率正被 benchmark
             //    全量替换，此时 DELETE 整表会把好数据抹成 0 行 → 保留旧数据，等下轮触发。
-            if (throwDetails == null) {
+            if (scan == null) {
                 log.error("[error-code] 本轮扫描中止：源码根为空/不可达（疑似源码替换窗口），"
                         + "保留 dii_error_code / dii_tx_error_code 旧数据");
                 return;
             }
-            // ② 扫到文件但 0 个 throw、而库里现存明细非空：银行源码不可能无错误码，视为异常态
-            if (throwDetails.isEmpty() && dao.countThrows() > 0) {
-                log.error("[error-code] 本轮扫描中止：throw 命中 0 条但库中现存明细非空，"
-                        + "拒绝清空覆盖（如确属预期请先人工清表再 rescan）");
+            // 原始候选为零且旧明细非空时沿用源码缺失保护，初次空库仍保持原有扫描行为。
+            if (scan.rawThrowCount() == 0 && dao.countThrows() > 0) {
+                log.error("[error-code] 本轮扫描中止：原始 throw 候选为 0 且库中现存明细非空，"
+                                + "保留旧数据 parsedFiles={} skippedLargeFiles={}",
+                        scan.parsedFiles(), scan.skippedLargeFiles());
                 return;
             }
+            List<ErrorCodeThrow> throwDetails = scan.throwsToKeep();
+            boolean allowEmpty = scan.rawThrowCount() > 0 && throwDetails.isEmpty();
             long t1 = System.currentTimeMillis();
             dao.rebuildThrows(throwDetails);                        // 重建明细 dii_error_code
             long t2 = System.currentTimeMillis();
-            log.info("[error-code] 明细已就绪 dii_error_code throws={} 扫描耗时={}ms 写库耗时={}ms",
-                    throwDetails.size(), t1 - t0, t2 - t1);
+            log.info("[error-code] 明细已就绪 rawThrows={} effectiveThrows={} parsedFiles={} "
+                            + "skippedLargeFiles={} 扫描耗时={}ms 写库耗时={}ms",
+                    scan.rawThrowCount(), throwDetails.size(), scan.parsedFiles(),
+                    scan.skippedLargeFiles(), t1 - t0, t2 - t1);
             if (materialize) {
                 // 物化交易维度 dii_tx_error_code（需图就绪）。比明细慢——每交易跑 getChain 级解析，
                 // 已并行化（见 ErrorCodeAttributionService）。物化耗时由其内部「物化完成 ... 耗时=」日志体现。
-                attribution.materializeTransactionErrorCodes();
-                log.info("[error-code] 本轮全量重建结束（明细+物化）总耗时={}ms", System.currentTimeMillis() - t0);
+                ErrorCodeAttributionService.MaterializeOutcome outcome =
+                        attribution.materializeTransactionErrorCodes(allowEmpty);
+                if (outcome.isComplete()) {
+                    log.info("[error-code] 本轮全量重建结束（明细+物化）总耗时={}ms", System.currentTimeMillis() - t0);
+                } else {
+                    log.warn("[error-code] 本轮明细已更新，交易物化未完成并保留旧结果，总耗时={}ms",
+                            System.currentTimeMillis() - t0);
+                }
             }
         } catch (org.springframework.dao.DataAccessException ex) {
             // 缺表/结果库异常（Spring JDBC 把 SQLException 包成 unchecked DataAccessException，
@@ -175,25 +183,42 @@ public class ErrorCodeScanService {
         } catch (Exception ex) {
             log.error("[error-code] 扫描异常", ex);
         } finally {
+            ErrorCodeExceptionTypeResolver.releaseCaches();
             scanning.set(false);
         }
     }
 
-    /** 遍历所有源码根，AST 扫描 throw 错误码。收集到 0 个源文件返回 null（调用方拒绝覆盖）。 */
-    private List<ErrorCodeThrow> scanAllSources() {
+    /** 仅完整扫描返回结果；目录遍历、读取或语法解析失败时中止，拒绝覆盖旧数据。 */
+    private ScanResult scanAllSources() throws IOException {
         List<ErrorCodeThrow> all = new ArrayList<>();
         AtomicLong seq = new AtomicLong(0);
         long maxBytes = 500L * 1024;   // 与 ProjectIndexer 一致：>500KB 跳过
-        List<Path> files = collectSourceFiles();
+        List<Path> roots = collectSourceRoots();
+        List<Path> files = collectSourceFiles(roots);
         log.info("[error-code] 收集到 {} 个 .java 源文件待扫描", files.size());
         if (files.isEmpty()) {
             return null;   // 源码根为空/不可达 → 交由 runSafely 中止本轮，保留旧数据
         }
-        for (Path f : files) {
-            scanOneFile(f, maxBytes, seq, all);
+        JavaParser parser = ErrorCodeExceptionTypeResolver.createParser(roots);
+        long rawThrowCount = 0;
+        int parsedFiles = 0;
+        int skippedLargeFiles = 0;
+        for (Path file : files) {
+            if (Files.size(file) > maxBytes) {
+                skippedLargeFiles++;
+                log.debug("[error-code] 文件超过 {} bytes，沿用大文件跳过规则 file={}", maxBytes, file);
+                continue;
+            }
+            ThrowStmtVisitor visitor = scanOneFile(file, parser, seq);
+            all.addAll(visitor.getResults());
+            rawThrowCount += visitor.getRawThrowCount();
+            parsedFiles++;
         }
-        return all;
+        return new ScanResult(all, rawThrowCount, parsedFiles, skippedLargeFiles);
     }
+
+    private record ScanResult(List<ErrorCodeThrow> throwsToKeep, long rawThrowCount,
+                              int parsedFiles, int skippedLargeFiles) {}
 
     /**
      * 收集 .java 源文件，<b>与建图 {@code Neo4jGraphBuilder.collectFiles} 完全同口径</b>：
@@ -206,64 +231,58 @@ public class ErrorCodeScanService {
      * 必须与建图扫的是同一批源文件——否则 classFqn 对不上、物化 join 不到
      * （业务 throw 在 src/main/java，旧实现只过滤 target/gen 故 throw=0）。
      */
-    private List<Path> collectSourceFiles() {
-        List<String> roots = new ArrayList<>();
+    private List<Path> collectSourceRoots() throws IOException {
+        Set<Path> roots = new LinkedHashSet<>();
         if (sourceRoots != null && !sourceRoots.isBlank()) {
             for (String r : sourceRoots.split(",")) {
-                if (!r.isBlank()) roots.add(r.trim());
+                if (!r.isBlank()) roots.add(Path.of(r.trim()).toAbsolutePath().normalize());
             }
         }
         if (workspaceRoots != null && !workspaceRoots.isBlank()) {
             for (String w : workspaceRoots.split(",")) {
                 String ws = w.trim();
                 if (ws.isEmpty()) continue;
-                Path wsPath = Path.of(ws);
-                if (!Files.exists(wsPath)) continue;
+                Path wsPath = Path.of(ws).toAbsolutePath().normalize();
+                if (!Files.isDirectory(wsPath)) {
+                    throw new IOException("工作区源码目录不存在或不可访问：" + wsPath);
+                }
                 try (Stream<Path> walk = Files.walk(wsPath, 8)) {
                     walk.filter(Files::isDirectory)
                         .filter(p -> {
                             String rel = wsPath.relativize(p).toString().replace('\\', '/');
                             return rel.endsWith("src/main/java") || rel.endsWith("target/gen");
                         })
-                        .map(Path::toString).forEach(roots::add);
-                } catch (IOException e) {
-                    log.warn("[error-code] 发现工作区子目录失败 ws={}", ws, e);
+                        .forEach(roots::add);
                 }
             }
         }
-        List<Path> files = new ArrayList<>();
-        for (String root : roots) {
-            Path p = Path.of(root);
-            if (!Files.exists(p)) continue;
-            try (Stream<Path> walk = Files.walk(p)) {
+        return new ArrayList<>(roots);
+    }
+
+    private List<Path> collectSourceFiles(List<Path> roots) throws IOException {
+        Set<Path> files = new LinkedHashSet<>();
+        for (Path root : roots) {
+            if (!Files.isDirectory(root)) {
+                throw new IOException("源码目录不存在或不可访问：" + root);
+            }
+            try (Stream<Path> walk = Files.walk(root)) {
                 walk.filter(Files::isRegularFile)
                     .filter(f -> f.toString().endsWith(".java"))
                     .filter(f -> !f.toString().replace('\\', '/').contains("/test/"))
                     .forEach(files::add);
-            } catch (IOException e) {
-                log.warn("[error-code] 遍历源码根失败 root={}", root, e);
             }
         }
-        return files;
+        return new ArrayList<>(files);
     }
 
-    private void scanOneFile(Path file, long maxBytes, AtomicLong seq, List<ErrorCodeThrow> sink) {
-        try {
-            if (Files.size(file) > maxBytes) {
-                return;   // 大文件跳过深扫
-            }
-            CompilationUnit cu = PARSER.get().parse(file).getResult().orElse(null);
-            if (cu == null) {
-                return;
-            }
-            String module = detectModule(file);
-            ThrowStmtVisitor v = new ThrowStmtVisitor(cu, file.toString(), module, seq);
-            v.visit(cu, null);
-            synchronized (sink) {
-                sink.addAll(v.getResults());
-            }
-        } catch (Exception e) {
-            log.warn("[error-code] 解析文件失败 file={}", file, e);
+    private ThrowStmtVisitor scanOneFile(Path file, JavaParser parser, AtomicLong seq) throws IOException {
+        ParseResult<CompilationUnit> parsed = parser.parse(file);
+        if (!parsed.isSuccessful() || parsed.getResult().isEmpty()) {
+            throw new IOException("Java 源文件解析失败，停止本轮扫描：" + file + " " + parsed.getProblems());
         }
+        CompilationUnit cu = parsed.getResult().get();
+        ThrowStmtVisitor visitor = new ThrowStmtVisitor(cu, file.toString(), detectModule(file), seq);
+        visitor.visit(cu, null);
+        return visitor;
     }
 }

@@ -40,6 +40,8 @@ public class ThrowStmtVisitor extends VoidVisitorAdapter<Void> {
     private final Deque<String> classStack = new ArrayDeque<>();
     private final Deque<String> methodStack = new ArrayDeque<>();
     private final List<ErrorCodeThrow> results = new ArrayList<>();
+    private long rawThrowCount;
+    private final CaughtErrorCodeAnalyzer caughtErrors = new CaughtErrorCodeAnalyzer();
 
     public ThrowStmtVisitor(CompilationUnit cu, String filePath, String moduleName, AtomicLong seq) {
         this.pkg = cu.getPackageDeclaration().map(pd -> pd.getNameAsString()).orElse("");
@@ -50,6 +52,11 @@ public class ThrowStmtVisitor extends VoidVisitorAdapter<Void> {
 
     public List<ErrorCodeThrow> getResults() {
         return results;
+    }
+
+    /** Recognized throw sites before local exception handling is analyzed. */
+    public long getRawThrowCount() {
+        return rawThrowCount;
     }
 
     @Override
@@ -102,6 +109,11 @@ public class ThrowStmtVisitor extends VoidVisitorAdapter<Void> {
             return;
         }
         if (mce.getScope().isEmpty()) {       // 错误码方法必有限定符 Scope
+            super.visit(n, arg);
+            return;
+        }
+        rawThrowCount++;
+        if (caughtErrors.isHandled(n)) {
             super.visit(n, arg);
             return;
         }

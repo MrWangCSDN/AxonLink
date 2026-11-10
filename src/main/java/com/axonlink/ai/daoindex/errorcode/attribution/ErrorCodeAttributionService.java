@@ -134,7 +134,7 @@ public class ErrorCodeAttributionService {
     }
 
     /**
-     * 编排：拉 Neo4j 可达全集 → joinToTxRows → 写库。无 Neo4j 则只清空物化表并 WARN。
+     * 编排：拉 Neo4j 可达全集 → joinToTxRows → 写库。无 Neo4j 时保留旧数据。
      *
      * <p>一致性保证（要么全量成功才覆盖，要么保留旧数据）：物化表由
      * {@link DiiErrorCodeDao#materializeTxErrorCodes} 整表 DELETE + INSERT 重建。
@@ -147,8 +147,20 @@ public class ErrorCodeAttributionService {
      * @return 物化结果（complete=是否完整覆盖、skippedDueToPartialFailure=是否因部分失败而保留旧数据）
      */
     public MaterializeOutcome materializeTransactionErrorCodes() {
+        return materializeTransactionErrorCodes(false);
+    }
+
+    /**
+     * @param allowEmpty 仅完整扫描确认原始候选全部被处理时为 true，允许清理旧交易结果。
+     */
+    public MaterializeOutcome materializeTransactionErrorCodes(boolean allowEmpty) {
         List<ErrorCodeThrow> throwDetails = dao.listAllThrows();   // Task 5
         if (throwDetails.isEmpty()) {
+            if (allowEmpty) {
+                dao.materializeTxErrorCodes(List.of());
+                log.info("[error-code] 完整扫描确认全部错误码已被处理，交易维度物化已清空");
+                return MaterializeOutcome.complete(0, 0);
+            }
             // 明细为空（正常环境不可能：银行源码必有错误码）→ 大概率处于源码目录被替换窗口，
             // 拒绝把物化表覆盖成 0 行（2026-07-15 内网事故链的一环）
             log.error("[error-code] 物化中止：dii_error_code 明细为空，疑似源码目录缺失窗口，"
