@@ -72,7 +72,8 @@ class ReplayDatabaseComparisonVersionServiceTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
@@ -85,6 +86,66 @@ class ReplayDatabaseComparisonVersionServiceTest {
         service = new ReplayDatabaseComparisonVersionService(
                 registrationService, metadataService, registrationDao, versionDao,
                 new ReplayDatabaseComparisonConfigurationHasher(), userDao, jdbc, CLOCK);
+    }
+
+    @Test
+    void customSqlGatePreparesFreshResultMetadataAndDoesNotUseLogicalIdsForPhysicalInspection() {
+        insertRegistration("sql_one", "金额汇总", List.of(field("id", "旧标识", 1, false, 1)));
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of());
+        var registration = registrationDao.findAllActiveWithFields().get(0).withCustomSql(definition)
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
+        var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
+        var freshColumns = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "ID", "VARCHAR", 2));
+        var analysis = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(definition.sql(), "base_schema", "acct", "物理表名称", freshColumns, List.of("id"));
+        when(analyzer.prepare(definition.sql(), List.of("id"), List.of("id"), null)).thenReturn(
+                new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(analysis,
+                        List.of(field("id", "ID", 2, false, 1)), registration.comparisonKey()));
+        service.setCustomSqlAnalyzer(analyzer);
+        when(metadataService.inspectTables(List.of("acct"))).thenReturn(Map.of("acct",
+                new ReplayBaseMetadataSnapshot(true, "acct", "物理表名称", List.of())));
+
+        var gate = service.validateAll(List.of(registration));
+
+        assertTrue(gate.valid());
+        var snapshot = gate.registrations().get(0);
+        assertEquals("金额汇总", snapshot.tableComment());
+        assertEquals(freshColumns, snapshot.customSql().resultColumns());
+        assertEquals("ID", snapshot.fields().get(0).columnComment());
+        assertEquals("sql_one", snapshot.tableName());
+        verify(metadataService).inspectTables(List.of("acct"));
+    }
+
+    @Test
+    void customSqlGateCollectsParseFailureAndSourceMismatchWithoutAcceptingPartialSnapshots() {
+        insertRegistration("sql_one", "错误查询", List.of(field("id", "标识", 1, false, 1)));
+        var registration = registrationDao.findAllActiveWithFields().get(0)
+                .withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of()))
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
+        var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
+        service.setCustomSqlAnalyzer(analyzer);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct", new ReplayBaseMetadataSnapshot(true, "acct", "账户", List.of())));
+        when(analyzer.prepare(any(), any(), any(), any())).thenThrow(new IllegalArgumentException("SQL 输出列失效"));
+        var invalid = service.validateAll(List.of(registration));
+        assertFalse(invalid.valid());
+        assertEquals("CUSTOM_SQL_INVALID", invalid.errors().get(0).status().name());
+        assertTrue(invalid.errors().get(0).reason().contains("SQL 输出列失效"));
+        var wrongSource = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(
+                "select id from other_acct", "base_schema", "other_acct", "另一表", List.of(), List.of("id"));
+        doReturn(new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(wrongSource, registration.fields(),
+                registration.comparisonKey())).when(analyzer).prepare(any(), any(), any(), any());
+        var mismatched = service.validateAll(List.of(registration));
+        assertFalse(mismatched.valid());
+        assertEquals("CUSTOM_SQL_INVALID", mismatched.errors().get(0).status().name());
+        assertTrue(mismatched.errors().get(0).reason().contains("关联基础表"));
+        var wrongSchema = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(
+                "select id from acct", "other_schema", "acct", "另一Schema同名表", List.of(), List.of("id"));
+        doReturn(new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(wrongSchema, registration.fields(),
+                registration.comparisonKey())).when(analyzer).prepare(any(), any(), any(), any());
+        var changedSchema = service.validateAll(List.of(registration));
+        assertFalse(changedSchema.valid());
+        assertEquals("CUSTOM_SQL_INVALID", changedSchema.errors().get(0).status().name());
+        assertTrue(changedSchema.errors().get(0).reason().contains("Schema"));
+        assertNoVersionSnapshots();
     }
 
     @Test void legacyNullSelectionWithoutPhysicalPrimarySynchronizesUniqueAndFreezesItInNewVersion() {

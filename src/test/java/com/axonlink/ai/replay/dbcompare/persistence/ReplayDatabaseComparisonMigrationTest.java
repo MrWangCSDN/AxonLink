@@ -17,6 +17,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReplayDatabaseComparisonMigrationTest {
 
     @Test
+    void customSqlMigrationPreservesExistingTableRegistrationsAndVersions() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"))
+                .execute(jdbc.getDataSource());
+        jdbc.update("INSERT INTO dii_replay_db_compare_registration "
+                + "(schema_name,table_name,domain_name,registered_date,created_by,created_name,created_at,updated_by,updated_name,updated_at) "
+                + "VALUES ('base','acct_master','存款组',CURRENT_DATE,'u','User',CURRENT_TIMESTAMP,'u','User',CURRENT_TIMESTAMP)");
+        jdbc.update("INSERT INTO dii_replay_db_compare_version "
+                + "(version_no,configuration_hash,table_count,field_count,generated_by,generated_name,generated_at) "
+                + "VALUES ('old',?,1,0,'u','User',CURRENT_TIMESTAMP)", "a".repeat(64));
+        jdbc.update("INSERT INTO dii_replay_db_compare_version_table "
+                + "(version_id,source_registration_id,source_registration_version,schema_name,table_name,domain_name,registered_date) "
+                + "VALUES (1,1,0,'base','acct_master','存款组',CURRENT_DATE)");
+
+        new ResourceDatabasePopulator(new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                .execute(jdbc.getDataSource());
+
+        for (String table : List.of("dii_replay_db_compare_registration", "dii_replay_db_compare_version_table")) {
+            assertEquals("TABLE", jdbc.queryForObject("SELECT registration_type FROM " + table, String.class));
+            assertEquals("acct_master", jdbc.queryForObject("SELECT table_name FROM " + table, String.class));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM " + table
+                    + " WHERE custom_sql IS NOT NULL OR result_columns_json IS NOT NULL", Integer.class));
+        }
+        assertEquals(0, jdbc.queryForObject("SELECT custom_sql_count FROM dii_replay_db_compare_version", Integer.class));
+        assertTrue(hasUniqueConstraint(jdbc, "DII_REPLAY_DB_COMPARE_REGISTRATION", "UK_REPLAY_DB_COMPARE_SCHEMA_TABLE"));
+        assertTrue(hasUniqueConstraint(jdbc, "DII_REPLAY_DB_COMPARE_VERSION_TABLE", "UK_REPLAY_DB_COMPARE_VERSION_TABLE"));
+    }
+
+    @Test
     void sampleLimitDefaultChangesOnlyForFutureRows() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
@@ -25,7 +56,8 @@ class ReplayDatabaseComparisonMigrationTest {
                 new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
 
         String insertRegistration = "INSERT INTO dii_replay_db_compare_registration "
@@ -125,7 +157,8 @@ class ReplayDatabaseComparisonMigrationTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
 
         assertColumns(jdbc, "DII_REPLAY_DB_COMPARE_AUDIT_EVENT", "OPERATOR_USERNAME");

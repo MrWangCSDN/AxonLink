@@ -60,7 +60,8 @@ class ReplayDatabaseComparisonImportServiceTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);

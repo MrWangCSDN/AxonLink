@@ -45,7 +45,7 @@ class ReplayDatabaseIssueRegistrationVersionTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         ReplayDatabaseIssueReviewProjectionTest.installJsonHelpers(jdbc);
         new ResourceDatabasePopulator(List.of(
-                "V62__dii_replay_database_comparison_fields.sql", "V63__dii_replay_database_comparison_versions.sql",
+                "V62__dii_replay_database_comparison_fields.sql", "V63__dii_replay_database_comparison_versions.sql", "V91__replay_db_compare_custom_sql.sql",
                 "V77__replay_database_issues.sql", "V78__replay_database_issue_review_projection.sql",
                 "V79__replay_database_issue_repair_date_projection.sql", "V80__replay_database_issue_collaborator_projection.sql",
                 "V81__replay_database_issue_completion_totals.sql", "V82__replay_database_table_person.sql",
@@ -58,6 +58,39 @@ class ReplayDatabaseIssueRegistrationVersionTest {
         when(resolver.resolve(any())).thenReturn(new UserPrincipalResolver.Resolved("LDAP", "editor", null));
         mvc = MockMvcBuilders.standaloneSetup(new ReplayDatabaseIssueController(dao, service, resolver,
                 new DaoIndexAnalysisProperties())).build();
+    }
+
+    @Test
+    void customSqlImportRequiresVersionBeforeWritingAnything() {
+        String code = "sql_0123456789abcdef0123456789abcdef";
+        sqlRegistration(code);
+        var error = assertThrows(IllegalArgumentException.class, () -> service.importFile(file(code), null, ACTOR));
+        assertTrue(error.getMessage().contains("登记版本"));
+        assertEquals(0L, count("dii_replay_database_issue"));
+        assertEquals(0L, count("dii_replay_database_issue_batch"));
+    }
+
+    @Test
+    void customSqlImportUsesSelectedSnapshotSourceAndCarriesBindingOnReimport() {
+        String code = "sql_0123456789abcdef0123456789abcdef";
+        sqlRegistration(code);
+        long version = version(FIRST, 2);
+        table(version, "public", code);
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET registration_type='CUSTOM_SQL',source_table_name='physical_source',table_comment='汇总口径' WHERE version_id=?", version);
+        jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,developer_display,imported_at) VALUES ('physical_source','公共组','张三(zhangsan)',CURRENT_TIMESTAMP)");
+        service.importFile(file(code), null, ACTOR, null, FIRST);
+        assertEquals("公共组", dao.findByIssueId(code).get("domain"));
+        assertEquals("张三(zhangsan)", dao.findByIssueId(code).get("owner"));
+        assertEquals("汇总口径", dao.findByIssueId(code).get("tableComment"));
+        service.importFile(file(code), null, ACTOR);
+        assertEquals(version, binding());
+        assertEquals(2L, count("dii_replay_database_issue"));
+    }
+
+    private void sqlRegistration(String code) {
+        jdbc.update("INSERT INTO dii_replay_db_compare_registration(schema_name,table_name,domain_name,registered_date,deleted,"
+                + "created_by,created_name,created_at,updated_by,updated_name,updated_at,registration_type,source_table_name,custom_sql,result_columns_json) "
+                + "VALUES ('public',?,'贷款组',CURRENT_DATE,1,'u','User',CURRENT_TIMESTAMP,'u','User',CURRENT_TIMESTAMP,'CUSTOM_SQL','physical_source','SELECT 1','[]')", code);
     }
 
     @Test

@@ -24,6 +24,9 @@ class ReplayDatabaseComparisonServiceWiringTest {
             org.mockito.Mockito.when(jdbcTemplate.getDataSource()).thenReturn(dataSource);
             context.registerBean(ReplayBaseMetadataService.class,
                     () -> mock(ReplayBaseMetadataService.class));
+            context.registerBean(com.axonlink.ai.replay.dbcompare.persistence.ReplayBaseDataSourceRegistry.class,
+                    () -> mock(com.axonlink.ai.replay.dbcompare.persistence.ReplayBaseDataSourceRegistry.class));
+            context.register(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
             context.registerBean(ReplayDatabaseComparisonDao.class,
                     () -> mock(ReplayDatabaseComparisonDao.class));
             context.registerBean(ReplayDatabaseComparisonVersionDao.class,

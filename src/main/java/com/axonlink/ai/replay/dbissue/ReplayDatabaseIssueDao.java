@@ -34,16 +34,56 @@ public class ReplayDatabaseIssueDao {
             new HeaderFilter("issueStatus","issueStatuses","issue_status",false),
             new HeaderFilter("reviewStatus","reviewStatuses","review_status",false),
             new HeaderFilter("issueType","issueTypes","issue_type",false));
-    public record TableIdentity(String tableName) {
-        static TableIdentity of(Map<String,Object> row){return new TableIdentity(text(row.get("tableName")).toLowerCase(Locale.ROOT));}
+    public record TableIdentity(String tableName, String batchNo) {
+        public TableIdentity {
+            tableName = text(tableName).trim().toLowerCase(Locale.ROOT);
+            batchNo = text(batchNo).trim();
+        }
+
+        public TableIdentity(String tableName) {
+            this(tableName, "");
+        }
+
+        static TableIdentity of(Map<String, Object> row) {
+            return new TableIdentity(text(row.get("tableName")), text(row.get("batchNo")));
+        }
     }
+
+    private record ResolvedSource(String tableName, String displayName) { }
+    private record SourcePersonnel(String identity, String name, String domain, String owner,
+                                   String developerUsernames, String tableComment) { }
     public record TechnologyOwnerRegistration(TableIdentity table,String identity,String name,String domain,String owner,String tableComment) {}
     public record RegistrationVersion(long id, String versionNo, java.time.LocalDateTime generatedAt,
                                       String generatedName, int tableCount, int fieldCount) {}
     private static final int MAX_FILTER_CANDIDATES=500;
     private static final String DOMAIN_SQL="COALESCE(registration.domain_name,'')";
     private static final String OWNER_SQL="COALESCE(registration.developer_display,'')";
-    private static final String ISSUE_FROM=" FROM dii_replay_database_issue i LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER(i.table_name)";
+    private static final String FROZEN_SOURCE_SQL = """
+            CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN NULLIF(TRIM(snapshot.source_table_name),'')
+                 ELSE snapshot.table_name END
+            """;
+    private static final String UNBOUND_SOURCE_SQL = """
+            CASE WHEN EXISTS (SELECT 1 FROM dii_replay_db_compare_registration current_registration
+                               WHERE LOWER(current_registration.table_name)=LOWER(i.table_name)
+                                 AND current_registration.registration_type='CUSTOM_SQL') THEN NULL
+                 ELSE i.table_name END
+            """;
+    private static final String ISSUE_SOURCE_SQL = """
+            CASE WHEN binding.registration_version_id IS NOT NULL THEN
+                 (SELECT CASE WHEN COUNT(*)=1 THEN MAX(%s) END
+                    FROM dii_replay_db_compare_version_table snapshot
+                    JOIN dii_replay_db_compare_version snapshot_version ON snapshot_version.id=snapshot.version_id
+                   WHERE snapshot.version_id=binding.registration_version_id
+                     AND LOWER(snapshot.table_name)=LOWER(i.table_name))
+                 ELSE %s END
+            """.formatted(FROZEN_SOURCE_SQL, UNBOUND_SOURCE_SQL);
+    private static final String ISSUE_FROM = " FROM dii_replay_database_issue i "
+            + "LEFT JOIN dii_replay_database_issue_batch binding ON binding.batch_no=i.batch_no "
+            + "LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER("
+            + ISSUE_SOURCE_SQL + ")";
+    private static final String UNBOUND_ISSUE_FROM = " FROM dii_replay_database_issue i "
+            + "LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER("
+            + UNBOUND_SOURCE_SQL + ")";
     private static final String VISIBLE_ISSUE_SQL="i.issue_status<>'不参与比对'";
     // Automatic repairs retain the last actual batch_no, so it also covers rows without import history.
     private static final String OCCURRENCES_SQL="SELECT issue_id AS issue_row_id,batch_no FROM dii_replay_database_issue_history WHERE import_event=1 AND incoming_snapshot IS NOT NULL UNION SELECT id AS issue_row_id,batch_no FROM dii_replay_database_issue";
@@ -72,15 +112,16 @@ public class ReplayDatabaseIssueDao {
         r.put("version",((Number)r.get("version")).longValue()+1);
     }
     private Object[] values(Map<String,Object> r){return new Object[]{r.get("issueId"),r.get("tableName"),r.get("tableComment"),r.get("domain"),r.get("owner"),r.get("issueLevel"),r.get("fieldName"),r.get("differenceCount"),r.getOrDefault("total528",0L),r.getOrDefault("totalCcbs",0L),r.get("batchNo"),java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate((String)r.get("batchNo"))),r.get("issueStatus"),r.get("issueType"),text(r.get("reviewStatus")),text(r.get("reviewReason")),text(r.get("defectRepairDate")),text(r.get("cooperationPerson")),text(r.get("plannedCompletionDate")).isBlank()?null:java.sql.Date.valueOf(text(r.get("plannedCompletionDate"))),encode(r)};}
-    private Map<String,Object> row(ResultSet rs,int n)throws SQLException{var r=decode(rs.getString("data_snapshot"));r.put("plannedCompletionDate",text(rs.getDate("planned_completion_date")));r.put("plannedCompletionDateChangeCount",rs.getLong("plan_date_change_count"));r.put("id",rs.getLong("id"));r.put("version",rs.getLong("version"));r.put("differenceCount",rs.getLong("difference_count"));r.put("total528",rs.getLong("total_528"));r.put("totalCcbs",rs.getLong("total_ccbs"));r.put("reviewStatus",text(rs.getString("review_status")));r.put("reviewReason",text(rs.getString("review_reason")));r.put("defectRepairDate",text(rs.getString("defect_repair_date")));r.put("cooperationPerson",text(rs.getString("cooperation_person_display")));return r;}
+    private Map<String,Object> row(ResultSet rs,int n)throws SQLException{var r=decode(rs.getString("data_snapshot"));r.put("tableName",rs.getString("table_name"));r.put("batchNo",rs.getString("batch_no"));r.put("plannedCompletionDate",text(rs.getDate("planned_completion_date")));r.put("plannedCompletionDateChangeCount",rs.getLong("plan_date_change_count"));r.put("id",rs.getLong("id"));r.put("version",rs.getLong("version"));r.put("differenceCount",rs.getLong("difference_count"));r.put("total528",rs.getLong("total_528"));r.put("totalCcbs",rs.getLong("total_ccbs"));r.put("reviewStatus",text(rs.getString("review_status")));r.put("reviewReason",text(rs.getString("review_reason")));r.put("defectRepairDate",text(rs.getString("defect_repair_date")));r.put("cooperationPerson",text(rs.getString("cooperation_person_display")));return r;}
     private Map<String,Object> joinedRow(ResultSet rs,int n)throws SQLException{var r=row(rs,n);r.put("domain",rs.getString("mapped_domain"));r.put("owner",rs.getString("mapped_owner"));return r;}
     public static String reviewDisplay(Map<String,Object> row){String state=text(row.get("reviewStatus"));return state.equals("待审核")?state:state.equals("已审核")?(text(row.get("reviewReason")).trim().isEmpty()?"已审核（未填写原因）":"已审核（已填写原因）"):"";}
     public Map<String,Object> list(Map<String,?> criteria){
         String order=orderBy(criteria);var where=where(criteria,null);var args=new ArrayList<>(where.args());
-        long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+ISSUE_FROM+where.sql(),Long.class,args.toArray()));
+        String from=issueFrom();
+        long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+from+where.sql(),Long.class,args.toArray()));
         int limit=Math.max(1,Math.min(integer(first(criteria.get("limit")),50),200)),offset=Math.max(0,integer(first(criteria.get("offset")),0));
         args.add(limit);args.add(offset);
-        var items=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+","+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL+" AS mapped_owner"+ISSUE_FROM+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
+        var items=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+","+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL+" AS mapped_owner"+from+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
         addOccurrenceBatches(items);
         items.forEach(item->item.put("reviewStatusDisplay",reviewDisplay(item)));
         return Map.of("items",items,"total",total,"limit",limit,"offset",offset);
@@ -115,7 +156,7 @@ public class ReplayDatabaseIssueDao {
             args.add(like(keyword.toLowerCase(Locale.ROOT)));
         }
         String tableComments=table?",GROUP_CONCAT(DISTINCT NULLIF(i.table_comment,'') ORDER BY NULLIF(i.table_comment,'') SEPARATOR '、') AS table_comments":"";
-        String grouped="SELECT "+filter.valueSql()+" AS candidate_value,COUNT(*) AS issue_count"+tableComments+ISSUE_FROM+sql+" GROUP BY "+filter.valueSql();
+        String grouped="SELECT "+filter.valueSql()+" AS candidate_value,COUNT(*) AS issue_count"+tableComments+issueFrom()+sql+" GROUP BY "+filter.valueSql();
         if(!keyword.isBlank()&&table){
             grouped+=" HAVING MAX(CASE WHEN LOWER("+filter.valueSql()+") LIKE ? ESCAPE '!' OR LOWER(COALESCE(i.table_comment,'')) LIKE ? ESCAPE '!' THEN 1 ELSE 0 END)=1";
             String search=like(keyword.toLowerCase(Locale.ROOT));args.add(search);args.add(search);
@@ -130,7 +171,7 @@ public class ReplayDatabaseIssueDao {
     }
     private Map<String,Object> occurrenceOptions(QueryWhere where,String keyword){
         var args=new ArrayList<>(where.args());
-        String scoped="SELECT i.id AS issue_row_id,occurrence.batch_no AS candidate_value"+ISSUE_FROM+" JOIN ("+OCCURRENCES_SQL+") occurrence ON occurrence.issue_row_id=i.id"+where.sql();
+        String scoped="SELECT i.id AS issue_row_id,occurrence.batch_no AS candidate_value"+issueFrom()+" JOIN ("+OCCURRENCES_SQL+") occurrence ON occurrence.issue_row_id=i.id"+where.sql();
         if(!keyword.isBlank()){scoped+=" AND LOWER(occurrence.batch_no) LIKE ? ESCAPE '!'";args.add(like(keyword.toLowerCase(Locale.ROOT)));}
         var totals=jdbc.queryForMap("SELECT COUNT(DISTINCT candidate_value) AS candidate_count,COUNT(DISTINCT issue_row_id) AS matched_count FROM ("+scoped+") candidates",args.toArray());
         args.add(MAX_FILTER_CANDIDATES);
@@ -188,19 +229,155 @@ public class ReplayDatabaseIssueDao {
     }
     public List<String> distinct(String column){
         String expression=switch(column){case "domain_name"->DOMAIN_SQL;case "owner_display"->OWNER_SQL;case "batch_no"->"i.batch_no";default->throw new IllegalArgumentException();};
-        return jdbc.queryForList("SELECT DISTINCT "+expression+" AS candidate_value"+ISSUE_FROM+" WHERE "+VISIBLE_ISSUE_SQL+" AND TRIM(COALESCE("+expression+",''))<>'' ORDER BY candidate_value",String.class);
+        return jdbc.queryForList("SELECT DISTINCT "+expression+" AS candidate_value"+issueFrom()+" WHERE "+VISIBLE_ISSUE_SQL+" AND TRIM(COALESCE("+expression+",''))<>'' ORDER BY candidate_value",String.class);
     }
-    public Map<String,String> metadata(String table){
-        var rows=technologyOwners(List.of(new TableIdentity(table.toLowerCase(Locale.ROOT))));
-        if(rows.size()!=1)return Map.of();
-        var row=rows.get(0);return Map.of("tableComment",text(row.tableComment()),"domain",text(row.domain()),"owner",text(row.owner()));
+
+    private String issueFrom() {
+        Boolean hasBoundIssues = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM dii_replay_database_issue issue_row
+                                 JOIN dii_replay_database_issue_batch issue_batch ON issue_batch.batch_no=issue_row.batch_no
+                                WHERE issue_batch.registration_version_id IS NOT NULL)
+                """, Boolean.class);
+        return Boolean.TRUE.equals(hasBoundIssues) ? ISSUE_FROM : UNBOUND_ISSUE_FROM;
     }
-    public List<TechnologyOwnerRegistration> technologyOwners(Collection<TableIdentity> tables){
-        if(tables.isEmpty())return List.of();
-        var names=new LinkedHashSet<String>();tables.forEach(table->names.add(table.tableName()));
-        return jdbc.query("SELECT table_name,domain_name,COALESCE(NULLIF(TRIM(technology_owner_usernames),''),technology_owner_emp_nos) AS technology_owner_identity,technology_owner_display,developer_display,table_comment FROM dii_replay_database_table_person WHERE table_name IN ("+String.join(",",Collections.nCopies(names.size(),"?"))+")",
-                (rs,n)->new TechnologyOwnerRegistration(new TableIdentity(rs.getString("table_name")),text(rs.getString("technology_owner_identity")),text(rs.getString("technology_owner_display")),text(rs.getString("domain_name")),text(rs.getString("developer_display")),text(rs.getString("table_comment"))),names.toArray());
+    public Map<String, String> metadata(String comparisonCode) {
+        return metadata(new TableIdentity(comparisonCode));
     }
+
+    /** Soft-deleted SQL registrations retain their permanent comparison identity. */
+    public Set<String> customSqlComparisonCodes(Collection<String> comparisonCodes) {
+        List<String> codes = comparisonCodes.stream().map(code -> new TableIdentity(code).tableName())
+                .distinct().toList();
+        if (codes.isEmpty()) {
+            return Set.of();
+        }
+        return new LinkedHashSet<>(jdbc.queryForList(
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE registration_type='CUSTOM_SQL' "
+                        + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ")",
+                String.class, codes.toArray()));
+    }
+
+    /** Import already has a selected version before the new batch binding is persisted. */
+    public Map<String, String> metadata(String comparisonCode, Long registrationVersionId) {
+        if (registrationVersionId == null) {
+            return metadata(comparisonCode);
+        }
+        String code = new TableIdentity(comparisonCode).tableName();
+        return metadata(versionSources(registrationVersionId, Set.of(code)).get(code));
+    }
+
+    public Map<String, String> metadata(TableIdentity identity) {
+        return metadata(sourceTables(List.of(identity)).get(identity));
+    }
+
+    private Map<String, String> metadata(ResolvedSource source) {
+        if (source == null) {
+            return Map.of();
+        }
+        SourcePersonnel person = personnel(Set.of(source.tableName())).get(source.tableName());
+        if (person == null) {
+            return Map.of();
+        }
+        return Map.of("tableComment", source.displayName() == null ? person.tableComment() : source.displayName(),
+                "domain", person.domain(), "owner", person.owner());
+    }
+
+    public List<TechnologyOwnerRegistration> technologyOwners(Collection<TableIdentity> tables) {
+        Map<TableIdentity, ResolvedSource> sources = sourceTables(tables);
+        Map<String, SourcePersonnel> people = personnel(sources.values().stream().map(ResolvedSource::tableName).toList());
+        List<TechnologyOwnerRegistration> result = new ArrayList<>();
+        for (var entry : sources.entrySet()) {
+            SourcePersonnel person = people.get(entry.getValue().tableName());
+            if (person != null) {
+                String comment = entry.getValue().displayName() == null ? person.tableComment() : entry.getValue().displayName();
+                result.add(new TechnologyOwnerRegistration(entry.getKey(), person.identity(), person.name(),
+                        person.domain(), person.owner(), comment));
+            }
+        }
+        return result;
+    }
+
+    private Map<TableIdentity, ResolvedSource> sourceTables(Collection<TableIdentity> tables) {
+        if (tables.isEmpty()) {
+            return Map.of();
+        }
+        Set<String> batches = new LinkedHashSet<>();
+        tables.stream().map(TableIdentity::batchNo).filter(batch -> !batch.isBlank()).forEach(batches::add);
+        Map<String, Long> versions = new HashMap<>();
+        if (!batches.isEmpty()) {
+            jdbc.query("SELECT batch_no,registration_version_id FROM dii_replay_database_issue_batch WHERE batch_no IN ("
+                            + String.join(",", Collections.nCopies(batches.size(), "?")) + ") AND registration_version_id IS NOT NULL",
+                    (org.springframework.jdbc.core.RowCallbackHandler) row ->
+                            versions.put(row.getString("batch_no"), row.getLong("registration_version_id")), batches.toArray());
+        }
+        Map<Long, List<TableIdentity>> bound = new LinkedHashMap<>();
+        List<TableIdentity> unbound = new ArrayList<>();
+        for (TableIdentity identity : new LinkedHashSet<>(tables)) {
+            Long version = versions.get(identity.batchNo());
+            if (version == null) {
+                unbound.add(identity);
+            } else {
+                bound.computeIfAbsent(version, ignored -> new ArrayList<>()).add(identity);
+            }
+        }
+        Map<TableIdentity, ResolvedSource> result = new LinkedHashMap<>();
+        for (var entry : bound.entrySet()) {
+            Map<String, ResolvedSource> sources = versionSources(entry.getKey(),
+                    entry.getValue().stream().map(TableIdentity::tableName).toList());
+            entry.getValue().stream().filter(identity -> sources.containsKey(identity.tableName()))
+                    .forEach(identity -> result.put(identity, sources.get(identity.tableName())));
+        }
+        if (!unbound.isEmpty()) {
+            List<String> codes = unbound.stream().map(TableIdentity::tableName).distinct().toList();
+            Set<String> sqlCodes = customSqlComparisonCodes(codes);
+            unbound.stream().filter(identity -> !sqlCodes.contains(identity.tableName()))
+                    .forEach(identity -> result.put(identity, new ResolvedSource(identity.tableName(), null)));
+        }
+        return result;
+    }
+
+    private Map<String, ResolvedSource> versionSources(long versionId, Collection<String> comparisonCodes) {
+        Map<String, ResolvedSource> result = new LinkedHashMap<>();
+        if (comparisonCodes.isEmpty()) {
+            return result;
+        }
+        List<String> codes = comparisonCodes.stream().distinct().toList();
+        List<Object> arguments = new ArrayList<>();
+        arguments.add(versionId);
+        arguments.addAll(codes);
+        String sql = "SELECT LOWER(snapshot.table_name) AS comparison_code,COUNT(*) AS matching_items,MAX("
+                + FROZEN_SOURCE_SQL + ") AS source_table_name,"
+                + "MAX(CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN snapshot.table_comment END) AS display_name "
+                + "FROM dii_replay_db_compare_version_table snapshot "
+                + "JOIN dii_replay_db_compare_version snapshot_version ON snapshot_version.id=snapshot.version_id "
+                + "WHERE snapshot.version_id=? AND LOWER(snapshot.table_name) IN ("
+                + String.join(",", Collections.nCopies(codes.size(), "?")) + ") GROUP BY LOWER(snapshot.table_name)";
+        jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) row -> {
+            String source = text(row.getString("source_table_name")).trim().toLowerCase(Locale.ROOT);
+            if (row.getLong("matching_items") == 1 && !source.isBlank()) {
+                result.put(row.getString("comparison_code"), new ResolvedSource(source, row.getString("display_name")));
+            }
+        }, arguments.toArray());
+        return result;
+    }
+
+    private Map<String, SourcePersonnel> personnel(Collection<String> sourceTables) {
+        Map<String, SourcePersonnel> result = new HashMap<>();
+        List<String> sources = sourceTables.stream().distinct().toList();
+        if (sources.isEmpty()) {
+            return result;
+        }
+        String sql = "SELECT table_name,domain_name,COALESCE(NULLIF(TRIM(technology_owner_usernames),''),technology_owner_emp_nos) "
+                + "AS technology_owner_identity,technology_owner_display,developer_display,developer_usernames,table_comment "
+                + "FROM dii_replay_database_table_person WHERE table_name IN ("
+                + String.join(",", Collections.nCopies(sources.size(), "?")) + ")";
+        jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) row -> result.put(row.getString("table_name"),
+                new SourcePersonnel(text(row.getString("technology_owner_identity")), text(row.getString("technology_owner_display")),
+                        text(row.getString("domain_name")), text(row.getString("developer_display")),
+                        text(row.getString("developer_usernames")), text(row.getString("table_comment")))), sources.toArray());
+        return result;
+    }
+
     public void checkTableDates(Set<String> tables,java.time.LocalDate date){
         for(String table:tables){var dates=jdbc.queryForList("SELECT batch_date FROM dii_replay_database_issue_table_state WHERE table_name=?",java.sql.Date.class,table);
             if(!dates.isEmpty()&&dates.get(0).toLocalDate().isAfter(date))throw new IllegalArgumentException("当前表已有更新批次，不允许倒序导入："+table);}
@@ -279,13 +456,25 @@ public class ReplayDatabaseIssueDao {
     public List<Map<String,Object>> history(long id){return jdbc.query("SELECT * FROM dii_replay_database_issue_history WHERE issue_id=? ORDER BY batch_no DESC,operation_at DESC,id DESC",(rs,n)->{
         Map<String,Object> r=new LinkedHashMap<>();r.put("id",rs.getLong("id"));r.put("batchNo",rs.getString("batch_no"));r.put("operationType",rs.getString("operation_type"));r.put("operationAt",rs.getTimestamp("operation_at").toLocalDateTime().toString().replace('T',' '));r.put("operatorUsername",rs.getString("operator_username"));r.put("operatorName",rs.getString("operator_name"));r.put("before",decode(rs.getString("before_snapshot")));r.put("after",decode(rs.getString("after_snapshot")));r.put("incoming",decode(rs.getString("incoming_snapshot")));return r;
     },id);}
-    public Set<String> developerTables(String username,Collection<String> tables){
-        if(tables.isEmpty())return Set.of();
-        var args=new ArrayList<Object>(tables);
-        return new LinkedHashSet<>(jdbc.query("SELECT table_name,developer_usernames FROM dii_replay_database_table_person WHERE table_name IN ("+String.join(",",Collections.nCopies(tables.size(),"?"))+")",
-                (rs,n)->Map.entry(rs.getString("table_name"),text(rs.getString("developer_usernames"))),args.toArray()).stream()
-                .filter(entry->Arrays.stream(entry.getValue().split("[、,，;；\\s]+" )).anyMatch(username::equals))
-                .map(Map.Entry::getKey).toList());
+    public Set<String> developerTables(String username, Collection<String> tables) {
+        List<TableIdentity> identities = tables.stream().map(TableIdentity::new).toList();
+        Set<String> result = new LinkedHashSet<>();
+        developerComparisons(username, identities).forEach(identity -> result.add(identity.tableName()));
+        return result;
+    }
+
+    public Set<TableIdentity> developerComparisons(String username, Collection<TableIdentity> comparisons) {
+        Map<TableIdentity, ResolvedSource> sources = sourceTables(comparisons);
+        Map<String, SourcePersonnel> people = personnel(sources.values().stream().map(ResolvedSource::tableName).toList());
+        Set<TableIdentity> result = new LinkedHashSet<>();
+        for (var entry : sources.entrySet()) {
+            SourcePersonnel person = people.get(entry.getValue().tableName());
+            if (person != null && Arrays.stream(person.developerUsernames().split("[、,，;；\\s]+"))
+                    .anyMatch(username::equals)) {
+                result.add(entry.getKey());
+            }
+        }
+        return result;
     }
     public void insertPlanDateChange(long id,java.time.LocalDate date,com.axonlink.ai.replay.dto.ReplayIssueOperator actor,java.time.LocalDateTime at){
         jdbc.update("INSERT INTO dii_replay_database_issue_plan_date_change(replay_issue_id,planned_completion_date,operator_username,operator_real_name,changed_at) VALUES (?,?,?,?,?)",

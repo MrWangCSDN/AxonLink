@@ -1,6 +1,8 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
+import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonCustomSqlCodec;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonKeys;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetail;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditEvent;
@@ -50,13 +52,14 @@ import java.util.Map;
 public class ReplayDatabaseComparisonDao {
 
     private static final String FULL_TABLE_FILTER_VALUE = "__FULL_TABLE__";
+    private static final String CUSTOM_SQL_FILTER_VALUE = "__CUSTOM_SQL__";
 
     public static final String EMPTY_FILTER_VALUE = "__EMPTY__";
 
     private static final int MAX_PAGE_SIZE = 200;
     private static final String REVISER_FILTER_EXPRESSION =
             "COALESCE(NULLIF(TRIM(p.developer_emp_nos),''),NULLIF(TRIM(p.developer_usernames),''),'" + EMPTY_FILTER_VALUE + "')";
-    private static final String PERSON_JOIN = " LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name) ";
+    private static final String PERSON_JOIN = " LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(COALESCE(r.source_table_name,r.table_name)) ";
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactionTemplate;
     private final ReplayDatabaseComparisonConditionCodec conditionCodec;
@@ -105,9 +108,10 @@ public class ReplayDatabaseComparisonDao {
                                p.technology_owner_emp_nos AS group_owner_emp_no,
                                COALESCE(p.technology_owner_display,'') AS group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json
+                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json,
+                               r.registration_type,r.source_table_name,r.custom_sql,r.result_columns_json
                           FROM dii_replay_db_compare_registration r
-                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(COALESCE(r.source_table_name,r.table_name))
                         """ + filter.sql() + " ORDER BY r.table_name,r.id LIMIT ? OFFSET ?",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
                         row.getLong("id"), row.getString("schema_name"), row.getString("table_name"),
@@ -120,24 +124,26 @@ public class ReplayDatabaseComparisonDao {
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
                         decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
-                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json"))),
+                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
+                                .withCustomSql(readCustomSql(row)),
                 arguments.toArray());
         ReplayDbCompareGlobalCounts globalCounts = findGlobalCounts();
         return new ReplayDbCompareListPage(
                 withFieldPreviews(items), page, size, total,
-                globalCounts.tableCount(), globalCounts.fieldCount());
+                globalCounts.tableCount(), globalCounts.fieldCount(), globalCounts.customSqlCount());
     }
 
     public ReplayDbCompareGlobalCounts findGlobalCounts() {
         return jdbc.queryForObject("""
                         SELECT COUNT(DISTINCT r.id) AS table_count,
-                               COUNT(f.id) AS field_count
+                               COUNT(f.id) AS field_count,
+                               COUNT(DISTINCT CASE WHEN r.registration_type='CUSTOM_SQL' THEN r.id END) AS custom_sql_count
                           FROM dii_replay_db_compare_registration r
                           LEFT JOIN dii_replay_db_compare_field f ON f.registration_id = r.id
                          WHERE r.deleted = 0
                         """,
                 (row, rowNumber) -> new ReplayDbCompareGlobalCounts(
-                        row.getLong("table_count"), row.getLong("field_count")));
+                        row.getLong("table_count"), row.getLong("field_count"), row.getLong("custom_sql_count")));
     }
 
     public List<ReplayDbCompareListItem> findMetadataCandidates(ReplayDbCompareQuery query) {
@@ -150,9 +156,10 @@ public class ReplayDatabaseComparisonDao {
                                p.technology_owner_emp_nos AS group_owner_emp_no,
                                COALESCE(p.technology_owner_display,'') AS group_owner_name,
                                r.registered_date,r.version,r.where_condition_json,r.compare_limit,
-                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json
+                               r.order_by_primary_keys_json,r.partition_num,r.sample_limit,r.comparison_key_json,
+                               r.registration_type,r.source_table_name,r.custom_sql,r.result_columns_json
                           FROM dii_replay_db_compare_registration r
-                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(COALESCE(r.source_table_name,r.table_name))
                         """ + filter.sql() + " ORDER BY r.table_name,r.id",
                 (row, rowNumber) -> new ReplayDbCompareListItem(
                         row.getLong("id"), row.getString("schema_name"), row.getString("table_name"),
@@ -165,7 +172,8 @@ public class ReplayDatabaseComparisonDao {
                         row.getString("where_condition_json") != null,
                         nullableLong(row, "compare_limit"), null, List.of(),
                         decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")))
-                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json"))),
+                                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
+                                .withCustomSql(readCustomSql(row)),
                 filter.arguments().toArray());
         return withFieldPreviews(items);
     }
@@ -647,20 +655,22 @@ public class ReplayDatabaseComparisonDao {
             ReplayDbCompareHeaderFilterRequest request,
             SqlFilter filter) {
         List<ScopeFilterRow> rows = jdbc.query("""
-                        SELECT r.id,r.table_name,r.where_condition_json,r.compare_limit
+                        SELECT r.id,r.table_name,r.where_condition_json,r.compare_limit,r.registration_type
                           FROM dii_replay_db_compare_registration r
-                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(r.table_name)
+                          LEFT JOIN dii_replay_database_table_person p ON p.table_name=LOWER(COALESCE(r.source_table_name,r.table_name))
                         """ + filter.sql() + " ORDER BY r.table_name,r.id",
                 (row, rowNumber) -> new ScopeFilterRow(
                         row.getLong("id"), row.getString("table_name"),
-                        row.getString("where_condition_json"), nullableLong(row, "compare_limit")),
+                        row.getString("where_condition_json"), nullableLong(row, "compare_limit"), row.getString("registration_type")),
                 filter.arguments().toArray());
         Map<Long, List<ReplayDbCompareField>> fieldsByRegistration = findFieldsByRegistrationIds(
                 rows.stream().map(ScopeFilterRow::id).toList());
         Map<String, Long> counts = new LinkedHashMap<>();
         for (ScopeFilterRow row : rows) {
             String value;
-            if (row.compareLimit() == null) {
+            if ("CUSTOM_SQL".equals(row.registrationType())) {
+                value = CUSTOM_SQL_FILTER_VALUE;
+            } else if (row.compareLimit() == null) {
                 value = row.conditionJson() == null ? FULL_TABLE_FILTER_VALUE : row.conditionJson();
             } else {
                 List<String> primaryKeys = fieldsByRegistration.getOrDefault(row.id(), List.of()).stream()
@@ -706,8 +716,9 @@ public class ReplayDatabaseComparisonDao {
                     (schema_name,table_name,table_comment,domain_name,reviser_emp_no,reviser_username,reviser_name,
                      group_owner_emp_no,group_owner_name,registered_date,deleted,deleted_reason,deleted_by,deleted_at,
                      version,created_by,created_name,created_at,updated_by,updated_name,updated_at,
-                     where_condition_json,compare_limit,order_by_primary_keys_json,partition_num,sample_limit,comparison_key_json)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     where_condition_json,compare_limit,order_by_primary_keys_json,partition_num,sample_limit,comparison_key_json,
+                     registration_type,source_table_name,custom_sql,result_columns_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, normalizeIdentifier(registration.schemaName()));
             statement.setString(2, normalizeIdentifier(registration.tableName()));
@@ -740,6 +751,10 @@ public class ReplayDatabaseComparisonDao {
             statement.setInt(25, registration.partitionNum());
             statement.setInt(26, registration.sampleLimit());
             statement.setString(27, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
+            statement.setString(28, registration.registrationType());
+            statement.setString(29, registration.customSql() == null ? null : registration.sourceTableName());
+            statement.setString(30, registration.customSql() == null ? null : registration.customSql().sql());
+            statement.setString(31, ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(registration.customSql()));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -757,8 +772,9 @@ public class ReplayDatabaseComparisonDao {
         StringBuilder sql = new StringBuilder(" WHERE r.deleted=0");
         List<Object> arguments = new ArrayList<>();
         if (!"tableName".equals(excludedKey) && hasText(query.tableKeyword())) {
-            sql.append(" AND (LOWER(r.table_name) LIKE ? OR LOWER(COALESCE(r.table_comment,'')) LIKE ?)");
+            sql.append(" AND (LOWER(r.table_name) LIKE ? OR LOWER(COALESCE(r.table_comment,'')) LIKE ? OR LOWER(COALESCE(r.source_table_name,'')) LIKE ?)");
             String pattern = pattern(query.tableKeyword());
+            arguments.add(pattern);
             arguments.add(pattern);
             arguments.add(pattern);
         }
@@ -924,7 +940,7 @@ public class ReplayDatabaseComparisonDao {
                             .filter(ReplayDbCompareField::primaryKey)
                             .sorted(java.util.Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
                             .map(ReplayDbCompareField::columnName)
-                            .toList(), item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey());
+                            .toList(), item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql());
         }).toList();
     }
 
@@ -947,6 +963,11 @@ public class ReplayDatabaseComparisonDao {
                 });
     }
 
+    private ReplayDbCompareCustomSql readCustomSql(java.sql.ResultSet row) throws java.sql.SQLException {
+        return ReplayDatabaseComparisonCustomSqlCodec.decode(row.getString("registration_type"),
+                row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json"));
+    }
+
     private ReplayDbCompareRegistration mapRegistration(java.sql.ResultSet row,
                                                          List<ReplayDbCompareField> fields) throws java.sql.SQLException {
         return new ReplayDbCompareRegistration(
@@ -964,7 +985,8 @@ public class ReplayDatabaseComparisonDao {
                 conditionCodec.decode(row.getString("where_condition_json")),
                 nullableLong(row, "compare_limit"),
                 decodeOrderingPrimaryKeys(row.getString("order_by_primary_keys_json")), null)
-                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")));
+                .withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
+                                .withCustomSql(readCustomSql(row));
     }
 
     private ReplayDbCompareRegistration withFields(ReplayDbCompareRegistration row,
@@ -976,7 +998,30 @@ public class ReplayDatabaseComparisonDao {
                 row.registeredDate(), row.deleted(), row.deletedReason(), row.deletedBy(), row.deletedAt(),
                 row.version(), row.createdBy(), row.createdName(), row.createdAt(), row.updatedBy(),
                 row.updatedName(), row.updatedAt(), fields, row.whereCondition(), row.compareLimit(),
-                row.orderingPrimaryKeyNames(), row.metadataValidation()).withPartitionNum(row.partitionNum()).withSampleLimit(row.sampleLimit()).withComparisonKey(row.comparisonKey());
+                row.orderingPrimaryKeyNames(), row.metadataValidation()).withPartitionNum(row.partitionNum()).withSampleLimit(row.sampleLimit()).withComparisonKey(row.comparisonKey()).withCustomSql(row.customSql());
+    }
+
+    public boolean updateCustomSqlRegistration(
+            long id, long expectedVersion, ReplayDbCompareRegistration target) {
+        if (target.customSql() == null) {
+            throw new IllegalArgumentException("自定义SQL定义不能为空");
+        }
+        return jdbc.update("""
+                        UPDATE dii_replay_db_compare_registration
+                           SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
+                               registered_date=?,reviser_emp_no=?,reviser_username=?,reviser_name=?,
+                               updated_by=?,updated_name=?,updated_at=?,where_condition_json=NULL,compare_limit=?,
+                               order_by_primary_keys_json=?,partition_num=?,sample_limit=?,comparison_key_json=?,
+                               custom_sql=?,result_columns_json=?,version=version+1
+                         WHERE id=? AND version=? AND deleted=0 AND registration_type='CUSTOM_SQL'
+                           AND source_table_name=?
+                        """, target.tableComment(), target.domainName(), target.groupOwnerEmpNo(), target.groupOwnerName(),
+                Date.valueOf(target.registeredDate()), target.reviserEmpNo(), target.reviserUsername(), target.reviserName(),
+                target.updatedBy(), target.updatedName(), Timestamp.valueOf(target.updatedAt()), target.compareLimit(),
+                encodeOrderingPrimaryKeys(target.orderingPrimaryKeyNames()), target.partitionNum(), target.sampleLimit(),
+                ReplayDatabaseComparisonKeys.encode(target.comparisonKey()), target.customSql().sql(),
+                ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(target.customSql()), id, expectedVersion,
+                target.sourceTableName()) == 1;
     }
 
     public boolean initializeOrderingPrimaryKeys(long id, List<String> orderingPrimaryKeyNames) {
@@ -1037,7 +1082,7 @@ public class ReplayDatabaseComparisonDao {
     private record SqlFilter(String sql, List<Object> arguments) {
     }
 
-    private record ScopeFilterRow(long id, String tableName, String conditionJson, Long compareLimit) {
+    private record ScopeFilterRow(long id, String tableName, String conditionJson, Long compareLimit, String registrationType) {
     }
 
     private record HeaderColumn(
@@ -1053,11 +1098,11 @@ public class ReplayDatabaseComparisonDao {
                         "CASE WHEN TRIM(COALESCE(p.domain_name,''))='' THEN '" + EMPTY_FILTER_VALUE + "' ELSE p.domain_name END",
                         "CASE WHEN TRIM(COALESCE(p.domain_name,''))='' THEN '空' ELSE p.domain_name END",
                         "COALESCE(p.domain_name,'')", false);
-                case "tableName" -> new HeaderColumn(key, "r.table_name", "CASE WHEN COALESCE(r.table_comment,'')='' THEN r.table_name ELSE CONCAT(r.table_name,'(',r.table_comment,')') END", "CONCAT(r.table_name,' ',COALESCE(r.table_comment,''))", false);
+                case "tableName" -> new HeaderColumn(key, "r.table_name", "CASE WHEN COALESCE(r.table_comment,'')='' THEN r.table_name ELSE CONCAT(r.table_name,'(',r.table_comment,')') END", "CONCAT(r.table_name,' ',COALESCE(r.table_comment,''),' ',COALESCE(r.source_table_name,''))", false);
                 case "fieldName" -> new HeaderColumn(key, "hf.column_name", "CASE WHEN COALESCE(hf.column_comment,'')='' THEN hf.column_name ELSE CONCAT(hf.column_name,'(',hf.column_comment,')') END", "CONCAT(hf.column_name,' ',COALESCE(hf.column_comment,''))", true);
                 case "whereCondition" -> new HeaderColumn(key,
-                        "COALESCE(r.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "')",
-                        "COALESCE(r.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "')",
+                        "CASE WHEN r.registration_type='CUSTOM_SQL' THEN '" + CUSTOM_SQL_FILTER_VALUE + "' ELSE COALESCE(r.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "') END",
+                        "CASE WHEN r.registration_type='CUSTOM_SQL' THEN '" + CUSTOM_SQL_FILTER_VALUE + "' ELSE COALESCE(r.where_condition_json,'" + FULL_TABLE_FILTER_VALUE + "') END",
                         "COALESCE(r.where_condition_json,'')", false);
                 case "reviser" -> new HeaderColumn(key,
                         REVISER_FILTER_EXPRESSION,
@@ -1081,25 +1126,33 @@ public class ReplayDatabaseComparisonDao {
             List<Object> arguments,
             List<String> values) {
         boolean includesFullTable = values.contains(FULL_TABLE_FILTER_VALUE);
+        boolean includesCustomSql = values.contains(CUSTOM_SQL_FILTER_VALUE);
         List<ReplayDbCompareScopeFilterValue> scopes = values.stream()
                 .map(ReplayDbCompareScopeFilterValue::decode)
                 .filter(java.util.Objects::nonNull)
                 .toList();
         List<String> configured = values.stream()
-                .filter(value -> !FULL_TABLE_FILTER_VALUE.equals(value))
+                .filter(value -> !FULL_TABLE_FILTER_VALUE.equals(value) && !CUSTOM_SQL_FILTER_VALUE.equals(value))
                 .filter(value -> ReplayDbCompareScopeFilterValue.decode(value) == null)
                 .toList();
         sql.append(" AND (");
         boolean appended = false;
         if (includesFullTable) {
-            sql.append("(r.where_condition_json IS NULL AND r.compare_limit IS NULL)");
+            sql.append("(r.registration_type='TABLE' AND r.where_condition_json IS NULL AND r.compare_limit IS NULL)");
+            appended = true;
+        }
+        if (includesCustomSql) {
+            if (appended) {
+                sql.append(" OR ");
+            }
+            sql.append("r.registration_type='CUSTOM_SQL'");
             appended = true;
         }
         if (!configured.isEmpty()) {
             if (appended) {
                 sql.append(" OR ");
             }
-            sql.append("(r.where_condition_json IN (")
+            sql.append("(r.registration_type='TABLE' AND r.where_condition_json IN (")
                     .append(String.join(",", Collections.nCopies(configured.size(), "?")))
                     .append(") AND r.compare_limit IS NULL)");
             arguments.addAll(configured);
@@ -1109,7 +1162,7 @@ public class ReplayDatabaseComparisonDao {
             if (appended) {
                 sql.append(" OR ");
             }
-            sql.append("(r.table_name=? AND ");
+            sql.append("(r.registration_type='TABLE' AND r.table_name=? AND ");
             arguments.add(scope.tableName());
             if (scope.conditionJson() == null) {
                 sql.append("r.where_condition_json IS NULL");

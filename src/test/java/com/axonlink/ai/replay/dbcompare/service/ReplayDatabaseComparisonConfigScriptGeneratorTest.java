@@ -27,6 +27,124 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
+    @Test
+    void customSqlProjectsSelectedAliasesInOrderForBothTargetsAndLimitsOutsideAggregation() {
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select tenant_id, sum(amount) as \"Total_Amount\" from acct_master group by tenant_id;",
+                "acct_master", List.of(
+                        new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("tenant_id", "tenant_id", "varchar", 1),
+                        new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("total_amount", "Total_Amount", "numeric", 2)));
+        var custom = new ReplayDbCompareVersionTableItem(1L, 1L, "base_schema", "SQL_123456", "汇总", "存款组",
+                "100", "creator", "创建人", "101", "owner", "负责人",
+                null, null, 25L, LocalDate.of(2026, 10, 15), 2,
+                List.of(new ReplayDbCompareVersionField("total_amount", "金额", 2, false, null, 1),
+                        new ReplayDbCompareVersionField("tenant_id", "租户", 1, false, null, 2)))
+                .withCustomSql(definition)
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection(
+                        "SQL_RESULT_KEY", "RESULT_KEY", List.of("tenant_id")));
+
+        for (var result : List.of(generator.generate("v1", List.of(custom)), generator.generateNew("v1", List.of(custom)))) {
+            String output = sql(result);
+            assertTrue(output.contains("select result_q.\"Total_Amount\" as \"total_amount\",result_q.\"tenant_id\" as \"tenant_id\" from ("));
+            assertTrue(output.contains(") result_q order by \"tenant_id\" limit 25) orig"));
+            assertTrue(output.contains(") result_q order by \"tenant_id\" limit 25) dest"));
+            assertTrue(output.contains("(1,'total_amount','1','金额','1','1','0','0')"));
+            assertTrue(output.contains("(1,'tenant_id','1','租户','2','2','1','0')"));
+            assertFalse(output.contains(";) result_q"));
+            assertTrue(output.contains("'SQL_123456','汇总比对'"));
+        }
+    }
+
+    @Test
+    void customSqlRequiresResultKeyAndCompleteProjectedMetadata() {
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select id from acct_master", "acct_master", List.of(
+                        new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "id", "bigint", 1)));
+        var custom = table("SQL_123456", "自定义查询", "存款组", field("id", "编号", false, 1))
+                .withCustomSql(definition);
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generate("v1", List.of(custom)));
+        var missing = custom.withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection(
+                "SQL_RESULT_KEY", "RESULT_KEY", List.of("id"))).withCustomSql(
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                        "select amount as other from acct_master", "acct_master", List.of(
+                                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("other", "other", "numeric", 1))));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generateNew("v1", List.of(missing)));
+    }
+
+    @Test
+    void customSqlQuotesCanonicalAliasesAndKeysThatAreSqlKeywords() {
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select id as \"select\" from acct_master", "acct_master", List.of(
+                        new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("select", "select", "bigint", 1)));
+        var custom = scopedTable(null, 3L, field("select", "编号", false, 1))
+                .withCustomSql(definition)
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection(
+                        "SQL_RESULT_KEY", "RESULT_KEY", List.of("select")));
+
+        String result = sql(generator.generate("v1", List.of(custom)));
+        assertTrue(result.contains("result_q.\"select\" as \"select\""));
+        assertTrue(result.contains("order by \"select\" limit 3"));
+    }
+
+    @Test
+    void customSqlBackslashesUseUtf8HexExpressionsIndependentOfMysqlStringEscapeMode() {
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select 'a\\b' as result_key from acct_master", "acct_master", List.of(
+                        new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("result_key", "result_key", "varchar", 1)));
+        var custom = table("SQL_123456", "自定义查询", "存款组", field("result_key", "编号", false, 1))
+                .withCustomSql(definition)
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection(
+                        "SQL_RESULT_KEY", "RESULT_KEY", List.of("result_key")));
+
+        for (var generated : List.of(generator.generate("v1", List.of(custom)), generator.generateNew("v1", List.of(custom)))) {
+            var matcher = java.util.regex.Pattern.compile("CONVERT\\(0x([0-9a-f]+) USING utf8mb4\\)").matcher(sql(generated));
+            List<String> queries = new ArrayList<>();
+            while (matcher.find()) {
+                queries.add(new String(HexFormat.of().parseHex(matcher.group(1)), StandardCharsets.UTF_8));
+            }
+            assertEquals(2, queries.size());
+            assertTrue(queries.get(0).contains("a\\b"));
+            assertTrue(queries.get(0).endsWith(") orig"));
+            assertTrue(queries.get(1).endsWith(") dest"));
+        }
+    }
+
+    @Test
+    void ordinaryTableOutputRemainsByteCompatible() {
+        String expected = """
+                START TRANSACTION;
+
+                TRUNCATE TABLE tss_bcomp_field;
+                TRUNCATE TABLE tss_bcomp_table_sql;
+                TRUNCATE TABLE tss_bcomp_conf;
+
+                INSERT INTO tss_bcomp_conf
+                  (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit)
+                VALUES
+                (1,'dept','acct_master','账户比对','2','1','3','1',1,'HASH',100);
+
+                INSERT INTO tss_bcomp_field
+                  (bcomp_index,field_name,field_type,field_memo,field_old_index,field_new_index,field_index_flag,field_enum_flag)
+                VALUES
+                (1,'id','1','编号','1','1','1','0');
+
+                INSERT INTO tss_bcomp_table_sql
+                  (bcomp_index,orig_sql,orig_database_id,dest_sql,dest_database_id)
+                VALUES
+                (1,'(select id from acct_master) orig',1,'(select id from acct_master) dest',2);
+
+                COMMIT;
+
+                -- Version: v1
+                -- Tables: 1
+                -- Fields: 1
+                """;
+        assertArrayEquals(expected.getBytes(StandardCharsets.UTF_8), generator.generate("v1",
+                List.of(table("acct_master", "账户", "存款组", field("id", "编号", true, 1)))).sqlContent());
+    }
+
     @Test void selectedUniqueSnapshotControlsFlagAndLimitForBothTargets() {
         var selected = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("ref_unique", "UNIQUE_INDEX", List.of("ref", "tenant"));
         var table = new ReplayDbCompareVersionTableItem(1L, 1L, "base", "acct_master", "账户", "存款组", "100", "creator", "创建人", "101", "owner", "负责人",

@@ -21,6 +21,9 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareListItem;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareMetadataStatus;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonConditionCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -60,9 +63,94 @@ class ReplayDatabaseComparisonDaoTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonDao(jdbc);
+    }
+
+    @Test
+    void persistsMultipleSqlItemsForOneSourceAndKeepsLegacyTableIdentity() {
+        long sourceId = insert("acct_master", "账户主表", "存款组", "001", "张三", "101", "赵经理",
+                LocalDate.of(2026, 9, 10), false, field("acct_no", "账号", 1, 1));
+        ReplayDbCompareCustomSql definition = customSql("SELECT acct_no, SUM(amount) AS total_amt FROM acct_master GROUP BY acct_no");
+        long firstId = dao.insertRegistration(sqlRegistration("sql_first", definition));
+        long secondId = dao.insertRegistration(sqlRegistration("sql_second", definition));
+
+        ReplayDbCompareRegistration legacy = dao.findByIdIncludingDeleted(sourceId);
+        ReplayDbCompareRegistration saved = dao.findByIdIncludingDeleted(firstId);
+        assertEquals("TABLE", legacy.registrationType());
+        assertEquals("acct_master", legacy.comparisonCode());
+        assertEquals("acct_master", legacy.sourceTableName());
+        assertNull(legacy.customSql());
+        assertEquals("CUSTOM_SQL", saved.registrationType());
+        assertEquals("sql_first", saved.comparisonCode());
+        assertEquals("acct_master", saved.sourceTableName());
+        assertEquals(definition, saved.customSql());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules().valueToTree(saved);
+        assertEquals("CUSTOM_SQL", json.get("registrationType").asText());
+        assertEquals("sql_first", json.get("comparisonCode").asText());
+        assertEquals("acct_master", json.get("sourceTableName").asText());
+        assertEquals(definition, saved.withPartitionNum(16).withSampleLimit(25)
+                .withComparisonKey(saved.comparisonKey()).customSql());
+        assertEquals(definition, dao.findAllActiveWithFields().stream()
+                .filter(item -> item.id() == secondId).findFirst().orElseThrow().customSql());
+
+        ReplayDbCompareListPage page = dao.search(ReplayDbCompareQuery.empty(0, 20));
+        assertEquals(3, page.globalTableCount());
+        assertEquals(2, page.globalCustomSqlCount());
+        assertEquals(5, page.globalFieldCount());
+        var sqlItem = page.items().stream().filter(item -> item.id() == firstId).findFirst().orElseThrow();
+        assertEquals("存款组", sqlItem.domainName());
+        assertEquals("张三(001)", sqlItem.reviserName());
+        assertEquals(definition, sqlItem.withPartitionNum(8).withSampleLimit(30)
+                .withComparisonKey(saved.comparisonKey()).customSql());
+        assertEquals(1, dao.search(scopeQuery("__FULL_TABLE__")).total());
+        assertEquals(2, dao.search(scopeQuery("__CUSTOM_SQL__")).total());
+        assertEquals(2, dao.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest(
+                "whereCondition", null, 20, null, null, List.of(), List.of(), List.of(), null, null))
+                .options().stream().filter(option -> "__CUSTOM_SQL__".equals(option.value()))
+                .findFirst().orElseThrow().count());
+    }
+
+    @Test
+    void customSqlUpdateUsesOptimisticVersionAndCannotChangeSourceAssociation() {
+        long id = dao.insertRegistration(sqlRegistration("sql_first", customSql("SELECT acct_no, amount AS total_amt FROM acct_master")));
+        ReplayDbCompareRegistration saved = dao.findByIdIncludingDeleted(id);
+        ReplayDbCompareCustomSql replacement = customSql("SELECT acct_no, SUM(amount) AS total_amt FROM acct_master GROUP BY acct_no");
+        ReplayDbCompareRegistration updated = saved.withCustomSql(replacement).withSampleLimit(50);
+
+        assertTrue(dao.updateCustomSqlRegistration(id, saved.version(), updated));
+        assertFalse(dao.updateCustomSqlRegistration(id, saved.version(), saved));
+        ReplayDbCompareRegistration current = dao.findByIdIncludingDeleted(id);
+        assertEquals(saved.version() + 1, current.version());
+        assertEquals(replacement, current.customSql());
+        assertEquals(50, current.sampleLimit());
+        assertEquals("sql_first", current.comparisonCode());
+        var differentSource = current.withCustomSql(new ReplayDbCompareCustomSql(
+                replacement.sql(), "other_table", replacement.resultColumns()));
+        assertFalse(dao.updateCustomSqlRegistration(id, current.version(), differentSource));
+        assertEquals(replacement, dao.findByIdIncludingDeleted(id).customSql());
+    }
+
+    private ReplayDbCompareCustomSql customSql(String sql) {
+        return new ReplayDbCompareCustomSql(sql, "acct_master", List.of(
+                new ReplayDbCompareSqlColumn("acct_no", "acct_no", "varchar", 1),
+                new ReplayDbCompareSqlColumn("total_amt", "total_amt", "numeric", 2)));
+    }
+
+    private ReplayDbCompareRegistration sqlRegistration(String code, ReplayDbCompareCustomSql definition) {
+        return new ReplayDbCompareRegistration(null, "base", code, "账户汇总", "旧领域",
+                "001", "张三", "101", "赵经理", LocalDate.of(2026, 9, 10), false,
+                null, null, null, 0, "001", "张三", CREATED_AT, "001", "张三", CREATED_AT,
+                List.of(field("acct_no", "账号", 1, 1), field("total_amt", "总金额", 2, 2)))
+                .withComparisonKey(new ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("acct_no")))
+                .withCustomSql(definition);
+    }
+
+    private ReplayDbCompareQuery scopeQuery(String value) {
+        return new ReplayDbCompareQuery(null, null, List.of(), List.of(), List.of(), null, null,
+                0, 20, List.of(), List.of(), List.of(), List.of(), List.of(value));
     }
 
     @Test

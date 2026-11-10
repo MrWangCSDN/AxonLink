@@ -99,6 +99,28 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void customSqlEndpointsRequireHumanLoginAndPreserveTheSaveContract() throws Exception {
+        String path = "/api/ai/parallel-replay/database-comparison-fields/custom-sql";
+        mvc.perform(post(path + "/analyze").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sql\":\"select id from source_table\"}"))
+                .andExpect(status().isUnauthorized());
+        when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
+        when(service.analyzeCustomSql(any(), any())).thenReturn(Map.of("sourceTableName", "source_table"));
+        mvc.perform(post(path + "/analyze").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sql\":\"select id from source_table\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.sourceTableName").value("source_table"));
+        String body = "{\"displayName\":\"汇总\",\"sourceTableName\":\"source_table\",\"sql\":\"select id from source_table\","
+                + "\"fieldNames\":[\"id\"],\"resultKeyColumns\":[\"id\"],\"partitionNum\":1,\"sampleLimit\":100,\"version\":3}";
+        mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        mvc.perform(put(path + "/9").contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        var captor = ArgumentCaptor.forClass(com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSqlSaveRequest.class);
+        verify(service).createCustomSql(captor.capture(), any());
+        assertEquals(List.of("id"), captor.getValue().resultKeyColumns());
+        assertEquals("source_table", captor.getValue().sourceTableName());
+        verify(service).updateCustomSql(eq(9L), any(), any());
+    }
+
+    @Test
     void technologyOwnerAutocompleteHasDedicatedEndpoint() throws Exception {
         mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/technology-owners")
                         .param("keyword", "101"))

@@ -56,7 +56,8 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
         scriptDao = new ReplayDatabaseComparisonVersionScriptDao(jdbc);
@@ -91,6 +92,41 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         assertArrayEquals(legacy.content(), service.download(VERSION_NO).content());
         assertEquals(legacy.sha256(), service.status(VERSION_NO).sha256());
         assertFalse(new String(legacy.content(), StandardCharsets.UTF_8).contains("reviser_name"));
+    }
+
+    @Test
+    void customSqlSnapshotSupportsBaseGenerationAndBothDownloadTargets() {
+        String sqlVersion = "20261110-180000";
+        long sqlVersionId = versionDao.insertVersion(sqlVersion, "b".repeat(64), 1, 2,
+                "tester", "测试人", LocalDateTime.of(2026, 11, 10, 18, 0));
+        jdbc.update("UPDATE dii_replay_db_compare_version SET custom_sql_count=1 WHERE id=?", sqlVersionId);
+        var custom = registration("SQL_123456", List.of(
+                field("total_amount", "金额", false, 1), field("tenant_id", "租户", false, 2)))
+                .withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                        "select tenant_id, sum(amount) as \"Total_Amount\" from acct_master group by tenant_id",
+                        "acct_master", List.of(
+                                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("tenant_id", "tenant_id", "varchar", 1),
+                                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("total_amount", "Total_Amount", "numeric", 2))))
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection(
+                        "SQL_RESULT_KEY", "RESULT_KEY", List.of("tenant_id")));
+        long tableId = versionDao.insertVersionTable(sqlVersionId, custom);
+        versionDao.insertVersionFields(tableId, custom.fields());
+
+        var stored = service.generate(sqlVersion, new ReplayIssueOperator("tester", "测试人"));
+        var legacy = service.forTarget(sqlVersion, service.download(sqlVersion), ConfigScriptTarget.LEGACY);
+        var current = service.forTarget(sqlVersion, service.download(sqlVersion), ConfigScriptTarget.NEW);
+
+        for (var file : List.of(stored, legacy, current)) {
+            String sql = new String(file.content(), StandardCharsets.UTF_8);
+            assertTrue(sql.contains("result_q.\"Total_Amount\" as \"total_amount\",result_q.\"tenant_id\" as \"tenant_id\""));
+            assertTrue(sql.contains("'SQL_123456'"));
+            assertTrue(sql.contains(") result_q) orig"));
+            assertTrue(sql.contains(") result_q) dest"));
+        }
+        assertTrue(new String(current.content(), StandardCharsets.UTF_8).contains("INSERT INTO tss_bcomp_table_sql_new"));
+        assertArrayEquals(stored.content(), service.download(sqlVersion).content());
+        assertEquals(stored.sha256(), service.status(sqlVersion).sha256());
+        assertFalse(current.sha256().equals(stored.sha256()));
     }
 
     @Test

@@ -3,6 +3,9 @@ package com.axonlink.ai.replay.dbcompare.service;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareChangeType;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSqlSaveRequest;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis;
 import org.springframework.http.HttpStatus;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
@@ -76,6 +79,12 @@ public class ReplayDatabaseComparisonService {
     private final ReplayDatabaseComparisonDao dao;
     private final SysUserDao userDao;
     private ReplayDatabaseTablePersonDao tablePersonDao;
+    private ReplayDatabaseComparisonCustomSqlAnalyzer customSqlAnalyzer;
+
+    @Autowired
+    public void setCustomSqlAnalyzer(ReplayDatabaseComparisonCustomSqlAnalyzer analyzer) {
+        this.customSqlAnalyzer = analyzer;
+    }
 
     @Autowired(required = false)
     public void setTablePersonDao(ReplayDatabaseTablePersonDao tablePersonDao) {
@@ -267,11 +276,141 @@ public class ReplayDatabaseComparisonService {
         return requiredResult(result);
     }
 
+    public Map<String, Object> analyzeCustomSql(String sql, ReplayIssueOperator operator) {
+        requireActor(operator);
+        ReplayDbCompareSqlAnalysis analysis;
+        try {
+            analysis = customSqlAnalyzer.analyze(sql);
+        } catch (IllegalArgumentException exception) {
+            throw invalidCustomSql(exception.getMessage());
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sql", analysis.sql());
+        result.put("schemaName", analysis.schemaName());
+        result.put("sourceTableName", analysis.sourceTableName());
+        result.put("sourceTableComment", analysis.sourceTableComment());
+        result.put("resultColumns", analysis.resultColumns());
+        result.put("candidateKeyColumns", analysis.candidateKeyColumns());
+        var person = tablePersonDao == null ? null : tablePersonDao.findByTableName(analysis.sourceTableName());
+        result.put("domainName", person == null ? "" : person.domain());
+        result.put("reviserName", person == null ? "" : person.developer());
+        result.put("groupOwnerName", person == null ? "" : person.technologyOwner());
+        return result;
+    }
+
+    public ReplayDbCompareRegistration createCustomSql(
+            ReplayDbCompareCustomSqlSaveRequest request, ReplayIssueOperator operator) {
+        Actor actor = requireActor(operator);
+        int partitions = partitionForSave(request.partitionNum(), 1, operator);
+        int samples = sampleForSave(request.sampleLimit(), 100, operator);
+        var prepared = prepareCustomSql(request);
+        var person = customSqlPerson(prepared.analysis().sourceTableName());
+        LocalDateTime now = LocalDateTime.now(clock);
+        var registration = customSqlRegistration(null, request, prepared, person, actor, now, partitions, samples);
+        var details = withSampleAudit(withPartitionAudit(
+                auditDiff.compare(null, state(registration), ReplayDbCompareAuditOperation.CREATE),
+                1, partitions), 100, samples);
+        return requiredResult(transactionTemplate.execute(status -> {
+            long id = dao.insertRegistration(registration);
+            writeAudit(id, registration.schemaName(), registration.tableName(), ReplayDbCompareAuditOperation.CREATE,
+                    0, null, actor, now, details);
+            return dao.findByIdIncludingDeleted(id);
+        }));
+    }
+
+    public ReplayDbCompareRegistration updateCustomSql(
+            long id, ReplayDbCompareCustomSqlSaveRequest request, ReplayIssueOperator operator) {
+        Actor actor = requireActor(operator);
+        var snapshot = requireRegistration(id);
+        requireActive(snapshot);
+        requireVersion(snapshot, request.version());
+        if (snapshot.customSql() == null) throw new IllegalArgumentException("该登记不是自定义 SQL");
+        if (!identifier(snapshot.sourceTableName()).equals(identifier(request.sourceTableName()))) {
+            throw new IllegalArgumentException("自定义 SQL 的关联基础表创建后不能更换");
+        }
+        int partitions = partitionForSave(request.partitionNum(), snapshot.partitionNum(), operator);
+        int samples = sampleForSave(request.sampleLimit(), snapshot.sampleLimit(), operator);
+        var prepared = prepareCustomSql(request);
+        if (!identifier(snapshot.schemaName()).equals(identifier(prepared.analysis().schemaName()))) {
+            throw new IllegalArgumentException("自定义 SQL 的母库 Schema 已变化，请重新登记");
+        }
+        var person = customSqlPerson(snapshot.sourceTableName());
+        LocalDateTime now = LocalDateTime.now(clock);
+        return requiredResult(transactionTemplate.execute(status -> {
+            var current = requireRegistration(id);
+            requireActive(current);
+            requireVersion(current, request.version());
+            var target = customSqlRegistration(current, request, prepared, person, actor, now, partitions, samples);
+            var details = withSampleAudit(withPartitionAudit(
+                    auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.UPDATE),
+                    current.partitionNum(), partitions), current.sampleLimit(), samples);
+            if (details.isEmpty()) return current;
+            if (!dao.updateCustomSqlRegistration(id, current.version(), target)) {
+                throw new ReplayDatabaseComparisonVersionConflictException();
+            }
+            dao.replaceFields(id, target.fields(), now);
+            writeAudit(id, current.schemaName(), current.tableName(), ReplayDbCompareAuditOperation.UPDATE,
+                    current.version() + 1, null, actor, now, details);
+            return dao.findByIdIncludingDeleted(id);
+        }));
+    }
+
+    private ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql prepareCustomSql(ReplayDbCompareCustomSqlSaveRequest request) {
+        String title = requireText(request.displayName(), "比对项名称不能为空");
+        if (title.length() > 100) throw new IllegalArgumentException("比对项名称不能超过100字符");
+        var prepared = prepareCustomSql(request.sql(), request.fieldNames(), request.resultKeyColumns(), request.compareLimit());
+        if (!identifier(prepared.analysis().sourceTableName()).equals(identifier(request.sourceTableName()))) {
+            throw new ReplayDatabaseComparisonGenerationException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "CUSTOM_SQL_SOURCE_MISMATCH", "SQL 来源表与关联基础表不一致", null);
+        }
+        return prepared;
+    }
+
+    private ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql prepareCustomSql(
+            String sql, List<String> fields, List<String> keys, Long limit) {
+        try {
+            return customSqlAnalyzer.prepare(sql, fields, keys, limit);
+        } catch (IllegalArgumentException exception) {
+            throw invalidCustomSql(exception.getMessage());
+        }
+    }
+
+    private ReplayDatabaseComparisonGenerationException invalidCustomSql(String reason) {
+        return new ReplayDatabaseComparisonGenerationException(HttpStatus.UNPROCESSABLE_ENTITY,
+                "CUSTOM_SQL_INVALID", reason, null);
+    }
+
+    private ReplayDatabaseTablePersonRow customSqlPerson(String source) {
+        var person = tablePersonDao == null ? null : tablePersonDao.findByTableName(source);
+        if (person == null) throw new IllegalArgumentException("该表未配置数据库表人员清单，请先导入人员清单：" + source);
+        requireDomain(person.domain());
+        return person;
+    }
+
+    private ReplayDbCompareRegistration customSqlRegistration(
+            ReplayDbCompareRegistration current, ReplayDbCompareCustomSqlSaveRequest request,
+            ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql prepared, ReplayDatabaseTablePersonRow person,
+            Actor actor, LocalDateTime now, int partitions, int samples) {
+        var analysis = prepared.analysis();
+        String developer = person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
+        return new ReplayDbCompareRegistration(current == null ? null : current.id(), analysis.schemaName(),
+                current == null ? "sql_" + java.util.UUID.randomUUID().toString().replace("-", "") : current.tableName(),
+                request.displayName().trim(), person.domain(), person.developerEmpNos(), person.developerUsernames(), developer,
+                person.technologyOwnerEmpNos(), person.technologyOwner(), LocalDate.now(clock), false, null, null, null,
+                current == null ? 0 : current.version() + 1,
+                current == null ? actor.empNo() : current.createdBy(), current == null ? actor.name() : current.createdName(),
+                current == null ? now : current.createdAt(), actor.empNo(), actor.name(), now, prepared.fields(), null,
+                request.compareLimit(), prepared.comparisonKey().columnNames(), null)
+                .withPartitionNum(partitions).withSampleLimit(samples).withComparisonKey(prepared.comparisonKey())
+                .withCustomSql(new ReplayDbCompareCustomSql(analysis.sql(), analysis.sourceTableName(), analysis.resultColumns()));
+    }
+
     public ReplayDbCompareRegistration update(
             long id,
             ReplayDbCompareSaveRequest request,
             ReplayIssueOperator operator) {
         Actor actor = requireActor(operator);
+        if (requireRegistration(id).customSql() != null) throw new IllegalArgumentException("请使用自定义 SQL 编辑入口");
         if (request.fieldNames().isEmpty()) {
             if (!request.deleteWhenNoFields()) {
                 throw new IllegalArgumentException("比对字段不能为空");
@@ -350,6 +489,7 @@ public class ReplayDatabaseComparisonService {
             ReplayIssueOperator operator) {
         Actor actor = requireActor(operator);
         ReplayDbCompareRegistration snapshot = requireRegistration(id);
+        if (snapshot.customSql() != null) throw new IllegalArgumentException("自定义 SQL 请通过自定义 SQL 入口新建登记");
         if (!snapshot.deleted()) {
             throw new IllegalStateException("当前登记未删除，不能重新登记");
         }
@@ -405,14 +545,14 @@ public class ReplayDatabaseComparisonService {
             List<ReplayDbCompareListItem> items = enrichMetadata(page.items());
             return new ReplayDbCompareListPage(
                     items, page.page(), page.size(), page.total(),
-                    page.globalTableCount(), page.globalFieldCount());
+                    page.globalTableCount(), page.globalFieldCount(), page.globalCustomSqlCount());
         } catch (ReplayBaseDatabaseUnavailableException exception) {
             List<ReplayDbCompareListItem> items = page.items().stream()
                     .map(item -> withValidation(item, ReplayDbCompareMetadataValidation.unavailable()))
                     .toList();
             return new ReplayDbCompareListPage(
                     items, page.page(), page.size(), page.total(),
-                    page.globalTableCount(), page.globalFieldCount());
+                    page.globalTableCount(), page.globalFieldCount(), page.globalCustomSqlCount());
         }
     }
 
@@ -421,6 +561,7 @@ public class ReplayDatabaseComparisonService {
                 .anyMatch(status -> status != ReplayDbCompareMetadataStatus.MISSING_FIELDS
                         && status != ReplayDbCompareMetadataStatus.MISSING_CONDITION_FIELDS
                         && status != ReplayDbCompareMetadataStatus.ORDERING_PRIMARY_KEY_CHANGED
+                        && status != ReplayDbCompareMetadataStatus.CUSTOM_SQL_INVALID
                         && status != ReplayDbCompareMetadataStatus.TABLE_MISSING)) {
             throw new IllegalArgumentException("仅支持筛选字段缺失、排序主键变更或母库表已删除状态");
         }
@@ -448,7 +589,7 @@ public class ReplayDatabaseComparisonService {
         ReplayDbCompareGlobalCounts globalCounts = dao.findGlobalCounts();
         return new ReplayDbCompareListPage(
                 matched.subList(fromIndex, toIndex), page, size, matched.size(),
-                globalCounts.tableCount(), globalCounts.fieldCount());
+                globalCounts.tableCount(), globalCounts.fieldCount(), globalCounts.customSqlCount());
     }
 
     private List<ReplayDbCompareListItem> enrichMetadata(List<ReplayDbCompareListItem> items) {
@@ -458,6 +599,7 @@ public class ReplayDatabaseComparisonService {
         Map<Long, List<ReplayDbCompareField>> fieldsByRegistration =
                 dao.findFieldsByRegistrationIds(items.stream().map(ReplayDbCompareListItem::id).toList());
         List<String> tableNames = items.stream()
+                .filter(item -> item.customSql() == null)
                 .map(ReplayDbCompareListItem::tableName)
                 .map(this::identifier)
                 .distinct()
@@ -468,7 +610,10 @@ public class ReplayDatabaseComparisonService {
             metadataByTable.putAll(metadataService.inspectTables(tableNames.subList(start, end)));
         }
         return items.stream()
-                .map(item -> withValidation(item, validationFor(
+                .map(item -> item.customSql() != null
+                        ? withValidation(item, customSqlValidation(item.schemaName(), item.customSql(),
+                                fieldsByRegistration.getOrDefault(item.id(), List.of()), item.comparisonKey(), item.compareLimit()))
+                        : withValidation(item, validationFor(
                         metadataByTable.get(identifier(item.tableName())),
                         fieldsByRegistration.getOrDefault(item.id(), List.of()),
                         item.whereCondition(), item.compareLimit(), item.orderingPrimaryKeyNames(), item.comparisonKey()), currentPrimaryKeyNames(
@@ -557,9 +702,34 @@ public class ReplayDatabaseComparisonService {
                 : validation.withOrderingPrimaryKeyDrift(savedOrderingPrimaryKeyNames, currentPrimaryKeys);
     }
 
+    private ReplayDbCompareMetadataValidation customSqlValidation(
+            String schema, ReplayDbCompareCustomSql definition, List<ReplayDbCompareField> fields,
+            ReplayDbCompareKeySelection key, Long limit) {
+        try {
+            if (key == null || !"RESULT_KEY".equals(key.indexType())) {
+                throw new IllegalArgumentException("结果比对键未配置");
+            }
+            var prepared = customSqlAnalyzer.prepare(definition.sql(), fields.stream()
+                    .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
+                    .map(ReplayDbCompareField::columnName).toList(), key.columnNames(), limit);
+            if (!identifier(schema).equals(identifier(prepared.analysis().schemaName()))
+                    || !identifier(definition.sourceTableName()).equals(identifier(prepared.analysis().sourceTableName()))) {
+                throw new IllegalArgumentException("SQL 来源表与登记不一致");
+            }
+            return ReplayDbCompareMetadataValidation.valid();
+        } catch (IllegalArgumentException exception) {
+            return ReplayDbCompareMetadataValidation.of(ReplayDbCompareMetadataStatus.CUSTOM_SQL_INVALID,
+                    List.of(), List.of(), List.of());
+        }
+    }
+
     public ReplayDbCompareRegistration detail(long id) {
         ReplayDbCompareRegistration snapshot = mappedPerson(requireRegistration(id));
         try {
+            if (snapshot.customSql() != null) {
+                return withValidation(snapshot, snapshot.fields(), customSqlValidation(snapshot.schemaName(),
+                        snapshot.customSql(), snapshot.fields(), snapshot.comparisonKey(), snapshot.compareLimit()));
+            }
             ReplayBaseMetadataSnapshot metadata = metadataService.inspectTable(snapshot.tableName());
             if (!metadata.tableExists()) {
                 return withValidation(snapshot,
@@ -593,7 +763,8 @@ public class ReplayDatabaseComparisonService {
 
     public ReplayDbComparePrimaryKeySyncResult synchronizePrimaryKeys() {
         List<ReplayDbCompareListItem> registrations =
-                dao.findMetadataCandidates(ReplayDbCompareQuery.empty(0, 200));
+                dao.findMetadataCandidates(ReplayDbCompareQuery.empty(0, 200)).stream()
+                        .filter(item -> item.customSql() == null).toList();
         if (registrations.isEmpty()) {
             return new ReplayDbComparePrimaryKeySyncResult(0, 0, 0, 0);
         }
@@ -840,6 +1011,9 @@ public class ReplayDatabaseComparisonService {
 
     private ReplayDbCompareHeaderFilterOption queryConditionOption(
             ReplayDbCompareHeaderFilterOption option) {
+        if ("__CUSTOM_SQL__".equals(option.value())) {
+            return new ReplayDbCompareHeaderFilterOption(option.value(), "自定义 SQL", option.count());
+        }
         ReplayDbCompareScopeFilterValue scope = ReplayDbCompareScopeFilterValue.decode(option.value());
         String label;
         if (scope != null) {
@@ -883,6 +1057,7 @@ public class ReplayDatabaseComparisonService {
                         ReplayDbCompareMetadataStatus.MISSING_CONDITION_FIELDS),
                 new StatusFilterLabel(ORDERING_PRIMARY_KEY_CHANGED_LABEL,
                         ReplayDbCompareMetadataStatus.ORDERING_PRIMARY_KEY_CHANGED),
+                new StatusFilterLabel("自定义 SQL 无效", ReplayDbCompareMetadataStatus.CUSTOM_SQL_INVALID),
                 new StatusFilterLabel(TABLE_MISSING_LABEL, ReplayDbCompareMetadataStatus.TABLE_MISSING));
     }
 
@@ -1131,7 +1306,7 @@ public class ReplayDatabaseComparisonService {
                 item.groupOwnerEmpNo(), item.groupOwnerName(), item.registeredDate(), item.version(),
                 item.fieldCount(), item.fieldPreview(), item.whereCondition(),
                 item.whereConditionConfigured(), item.compareLimit(), validation, primaryKeyNames,
-                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey());
+                item.orderingPrimaryKeyNames()).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql());
     }
 
     private ReplayDbCompareRegistration withValidation(
@@ -1147,12 +1322,12 @@ public class ReplayDatabaseComparisonService {
                 registration.createdBy(), registration.createdName(), registration.createdAt(),
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(), fields,
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey());
+                registration.orderingPrimaryKeyNames(), validation).withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey()).withCustomSql(registration.customSql());
     }
 
     private ReplayDbCompareRegistration mappedPerson(ReplayDbCompareRegistration registration) {
         if (tablePersonDao == null) return registration;
-        ReplayDatabaseTablePersonRow person = tablePersonDao.findByTableName(registration.tableName());
+        ReplayDatabaseTablePersonRow person = tablePersonDao.findByTableName(registration.sourceTableName());
         String domain = person == null ? "" : person.domain();
         String developerName = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
         String developerUsername = person == null ? "" : person.developerUsernames();
@@ -1168,7 +1343,7 @@ public class ReplayDatabaseComparisonService {
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(), registration.fields(),
                 registration.whereCondition(), registration.compareLimit(), registration.orderingPrimaryKeyNames(),
                 registration.metadataValidation()).withPartitionNum(registration.partitionNum())
-                .withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey());
+                .withSampleLimit(registration.sampleLimit()).withComparisonKey(registration.comparisonKey()).withCustomSql(registration.customSql());
     }
 
     private ReplayDbCompareField withExistsInBase(ReplayDbCompareField field, Boolean existsInBase) {
@@ -1194,7 +1369,7 @@ public class ReplayDatabaseComparisonService {
                 registration.groupOwnerEmpNo(), registration.groupOwnerName(),
                 registration.registeredDate(), registration.deleted(), registration.fields(),
                 registration.whereCondition(), registration.compareLimit(),
-                registration.orderingPrimaryKeyNames(), registration.comparisonKey());
+                registration.orderingPrimaryKeyNames(), registration.comparisonKey(), registration.customSql());
     }
 
     private void writeAudit(

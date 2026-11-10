@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.dbcompare.dto;
 
 import java.time.LocalDate;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 public record ReplayDbCompareListItem(
         long id,
@@ -26,7 +27,38 @@ public record ReplayDbCompareListItem(
         List<String> orderingPrimaryKeyNames,
         int partitionNum,
         int sampleLimit,
-        ReplayDbCompareKeySelection comparisonKey) {
+        ReplayDbCompareKeySelection comparisonKey,
+        ReplayDbCompareCustomSql customSql) {
+
+    public ReplayDbCompareListItem(
+            long id,
+            String schemaName,
+            String tableName,
+            String tableComment,
+            String domainName,
+            String reviserEmpNo,
+            String reviserUsername,
+            String reviserName,
+            String groupOwnerEmpNo,
+            String groupOwnerName,
+            LocalDate registeredDate,
+            long version,
+            int fieldCount,
+            List<String> fieldPreview,
+            ReplayDbCompareConditionTree whereCondition,
+            boolean whereConditionConfigured,
+            Long compareLimit,
+            ReplayDbCompareMetadataValidation metadataValidation,
+            List<String> primaryKeyNames,
+            List<String> orderingPrimaryKeyNames,
+            int partitionNum,
+            int sampleLimit,
+            ReplayDbCompareKeySelection comparisonKey) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
+                groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
+                whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
+                partitionNum, sampleLimit, comparisonKey, null);
+    }
 
     public ReplayDbCompareListItem(long id,
         String schemaName,
@@ -54,7 +86,11 @@ public record ReplayDbCompareListItem(
     }
 
     public ReplayDbCompareListItem withComparisonKey(ReplayDbCompareKeySelection comparisonKey) {
-        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareListItem(
+                id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
+                groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
+                whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
+                partitionNum, sampleLimit, comparisonKey, customSql);
     }
 
     public ReplayDbCompareListItem(
@@ -83,7 +119,11 @@ public record ReplayDbCompareListItem(
     }
 
     public ReplayDbCompareListItem withSampleLimit(int sampleLimit) {
-        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareListItem(
+                id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
+                groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
+                whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
+                partitionNum, sampleLimit, comparisonKey, customSql);
     }
 
     public ReplayDbCompareListItem(
@@ -114,10 +154,11 @@ public record ReplayDbCompareListItem(
     }
 
     public ReplayDbCompareListItem withPartitionNum(int partitionNum) {
-        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo,
-                reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount,
-                fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation,
-                primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareListItem(
+                id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
+                groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
+                whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
+                partitionNum, sampleLimit, comparisonKey, customSql);
     }
 
     public ReplayDbCompareListItem {
@@ -168,5 +209,28 @@ public record ReplayDbCompareListItem(
                 reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version,
                 fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit,
                 metadataValidation, primaryKeyNames, List.of());
+    }
+
+    public ReplayDbCompareListItem withCustomSql(ReplayDbCompareCustomSql customSql) {
+        return new ReplayDbCompareListItem(
+                id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
+                groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
+                whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
+                partitionNum, sampleLimit, comparisonKey, customSql);
+    }
+
+    @JsonProperty("registrationType")
+    public String registrationType() {
+        return customSql == null ? "TABLE" : "CUSTOM_SQL";
+    }
+
+    @JsonProperty("comparisonCode")
+    public String comparisonCode() {
+        return tableName;
+    }
+
+    @JsonProperty("sourceTableName")
+    public String sourceTableName() {
+        return customSql == null ? tableName : customSql.sourceTableName();
     }
 }

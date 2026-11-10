@@ -9,5 +9,11 @@ public record ReplayDbCompareVersionSummary(
         LocalDateTime generatedAt,
         int tableCount,
         int fieldCount,
-        boolean latest) {
+        boolean latest,
+        int customSqlCount) {
+
+    public ReplayDbCompareVersionSummary(String versionNo, String generatedBy, String generatedName,
+            LocalDateTime generatedAt, int tableCount, int fieldCount, boolean latest) {
+        this(versionNo, generatedBy, generatedName, generatedAt, tableCount, fieldCount, latest, 0);
+    }
 }
