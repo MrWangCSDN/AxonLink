@@ -16,10 +16,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayDatabaseIssueTypeRulesTest {
     private ReplayDatabaseIssueService service;
@@ -59,7 +61,7 @@ class ReplayDatabaseIssueTypeRulesTest {
     }
 
     @Test
-    void exposesSevenTypesAndEnforcesStatusSpecificChoices() {
+    void exposesTypesAndEnforcesStatusSpecificChoices() {
         assertEquals(ReplayDatabaseIssueTypes.ALL, service.options(actor).get("issueTypes"));
         long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
         var updated = service.update(id, Map.of("version", 0, "issueStatus", "无需处理", "issueType", "规则性差异"), actor);
@@ -67,6 +69,20 @@ class ReplayDatabaseIssueTypeRulesTest {
         long version = ((Number) updated.get("version")).longValue();
         assertThrows(IllegalArgumentException.class, () -> service.update(id,
                 Map.of("version", version, "issueStatus", "打开", "issueType", "不参与比对"), actor));
+    }
+
+    @Test
+    void savesParameterIssueTypeAndIncludesItInTheOptions() {
+        var options = (List<?>) service.options(actor).get("issueTypes");
+        assertTrue(options.contains("参数问题"));
+        long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
+
+        var updated = service.update(id, Map.of("version", 0, "issueType", "参数问题"), actor);
+
+        assertEquals("打开", updated.get("issueStatus"));
+        assertEquals("参数问题", updated.get("issueType"));
+        assertEquals("参数问题", dao.find(id).get("issueType"));
+        assertEquals(1, dao.history(id).size());
     }
 
     @ParameterizedTest
@@ -85,7 +101,7 @@ class ReplayDatabaseIssueTypeRulesTest {
 
     @ParameterizedTest
     @EmptySource
-    @ValueSource(strings = {"修改比对规则", "修改迁移规则", "修改代码", "前后交易差异", "其他问题",
+    @ValueSource(strings = {"修改比对规则", "修改迁移规则", "修改代码", "前后交易差异", "参数问题", "其他问题",
             "合理差异", "规则性差异问题", "外围问题"})
     void rejectsInvalidNoActionTypeWithTheTwoAllowedChoices(String type) {
         var before = dao.findByIssueId("type-rule");
