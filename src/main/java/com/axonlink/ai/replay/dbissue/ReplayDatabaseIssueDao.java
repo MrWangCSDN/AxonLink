@@ -52,7 +52,14 @@ public class ReplayDatabaseIssueDao {
     private record ResolvedSource(String tableName, String displayName) { }
     private record SourcePersonnel(String identity, String name, String domain, String owner,
                                    String developerUsernames, String tableComment) { }
-    public record TechnologyOwnerRegistration(TableIdentity table,String identity,String name,String domain,String owner,String tableComment) {}
+    public record TechnologyOwnerRegistration(TableIdentity table, String identity, String name,
+                                               String domain, String owner, String tableComment,
+                                               String developerUsernames) {
+        public TechnologyOwnerRegistration(TableIdentity table, String identity, String name,
+                                            String domain, String owner, String tableComment) {
+            this(table, identity, name, domain, owner, tableComment, "");
+        }
+    }
     public record RegistrationVersion(long id, String versionNo, java.time.LocalDateTime generatedAt,
                                       String generatedName, int tableCount, int fieldCount) {}
     private static final int MAX_FILTER_CANDIDATES=500;
@@ -291,7 +298,7 @@ public class ReplayDatabaseIssueDao {
             if (person != null) {
                 String comment = entry.getValue().displayName() == null ? person.tableComment() : entry.getValue().displayName();
                 result.add(new TechnologyOwnerRegistration(entry.getKey(), person.identity(), person.name(),
-                        person.domain(), person.owner(), comment));
+                        person.domain(), person.owner(), comment, person.developerUsernames()));
             }
         }
         return result;

@@ -1,6 +1,8 @@
 package com.axonlink.ai.replay.dbissue;
 
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
+import com.axonlink.ai.replay.dto.ReplayIssueMailSendRequest;
+import com.axonlink.ai.replay.dto.ReplayIssueMailStatus;
 import com.axonlink.ai.daoindex.config.DaoIndexAnalysisProperties;
 import com.axonlink.common.R;
 import com.axonlink.security.UserPrincipalResolver;
@@ -14,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.util.MultiValueMap;
 import java.io.ByteArrayOutputStream;
 import java.net.URLEncoder;
@@ -27,6 +30,12 @@ public class ReplayDatabaseIssueController {
     private static final Logger log=LoggerFactory.getLogger(ReplayDatabaseIssueController.class);
     private final ReplayDatabaseIssueDao dao;private final ReplayDatabaseIssueService service;private final UserPrincipalResolver resolver;
     private final DaoIndexAnalysisProperties properties;
+    private ReplayDatabaseIssueMailService mailService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setMailService(ReplayDatabaseIssueMailService mailService) {
+        this.mailService = mailService;
+    }
     public ReplayDatabaseIssueController(ReplayDatabaseIssueDao dao,ReplayDatabaseIssueService service,UserPrincipalResolver resolver,DaoIndexAnalysisProperties properties){this.dao=dao;this.service=service;this.resolver=resolver;this.properties=properties;}
     @org.springframework.beans.factory.annotation.Autowired private ReplayDatabaseIssuePlanDateService planDates;
     @PatchMapping("/{id}/planned-completion-date") public R<Map<String,Object>> updatePlanDate(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(planDates.update(id,body,actor(request)));}
@@ -45,6 +54,16 @@ public class ReplayDatabaseIssueController {
     }
     @PatchMapping("/{id}") public R<Map<String,Object>> update(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(service.update(id,body,actor(request)));}
     @PostMapping("/{id}/review") public R<Map<String,Object>> review(@PathVariable long id,@RequestBody Map<String,Object> body,HttpServletRequest request){return R.ok(service.approve(id,body,actor(request)));}
+    @GetMapping("/{id}/mail-status")
+    public R<ReplayIssueMailStatus> mailStatus(@PathVariable long id, HttpServletRequest request) {
+        return R.ok(mailService.status(id, actor(request)));
+    }
+
+    @PostMapping("/{id}/mail-send")
+    public R<ReplayIssueMailStatus> sendMail(@PathVariable long id,
+            @RequestBody(required = false) ReplayIssueMailSendRequest body, HttpServletRequest request) {
+        return R.ok(mailService.requestSend(id, body == null ? null : body.recipientEmails(), actor(request)));
+    }
     @GetMapping("/{id}/tracking") public R<List<Map<String,Object>>> tracking(@PathVariable long id){return R.ok(service.tracking(id));}
     @GetMapping("/export") public ResponseEntity<byte[]> export(@RequestParam MultiValueMap<String,String> criteria){return exportCriteria(criteria);}
     @PostMapping("/export") public ResponseEntity<byte[]> exportJson(@RequestBody Map<String,Object> criteria){return exportCriteria(criteria);}
@@ -75,6 +94,11 @@ public class ReplayDatabaseIssueController {
     private ReplayIssueOperator actor(HttpServletRequest request){var actor=optionalActor(request);if(actor==null)throw new AuthenticationCredentialsNotFoundException("请先登录");return actor;}
     private ReplayIssueOperator optionalActor(HttpServletRequest request){var resolved=resolver.resolve(request);if(resolved==null||text(resolved.principal).isBlank())return null;String username=resolved.user==null?resolved.principal:text(resolved.user.getUsername());if(username.isBlank())username=resolved.principal;String name=resolved.user==null?username:text(resolved.user.getRealName());return new ReplayIssueOperator(username,name.isBlank()?username:name);}
     @ExceptionHandler(AuthenticationCredentialsNotFoundException.class)public ResponseEntity<R<Object>> unauth(Exception e){return error(HttpStatus.UNAUTHORIZED,e.getMessage());}
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<R<Object>> responseStatus(ResponseStatusException exception) {
+        return ResponseEntity.status(exception.getStatusCode()).body(R.fail(exception.getStatusCode().value(),
+                exception.getReason(), null));
+    }
     @ExceptionHandler(SecurityException.class)public ResponseEntity<R<Object>> forbidden(Exception e){return error(HttpStatus.FORBIDDEN,e.getMessage());}
     @ExceptionHandler({ReplayDatabaseIssueConflictException.class,ReplayDatabaseIssueService.RegistrationVersionConflictException.class})public ResponseEntity<R<Object>> conflict(Exception e){return error(HttpStatus.CONFLICT,e.getMessage());}
     @ExceptionHandler(ReplayDatabaseIssueService.RegistrationVersionNotFoundException.class)public ResponseEntity<R<Object>> notFound(Exception e){return error(HttpStatus.NOT_FOUND,e.getMessage());}

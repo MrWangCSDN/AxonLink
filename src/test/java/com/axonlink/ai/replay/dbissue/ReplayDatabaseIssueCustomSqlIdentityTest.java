@@ -77,6 +77,9 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
         assertEquals(1L, dao.list(Map.of("domains", List.of("贷款组"))).get("total"));
         assertEquals(0L, dao.list(Map.of("domains", List.of("错误映射"))).get("total"));
         assertEquals("贷款组", dao.metadata(CODE, version).get("domain"));
+        var mailPeople = dao.technologyOwners(List.of(new ReplayDatabaseIssueDao.TableIdentity(CODE, FIRST_BATCH)));
+        assertEquals(1, mailPeople.size());
+        assertEquals("dev_a", mailPeople.get(0).developerUsernames());
         assertEquals("汇总口径", dao.metadata(CODE, version).get("tableComment"));
         assertEquals("2026-11-11", dates.update(id, Map.of("version", 0, "plannedCompletionDate", "2026-11-11"),
                 actor("dev_a")).get("plannedCompletionDate"));
