@@ -2,8 +2,10 @@ package com.axonlink.ai.replay.service;
 
 import com.axonlink.ai.replay.dto.ReplayConfigBatchDeleteRequest;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
+import com.axonlink.ai.replay.dto.ReplayConfigIdBatchRequest;
 
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -15,6 +17,7 @@ public final class ReplayConfigValidation {
     public static final int MAX_BATCH_DELETE = 100;
     public static final int MAX_BATCH_CREATE = 3;
     public static final int MAX_IGNORE_REASON = 512;
+    public static final int MAX_MESSAGE_SEQUENCES = 100;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
     private static final Pattern SERVICE_CODE_PATTERN = Pattern.compile("^[0-9A-Za-z]+&(sop|soap|bzjson)$");
 
@@ -151,6 +154,60 @@ public final class ReplayConfigValidation {
         if (id <= 0) {
             throw new IllegalArgumentException("记录 id 不合法");
         }
+    }
+
+    public static String requireMessageSequenceCategory(String value) {
+        String category = requireText(value, "领域").toUpperCase();
+        if (!Set.of("QUERY", "ACCOUNTING").contains(category)) {
+            throw new IllegalArgumentException("领域只允许 QUERY 或 ACCOUNTING");
+        }
+        return category;
+    }
+
+    public static List<String> requireMessageSequences(String value) {
+        String source = value == null ? "" : value;
+        String[] parts = source.split(",", -1);
+        if (parts.length > MAX_MESSAGE_SEQUENCES) {
+            throw new IllegalArgumentException("单次最多新增 100 个流水号");
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        LinkedHashSet<String> duplicates = new LinkedHashSet<>();
+        for (String part : parts) {
+            String item = part.trim();
+            if (item.isEmpty()) {
+                throw new IllegalArgumentException("流水号不能为空，多个流水号请使用英文逗号分隔");
+            }
+            if (item.length() > 512) {
+                throw new IllegalArgumentException("流水号不能超过 512 个字符");
+            }
+            if (!values.add(item)) {
+                duplicates.add(item);
+            }
+        }
+        if (!duplicates.isEmpty()) {
+            throw new ReplayConfigConflictException("流水号重复：" + String.join(",", duplicates));
+        }
+        return List.copyOf(values);
+    }
+
+    public static List<Long> requireBatchIds(ReplayConfigIdBatchRequest request) {
+        List<Long> ids = request == null ? null : request.ids();
+        if (ids == null || ids.isEmpty()) {
+            throw new IllegalArgumentException("批量操作至少需要 1 条记录");
+        }
+        if (ids.size() > MAX_BATCH_DELETE) {
+            throw new IllegalArgumentException("批量操作单次最多 100 条");
+        }
+        Set<Long> unique = new HashSet<>();
+        for (Long id : ids) {
+            if (id == null || id <= 0) {
+                throw new IllegalArgumentException("批量操作记录 id 不合法");
+            }
+            if (!unique.add(id)) {
+                throw new IllegalArgumentException("批量操作记录不能重复");
+            }
+        }
+        return ids;
     }
 
     /** 批量新增：1 至 3 条，元素不得为空。 */
