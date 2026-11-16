@@ -44,10 +44,15 @@ public class ReplayErrorCodeIgnoreDao {
 
     public long count(String serviceCode, String oldRespCode, String newRespCode, Collection<String> serviceCodes,
                       Integer reviewStatus) {
+        return count(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus, null);
+    }
+
+    public long count(String serviceCode, String oldRespCode, String newRespCode, Collection<String> serviceCodes,
+                      Integer reviewStatus, Boolean reasonEmpty) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus);
+        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus, reasonEmpty);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_error_code_ignore_config WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -57,10 +62,16 @@ public class ReplayErrorCodeIgnoreDao {
     public List<ReplayErrorCodeIgnoreRow> list(String serviceCode, String oldRespCode, String newRespCode,
                                                Collection<String> serviceCodes, Integer reviewStatus,
                                                int limit, int offset) {
+        return list(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus, null, limit, offset);
+    }
+
+    public List<ReplayErrorCodeIgnoreRow> list(String serviceCode, String oldRespCode, String newRespCode,
+                                               Collection<String> serviceCodes, Integer reviewStatus,
+                                               Boolean reasonEmpty, int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus);
+        Filter filter = filter(serviceCode, oldRespCode, newRespCode, serviceCodes, reviewStatus, reasonEmpty);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -272,7 +283,7 @@ public class ReplayErrorCodeIgnoreDao {
     }
 
     private Filter filter(String serviceCode, String oldRespCode, String newRespCode,
-                          Collection<String> serviceCodes, Integer reviewStatus) {
+                          Collection<String> serviceCodes, Integer reviewStatus, Boolean reasonEmpty) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -293,6 +304,9 @@ public class ReplayErrorCodeIgnoreDao {
         if (reviewStatus != null) {
             sql.append(" AND review_status=?");
             args.add(reviewStatus);
+        }
+        if (Boolean.TRUE.equals(reasonEmpty)) {
+            sql.append(" AND TRIM(COALESCE(ignore_reason,''))=''");
         }
         return new Filter(sql.toString(), args);
     }

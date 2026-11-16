@@ -19,15 +19,27 @@ class ReplayErrorCodeIgnoreServiceTest {
     private static final ReplayConfigOperator OPERATOR = new ReplayConfigOperator("zhangs3", "张三");
     private static final String CODE = "S1&sop";
 
+    private JdbcTemplate jdbc;
     private ReplayErrorCodeIgnoreService service;
 
     @BeforeEach
     void setUp() {
-        JdbcTemplate jdbc = ReplayConfigTestFixtures.newJdbc();
+        jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         service = new ReplayErrorCodeIgnoreService(
                 new ReplayErrorCodeIgnoreDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
                 new ReplayConfigPersonResolver(jdbc));
+    }
+
+    @Test
+    void filtersBlankHistoricalIgnoreReason() {
+        ReplayErrorCodeIgnoreRow blank = service.create(
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, "E001", null, "测试原因"), OPERATOR);
+        service.create(new ReplayErrorCodeIgnoreCreateRequest(CODE, "E002", null, "测试原因"), OPERATOR);
+        jdbc.update("UPDATE dii_replay_error_code_ignore_config SET ignore_reason='' WHERE id=?", blank.id());
+
+        assertEquals(1, service.list(10, 0, null, null, null, null, null, null,
+                null, true, OPERATOR).total());
     }
 
     @Test

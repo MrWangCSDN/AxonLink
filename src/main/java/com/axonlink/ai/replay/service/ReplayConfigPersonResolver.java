@@ -86,17 +86,27 @@ public class ReplayConfigPersonResolver {
      * znzx_service.tran_code → esf_service_code 去点号 → 追加三种后缀。
      */
     public Set<String> findReviewableServiceCodes(String empNo) {
-        if (empNo == null || empNo.isBlank()) {
+        return findServiceCodesByIdentity("bank_owner_emp_nos", empNo);
+    }
+
+    /** 解析某登录账号作为开发人员负责的全部最终服务码集合。 */
+    public Set<String> findDevelopedServiceCodes(String username) {
+        return findServiceCodesByIdentity("developer_usernames", username);
+    }
+
+    private Set<String> findServiceCodesByIdentity(String identityColumn, String identity) {
+        if (identity == null || identity.isBlank()) {
             return Set.of();
         }
-        String target = empNo.trim();
+        String target = identity.trim();
         List<String> transactionCodes = jdbc.query(
-                        "SELECT old_transaction_code, bank_owner_emp_nos FROM dii_replay_transaction_person "
-                                + "WHERE TRIM(COALESCE(bank_owner_emp_nos,'')) <> ''",
+                        "SELECT old_transaction_code, " + identityColumn
+                                + " FROM dii_replay_transaction_person WHERE TRIM(COALESCE("
+                                + identityColumn + ",'')) <> ''",
                         (rs, rowNum) -> new String[]{rs.getString("old_transaction_code"),
-                                rs.getString("bank_owner_emp_nos")})
+                                rs.getString(identityColumn)})
                 .stream()
-                .filter(row -> splitEmpNos(row[1]).contains(target))
+                .filter(row -> splitIdentities(row[1]).contains(target))
                 .map(row -> row[0])
                 .filter(code -> code != null && !code.isBlank())
                 .distinct()
@@ -190,7 +200,7 @@ public class ReplayConfigPersonResolver {
         if (info == null || operator == null || operator.empNo() == null || operator.empNo().isBlank()) {
             return false;
         }
-        return splitEmpNos(info.bankOwnerEmpNos()).contains(operator.empNo().trim());
+        return splitIdentities(info.bankOwnerEmpNos()).contains(operator.empNo().trim());
     }
 
     /**
@@ -228,11 +238,11 @@ public class ReplayConfigPersonResolver {
         return names.isEmpty() ? "没有审核权限" : "没有权限，请联系" + names + "进行审核";
     }
 
-    private static List<String> splitEmpNos(String value) {
+    private static List<String> splitIdentities(String value) {
         if (value == null || value.isBlank()) {
             return List.of();
         }
-        return java.util.Arrays.stream(value.split("[、,，;；]"))
+        return java.util.Arrays.stream(value.split("[、,，;；\\s]+"))
                 .map(String::trim)
                 .filter(item -> !item.isBlank())
                 .toList();

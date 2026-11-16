@@ -62,22 +62,55 @@ public class ReplayErrorCodeIgnoreService {
                                                            String oldRespCode, String newRespCode,
                                                            Integer reviewStatus, Boolean reviewableByMe,
                                                            ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, serviceCode, oldRespCode, newRespCode,
+                reviewStatus, reviewableByMe, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
+                                                           String internalTransactionCode, String domain,
+                                                           String serviceCode,
+                                                           String oldRespCode, String newRespCode,
+                                                           Integer reviewStatus, Boolean reviewableByMe,
+                                                           Boolean reasonEmpty, ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, serviceCode, oldRespCode, newRespCode,
+                reviewStatus, reviewableByMe, null, reasonEmpty, operator);
+    }
+
+    public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
+                                                           String internalTransactionCode, String domain,
+                                                           String serviceCode,
+                                                           String oldRespCode, String newRespCode,
+                                                           Integer reviewStatus, Boolean reviewableByMe,
+                                                           Boolean developedByMe, Boolean reasonEmpty,
+                                                           ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
+        boolean onlyReviewableByMe = Boolean.TRUE.equals(reviewableByMe);
+        if (onlyReviewableByMe && Integer.valueOf(1).equals(resolvedReviewStatus)) {
+            return new ReplayConfigPage<>(0, List.of());
+        }
+        Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 ReplayConfigPersonResolver.intersect(
-                        resolver.resolveFinalServiceCodes(internalTransactionCode),
-                        personResolver.resolveFinalServiceCodesByDomain(domain)),
-                Boolean.TRUE.equals(reviewableByMe)
-                        ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
+                        ReplayConfigPersonResolver.intersect(
+                                resolver.resolveFinalServiceCodes(internalTransactionCode),
+                                personResolver.resolveFinalServiceCodesByDomain(domain)),
+                        onlyReviewableByMe
+                                ? personResolver.findReviewableServiceCodes(
+                                        operator == null ? null : operator.empNo())
+                                : null),
+                Boolean.TRUE.equals(developedByMe)
+                        ? personResolver.findDevelopedServiceCodes(
+                                operator == null ? null : operator.username())
                         : null);
-        long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, resolvedReviewStatus);
+        long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, effectiveReviewStatus,
+                reasonEmpty);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplayErrorCodeIgnoreRow> rows = dao.list(serviceCode, oldRespCode, newRespCode, serviceCodes,
-                resolvedReviewStatus, resolvedLimit, resolvedOffset);
+                effectiveReviewStatus, reasonEmpty, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 

@@ -51,9 +51,12 @@ public class ReplayErrorCodeIgnoreController extends AbstractReplayConfigControl
             @RequestParam(required = false) String newRespCode,
             @RequestParam(required = false) Integer reviewStatus,
             @RequestParam(required = false) Boolean reviewableByMe,
+            @RequestParam(required = false) Boolean developedByMe,
+            @RequestParam(required = false) Boolean reasonEmpty,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, domain, serviceCode, oldRespCode,
-                newRespCode, reviewStatus, reviewableByMe, resolveOperator(request)));
+                newRespCode, reviewStatus, reviewableByMe, developedByMe, reasonEmpty,
+                resolveOperator(request)));
     }
 
     @PostMapping

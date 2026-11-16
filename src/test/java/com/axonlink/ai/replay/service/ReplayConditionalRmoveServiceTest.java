@@ -20,15 +20,26 @@ class ReplayConditionalRmoveServiceTest {
     private static final ReplayConfigOperator OPERATOR = new ReplayConfigOperator("zhangs3", "张三");
     private static final String CODE = "S1&sop";
 
+    private JdbcTemplate jdbc;
     private ReplayConditionalRmoveService service;
 
     @BeforeEach
     void setUp() {
-        JdbcTemplate jdbc = ReplayConfigTestFixtures.newJdbc();
+        jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         service = new ReplayConditionalRmoveService(
                 new ReplayConditionalRmoveDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
                 new ReplayConfigPersonResolver(jdbc));
+    }
+
+    @Test
+    void filtersBlankHistoricalIgnoreReason() {
+        ReplayConditionalRmoveRow blank = create(CODE, "blankReason");
+        create(CODE, "filledReason");
+        jdbc.update("UPDATE dii_replay_conditional_rmove SET ignore_reason=NULL WHERE id=?", blank.id());
+
+        assertEquals(1, service.list(10, 0, null, null, null, null, null,
+                null, null, true, OPERATOR).total());
     }
 
     @Test

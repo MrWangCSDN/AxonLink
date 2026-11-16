@@ -61,6 +61,17 @@ class ReplaySortFieldServiceTest {
     }
 
     @Test
+    void filtersBlankHistoricalSortingReason() {
+        List<ReplaySortFieldRow> blankRows = service.create(
+                new ReplaySortFieldCreateRequest("6208", "a.a1", "b.b1", "测试原因"), OPERATOR);
+        service.create(new ReplaySortFieldCreateRequest("6208", "c.c1", "d.d1", "测试原因"), OPERATOR);
+        jdbc.update("UPDATE dii_replay_sort_field SET ignore_reason='   ' WHERE id=?", blankRows.get(0).id());
+
+        assertEquals(1, service.list(10, 0, null, null, null, null, null,
+                null, null, true, OPERATOR).total());
+    }
+
+    @Test
     void rejectsUnknownTranCodeAndBadFieldFormat() {
         IllegalArgumentException unmapped = assertThrows(IllegalArgumentException.class, () -> service.create(
                 new ReplaySortFieldCreateRequest("9999", "a.b", "c.d", "测试原因"), OPERATOR));

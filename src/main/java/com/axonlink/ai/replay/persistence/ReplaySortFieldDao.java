@@ -44,10 +44,15 @@ public class ReplaySortFieldDao {
 
     public long count(String origTrcd, String origArryName, String origFieldName, Collection<String> serviceCodes,
                       Integer reviewStatus) {
+        return count(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus, null);
+    }
+
+    public long count(String origTrcd, String origArryName, String origFieldName, Collection<String> serviceCodes,
+                      Integer reviewStatus, Boolean reasonEmpty) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus);
+        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus, reasonEmpty);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_sort_field WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -57,10 +62,16 @@ public class ReplaySortFieldDao {
     public List<ReplaySortFieldRow> list(String origTrcd, String origArryName, String origFieldName,
                                          Collection<String> serviceCodes, Integer reviewStatus,
                                          int limit, int offset) {
+        return list(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus, null, limit, offset);
+    }
+
+    public List<ReplaySortFieldRow> list(String origTrcd, String origArryName, String origFieldName,
+                                         Collection<String> serviceCodes, Integer reviewStatus,
+                                         Boolean reasonEmpty, int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus);
+        Filter filter = filter(origTrcd, origArryName, origFieldName, serviceCodes, reviewStatus, reasonEmpty);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -271,7 +282,7 @@ public class ReplaySortFieldDao {
     }
 
     private Filter filter(String origTrcd, String origArryName, String origFieldName,
-                          Collection<String> serviceCodes, Integer reviewStatus) {
+                          Collection<String> serviceCodes, Integer reviewStatus, Boolean reasonEmpty) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -292,6 +303,9 @@ public class ReplaySortFieldDao {
         if (reviewStatus != null) {
             sql.append(" AND review_status=?");
             args.add(reviewStatus);
+        }
+        if (Boolean.TRUE.equals(reasonEmpty)) {
+            sql.append(" AND TRIM(COALESCE(ignore_reason,''))=''");
         }
         return new Filter(sql.toString(), args);
     }

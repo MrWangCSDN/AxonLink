@@ -198,6 +198,9 @@ class ReplayUnconditionalIgnoreServiceTest {
     void filtersByReviewableByMe() {
         ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
         service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mineA", REASON), OPERATOR);
+        ReplayUnconditionalIgnoreRow approved = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "approved", REASON), OPERATOR);
+        service.review(approved.id(), approved.version(), reviewer);
         service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "otherB", REASON), OPERATOR);
 
         ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
@@ -207,6 +210,45 @@ class ReplayUnconditionalIgnoreServiceTest {
 
         assertEquals(0, service.list(10, 0, null, null, null, null, null, true, OPERATOR).total());
         assertEquals(1, service.list(10, 0, null, null, null, null, 0, true, reviewer).total());
+        assertEquals(0, service.list(10, 0, null, null, null, null, 1, true, reviewer).total());
+    }
+
+    @Test
+    void filtersByDevelopedByMe() {
+        ReplayConfigOperator developer = new ReplayConfigOperator("c-zhangs", "张三", "c-zhangs");
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "mine", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "unmapped", REASON), OPERATOR);
+
+        ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
+                10, 0, null, null, null, null, null, null, true, null, developer);
+        assertEquals(1, mine.total());
+        assertEquals("mine", mine.items().get(0).fieldName());
+    }
+
+    @Test
+    void filtersBlankHistoricalReasonsTogetherWithReviewableByMe() {
+        ReplayConfigOperator reviewer = new ReplayConfigOperator("lisi", "李四", "c-lisi");
+        ReplayUnconditionalIgnoreRow nullReason = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "nullReason", REASON), OPERATOR);
+        ReplayUnconditionalIgnoreRow emptyReason = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "emptyReason", REASON), OPERATOR);
+        ReplayUnconditionalIgnoreRow spacesReason = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "spacesReason", REASON), OPERATOR);
+        service.create(new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "filledReason", REASON), OPERATOR);
+        ReplayUnconditionalIgnoreRow noOwner = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S9&sop", "noOwner", REASON), OPERATOR);
+
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=NULL WHERE id=?", nullReason.id());
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason='' WHERE id=?", emptyReason.id());
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason='   ' WHERE id=?", spacesReason.id());
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=NULL WHERE id=?", noOwner.id());
+
+        assertEquals(4, service.list(10, 0, null, null, null, null,
+                null, null, true, OPERATOR).total());
+        ReplayConfigPage<ReplayUnconditionalIgnoreRow> mine = service.list(
+                10, 0, null, null, null, null, null, true, true, reviewer);
+        assertEquals(3, mine.total());
+        assertTrue(mine.items().stream().allMatch(row -> row.tranCode().equals("S1&sop")));
     }
 
     @Test

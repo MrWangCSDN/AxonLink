@@ -49,9 +49,12 @@ public class ReplaySortFieldController extends AbstractReplayConfigController {
             @RequestParam(required = false) String origFieldName,
             @RequestParam(required = false) Integer reviewStatus,
             @RequestParam(required = false) Boolean reviewableByMe,
+            @RequestParam(required = false) Boolean developedByMe,
+            @RequestParam(required = false) Boolean reasonEmpty,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, domain, origTrcd, origArryName,
-                origFieldName, reviewStatus, reviewableByMe, resolveOperator(request)));
+                origFieldName, reviewStatus, reviewableByMe, developedByMe, reasonEmpty,
+                resolveOperator(request)));
     }
 
     @PostMapping
