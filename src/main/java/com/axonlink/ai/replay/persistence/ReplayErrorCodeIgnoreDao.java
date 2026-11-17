@@ -121,20 +121,23 @@ public class ReplayErrorCodeIgnoreDao {
                                            ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
+            boolean serviceChanged = changed(current.serviceCode(), newServiceCode);
+            boolean oldChanged = changed(current.oldRespCode(), newOldRespCode);
+            boolean newChanged = changed(current.newRespCode(), newNewRespCode);
+            boolean businessChanged = serviceChanged || oldChanged || newChanged;
+            int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_error_code_ignore_config SET service_code=?,old_resp_code=?,"
-                            + "new_resp_code=?,ignore_reason=?,review_status=0,updated_at=?,version=version+1 "
+                            + "new_resp_code=?,ignore_reason=?,review_status=?,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
-                    newServiceCode, newOldRespCode, newNewRespCode, newIgnoreReason, Timestamp.valueOf(now),
+                    newServiceCode, newOldRespCode, newNewRespCode, newIgnoreReason, nextReviewStatus,
+                    Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            boolean serviceChanged = changed(current.serviceCode(), newServiceCode);
-            boolean oldChanged = changed(current.oldRespCode(), newOldRespCode);
-            boolean newChanged = changed(current.newRespCode(), newNewRespCode);
             boolean reasonChanged = changed(current.ignoreReason(), newIgnoreReason);
-            boolean reviewChanged = current.reviewStatus() != 0;
+            boolean reviewChanged = current.reviewStatus() != nextReviewStatus;
             insertOperation(current.id(), "UPDATE",
                     serviceChanged ? current.serviceCode() : null,
                     oldChanged ? current.oldRespCode() : null,

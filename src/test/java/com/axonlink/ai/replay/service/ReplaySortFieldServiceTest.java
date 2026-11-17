@@ -113,4 +113,20 @@ class ReplaySortFieldServiceTest {
         service.delete(target.id(), 1, OPERATOR);
         assertEquals(5, service.list(10, 0, null, null, null, null).total());
     }
+
+    @Test
+    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+        ReplaySortFieldRow created = service.create(
+                new ReplaySortFieldCreateRequest("6208", "a.a1", "b.b1", "原因"), OPERATOR).get(0);
+        jdbc.update("UPDATE dii_replay_sort_field SET review_status=1 WHERE id=?", created.id());
+
+        ReplaySortFieldRow reasonUpdated = service.update(created.id(),
+                new ReplaySortFieldUpdateRequest(created.origTrcd(), created.origArryName(),
+                        created.origFieldName(), "新原因", 0), OPERATOR);
+        assertEquals(1, reasonUpdated.reviewStatus());
+
+        ReplaySortFieldRow businessUpdated = service.update(created.id(),
+                new ReplaySortFieldUpdateRequest(created.origTrcd(), "c", "d", "再次修改", 1), OPERATOR);
+        assertEquals(0, businessUpdated.reviewStatus());
+    }
 }

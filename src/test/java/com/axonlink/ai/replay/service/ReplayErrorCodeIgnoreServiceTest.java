@@ -72,4 +72,19 @@ class ReplayErrorCodeIgnoreServiceTest {
         assertEquals("N002", updated.newRespCode());
         assertEquals(1, updated.version());
     }
+
+    @Test
+    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+        ReplayErrorCodeIgnoreRow created = service.create(
+                new ReplayErrorCodeIgnoreCreateRequest(CODE, "E001", null, "原因"), OPERATOR);
+        jdbc.update("UPDATE dii_replay_error_code_ignore_config SET review_status=1 WHERE id=?", created.id());
+
+        ReplayErrorCodeIgnoreRow reasonUpdated = service.update(created.id(),
+                new ReplayErrorCodeIgnoreUpdateRequest(CODE, "E001", null, "新原因", 0), OPERATOR);
+        assertEquals(1, reasonUpdated.reviewStatus());
+
+        ReplayErrorCodeIgnoreRow businessUpdated = service.update(created.id(),
+                new ReplayErrorCodeIgnoreUpdateRequest(CODE, "E002", null, "再次修改", 1), OPERATOR);
+        assertEquals(0, businessUpdated.reviewStatus());
+    }
 }

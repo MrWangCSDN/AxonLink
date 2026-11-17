@@ -85,4 +85,19 @@ class ReplayMessageSequenceIgnoreServiceTest {
         assertEquals(0, service.list(10, 0, "QUERY", null, null, 1,
                 true, null, null, REVIEWER).total());
     }
+
+    @Test
+    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+        ReplayMessageSequenceIgnoreRow created = service.create(new ReplayMessageSequenceIgnoreCreateRequest(
+                "S1&sop", "QUERY", "q1", "原因"), OPERATOR).get(0);
+        jdbc.update("UPDATE dii_replay_message_sequence_ignore SET review_status=1 WHERE id=?", created.id());
+
+        ReplayMessageSequenceIgnoreRow reasonUpdated = service.update(created.id(),
+                new ReplayMessageSequenceIgnoreUpdateRequest("S1&sop", "QUERY", "q1", "新原因"), OPERATOR);
+        assertEquals(1, reasonUpdated.reviewStatus());
+
+        ReplayMessageSequenceIgnoreRow businessUpdated = service.update(created.id(),
+                new ReplayMessageSequenceIgnoreUpdateRequest("S1&sop", "ACCOUNTING", "q1", "再次修改"), OPERATOR);
+        assertEquals(0, businessUpdated.reviewStatus());
+    }
 }

@@ -117,18 +117,20 @@ public class ReplayUnconditionalIgnoreDao {
                                                ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
+            boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
+            boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
+            boolean reasonChanged = !Objects.equals(current.ignoreReason(), newIgnoreReason);
+            boolean businessChanged = tranChanged || fieldChanged;
+            int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,ignore_reason=?,"
-                            + "review_status=0,updated_at=?,version=version+1 WHERE id=? AND version=?",
-                    newTranCode, newFieldName, newIgnoreReason, Timestamp.valueOf(now),
+                            + "review_status=?,updated_at=?,version=version+1 WHERE id=? AND version=?",
+                    newTranCode, newFieldName, newIgnoreReason, nextReviewStatus, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            boolean tranChanged = !Objects.equals(current.tranCode(), newTranCode);
-            boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
-            boolean reasonChanged = !Objects.equals(current.ignoreReason(), newIgnoreReason);
-            boolean reviewChanged = current.reviewStatus() != 0;
+            boolean reviewChanged = current.reviewStatus() != nextReviewStatus;
             insertOperation(current.id(), "UPDATE",
                     tranChanged ? current.tranCode() : null, fieldChanged ? current.fieldName() : null,
                     tranChanged ? newTranCode : null, fieldChanged ? newFieldName : null,

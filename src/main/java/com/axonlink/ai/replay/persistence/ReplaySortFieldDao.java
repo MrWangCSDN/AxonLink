@@ -119,20 +119,23 @@ public class ReplaySortFieldDao {
                                      ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
+            boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
+            boolean arryChanged = changed(current.origArryName(), newOrigArryName);
+            boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
+            boolean businessChanged = trcdChanged || arryChanged || fieldChanged;
+            int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"
-                            + "ignore_reason=?,review_status=0,updated_at=?,version=version+1 "
+                            + "ignore_reason=?,review_status=?,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
-                    newOrigTrcd, newOrigArryName, newOrigFieldName, newIgnoreReason, Timestamp.valueOf(now),
+                    newOrigTrcd, newOrigArryName, newOrigFieldName, newIgnoreReason, nextReviewStatus,
+                    Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
-            boolean arryChanged = changed(current.origArryName(), newOrigArryName);
-            boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
             boolean reasonChanged = changed(current.ignoreReason(), newIgnoreReason);
-            boolean reviewChanged = current.reviewStatus() != 0;
+            boolean reviewChanged = current.reviewStatus() != nextReviewStatus;
             insertOperation(current.id(), "UPDATE",
                     trcdChanged ? current.origTrcd() : null,
                     arryChanged ? current.origArryName() : null,

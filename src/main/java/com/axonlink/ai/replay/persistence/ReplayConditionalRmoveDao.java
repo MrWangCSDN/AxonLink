@@ -139,16 +139,24 @@ public class ReplayConditionalRmoveDao {
         return tx.execute(status -> {
             boolean codeChanged = !Objects.equals(current.origTrcd(), newOrigTrcd);
             int newIndex = codeChanged ? nextIndex(newOrigTrcd) : current.fieldFileIndx();
+            boolean fieldNameChanged = !Objects.equals(current.fieldRmoveName(), newFieldRmoveName);
+            boolean indexChanged = current.fieldFileIndx() != newIndex;
+            boolean flagChanged = current.fieldFileFlag() != newFieldFileFlag;
+            boolean origCondChanged = !Objects.equals(current.origFieldCond(), newOrigFieldCond);
+            boolean destCondChanged = !Objects.equals(current.destFieldCond(), newDestFieldCond);
+            boolean businessChanged = codeChanged || fieldNameChanged || indexChanged || flagChanged
+                    || origCondChanged || destCondChanged;
+            int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update("UPDATE dii_replay_conditional_rmove SET orig_trcd=?,field_rmove_name=?,"
                             + "field_file_indx=?,field_file_flag=?,orig_field_cond=?,dest_field_cond=?,"
-                            + "ignore_reason=?,review_status=0,updated_at=?,version=version+1 "
+                            + "ignore_reason=?,review_status=?,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
                     newOrigTrcd, newFieldRmoveName, newIndex, newFieldFileFlag, newOrigFieldCond, newDestFieldCond,
-                    newIgnoreReason, Timestamp.valueOf(now), current.id(), current.version());
+                    newIgnoreReason, nextReviewStatus, Timestamp.valueOf(now), current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            boolean reviewChanged = current.reviewStatus() != 0;
+            boolean reviewChanged = current.reviewStatus() != nextReviewStatus;
             insertOperation(current.id(), "UPDATE",
                     changed(current.origTrcd(), newOrigTrcd) ? current.origTrcd() : null,
                     changed(current.fieldRmoveName(), newFieldRmoveName) ? current.fieldRmoveName() : null,

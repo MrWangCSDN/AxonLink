@@ -386,6 +386,21 @@ class ReplayUnconditionalIgnoreServiceTest {
                 new HashSet<>(new ReplayConfigPersonResolver(jdbc).listDomains()));
     }
 
+    @Test
+    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET review_status=1 WHERE id=?", created.id());
+
+        ReplayUnconditionalIgnoreRow reasonUpdated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", "新原因", 0), OPERATOR);
+        assertEquals(1, reasonUpdated.reviewStatus());
+
+        ReplayUnconditionalIgnoreRow businessUpdated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "customerNo", "再次修改", 1), OPERATOR);
+        assertEquals(0, businessUpdated.reviewStatus());
+    }
+
     private void seedServiceAndPerson(String esfServiceCode, String tranCode, String domain, String name,
                                       String bankOwnerEmpNos) {
         jdbc.update("INSERT INTO znzx_service "

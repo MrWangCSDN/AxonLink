@@ -100,20 +100,26 @@ public class ReplayMessageSequenceIgnoreDao {
                                                   ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
+            boolean serviceChanged = changed(current.serviceCode(), serviceCode);
+            boolean categoryChanged = changed(current.category(), category);
+            boolean sequenceChanged = changed(current.messageSequence(), sequence);
+            boolean reasonChanged = changed(current.ignoreReason(), reason);
+            boolean businessChanged = serviceChanged || categoryChanged || sequenceChanged;
+            int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             jdbc.update("UPDATE dii_replay_message_sequence_ignore SET service_code=?,category=?,message_sequence=?,"
-                            + "ignore_reason=?,review_status=0,updated_at=? WHERE id=?",
-                    serviceCode, category, sequence, reason, Timestamp.valueOf(now), current.id());
+                            + "ignore_reason=?,review_status=?,updated_at=? WHERE id=?",
+                    serviceCode, category, sequence, reason, nextReviewStatus, Timestamp.valueOf(now), current.id());
             operation(current.id(), "UPDATE",
-                    changed(current.serviceCode(), serviceCode) ? current.serviceCode() : null,
-                    changed(current.category(), category) ? current.category() : null,
-                    changed(current.messageSequence(), sequence) ? current.messageSequence() : null,
-                    changed(current.ignoreReason(), reason) ? current.ignoreReason() : null,
-                    current.reviewStatus() == 0 ? null : current.reviewStatus(),
-                    changed(current.serviceCode(), serviceCode) ? serviceCode : null,
-                    changed(current.category(), category) ? category : null,
-                    changed(current.messageSequence(), sequence) ? sequence : null,
-                    changed(current.ignoreReason(), reason) ? reason : null,
-                    current.reviewStatus() == 0 ? null : 0, operator, now);
+                    serviceChanged ? current.serviceCode() : null,
+                    categoryChanged ? current.category() : null,
+                    sequenceChanged ? current.messageSequence() : null,
+                    reasonChanged ? current.ignoreReason() : null,
+                    current.reviewStatus() == nextReviewStatus ? null : current.reviewStatus(),
+                    serviceChanged ? serviceCode : null,
+                    categoryChanged ? category : null,
+                    sequenceChanged ? sequence : null,
+                    reasonChanged ? reason : null,
+                    current.reviewStatus() == nextReviewStatus ? null : nextReviewStatus, operator, now);
             return findById(current.id());
         });
     }
