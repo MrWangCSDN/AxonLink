@@ -91,14 +91,15 @@ public class ReplayConfigExportService {
         try (Workbook workbook = new XSSFWorkbook()) {
             HeaderStyles styles = createHeaderStyles(workbook);
             writeSheet(workbook, styles, "无条件忽略",
-                    List.of("忽略字段"), unconditionalRows());
+                    List.of("忽略字段", "中文名称"), unconditionalRows());
             writeSheet(workbook, styles, "有条件忽略",
-                    List.of("忽略字段", "字段索引", "字段标识", "主系统字段忽略条件", "备系统字段忽略条件"),
+                    List.of("忽略字段", "中文名称", "字段索引", "字段标识",
+                            "主系统字段忽略条件", "备系统字段忽略条件"),
                     conditionalRows());
             writeSheet(workbook, styles, "错误码忽略",
                     List.of("老核心错误码", "新核心错误码"), errorCodeRows());
             writeSheet(workbook, styles, "排序字段",
-                    List.of("对象/数组名称", "排序字段"), sortFieldRows());
+                    List.of("对象/数组名称", "排序字段", "中文名称"), sortFieldRows());
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             workbook.write(out);
@@ -117,7 +118,8 @@ public class ReplayConfigExportService {
         List<List<String>> lines = new ArrayList<>(rows.size());
         for (ReplayUnconditionalIgnoreRow row : rows) {
             lines.add(buildLine(row.tranCode(), persons.get(row.tranCode()),
-                    List.of(text(row.fieldName())), row.ignoreReason(), row.updatedAt(), row.createdAt(),
+                    List.of(text(row.fieldName()), text(row.fieldChineseName())), row.ignoreReason(),
+                    row.updatedAt(), row.createdAt(),
                     reviews.get(row.id())));
         }
         return sortByServiceCode(lines);
@@ -134,7 +136,8 @@ public class ReplayConfigExportService {
         List<List<String>> lines = new ArrayList<>(rows.size());
         for (ReplayConditionalRmoveRow row : rows) {
             lines.add(buildLine(row.origTrcd(), persons.get(row.origTrcd()),
-                    List.of(text(row.fieldRmoveName()), String.valueOf(row.fieldFileIndx()),
+                    List.of(text(row.fieldRmoveName()), text(row.fieldChineseName()),
+                            String.valueOf(row.fieldFileIndx()),
                             flagText(row.fieldFileFlag()), text(row.origFieldCond()), text(row.destFieldCond())),
                     row.ignoreReason(), row.updatedAt(), row.createdAt(), reviews.get(row.id())));
         }
@@ -169,7 +172,7 @@ public class ReplayConfigExportService {
         List<List<String>> lines = new ArrayList<>(rows.size());
         for (ReplaySortFieldRow row : rows) {
             lines.add(buildLine(row.origTrcd(), persons.get(row.origTrcd()),
-                    List.of(text(row.origArryName()), text(row.origFieldName())),
+                    List.of(text(row.origArryName()), text(row.origFieldName()), text(row.fieldChineseName())),
                     row.ignoreReason(), row.updatedAt(), row.createdAt(), reviews.get(row.id())));
         }
         return sortByServiceCode(lines);
