@@ -30,6 +30,7 @@ class ReplayUnconditionalIgnoreServiceTest {
 
     private static final ReplayConfigOperator OPERATOR = new ReplayConfigOperator("zhangs3", "张三");
     private static final String REASON = "测试原因";
+    private static final String CHINESE_NAME = "账号";
 
     private JdbcTemplate jdbc;
     private ReplayUnconditionalIgnoreService service;
@@ -54,8 +55,9 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void reviewFlowEnforcesBankOwnerAndResetsOnUpdate() {
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", CHINESE_NAME, REASON), OPERATOR);
         assertEquals(0, created.reviewStatus());
+        assertEquals(CHINESE_NAME, created.fieldChineseName());
         assertEquals(REASON, created.ignoreReason());
         assertEquals("Y444", created.oldTransactionCode());
         assertEquals("张三", created.developer());
@@ -81,6 +83,20 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals(1, again.reviewStatus());
         assertEquals(reviewed.version(), again.version());
         assertEquals(2, service.operations(created.id(), 10, 0).total());
+    }
+
+    @Test
+    void requiresFieldChineseNameOnCreateAndUpdate() {
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", " ", REASON), OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", "中".repeat(257), REASON),
+                OPERATOR));
+
+        ReplayUnconditionalIgnoreRow created = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", CHINESE_NAME, REASON), OPERATOR);
+        assertThrows(IllegalArgumentException.class, () -> service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", " ", REASON, 0), OPERATOR));
     }
 
     @Test
@@ -436,16 +452,21 @@ class ReplayUnconditionalIgnoreServiceTest {
     @Test
     void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
         ReplayUnconditionalIgnoreRow created = service.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", CHINESE_NAME, REASON), OPERATOR);
         jdbc.update("UPDATE dii_replay_unconditional_ignore SET review_status=1 WHERE id=?", created.id());
 
         ReplayUnconditionalIgnoreRow reasonUpdated = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", "新原因", 0), OPERATOR);
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", CHINESE_NAME, "新原因", 0),
+                OPERATOR);
         assertEquals(1, reasonUpdated.reviewStatus());
 
-        ReplayUnconditionalIgnoreRow businessUpdated = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "customerNo", "再次修改", 1), OPERATOR);
-        assertEquals(0, businessUpdated.reviewStatus());
+        ReplayUnconditionalIgnoreRow chineseNameUpdated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", "客户账号", "新原因", 1),
+                OPERATOR);
+        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
+                .anyMatch(change -> "field_chinese_name".equals(change.field())
+                        && CHINESE_NAME.equals(change.oldValue()) && "客户账号".equals(change.newValue())));
     }
 
     private void seedServiceAndPerson(String esfServiceCode, String tranCode, String domain, String name,

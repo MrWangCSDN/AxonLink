@@ -40,17 +40,20 @@ class ReplaySortFieldServiceTest {
     @Test
     void createExpandsThreeRowsAndParsesFieldFormats() {
         List<ReplaySortFieldRow> created = service.create(
-                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "loans(loanNo,loanType)",
-                        "排序字段忽略原因"),
+                new ReplaySortFieldCreateRequest("6208", "accounts.accountNo", "老核心账号",
+                        "loans(loanNo,loanType)", "新核心贷款属性", "排序字段忽略原因"),
                 OPERATOR);
 
         assertEquals(3, created.size());
         assertTrue(created.stream().anyMatch(row -> row.origTrcd().equals(BASE + "&sop")
-                && row.origArryName().equals("accounts") && row.origFieldName().equals("accountNo")));
+                && row.origArryName().equals("accounts") && row.origFieldName().equals("accountNo")
+                && row.fieldChineseName().equals("老核心账号")));
         assertTrue(created.stream().anyMatch(row -> row.origTrcd().equals(BASE + "&soap")
-                && row.origArryName().equals("loans") && row.origFieldName().equals("loanNo,loanType")));
+                && row.origArryName().equals("loans") && row.origFieldName().equals("loanNo,loanType")
+                && row.fieldChineseName().equals("新核心贷款属性")));
         assertTrue(created.stream().anyMatch(row -> row.origTrcd().equals(BASE + "&bzjson")
-                && row.origArryName().equals("loans") && row.origFieldName().equals("loanNo,loanType")));
+                && row.origArryName().equals("loans") && row.origFieldName().equals("loanNo,loanType")
+                && row.fieldChineseName().equals("新核心贷款属性")));
         created.forEach(row -> assertEquals(1, row.tranMode()));
         // 三条共用同一条忽略原因
         created.forEach(row -> assertEquals("排序字段忽略原因", row.ignoreReason()));
@@ -73,6 +76,12 @@ class ReplaySortFieldServiceTest {
 
     @Test
     void rejectsUnknownTranCodeAndBadFieldFormat() {
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplaySortFieldCreateRequest("6208", "a.b", " ", "c.d", "新字段", "测试原因"),
+                OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplaySortFieldCreateRequest("6208", "a.b", "老字段", "c.d", "中".repeat(257),
+                        "测试原因"), OPERATOR));
         IllegalArgumentException unmapped = assertThrows(IllegalArgumentException.class, () -> service.create(
                 new ReplaySortFieldCreateRequest("9999", "a.b", "c.d", "测试原因"), OPERATOR));
         assertEquals("交易码无映射：9999", unmapped.getMessage());
@@ -117,16 +126,20 @@ class ReplaySortFieldServiceTest {
     @Test
     void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
         ReplaySortFieldRow created = service.create(
-                new ReplaySortFieldCreateRequest("6208", "a.a1", "b.b1", "原因"), OPERATOR).get(0);
+                new ReplaySortFieldCreateRequest("6208", "a.a1", "排序字段",
+                        "b.b1", "新核心排序字段", "原因"), OPERATOR).get(0);
         jdbc.update("UPDATE dii_replay_sort_field SET review_status=1 WHERE id=?", created.id());
 
         ReplaySortFieldRow reasonUpdated = service.update(created.id(),
                 new ReplaySortFieldUpdateRequest(created.origTrcd(), created.origArryName(),
-                        created.origFieldName(), "新原因", 0), OPERATOR);
+                        created.origFieldName(), "排序字段", "新原因", 0), OPERATOR);
         assertEquals(1, reasonUpdated.reviewStatus());
 
-        ReplaySortFieldRow businessUpdated = service.update(created.id(),
-                new ReplaySortFieldUpdateRequest(created.origTrcd(), "c", "d", "再次修改", 1), OPERATOR);
-        assertEquals(0, businessUpdated.reviewStatus());
+        ReplaySortFieldRow chineseNameUpdated = service.update(created.id(),
+                new ReplaySortFieldUpdateRequest(created.origTrcd(), created.origArryName(),
+                        created.origFieldName(), "新排序字段", "新原因", 1), OPERATOR);
+        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
+                .anyMatch(change -> "field_chinese_name".equals(change.field())));
     }
 }

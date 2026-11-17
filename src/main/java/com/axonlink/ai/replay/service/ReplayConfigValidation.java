@@ -16,6 +16,7 @@ public final class ReplayConfigValidation {
     public static final int DEFAULT_LIMIT = 10;
     public static final int MAX_BATCH_DELETE = 100;
     public static final int MAX_BATCH_CREATE = 3;
+    public static final int MAX_FIELD_CHINESE_NAME = 256;
     public static final int MAX_IGNORE_REASON = 512;
     public static final int MAX_MESSAGE_SEQUENCES = 100;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
@@ -50,6 +51,15 @@ public final class ReplayConfigValidation {
         String trimmed = requireText(value, "忽略原因");
         if (trimmed.length() > MAX_IGNORE_REASON) {
             throw new IllegalArgumentException("忽略原因不能超过 512 个字符");
+        }
+        return trimmed;
+    }
+
+    /** 字段中文名称：必填、去除首尾空格、长度不超过 256。 */
+    public static String requireFieldChineseName(String value) {
+        String trimmed = requireText(value, "中文名称");
+        if (trimmed.length() > MAX_FIELD_CHINESE_NAME) {
+            throw new IllegalArgumentException("中文名称不能超过 256 个字符");
         }
         return trimmed;
     }

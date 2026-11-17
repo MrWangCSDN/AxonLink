@@ -19,6 +19,7 @@ class ReplayConditionalRmoveServiceTest {
 
     private static final ReplayConfigOperator OPERATOR = new ReplayConfigOperator("zhangs3", "张三");
     private static final String CODE = "S1&sop";
+    private static final String CHINESE_NAME = "账号";
 
     private JdbcTemplate jdbc;
     private ReplayConditionalRmoveService service;
@@ -79,6 +80,12 @@ class ReplayConditionalRmoveServiceTest {
     @Test
     void validatesFlagAndDetectsNoChange() {
         assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", " ", 2, null, null, "测试原因"),
+                OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", "中".repeat(257), 2,
+                        null, null, "测试原因"), OPERATOR));
+        assertThrows(IllegalArgumentException.class, () -> service.create(
                 new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 3, null, null, "测试原因"), OPERATOR));
         assertThrows(IllegalArgumentException.class, () -> service.create(
                 new ReplayConditionalRmoveCreateRequest(CODE, "accounts", null, null, null, "测试原因"), OPERATOR));
@@ -86,8 +93,10 @@ class ReplayConditionalRmoveServiceTest {
                 new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 2, null, null, "  "), OPERATOR));
 
         ReplayConditionalRmoveRow created = service.create(
-                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", 2, "  ", "x == 1", "测试原因"),
+                new ReplayConditionalRmoveCreateRequest(CODE, "accounts", CHINESE_NAME, 2,
+                        "  ", "x == 1", "测试原因"),
                 OPERATOR);
+        assertEquals(CHINESE_NAME, created.fieldChineseName());
         assertEquals(2, created.fieldFileFlag());
         assertEquals(null, created.origFieldCond());
         assertEquals("x == 1", created.destFieldCond());
@@ -101,8 +110,8 @@ class ReplayConditionalRmoveServiceTest {
     }
 
     private ReplayConditionalRmoveRow create(String code, String fieldName) {
-        return service.create(new ReplayConditionalRmoveCreateRequest(code, fieldName, 1, null, null, "测试原因"),
-                OPERATOR);
+        return service.create(new ReplayConditionalRmoveCreateRequest(
+                code, fieldName, CHINESE_NAME, 1, null, null, "测试原因"), OPERATOR);
     }
 
     @Test
@@ -111,13 +120,15 @@ class ReplayConditionalRmoveServiceTest {
         jdbc.update("UPDATE dii_replay_conditional_rmove SET review_status=1 WHERE id=?", created.id());
 
         ReplayConditionalRmoveRow reasonUpdated = service.update(created.id(),
-                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", 1, null, null,
-                        "新原因", 0), OPERATOR);
+                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", CHINESE_NAME, 1,
+                        null, null, "新原因", 0), OPERATOR);
         assertEquals(1, reasonUpdated.reviewStatus());
 
-        ReplayConditionalRmoveRow businessUpdated = service.update(created.id(),
-                new ReplayConditionalRmoveUpdateRequest(CODE, "customers", 1, null, null,
-                        "再次修改", 1), OPERATOR);
-        assertEquals(0, businessUpdated.reviewStatus());
+        ReplayConditionalRmoveRow chineseNameUpdated = service.update(created.id(),
+                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", "客户账号", 1,
+                        null, null, "新原因", 1), OPERATOR);
+        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
+                .anyMatch(change -> "field_chinese_name".equals(change.field())));
     }
 }

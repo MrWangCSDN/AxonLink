@@ -135,9 +135,13 @@ public class ReplaySortFieldService {
         ParsedSortField oldParsed = parseSortField(
                 ReplayConfigValidation.requireText(request == null ? null : request.oldSortField(), "老核心排序字段"),
                 "老核心排序字段");
+        String oldSortFieldChineseName = ReplayConfigValidation.requireFieldChineseName(
+                request == null ? null : request.oldSortFieldChineseName());
         ParsedSortField newParsed = parseSortField(
                 ReplayConfigValidation.requireText(request == null ? null : request.newSortField(), "新核心排序字段"),
                 "新核心排序字段");
+        String newSortFieldChineseName = ReplayConfigValidation.requireFieldChineseName(
+                request == null ? null : request.newSortFieldChineseName());
         String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
                 request == null ? null : request.ignoreReason());
         List<String> esfCodes = resolver.findEsfServiceCodes(tranCode);
@@ -154,9 +158,9 @@ public class ReplaySortFieldService {
             if (base.isBlank()) {
                 continue;
             }
-            addDraft(drafts, seen, base + "&sop", oldParsed, ignoreReason);
-            addDraft(drafts, seen, base + "&soap", newParsed, ignoreReason);
-            addDraft(drafts, seen, base + "&bzjson", newParsed, ignoreReason);
+            addDraft(drafts, seen, base + "&sop", oldParsed, oldSortFieldChineseName, ignoreReason);
+            addDraft(drafts, seen, base + "&soap", newParsed, newSortFieldChineseName, ignoreReason);
+            addDraft(drafts, seen, base + "&bzjson", newParsed, newSortFieldChineseName, ignoreReason);
         }
         if (drafts.isEmpty()) {
             throw new IllegalArgumentException("交易码无映射：" + tranCode);
@@ -175,6 +179,8 @@ public class ReplaySortFieldService {
                 request == null ? null : request.origArryName(), "对象/数组名称");
         String origFieldName = ReplayConfigValidation.requireText(
                 request == null ? null : request.origFieldName(), "排序字段");
+        String fieldChineseName = ReplayConfigValidation.requireFieldChineseName(
+                request == null ? null : request.fieldChineseName());
         String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
                 request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
@@ -188,12 +194,13 @@ public class ReplaySortFieldService {
         if (Objects.equals(current.origTrcd(), origTrcd)
                 && Objects.equals(current.origArryName(), origArryName)
                 && Objects.equals(current.origFieldName(), origFieldName)
+                && Objects.equals(current.fieldChineseName(), fieldChineseName)
                 && Objects.equals(current.ignoreReason(), ignoreReason)) {
             return enrich(current, operator);
         }
         try {
-            return enrich(dao.update(current, origTrcd, origArryName, origFieldName, ignoreReason, operator),
-                    operator);
+            return enrich(dao.update(current, origTrcd, origArryName, origFieldName, fieldChineseName,
+                    ignoreReason, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码、对象/数组名称与排序字段重复）");
         }
@@ -251,10 +258,11 @@ public class ReplaySortFieldService {
     }
 
     private static void addDraft(List<ReplaySortFieldDraft> drafts, Set<String> seen, String origTrcd,
-                                 ParsedSortField parsed, String ignoreReason) {
+                                 ParsedSortField parsed, String fieldChineseName, String ignoreReason) {
         String key = origTrcd + "|" + parsed.arryName() + "|" + parsed.fieldName();
         if (seen.add(key)) {
-            drafts.add(new ReplaySortFieldDraft(origTrcd, parsed.arryName(), parsed.fieldName(), ignoreReason));
+            drafts.add(new ReplaySortFieldDraft(
+                    origTrcd, parsed.arryName(), parsed.fieldName(), fieldChineseName, ignoreReason));
         }
     }
 
@@ -302,7 +310,8 @@ public class ReplaySortFieldService {
                                       ReplayConfigOperator operator) {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
         return new ReplaySortFieldRow(row.id(), row.origTrcd(), row.origArryName(), row.origFieldName(),
-                row.ignoreReason(), row.tranMode(), row.createdAt(), row.updatedAt(), row.version(),
+                row.fieldChineseName(), row.ignoreReason(), row.tranMode(), row.createdAt(),
+                row.updatedAt(), row.version(),
                 row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),
