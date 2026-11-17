@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.controller;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbComparePartitioningRequest;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSqlSaveRequest;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonPartitionForbiddenException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 
@@ -200,6 +201,24 @@ public class ReplayDatabaseComparisonController {
             @RequestBody ReplayDbCompareSaveRequest body,
             HttpServletRequest request) {
         return ResponseEntity.ok(R.ok(service.create(body, requireRegistrationOperator(request))));
+    }
+
+    @PostMapping("/custom-sql/analyze")
+    public R<Map<String, Object>> analyzeCustomSql(@RequestBody Map<String, String> body,
+                                                  HttpServletRequest request) {
+        return R.ok(service.analyzeCustomSql(body.get("sql"), requireRegistrationOperator(request)));
+    }
+
+    @PostMapping("/custom-sql")
+    public R<ReplayDbCompareRegistration> createCustomSql(@RequestBody ReplayDbCompareCustomSqlSaveRequest body,
+                                                         HttpServletRequest request) {
+        return R.ok(service.createCustomSql(body, requireRegistrationOperator(request)));
+    }
+
+    @PutMapping("/custom-sql/{id}")
+    public R<ReplayDbCompareRegistration> updateCustomSql(@PathVariable long id,
+            @RequestBody ReplayDbCompareCustomSqlSaveRequest body, HttpServletRequest request) {
+        return R.ok(service.updateCustomSql(id, body, requireRegistrationOperator(request)));
     }
 
     @PutMapping("/{id}/partitioning")

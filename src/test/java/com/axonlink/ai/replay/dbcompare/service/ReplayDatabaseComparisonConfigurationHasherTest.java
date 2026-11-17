@@ -23,6 +23,39 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
             new ReplayDatabaseComparisonConfigurationHasher();
 
     @Test
+    void preservesThePreviouslyEncodedTableHashByteForByte() {
+        var table = registration(1L, "acct_master", "账户主表", 3,
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        assertEquals("bbd6260ed52d600cebe977d31d0c7f3ceaeac4ef98a57d3594c9ae89e792660c",
+                hasher.hash(List.of(table)));
+    }
+
+    @Test
+    void customSqlHashIncludesQuerySourceAndTheFullOrderedResultSchema() {
+        var columns = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn(
+                "total_amt", "TOTAL_AMT", "NUMERIC", 1));
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select sum(amount) as total_amt from acct", "acct", columns);
+        var registration = registration(1L, "sql_one", "汇总", 3,
+                List.of(field("total_amt", "金额", 1, false, 1))).withCustomSql(definition);
+        var changedQuery = registration.withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                "select sum(amount * 2) as total_amt from acct", "acct", columns));
+        var changedSource = registration.withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                definition.sql(), "other_acct", columns));
+        var changedType = registration.withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                definition.sql(), "acct", List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn(
+                "total_amt", "TOTAL_AMT", "VARCHAR", 1))));
+        var changedLabel = registration.withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(
+                definition.sql(), "acct", List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn(
+                "total_amt", "total_amt", "NUMERIC", 1))));
+        String baseline = hasher.hash(List.of(registration));
+        assertNotEquals(baseline, hasher.hash(List.of(changedQuery)));
+        assertNotEquals(baseline, hasher.hash(List.of(changedSource)));
+        assertNotEquals(baseline, hasher.hash(List.of(changedType)));
+        assertNotEquals(baseline, hasher.hash(List.of(changedLabel)));
+    }
+
+    @Test
     void producesTheSameHashForEquivalentInputIterationOrder() {
         ReplayDbCompareRegistration account = registration(
                 1L, "acct_master", "账户主表", 3,

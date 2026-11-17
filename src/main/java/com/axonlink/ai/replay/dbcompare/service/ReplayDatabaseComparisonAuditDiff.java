@@ -37,7 +37,7 @@ public class ReplayDatabaseComparisonAuditDiff {
         }
 
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
-        addModify(details, "tableComment", "表中文名",
+        addModify(details, "tableComment", after.customSql() == null ? "表中文名" : "比对项名称",
                 text(before.tableComment()), text(after.tableComment()));
         addModify(details, "domainName", "领域",
                 text(before.domainName()), text(after.domainName()));
@@ -49,7 +49,10 @@ public class ReplayDatabaseComparisonAuditDiff {
                 Boolean.toString(before.deleted()), Boolean.toString(after.deleted()));
         addModify(details, "queryCondition", "查询条件",
                 queryCondition(before), queryCondition(after));
-        addModify(details, "comparisonKey", "比对键索引", keyLabel(before), keyLabel(after));
+        addModify(details, "comparisonKey", after.customSql() == null ? "比对键索引" : "结果比对键", keyLabel(before), keyLabel(after));
+        addModify(details, "customSql", "自定义 SQL", sqlText(before), sqlText(after));
+        addModify(details, "customSql.sourceTableName", "关联基础表", sourceTable(before), sourceTable(after));
+        addModify(details, "customSql.resultColumns", "SQL 结果结构", resultSchema(before), resultSchema(after));
         addFieldDifferences(details, before.fields(), after.fields());
         return List.copyOf(details);
     }
@@ -59,13 +62,20 @@ public class ReplayDatabaseComparisonAuditDiff {
             throw new IllegalArgumentException("新增或重新登记必须提供修改后状态");
         }
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
-        addAdded(details, "tableComment", "表中文名", text(after.tableComment()));
+        addAdded(details, "tableComment", after.customSql() == null ? "表中文名" : "比对项名称", text(after.tableComment()));
         addAdded(details, "domainName", "领域", text(after.domainName()));
         addAdded(details, "groupOwner", "科技负责人", owner(after));
         addAdded(details, "registeredDate", "登记日期", value(after.registeredDate()));
         addAdded(details, "deleted", "删除状态", Boolean.toString(after.deleted()));
         addAdded(details, "queryCondition", "查询条件", queryCondition(after));
-        if (after.comparisonKey() != null) addAdded(details, "comparisonKey", "比对键索引", keyLabel(after));
+        if (after.comparisonKey() != null) {
+            addAdded(details, "comparisonKey", after.customSql() == null ? "比对键索引" : "结果比对键", keyLabel(after));
+        }
+        if (after.customSql() != null) {
+            addAdded(details, "customSql", "自定义 SQL", sqlText(after));
+            addAdded(details, "customSql.sourceTableName", "关联基础表", sourceTable(after));
+            addAdded(details, "customSql.resultColumns", "SQL 结果结构", resultSchema(after));
+        }
         fieldsByName(after.fields()).values().forEach(field ->
                 details.add(fieldDetail(ReplayDbCompareChangeType.ADD, field, null, fieldValue(field))));
         return List.copyOf(details);
@@ -78,6 +88,16 @@ public class ReplayDatabaseComparisonAuditDiff {
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
         details.add(new ReplayDbCompareAuditDetailDraft(
                 ReplayDbCompareChangeType.MODIFY, "deleted", "删除状态", "false", "true"));
+        if (before.customSql() != null) {
+            details.add(new ReplayDbCompareAuditDetailDraft(
+                    ReplayDbCompareChangeType.DELETE, "customSql", "自定义 SQL", sqlText(before), null));
+            details.add(new ReplayDbCompareAuditDetailDraft(
+                    ReplayDbCompareChangeType.DELETE, "customSql.sourceTableName", "关联基础表", sourceTable(before), null));
+            details.add(new ReplayDbCompareAuditDetailDraft(
+                    ReplayDbCompareChangeType.DELETE, "customSql.resultColumns", "SQL 结果结构", resultSchema(before), null));
+            details.add(new ReplayDbCompareAuditDetailDraft(
+                    ReplayDbCompareChangeType.DELETE, "comparisonKey", "结果比对键", keyLabel(before), null));
+        }
         fieldsByName(before.fields()).values().forEach(field ->
                 details.add(fieldDetail(ReplayDbCompareChangeType.DELETE, field, fieldValue(field), null)));
         return List.copyOf(details);
@@ -172,7 +192,28 @@ public class ReplayDatabaseComparisonAuditDiff {
 
     private String keyLabel(ReplayDbCompareState state) {
         var key = state.comparisonKey();
+        if (key != null && "RESULT_KEY".equals(key.indexType())) {
+            return String.join("、", key.columnNames());
+        }
         return key == null ? null : key.indexName() + " (" + key.indexType() + "): " + String.join(",", key.columnNames());
+    }
+
+    private String sqlText(ReplayDbCompareState state) {
+        return state.customSql() == null ? null : state.customSql().sql();
+    }
+
+    private String sourceTable(ReplayDbCompareState state) {
+        return state.customSql() == null ? null : state.customSql().sourceTableName();
+    }
+
+    private String resultSchema(ReplayDbCompareState state) {
+        if (state.customSql() == null) {
+            return null;
+        }
+        return state.customSql().resultColumns().stream()
+                .map(column -> column.columnName() + " [" + column.columnLabel() + "] "
+                        + column.dataType() + " 第" + column.ordinalPosition() + "列")
+                .collect(java.util.stream.Collectors.joining("\n"));
     }
 
     private String owner(ReplayDbCompareState state) {
@@ -184,8 +225,9 @@ public class ReplayDatabaseComparisonAuditDiff {
     }
 
     private String queryCondition(ReplayDbCompareState state) {
-        return queryConditionFormatter.format(
+        String formatted = queryConditionFormatter.format(
                 state.whereCondition(), state.orderingPrimaryKeyNames(), state.compareLimit());
+        return state.customSql() != null && "全表".equals(formatted) ? "全部结果" : formatted;
     }
 
     private String text(String value) {

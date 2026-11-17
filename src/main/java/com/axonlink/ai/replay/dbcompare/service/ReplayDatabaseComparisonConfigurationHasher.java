@@ -48,6 +48,12 @@ public class ReplayDatabaseComparisonConfigurationHasher {
             if (registration.comparisonKey() != null) {
                 putString(digest, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
             }
+            if (registration.customSql() != null) {
+                putString(digest, "CUSTOM_SQL");
+                putString(digest, normalize(registration.sourceTableName()));
+                putString(digest, registration.customSql().sql());
+                putString(digest, ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(registration.customSql()));
+            }
             List<ReplayDbCompareField> fields = registration.fields().stream()
                     .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder)
                             .thenComparing(field -> normalize(field.columnName())))

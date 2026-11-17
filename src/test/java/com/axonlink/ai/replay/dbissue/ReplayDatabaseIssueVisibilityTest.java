@@ -51,7 +51,7 @@ class ReplayDatabaseIssueVisibilityTest {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         ReplayDatabaseIssueReviewProjectionTest.installJsonHelpers(jdbc);
         new ResourceDatabasePopulator(List.of(
-                "V62__dii_replay_database_comparison_fields.sql", "V63__dii_replay_database_comparison_versions.sql",
+                "V62__dii_replay_database_comparison_fields.sql", "V63__dii_replay_database_comparison_versions.sql", "V91__replay_db_compare_custom_sql.sql",
                 "V77__replay_database_issues.sql", "V78__replay_database_issue_review_projection.sql",
                 "V79__replay_database_issue_repair_date_projection.sql", "V80__replay_database_issue_collaborator_projection.sql",
                 "V81__replay_database_issue_completion_totals.sql", "V82__replay_database_table_person.sql",

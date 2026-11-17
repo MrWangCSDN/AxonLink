@@ -23,6 +23,28 @@ class ReplayDatabaseComparisonAuditDiffTest {
     private final ReplayDatabaseComparisonAuditDiff diff = new ReplayDatabaseComparisonAuditDiff();
 
     @Test
+    void auditsCustomSqlTextResultSchemaAndResultKeysWithReadableLabels() {
+        var columns = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "id", "VARCHAR", 1));
+        var before = state("汇总", "存款组", "101", "赵经理", LocalDate.of(2026, 11, 10), false, List.of())
+                .withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", columns))
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
+        var after = before.withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select upper(id) as id from acct", "acct",
+                List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "ID", "VARCHAR", 1))))
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id", "branch")));
+        var details = diff.compare(before, after, ReplayDbCompareAuditOperation.UPDATE);
+        var sql = details.stream().filter(item -> "customSql".equals(item.fieldCode())).findFirst().orElseThrow();
+        assertEquals("自定义 SQL", sql.fieldLabel());
+        assertEquals("select id from acct", sql.beforeValue());
+        assertEquals("select upper(id) as id from acct", sql.afterValue());
+        assertTrue(details.stream().anyMatch(item -> "SQL 结果结构".equals(item.fieldLabel()) && item.afterValue().contains("ID")));
+        assertTrue(details.stream().anyMatch(item -> "结果比对键".equals(item.fieldLabel())));
+        assertTrue(diff.compare(null, before, ReplayDbCompareAuditOperation.CREATE).stream()
+                .anyMatch(item -> "customSql".equals(item.fieldCode()) && "select id from acct".equals(item.afterValue())));
+        assertTrue(diff.compare(before, null, ReplayDbCompareAuditOperation.DELETE).stream()
+                .anyMatch(item -> "customSql".equals(item.fieldCode()) && "select id from acct".equals(item.beforeValue())));
+    }
+
+    @Test
     void comparesNormalizedTableAttributesInStableOrder() {
         ReplayDbCompareState before = state("账户主表", "存款组", "101", "赵经理",
                 LocalDate.of(2026, 9, 11), false, List.of());

@@ -2,6 +2,8 @@ package com.axonlink.ai.replay.reopen;
 
 import static com.axonlink.ai.replay.reopen.ReplayReopenDtos.*;
 
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
+
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -11,9 +13,16 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.*;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Repository
 public class ReplayReopenDao {
@@ -21,6 +30,10 @@ public class ReplayReopenDao {
     private final TransactionTemplate transaction;
     private final TransactionTemplate writeTransaction;
     private static final String EVENTS = "dii_replay_reopen_event";
+    private static final Pattern BATCH_DATE_TIME =
+            Pattern.compile("^(?:RPT|DZ)(\\d{8})-(?:(\\d{6})(?:-|$))?.*$");
+    private static final DateTimeFormatter BATCH_CLOCK =
+            DateTimeFormatter.ofPattern("HHmmss").withResolverStyle(ResolverStyle.STRICT);
     private static final RowMapper<EventRow> MAPPER =
             (r, n) ->
                     new EventRow(
@@ -118,6 +131,19 @@ public class ReplayReopenDao {
                 f.pageSize());
     }
 
+    public List<EventRow> countTransferCandidates(Filter filter, String sourceOwnerUsername, int count) {
+        Where scope = where(normalize(filter));
+        String ownerCondition = sourceOwnerUsername == null
+                ? " AND (e.current_owner_username IS NULL OR e.current_owner_username='')"
+                : " AND e.current_owner_username=?";
+        List<Object> args = new ArrayList<>(scope.args());
+        if (sourceOwnerUsername != null) args.add(sourceOwnerUsername);
+        args.add(count);
+        return jdbc.query("SELECT e.* FROM " + EVENTS + " e" + scope.sql() + ownerCondition
+                        + " AND e.pending_appeal_id IS NULL ORDER BY e.id LIMIT ?",
+                MAPPER, args.toArray());
+    }
+
     public Map<String, Long> issueCounts(List<String> keys) {
         Map<String, Long> result = new LinkedHashMap<>();
         if (keys == null || keys.isEmpty()) return result;
@@ -175,6 +201,8 @@ public class ReplayReopenDao {
                     .add(row.person());
         List<BatchStat> batchStats =
                 batches.stream()
+                        .sorted(Comparator.comparing(
+                                batch -> batchChronologyKey(batch.name()), Comparator.reverseOrder()))
                         .map(
                                 batch ->
                                         new BatchStat(
@@ -191,6 +219,28 @@ public class ReplayReopenDao {
     }
 
     private record BatchCount(String name, long count) {}
+
+    private static String batchChronologyKey(String batchName) {
+        String normalized = batchName == null ? "" : batchName.trim();
+        Matcher matcher = BATCH_DATE_TIME.matcher(normalized);
+        if (!matcher.matches()) return "";
+        LocalDate date;
+        try {
+            date = LocalDate.parse(matcher.group(1), DateTimeFormatter.BASIC_ISO_DATE);
+        } catch (DateTimeParseException invalidDate) {
+            return "";
+        }
+        LocalTime time = LocalTime.MIDNIGHT;
+        if (matcher.group(2) != null) {
+            try {
+                time = LocalTime.parse(matcher.group(2), BATCH_CLOCK);
+            } catch (DateTimeParseException invalidTime) {
+                // Historical suffixes can be sequence numbers instead of a valid clock time.
+            }
+        }
+        return date.format(DateTimeFormatter.BASIC_ISO_DATE) + time.format(BATCH_CLOCK)
+                + normalized.substring(matcher.start(1));
+    }
 
     private record PersonAggregate(String batchName, PersonStat person) {}
 
@@ -214,7 +264,7 @@ public class ReplayReopenDao {
                 source
                         + " JOIN dii_replay_reopen_audit a ON a.event_id=e.id"
                         + w.sql()
-                        + " AND a.action IN ('APPEAL_APPROVED','OWNER_ASSIGNED') AND"
+                        + " AND a.action IN ('APPEAL_APPROVED','OWNER_ASSIGNED','COUNT_TRANSFERRED') AND"
                         + " (COALESCE(a.from_owner_username,'')<>COALESCE(a.to_owner_username,''))";
         String inbound =
                 "SELECT e.batch_name,a.to_owner_username,a.to_owner_name,0,1,0,0,0,NULL"
@@ -318,7 +368,8 @@ public class ReplayReopenDao {
                 f.onlyMine(),
                 Math.max(1, f.page()),
                 f.pageSize() <= 0 ? 20 : Math.min(200, f.pageSize()),
-                f.sourceRoundId());
+                f.sourceRoundId(),
+                f.batchNames());
     }
 
     private record Where(String sql, List<Object> args) {}
@@ -328,9 +379,18 @@ public class ReplayReopenDao {
         List<Object> args = new ArrayList<>();
         add(sql, args, "e.issue_key", f.issueKey());
         add(sql, args, "e.batch_name", f.batchName());
+        if (f.batchNames() != null && !f.batchNames().isEmpty()) {
+            sql.append(" AND e.batch_name IN (")
+                    .append(String.join(",", Collections.nCopies(f.batchNames().size(), "?")))
+                    .append(')');
+            args.addAll(f.batchNames());
+        }
         add(sql, args, "e.issue_domain", f.issueDomain());
-        if (f.replayType() != null && !f.replayType().isBlank() && !"ALL".equals(f.replayType()))
+        if (f.replayType() != null && !f.replayType().isBlank() && !"ALL".equals(f.replayType())) {
             add(sql, args, "e.replay_type", f.replayType());
+            sql.append(" AND e.batch_name LIKE ?");
+            args.add(ReplayIssueReplayType.parse(f.replayType()).batchPrefix() + "%");
+        }
         add(sql, args, "e.current_owner_username", f.ownerUsername());
         if (f.onlyMine() && (f.ownerUsername() == null || f.ownerUsername().isBlank()))
             sql.append(" AND 1=0");

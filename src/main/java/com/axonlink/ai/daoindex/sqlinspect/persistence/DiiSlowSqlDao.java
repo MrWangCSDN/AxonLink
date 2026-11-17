@@ -4,7 +4,9 @@ import com.axonlink.ai.daoindex.sqlinspect.slowsql.dto.ParsedSlowSqlRow;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -25,6 +27,8 @@ import java.util.TreeSet;
 public class DiiSlowSqlDao {
 
     private final JdbcTemplate jdbc;
+    private final TransactionTemplate transactions;
+    private static final int IMPORT_CHUNK_SIZE = 2000;
 
     /**
      * 低频隐藏阈值（2026-07-16）：exec_count &le; 该值 的行列表/导出一律不展示
@@ -37,6 +41,7 @@ public class DiiSlowSqlDao {
 
     public DiiSlowSqlDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
+        this.transactions = new TransactionTemplate(new DataSourceTransactionManager(diiResultJdbcTemplate.getDataSource()));
     }
 
     /** 单测/运维调整阈值入口（生产走 yml 配置 dii.slow-sql.hide-exec-count-lte）。 */
@@ -78,6 +83,18 @@ public class DiiSlowSqlDao {
     /** 同轮覆盖：删除整轮旧数据，返回删除行数。 */
     public int deleteByRound(String round) {
         return jdbc.update("DELETE FROM dii_slow_sql WHERE round = ?", round);
+    }
+
+    /** 整轮覆盖在同一事务中完成，分块插入失败时恢复旧轮数据。 */
+    public int replaceRound(String round, List<ParsedSlowSqlRow> rows, LocalDateTime importedAt) {
+        Integer deleted = transactions.execute(status -> {
+            int count = deleteByRound(round);
+            for (int start = 0; start < rows.size(); start += IMPORT_CHUNK_SIZE) {
+                batchInsert(rows.subList(start, Math.min(start + IMPORT_CHUNK_SIZE, rows.size())), round, importedAt);
+            }
+            return count;
+        });
+        return java.util.Objects.requireNonNull(deleted, "慢SQL轮次覆盖事务未完成");
     }
 
     /**

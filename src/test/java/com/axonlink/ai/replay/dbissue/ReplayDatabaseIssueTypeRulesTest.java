@@ -16,10 +16,12 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayDatabaseIssueTypeRulesTest {
     private ReplayDatabaseIssueService service;
@@ -32,6 +34,8 @@ class ReplayDatabaseIssueTypeRulesTest {
         ReplayDatabaseIssueReviewProjectionTest.installJsonHelpers(jdbc);
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),
                 new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),
@@ -39,6 +43,7 @@ class ReplayDatabaseIssueTypeRulesTest {
                 new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_database_issue_completion_totals.sql"),
                 new ClassPathResource("db/daoindex/V83__replay_database_issue_plan_date.sql"),
+                new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"),
                 new ClassPathResource("db/user/01_user_ddl.sql")).execute(jdbc.getDataSource());
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('editor','编辑人','E001',1)");
         dao = new ReplayDatabaseIssueDao(jdbc);
@@ -56,7 +61,7 @@ class ReplayDatabaseIssueTypeRulesTest {
     }
 
     @Test
-    void exposesSevenTypesAndEnforcesStatusSpecificChoices() {
+    void exposesTypesAndEnforcesStatusSpecificChoices() {
         assertEquals(ReplayDatabaseIssueTypes.ALL, service.options(actor).get("issueTypes"));
         long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
         var updated = service.update(id, Map.of("version", 0, "issueStatus", "无需处理", "issueType", "规则性差异"), actor);
@@ -64,6 +69,20 @@ class ReplayDatabaseIssueTypeRulesTest {
         long version = ((Number) updated.get("version")).longValue();
         assertThrows(IllegalArgumentException.class, () -> service.update(id,
                 Map.of("version", version, "issueStatus", "打开", "issueType", "不参与比对"), actor));
+    }
+
+    @Test
+    void savesParameterIssueTypeAndIncludesItInTheOptions() {
+        var options = (List<?>) service.options(actor).get("issueTypes");
+        assertTrue(options.contains("参数问题"));
+        long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
+
+        var updated = service.update(id, Map.of("version", 0, "issueType", "参数问题"), actor);
+
+        assertEquals("打开", updated.get("issueStatus"));
+        assertEquals("参数问题", updated.get("issueType"));
+        assertEquals("参数问题", dao.find(id).get("issueType"));
+        assertEquals(1, dao.history(id).size());
     }
 
     @ParameterizedTest
@@ -82,7 +101,7 @@ class ReplayDatabaseIssueTypeRulesTest {
 
     @ParameterizedTest
     @EmptySource
-    @ValueSource(strings = {"修改比对规则", "修改迁移规则", "修改代码", "前后交易差异", "其他问题",
+    @ValueSource(strings = {"修改比对规则", "修改迁移规则", "修改代码", "前后交易差异", "参数问题", "其他问题",
             "合理差异", "规则性差异问题", "外围问题"})
     void rejectsInvalidNoActionTypeWithTheTwoAllowedChoices(String type) {
         var before = dao.findByIssueId("type-rule");

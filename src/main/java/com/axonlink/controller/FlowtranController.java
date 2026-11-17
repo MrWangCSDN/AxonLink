@@ -115,7 +115,7 @@ public class FlowtranController {
     }
 
     /**
-     * 导出指定领域的全部交易链路，固定包含交易、服务、构件、数据库表四个 Sheet。
+     * 导出指定领域的全部交易链路，包含交易、服务、构件、数据库表、DAO 方法五个 Sheet。
      */
     @GetMapping("/domains/{domainKey}/chains/export")
     public ResponseEntity<?> exportDomainChains(

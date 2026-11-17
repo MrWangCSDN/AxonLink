@@ -50,6 +50,21 @@ public class ReplayReopenPermissionService {
                 && properties.getAdminEmpNos().contains(user.getEmpNo());
     }
 
+    public boolean canTransferCounts(ReplayIssueOperator operator) {
+        return configuredCountTransfer(active(operator));
+    }
+
+    public SysUser requireCountTransfer(ReplayIssueOperator operator) {
+        SysUser user = requireActive(operator);
+        if (!configuredCountTransfer(user)) throw ReplayReopenException.forbidden("无重开次数调整权限");
+        return user;
+    }
+
+    private boolean configuredCountTransfer(SysUser user) {
+        return user != null && user.getEmpNo() != null && !user.getEmpNo().isBlank()
+                && properties.getCountTransferEmpNos().contains(user.getEmpNo());
+    }
+
     public boolean isLeader(String domain, ReplayIssueOperator operator) {
         SysUser user = active(operator);
         Policy policy = store.findPolicy(domain,false);

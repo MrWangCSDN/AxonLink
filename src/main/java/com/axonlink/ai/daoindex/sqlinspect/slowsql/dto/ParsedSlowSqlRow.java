@@ -3,8 +3,8 @@ package com.axonlink.ai.daoindex.sqlinspect.slowsql.dto;
 /**
  * 慢SQL v2 聚合行：同一 (serviceName, abstractHash) 在一次导入文件内的汇总。
  *
- * <p>导入解析阶段在内存 Map 里按键聚合：{@link #absorb} 吃进一次出现——
- * 次数 +1；若耗时更大则用该次的 耗时/参数/来源 替换代表字段（"取最大耗时那条展示"）。
+ * <p>导入解析阶段在内存 Map 里按键聚合，累计每行提供的执行次数。
+ * 若耗时更大则用该行的耗时、参数和来源替换代表字段。
  * 领域（domain）与重复轮次（repeatRounds）在解析完成后由 Service 统一回填。
  */
 public class ParsedSlowSqlRow {
@@ -37,9 +37,23 @@ public class ParsedSlowSqlRow {
         this.execCount = 1;
     }
 
+    public ParsedSlowSqlRow(String serviceName, String bizType,
+                            String abstractSql, String abstractHash,
+                            long timeCostMs, String timeCostRaw,
+                            String execParams, String sourceLocation, int executionCount) {
+        this(serviceName, bizType, abstractSql, abstractHash, timeCostMs, timeCostRaw, execParams, sourceLocation);
+        this.execCount = executionCount;
+    }
+
     /** 聚合吃进同键的又一次出现：计数 +1；耗时更大则替换代表字段。 */
     public void absorb(long timeCostMs, String timeCostRaw, String execParams, String sourceLocation) {
-        this.execCount++;
+        absorb(timeCostMs, timeCostRaw, execParams, sourceLocation, 1);
+    }
+
+    /** 合并同类SQL的输入次数，代表字段仍来自耗时最大的输入行。 */
+    public void absorb(long timeCostMs, String timeCostRaw, String execParams, String sourceLocation,
+                       int executionCount) {
+        this.execCount = Math.addExact(this.execCount, executionCount);
         if (timeCostMs > this.maxTimeCostMs) {
             this.maxTimeCostMs = timeCostMs;
             this.maxTimeCostRaw = timeCostRaw;

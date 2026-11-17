@@ -1,0 +1,268 @@
+{
+  "date": "2026-11-11",
+  "backend_java": 17,
+  "backend_command": "mvn -q test",
+  "backend_totals": {
+    "tests": 1462,
+    "failures": 9,
+    "errors": 31,
+    "skipped": 6
+  },
+  "backend_passed": 1416,
+  "baseline_exact": true,
+  "new_failures": [],
+  "missing_baseline_failures": [],
+  "known_failures": [
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "anActualAppearanceSurvivesAnAbsentOverwriteOfTheSameBatchAndLaterAppearance",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "candidateSearchEscapesWildcardsAndRejectsInvalidFieldAndCounts",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "collaboratorDisplayFiltersCombineWithOtherColumnsAndSharedPagingSortingAndExport",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "currentRegistrationDrivesDomainOwnerFilteringOptionsExportAndMutationResponsesWithoutReimport",
+      "kind": "failure",
+      "type": "java.lang.AssertionError"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "differenceCountSortingIsNumericStableFilteredAndSharedByPagedListsAndExports",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "exactRepeatedValuesPreserveCommasAndOtherColumns",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "exportRejectsInvalidRepeatedCriteriaAsBadRequest",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "exportShowsCurrentRegisteredTechnologyOwnerAndReviserSeparately",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "exportUsesTheCurrentVisibleColumnsAndMergedTableNames",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "facetsReportTruncationAndCountsWithoutScanningOnlyTheCurrentPage",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "facetsUseAllScopedRowsExcludeTheirOwnFilterAndKeepBlankCandidates",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "historicalBatchFiltersAndFacetsCountDistinctIssuesAcrossAllOccurrences",
+      "kind": "failure",
+      "type": "java.lang.AssertionError"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "importListEditAndTrackUseSeparateLevelsAndTypes",
+      "kind": "failure",
+      "type": "java.lang.AssertionError"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "listPermissionsResolveTechnologyOwnersOncePerPageAndDoNotUseNamesAsIdentifiers",
+      "kind": "failure",
+      "type": "java.lang.AssertionError"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "mergedTableFacetSearchesChineseNameAndIncludesDeterministicDisplayLabel",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "occurrenceBatchesFallBackToCurrentBatchWhenHistoryIsMissing",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "occurrenceBatchesIncludeEveryActualImportNewestFirstAndExportThem",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "oldReleaseProtectsPendingVerificationDespiteNewBatchDate",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "postFilteringAndExportSupportSelectionsLargerThanNormalUrlLimits",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "protectedPendingIssuesStillAutoFixWhenAbsentAsRequested",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "rejectsBlankNumericFilterValues",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "repairDateFiltersAndCandidatesUseAllScopedRowsAndShareSortedExportCriteria",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "repeatedFiltersApplyOrWithinColumnsAndAndBetweenColumnsBeforePagingAndExport",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "reviewFacetAndExportUseTheThreeDisplayStatusesWithoutChangingRawValues",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "saveAtReleaseTimeCanBeReopened",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "saveBeforeReleaseTimeCanBeReopened",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueControllerTest",
+      "test": "tableTechnologyOwnerControlsReviewAndReturnedRowPermissions",
+      "kind": "failure",
+      "type": "java.lang.AssertionError"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "acceptsReorderedColumnsAndRepeatedHeadersButRejectsDuplicateTables",
+      "kind": "failure",
+      "type": "org.opentest4j.AssertionFailedError"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "batchAfterAutoRepairCannotBeRolledBackToAnEarlierOccurrence",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "disappearsAsFixedAndReappearsAsNewWithInheritedContent",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "firstImportCreatesNewIssuesAndUsesExistingRegistrationMetadataForOldFiles",
+      "kind": "failure",
+      "type": "org.opentest4j.AssertionFailedError"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "importsIgnoreMissingOrConflictingReportDomainAndOwnerAndSnapshotCurrentRegistration",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "importsOfOtherSuccessfulTablesDoNotRepairUncoveredTables",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "noActionReviewRequiresPermissionAndPreservesApprovalOnLaterImports",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "parsesBothDirectionsAndFieldIdsIgnoringReportOwnerAndKeepingZeroCountScope",
+      "kind": "failure",
+      "type": "org.opentest4j.AssertionFailedError"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "parsesRealBdExportIncludingDirectionTitleAndAppendedBatch",
+      "kind": "failure",
+      "type": "org.opentest4j.AssertionFailedError"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "preservesHumanContentAndReopensOnlyWhenBatchDateIsAfterManualSaveDate",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "protectsSameDayBatchWhenImportedOnALaterSystemDate",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "rejectsStaleVersionAndEarlierBatchWithoutChangingCurrentOrHistory",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    },
+    {
+      "class": "ReplayDatabaseIssueTest",
+      "test": "repeatBatchUpdatesOriginalSnapshotWithoutDuplicatingHistory",
+      "kind": "error",
+      "type": "java.lang.NullPointerException"
+    }
+  ],
+  "frontend": {
+    "files": 36,
+    "tests": 647,
+    "failures": 0,
+    "build": "passed"
+  },
+  "intranet_validation": [
+    "实际BASE与两侧业务SQL执行",
+    "实际生产LEGACY DDL",
+    "结果键归一化后的数据唯一性"
+  ]
+}

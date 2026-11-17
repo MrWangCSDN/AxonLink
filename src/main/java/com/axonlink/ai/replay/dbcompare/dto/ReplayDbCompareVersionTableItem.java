@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.dbcompare.dto;
 
 import java.time.LocalDate;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 public record ReplayDbCompareVersionTableItem(
         long sourceRegistrationId,
@@ -24,7 +25,36 @@ public record ReplayDbCompareVersionTableItem(
         List<ReplayDbCompareVersionField> fields,
         int partitionNum,
         int sampleLimit,
-        ReplayDbCompareKeySelection comparisonKey) {
+        ReplayDbCompareKeySelection comparisonKey,
+        ReplayDbCompareCustomSql customSql) {
+
+    public ReplayDbCompareVersionTableItem(
+            long sourceRegistrationId,
+            long sourceRegistrationVersion,
+            String schemaName,
+            String tableName,
+            String tableComment,
+            String domainName,
+            String reviserEmpNo,
+            String reviserUsername,
+            String reviserName,
+            String groupOwnerEmpNo,
+            String groupOwnerUsername,
+            String groupOwnerName,
+            ReplayDbCompareConditionTree whereCondition,
+            String whereSql,
+            Long compareLimit,
+            LocalDate registeredDate,
+            int fieldCount,
+            List<ReplayDbCompareVersionField> fields,
+            int partitionNum,
+            int sampleLimit,
+            ReplayDbCompareKeySelection comparisonKey) {
+        this(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName,
+                reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName,
+                whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit,
+                comparisonKey, null);
+    }
 
     public ReplayDbCompareVersionTableItem(long sourceRegistrationId,
         long sourceRegistrationVersion,
@@ -50,7 +80,11 @@ public record ReplayDbCompareVersionTableItem(
     }
 
     public ReplayDbCompareVersionTableItem withComparisonKey(ReplayDbCompareKeySelection comparisonKey) {
-        return new ReplayDbCompareVersionTableItem(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName, whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareVersionTableItem(
+                sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName,
+                reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName,
+                whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit,
+                comparisonKey, customSql);
     }
 
     public ReplayDbCompareVersionTableItem(
@@ -77,7 +111,11 @@ public record ReplayDbCompareVersionTableItem(
     }
 
     public ReplayDbCompareVersionTableItem withSampleLimit(int sampleLimit) {
-        return new ReplayDbCompareVersionTableItem(sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName, whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareVersionTableItem(
+                sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName,
+                reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName,
+                whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit,
+                comparisonKey, customSql);
     }
 
     public ReplayDbCompareVersionTableItem(
@@ -105,10 +143,11 @@ public record ReplayDbCompareVersionTableItem(
     }
 
     public ReplayDbCompareVersionTableItem withPartitionNum(int partitionNum) {
-        return new ReplayDbCompareVersionTableItem(sourceRegistrationId, sourceRegistrationVersion, schemaName,
-                tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo,
-                groupOwnerUsername, groupOwnerName, whereCondition, whereSql, compareLimit, registeredDate,
-                fieldCount, fields, partitionNum, sampleLimit, comparisonKey);
+        return new ReplayDbCompareVersionTableItem(
+                sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName,
+                reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName,
+                whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit,
+                comparisonKey, customSql);
     }
 
     public ReplayDbCompareVersionTableItem {
@@ -136,5 +175,28 @@ public record ReplayDbCompareVersionTableItem(
                 domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo,
                 groupOwnerUsername, groupOwnerName, null, null, null,
                 registeredDate, fieldCount, fields);
+    }
+
+    public ReplayDbCompareVersionTableItem withCustomSql(ReplayDbCompareCustomSql customSql) {
+        return new ReplayDbCompareVersionTableItem(
+                sourceRegistrationId, sourceRegistrationVersion, schemaName, tableName, tableComment, domainName,
+                reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerUsername, groupOwnerName,
+                whereCondition, whereSql, compareLimit, registeredDate, fieldCount, fields, partitionNum, sampleLimit,
+                comparisonKey, customSql);
+    }
+
+    @JsonProperty("registrationType")
+    public String registrationType() {
+        return customSql == null ? "TABLE" : "CUSTOM_SQL";
+    }
+
+    @JsonProperty("comparisonCode")
+    public String comparisonCode() {
+        return tableName;
+    }
+
+    @JsonProperty("sourceTableName")
+    public String sourceTableName() {
+        return customSql == null ? tableName : customSql.sourceTableName();
     }
 }

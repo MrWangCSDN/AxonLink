@@ -181,6 +181,44 @@ class ErrorCodeAttributionServiceTest {
     }
 
     @Test
+    void explicitlyAllowedEmptyResultClearsTransactionRowsWithoutNeo4j() {
+        RecordingDao dao = new RecordingDao();
+        ErrorCodeAttributionService s = svc(dao);
+
+        ErrorCodeAttributionService.MaterializeOutcome out = s.materializeTransactionErrorCodes(true);
+
+        assertTrue(out.isComplete(), "完整扫描确认全部被捕获时，零结果属于成功物化");
+        assertFalse(out.isSkippedDueToPartialFailure());
+        assertEquals(0, out.getReachableCount());
+        assertEquals(0, out.getTxRowCount());
+        assertTrue(dao.materializeCalled, "显式允许的零结果需要清理旧交易错误码");
+        assertEquals(List.of(), dao.lastRows);
+    }
+
+    @Test
+    void emptyResultWithoutPermissionStillKeepsOldData() {
+        RecordingDao dao = new RecordingDao();
+
+        ErrorCodeAttributionService.MaterializeOutcome out =
+                svc(dao).materializeTransactionErrorCodes(false);
+
+        assertFalse(out.isComplete());
+        assertFalse(dao.materializeCalled);
+    }
+
+    @Test
+    void allowingEmptyDoesNotBypassGraphGuardWhenDetailsRemain() {
+        RecordingDao dao = new RecordingDao();
+        dao.throwsToReturn = List.of(et("E0001", "com.x.A", "m", 1));
+
+        ErrorCodeAttributionService.MaterializeOutcome out =
+                svc(dao).materializeTransactionErrorCodes(true);
+
+        assertFalse(out.isComplete());
+        assertFalse(dao.materializeCalled, "明细非空时仍需 Neo4j 完整解析，不能直接清空");
+    }
+
+    @Test
     void nullDriverKeepsOldDataInsteadOfClearing() {
         RecordingDao dao = new RecordingDao();
         dao.throwsToReturn = List.of(et("E0001", "com.x.A", "m", 1));   // 明细非空

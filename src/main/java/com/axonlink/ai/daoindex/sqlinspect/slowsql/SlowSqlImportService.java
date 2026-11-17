@@ -19,17 +19,19 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
 /**
- * 慢SQL导入 v2：5 列 (serviceName / 抽象SQL / 参数 / 耗时 / 来源文件)，
- * 解析时按 <b>(serviceName, 抽象SQL哈希)</b> 内存聚合（最大耗时代表行 + 出现次数），
- * 轮次由调用方输入（同轮先删后插=覆盖），落库前回填 E 列领域与「重复出现轮次」。
+ * 慢SQL导入：按 (serviceName, 抽象SQL哈希) 合并，取最大耗时代表行。
+ * 可选 sssCount 提供已汇总的执行次数，没有该列时每条输入计一次。
+ * 轮次由调用方输入（同轮先删后插=覆盖），落库前按来源回填领域与「重复出现轮次」。
  */
 @Service
 public class SlowSqlImportService {
@@ -45,8 +47,6 @@ public class SlowSqlImportService {
     private static final int COL_LOCATION = 4;
     private static final int ABSTRACT_SQL_MAX = 60_000;
     private static final int LOCATION_MAX = 512;
-    /** 分块入库大小：配合 rewriteBatchedStatements 规避 max_allowed_packet。 */
-    private static final int CHUNK_SIZE = 2000;
 
     private final DiiSlowSqlDao dao;
     private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
@@ -73,7 +73,7 @@ public class SlowSqlImportService {
      * 入口：解析整文件→内存聚合→回填领域/重复轮次→同轮覆盖入库→批量继承白名单。
      *
      * @param round 用户输入轮次（如 20260103-20260107）；非空、≤20 字符、不含逗号
-     * @return {round, rawRows, aggregatedRows, repeatHit, skipped}
+     * @return 轮次、输入行数、SQL类数、计数模式及导入统计
      */
     public Map<String, Object> importFile(MultipartFile file, String env, String round) throws IOException {
         String r = validateRound(round);
@@ -94,11 +94,9 @@ public class SlowSqlImportService {
         int[] skipped = {0};
         int[] filtered = {0};
         String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
-        if (name.endsWith(".csv")) {
-            parseCsv(file, agg, rawRows, skipped, filterPrefixes, filtered);
-        } else {
-            parseXlsx(file, agg, rawRows, skipped, filterPrefixes, filtered);
-        }
+        boolean preAggregated = name.endsWith(".csv")
+                ? parseCsv(file, agg, rawRows, skipped, filterPrefixes, filtered)
+                : parseXlsx(file, agg, rawRows, skipped, filterPrefixes, filtered);
 
         // ② 回填领域（按代表行的 E 列）+ 重复出现轮次（与库中所有其他轮次比）
         Map<String, TreeSet<String>> earlier = dao.roundsByKeyExcluding(r);
@@ -113,18 +111,8 @@ public class SlowSqlImportService {
             }
         }
 
-        // ③ 同轮覆盖：先删后插（分块）
-        int deleted = dao.deleteByRound(r);
-        LocalDateTime now = LocalDateTime.now();
-        List<ParsedSlowSqlRow> buffer = new ArrayList<>(CHUNK_SIZE);
-        for (ParsedSlowSqlRow row : agg.values()) {
-            buffer.add(row);
-            if (buffer.size() >= CHUNK_SIZE) {
-                dao.batchInsert(buffer, r, now);
-                buffer.clear();
-            }
-        }
-        if (!buffer.isEmpty()) dao.batchInsert(buffer, r, now);
+        // ③ 全文件校验完成后，在同一事务内覆盖该轮次。
+        int deleted = dao.replaceRound(r, new ArrayList<>(agg.values()), LocalDateTime.now());
 
         // ④ 批量继承白名单（1 次 SELECT + 命中数次 UPDATE），失败不阻断。
         //    v2：白名单粒度=(微服务+抽象SQL)——聚合 Map 的键(svc+"\n"+hash)正好就是继承键
@@ -156,6 +144,7 @@ public class SlowSqlImportService {
         result.put("round", r);
         result.put("rawRows", rawRows[0]);
         result.put("aggregatedRows", agg.size());
+        result.put("preAggregated", preAggregated);
         result.put("repeatHit", repeatHit);
         result.put("skipped", skipped[0]);
         result.put("filtered", filtered[0]);   // v3：被采集过滤名单排除的行数
@@ -208,30 +197,34 @@ public class SlowSqlImportService {
         }
     }
 
-    private void parseXlsx(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
+    private boolean parseXlsx(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
                            int[] rawRows, int[] skipped,
                            List<String> filterPrefixes, int[] filtered) throws IOException {
         try (InputStream raw = file.getInputStream();
              BufferedInputStream is = new BufferedInputStream(raw);
              Workbook wb = WorkbookFactory.create(is)) {
-            if (wb.getNumberOfSheets() == 0) return;
+            if (wb.getNumberOfSheets() == 0) return false;
             Sheet sheet = wb.getSheetAt(0);
             boolean header = true;
             ColumnLayout layout = ColumnLayout.legacy();
             for (Row row : sheet) {
                 if (header) {
                     header = false;
-                    layout = columnLayout(cell(row, 0), cell(row, 1));
+                    List<String> headers = new ArrayList<>();
+                    for (int index = 0; index < row.getLastCellNum(); index++) headers.add(cell(row, index));
+                    layout = columnLayout(headers);
                     continue;
                 }
                 addRow(agg, rawRows, skipped, filterPrefixes, filtered,
                         cell(row, layout.serviceIndex()), cell(row, layout.abstractIndex()),
-                        cell(row, COL_PARAMS), cell(row, COL_COST), cell(row, COL_LOCATION));
+                        cell(row, layout.paramsIndex()), cell(row, layout.costIndex()), cell(row, layout.locationIndex()),
+                        layout.countIndex() >= 0, cell(row, layout.countIndex()), row.getRowNum() + 1L);
             }
+            return layout.countIndex() >= 0;
         }
     }
 
-    private void parseCsv(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
+    private boolean parseCsv(MultipartFile file, Map<String, ParsedSlowSqlRow> agg,
                           int[] rawRows, int[] skipped,
                           List<String> filterPrefixes, int[] filtered) throws IOException {
         try (java.io.Reader reader = new java.io.BufferedReader(
@@ -248,29 +241,61 @@ public class SlowSqlImportService {
                 for (org.apache.commons.csv.CSVRecord rec : parser) {
                     if (header) {
                         header = false;
-                        layout = columnLayout(get(rec, 0), get(rec, 1));
+                        List<String> headers = new ArrayList<>();
+                        rec.forEach(headers::add);
+                        layout = columnLayout(headers);
                         continue;
                     }
                     addRow(agg, rawRows, skipped, filterPrefixes, filtered,
                             get(rec, layout.serviceIndex()), get(rec, layout.abstractIndex()),
-                            get(rec, COL_PARAMS), get(rec, COL_COST), get(rec, COL_LOCATION));
+                            get(rec, layout.paramsIndex()), get(rec, layout.costIndex()), get(rec, layout.locationIndex()),
+                            layout.countIndex() >= 0, get(rec, layout.countIndex()), rec.getRecordNumber());
                 }
+                return layout.countIndex() >= 0;
             }
         }
     }
 
     private static String get(org.apache.commons.csv.CSVRecord rec, int idx) {
-        return rec.size() > idx ? rec.get(idx) : "";
+        return idx >= 0 && rec.size() > idx ? rec.get(idx) : "";
     }
 
     /**
      * 根据前两列表头识别导出版本。没有明确表头时保留历史行为，按 A=ServiceName、B=SQL 解析。
      */
     static ColumnLayout columnLayout(String first, String second) {
-        String a = normalizeHeader(first);
-        String b = normalizeHeader(second);
-        if (isSqlHeader(a) && isServiceHeader(b)) return new ColumnLayout(1, 0);
-        return ColumnLayout.legacy();
+        return columnLayout(Arrays.asList(first, second));
+    }
+
+    static ColumnLayout columnLayout(List<String> headers) {
+        List<String> names = headers.stream().map(SlowSqlImportService::normalizeHeader).toList();
+        String first = names.isEmpty() ? "" : names.get(0);
+        String second = names.size() < 2 ? "" : names.get(1);
+        ColumnLayout fallback = isSqlHeader(first) && isServiceHeader(second)
+                ? new ColumnLayout(1, 0) : ColumnLayout.legacy();
+        int count = names.indexOf("ssscount");
+        if (count >= 0 && names.lastIndexOf("ssscount") != count) {
+            throw new IllegalArgumentException("表头中存在重复的 sssCount 列");
+        }
+        ColumnLayout layout = new ColumnLayout(
+                headerIndex(names, fallback.serviceIndex(), "servicename", "service", "微服务", "服务名"),
+                headerIndex(names, fallback.abstractIndex(), "slowsqlstatement", "abstractsql", "抽象sql", "sql"),
+                headerIndex(names, COL_PARAMS, "slowsqlparameter", "slowsqlparameters", "slowsqlparams", "execparams", "params", "执行参数", "参数"),
+                headerIndex(names, COL_COST, "slowsqltimecost", "timecost", "timecostms", "cost", "执行耗时", "耗时", "最大执行耗时"),
+                headerIndex(names, COL_LOCATION, "slowsqllocation", "sourcelocation", "location", "来源文件", "来源"), count);
+        if (count >= 0 && java.util.stream.IntStream.of(layout.serviceIndex(), layout.abstractIndex(),
+                layout.paramsIndex(), layout.costIndex(), layout.locationIndex(), count).distinct().count() != 6) {
+            throw new IllegalArgumentException("检测到 sssCount，请为微服务、SQL、参数、耗时和来源提供可识别的表头");
+        }
+        return layout;
+    }
+
+    private static int headerIndex(List<String> headers, int fallback, String... aliases) {
+        for (String alias : aliases) {
+            int index = headers.indexOf(alias);
+            if (index >= 0) return index;
+        }
+        return fallback;
     }
 
     private static boolean isSqlHeader(String header) {
@@ -286,11 +311,15 @@ public class SlowSqlImportService {
     }
 
     private static String normalizeHeader(String value) {
-        return value == null ? "" : value.trim().replace("_", "")
+        return value == null ? "" : value.replace("\uFEFF", "").trim().replace("_", "")
                 .replace("-", "").replace(" ", "").toLowerCase(java.util.Locale.ROOT);
     }
 
-    record ColumnLayout(int serviceIndex, int abstractIndex) {
+    record ColumnLayout(int serviceIndex, int abstractIndex, int paramsIndex, int costIndex,
+                        int locationIndex, int countIndex) {
+        ColumnLayout(int serviceIndex, int abstractIndex) {
+            this(serviceIndex, abstractIndex, COL_PARAMS, COL_COST, COL_LOCATION, -1);
+        }
         static ColumnLayout legacy() {
             return new ColumnLayout(COL_SERVICE, COL_ABSTRACT);
         }
@@ -302,7 +331,8 @@ public class SlowSqlImportService {
      */
     private void addRow(Map<String, ParsedSlowSqlRow> agg, int[] rawRows, int[] skipped,
                         List<String> filterPrefixes, int[] filtered,
-                        String serviceName, String abs, String params, String cost, String location) {
+                        String serviceName, String abs, String params, String cost, String location,
+                        boolean preAggregated, String count, long rowNumber) {
         String abstractSql = abs == null ? "" : abs.trim();
         if (abstractSql.isEmpty() || abstractSql.length() > ABSTRACT_SQL_MAX) {
             skipped[0]++;
@@ -314,6 +344,7 @@ public class SlowSqlImportService {
             return;
         }
         rawRows[0]++;
+        int executions = preAggregated ? executionCount(count, rowNumber) : 1;
         String svc = serviceName == null ? "" : serviceName.trim();
         long ms = SlowSqlParser.parseCostMs(cost);
         String costRaw = cost == null ? null : cost.trim();
@@ -328,13 +359,29 @@ public class SlowSqlImportService {
         ParsedSlowSqlRow exist = agg.get(key);
         if (exist == null) {
             agg.put(key, new ParsedSlowSqlRow(
-                    svc, SlowSqlParser.bizTypeOf(svc), abstractSql, hash, ms, costRaw, p, loc));
+                    svc, SlowSqlParser.bizTypeOf(svc), abstractSql, hash, ms, costRaw, p, loc, executions));
         } else {
-            exist.absorb(ms, costRaw, p, loc);
+            try {
+                exist.absorb(ms, costRaw, p, loc, executions);
+            } catch (ArithmeticException exception) {
+                throw new IllegalArgumentException("第" + rowNumber + "行 " + (preAggregated ? "sssCount" : "执行次数")
+                        + " 累计值超过2147483647");
+            }
         }
     }
 
+    private static int executionCount(String value, long rowNumber) {
+        try {
+            int count = new BigDecimal(value == null ? "" : value.trim()).intValueExact();
+            if (count >= 0) return count;
+        } catch (NumberFormatException | ArithmeticException exception) {
+            // 统一给出输入行号，避免把非法的预聚合次数静默改成一次。
+        }
+        throw new IllegalArgumentException("第" + rowNumber + "行 sssCount 必须是0至2147483647的整数");
+    }
+
     private String cell(Row row, int idx) {
+        if (idx < 0) return null;
         Cell c = row.getCell(idx);
         if (c == null) return null;
         try {

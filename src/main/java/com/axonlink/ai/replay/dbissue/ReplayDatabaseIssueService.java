@@ -54,7 +54,8 @@ public class ReplayDatabaseIssueService {
             for(var input:parsed.issues()){
                 incomingIds.add(input.issueId());var before=known.get(input.issueId());
                 Map<String,Object> after=before==null?blank():new LinkedHashMap<>(before);
-                var meta=metadata.computeIfAbsent(input.tableName(),dao::metadata);
+                var meta=metadata.computeIfAbsent(input.tableName(), table -> dao.metadata(table,
+                        registrationVersion == null ? null : registrationVersion.id()));
                 var raw=new LinkedHashMap<String,Object>();raw.put("issueId",input.issueId());raw.put("tableName",input.tableName());raw.put("tableComment",input.tableComment().isEmpty()?meta.getOrDefault("tableComment",""):input.tableComment());raw.put("domain",meta.getOrDefault("domain",""));raw.put("owner",meta.getOrDefault("owner",""));raw.put("issueLevel",input.issueLevel());raw.put("fieldName",input.fieldName());raw.put("differenceCount",input.differenceCount());raw.put("total528",input.total528());raw.put("totalCcbs",input.totalCcbs());raw.put("only528Count",input.only528());raw.put("onlyCcbsCount",input.onlyCcbs());raw.put("sameKeyDifferentRowCount",input.sameKeyDifferentRowCount());raw.put("batchNo",parsed.batchNo());
                 after.putAll(raw);after.put("importedAt",at);after.put("lastOccurredDate",parsed.batchDate().toString());
                 String operation="基础数据覆盖，人工内容继承";
@@ -75,7 +76,8 @@ public class ReplayDatabaseIssueService {
             for(var before:current){
                 if(!incomingIds.contains(text(before.get("issueId")))&&parsed.tables().contains(text(before.get("tableName")))&&(REPAIRABLE.contains(text(before.get("issueStatus")))||text(before.get("issueStatus")).equals("已修复"))){
                     var after=new LinkedHashMap<>(before);after.put("issueStatus","已修复");after.put("defectRepairDate",parsed.batchDate().toString());
-                    var meta=metadata.computeIfAbsent(text(before.get("tableName")),dao::metadata);
+                    var meta=metadata.computeIfAbsent(text(before.get("tableName")), table -> dao.metadata(table,
+                            registrationVersion == null ? null : registrationVersion.id()));
                     after.put("domain",meta.getOrDefault("domain",""));after.put("owner",meta.getOrDefault("owner",""));
                     clearReview(after);dao.update(after);dao.history(before,after,null,parsed.batchNo(),"问题自动修复",at,actor.username(),actor.realName(),true);repaired++;
                 }
@@ -120,7 +122,14 @@ public class ReplayDatabaseIssueService {
         } else if (!requested.isEmpty()) {
             version = requireRegistrationVersion(dao.registrationVersion(requested), "登记版本不存在：" + requested);
         }
-        if (version == null) return null;
+        if (version == null) {
+            Set<String> sqlCodes = dao.customSqlComparisonCodes(tables);
+            if (!sqlCodes.isEmpty()) {
+                throw new IllegalArgumentException("自定义 SQL 比对结果必须关联登记版本，请选择登记版本后导入："
+                        + String.join("、", new TreeSet<>(sqlCodes)));
+            }
+            return null;
+        }
         Map<String,Long> matches = dao.registrationVersionTableCounts(version.id(), tables);
         List<String> missing = new ArrayList<>();
         List<String> ambiguous = new ArrayList<>();
@@ -158,7 +167,7 @@ public class ReplayDatabaseIssueService {
             String type=text(request.get("issueType")).trim();
             if(status.equals("无需处理")&&!ReplayDatabaseIssueTypes.NO_ACTION.contains(type))throw new IllegalArgumentException("无需处理的问题类型只能选择：不参与比对、规则性差异");
             if(!ReplayDatabaseIssueTypes.ALL.contains(type))throw new IllegalArgumentException("请选择有效问题类型");
-            if(!status.equals("无需处理")&&!ReplayDatabaseIssueTypes.ACTIONABLE.contains(type))throw new IllegalArgumentException("其他状态的问题类型只能选择：修改比对规则、修改迁移规则、修改代码、前后交易差异、其他问题");
+            if(!status.equals("无需处理")&&!ReplayDatabaseIssueTypes.ACTIONABLE.contains(type))throw new IllegalArgumentException("其他状态的问题类型只能选择：修改比对规则、修改迁移规则、修改代码、前后交易差异、参数问题、其他问题");
             var after=new LinkedHashMap<>(before);after.put("issueStatus",status);after.put("issueType",type);
             for(String field:List.of("initialAnalysis","finalSolution","remark")){String value=text(request.get(field));if(value.length()>500)throw new IllegalArgumentException("分析、方案和备注各不能超过500个字符");after.put(field,value);}
             String username=text(request.get("cooperationPersonUsername")).trim();String name="";

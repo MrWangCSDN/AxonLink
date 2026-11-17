@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.reopen;
 
+import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
 import com.axonlink.ai.user.entity.SysUser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -15,6 +16,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static com.axonlink.ai.replay.reopen.ReplayReopenDtos.*;
@@ -41,6 +43,31 @@ public class ReplayReopenWorkflowDao {
     private final JdbcTemplate jdbc;
 
     public ReplayReopenWorkflowDao(ReplayReopenDao eventDao) { this.jdbc = eventDao.jdbc(); }
+
+    public CountTransferRow findCountTransfer(String requestId) {
+        return jdbc.query("SELECT request_id,request_fingerprint,operator_username,source_owner_username,"
+                        + "target_owner_username,transfer_count,occurred_at FROM dii_replay_reopen_count_transfer WHERE request_id=?",
+                (r,n) -> new CountTransferRow(r.getString("request_id"),r.getString("request_fingerprint"),
+                        r.getString("operator_username"),r.getString("source_owner_username"),
+                        r.getString("target_owner_username"),r.getInt("transfer_count"),time(r,"occurred_at")),
+                requestId).stream().findFirst().orElse(null);
+    }
+
+    public void insertCountTransfer(CountTransferRequest request, String fingerprint, SysUser actor,
+                                    String batchNamesJson, LocalDateTime at) {
+        jdbc.update("INSERT INTO dii_replay_reopen_count_transfer"
+                        + " (request_id,request_fingerprint,operator_username,operator_name,source_owner_username,"
+                        + "target_owner_username,transfer_count,replay_type,batch_names,reason,event_ids,occurred_at)"
+                        + " VALUES (?,?,?,?,?,?,?,?,?,?,'[]',?)",
+                request.requestId(),fingerprint,actor.getUsername(),actor.getRealName(),request.sourceOwnerUsername(),
+                request.targetOwnerUsername(),request.count().intValueExact(),request.replayType(),batchNamesJson,request.reason(),at);
+    }
+
+    public void completeCountTransfer(String requestId, String sourceName, String targetName, String eventIdsJson) {
+        changed(jdbc.update("UPDATE dii_replay_reopen_count_transfer"
+                        + " SET source_owner_name=?,target_owner_name=?,event_ids=? WHERE request_id=?",
+                sourceName,targetName,eventIdsJson,requestId));
+    }
 
     public Policy findPolicy(String domain, boolean forUpdate) {
         return jdbc.query("SELECT * FROM " + POLICIES + " WHERE issue_domain=?" + (forUpdate ? " FOR UPDATE" : ""),
@@ -163,9 +190,19 @@ public class ReplayReopenWorkflowDao {
         where.append(" AND EXISTS (SELECT 1 FROM ").append(ITEMS).append(" i JOIN dii_replay_reopen_event e ON e.id=i.event_id WHERE i.appeal_id=a.id");
         add(where,args,"e.issue_key",scope.issueKey());
         add(where,args,"e.batch_name",scope.batchName());
+        if (scope.batchNames() != null && !scope.batchNames().isEmpty()) {
+            where.append(" AND e.batch_name IN (")
+                    .append(String.join(",",Collections.nCopies(scope.batchNames().size(),"?")))
+                    .append(')');
+            args.addAll(scope.batchNames());
+        }
         add(where,args,"e.issue_domain",scope.issueDomain());
         add(where,args,"e.current_owner_username",scope.ownerUsername());
-        if (!"ALL".equals(scope.replayType())) add(where,args,"e.replay_type",scope.replayType());
+        if (scope.replayType() != null && !scope.replayType().isBlank() && !"ALL".equals(scope.replayType())) {
+            add(where,args,"e.replay_type",scope.replayType());
+            where.append(" AND e.batch_name LIKE ?");
+            args.add(ReplayIssueReplayType.parse(scope.replayType()).batchPrefix()+"%");
+        }
         if (scope.eventId() != null) { where.append(" AND e.id=?"); args.add(scope.eventId()); }
         if (scope.sourceRoundId() != null) { where.append(" AND e.source_round_id=?"); args.add(scope.sourceRoundId()); }
         where.append(')');

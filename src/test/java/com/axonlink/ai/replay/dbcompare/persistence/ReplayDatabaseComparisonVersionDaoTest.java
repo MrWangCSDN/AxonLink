@@ -4,6 +4,8 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCondition;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionConnector;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConditionGroup;
@@ -48,10 +50,63 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);
+    }
+
+    @Test
+    void freezesSqlDefinitionAndCountsWithoutChangingLegacySnapshotDefaults() {
+        long versionId = dao.insertVersion("20260914-120000", "a".repeat(64), 2, 3,
+                "100", "张三", now, 1);
+        ReplayDbCompareCustomSql definition = new ReplayDbCompareCustomSql(
+                "SELECT acct_no, SUM(amount) AS total_amt FROM acct_master GROUP BY acct_no", "acct_master",
+                List.of(new ReplayDbCompareSqlColumn("acct_no", "acct_no", "varchar", 1),
+                        new ReplayDbCompareSqlColumn("total_amt", "Total_Amt", "numeric", 2)));
+        ReplayDbCompareRegistration sql = registration(7L, 3L, "sql_first", "账户汇总", "存款组", "100", "张三",
+                List.of(field("acct_no", "账号", 1, false, 1), field("total_amt", "总金额", 2, false, 2)))
+                .withCustomSql(definition);
+        new ReplayDatabaseComparisonDao(jdbc).insertRegistration(sql);
+        long sqlId = dao.insertVersionTable(versionId, sql);
+        dao.insertVersionFields(sqlId, sql.fields());
+        ReplayDbCompareRegistration table = registration(8L, 2L, "acct_master", "账户主表", "存款组", "100", "张三",
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        long tableId = dao.insertVersionTable(versionId, table);
+        dao.insertVersionFields(tableId, table.fields());
+
+        var complete = dao.findCompleteSnapshot(versionId);
+        var frozenSql = complete.stream().filter(item -> item.tableName().equals("sql_first")).findFirst().orElseThrow();
+        var frozenTable = complete.stream().filter(item -> item.tableName().equals("acct_master")).findFirst().orElseThrow();
+        assertEquals(definition, frozenSql.customSql());
+        assertEquals("acct_master", frozenSql.sourceTableName());
+        assertEquals("sql_first", frozenSql.comparisonCode());
+        assertEquals("CUSTOM_SQL", frozenSql.registrationType());
+        assertEquals(definition, frozenSql.withPartitionNum(8).withSampleLimit(30)
+                .withComparisonKey(frozenSql.comparisonKey()).customSql());
+        assertEquals("TABLE", frozenTable.registrationType());
+        assertNull(frozenTable.customSql());
+        assertEquals(1, dao.findStoredVersion("20260914-120000").customSqlCount());
+        assertEquals(1, dao.findLatestVersion().customSqlCount());
+        assertEquals(1, dao.findVersions(0, 20).items().get(0).customSqlCount());
+        var searched = dao.searchVersion("20260914-120000", ReplayDbCompareVersionQuery.empty(0, 20));
+        assertEquals(definition, searched.items().stream().filter(item -> item.tableName().equals("sql_first"))
+                .findFirst().orElseThrow().customSql());
+        var fullTables = dao.searchVersion("20260914-120000", new ReplayDbCompareVersionQuery(
+                0, 20, null, null, List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), List.of(), List.of("__FULL_TABLE__")));
+        var sqlTables = dao.searchVersion("20260914-120000", new ReplayDbCompareVersionQuery(
+                0, 20, null, null, List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), List.of(), List.of("__CUSTOM_SQL__")));
+        assertEquals(List.of("acct_master"), fullTables.items().stream().map(item -> item.tableName()).toList());
+        assertEquals(List.of("sql_first"), sqlTables.items().stream().map(item -> item.tableName()).toList());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET custom_sql=? WHERE table_name='sql_first'",
+                "SELECT acct_no FROM acct_master");
+        assertEquals(definition, dao.findCompleteSnapshot(versionId).stream()
+                .filter(item -> item.tableName().equals("sql_first")).findFirst().orElseThrow().customSql());
+        dao.insertVersion("20260914-130000", "b".repeat(64), 0, 0, "100", "张三", now.plusHours(1));
+        assertEquals(0, dao.findLatestVersion().customSqlCount());
     }
 
     @Test

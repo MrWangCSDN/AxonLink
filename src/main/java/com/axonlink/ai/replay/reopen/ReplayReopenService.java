@@ -11,6 +11,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.Normalizer;
@@ -52,7 +53,7 @@ public class ReplayReopenService {
         List<Policy> policies=store.policies();
         return new Permissions(true,permissions.option(current),permissions.canManage(operator),
                 policies.stream().map(Policy::issueDomain).filter(domain->permissions.isLeader(domain,operator)).toList(),
-                policies,issueDomains());
+                policies,issueDomains(),permissions.canTransferCounts(operator));
     }
 
     public Map<String,List<String>> filters(String replayType) {
@@ -82,6 +83,84 @@ public class ReplayReopenService {
         enabled(); return events.statistics(normalize(filter,operator));
     }
 
+    public CountTransferResult transferCounts(CountTransferRequest body, ReplayIssueOperator operator) {
+        enabled();
+        SysUser initialActor = permissions.requireCountTransfer(operator);
+        CountTransferRequest request = normalizeCountTransfer(body);
+        String fingerprint = sha256(writeJson(Arrays.asList(initialActor.getUsername(),request.replayType(),
+                request.batchNames(),request.sourceOwnerUsername(),request.targetOwnerUsername(),request.count(),request.reason())));
+        try {
+            return events.inWriteTransaction(() -> {
+                SysUser actor = permissions.requireCountTransfer(operator);
+                CountTransferRow repeated = store.findCountTransfer(request.requestId());
+                if (repeated != null) return sameCountTransfer(repeated,actor,fingerprint);
+                LocalDateTime at = now().withNano(0);
+                // Claim the operation before any event locks. The row is committed only with all moves.
+                store.insertCountTransfer(request,fingerprint,actor,writeJson(request.batchNames()),at);
+                Filter scope = new Filter(null,null,null,request.replayType(),null,null,false,1,20,null,request.batchNames());
+                int count = request.count().intValueExact();
+                List<EventRow> candidates = events.countTransferCandidates(scope,request.sourceOwnerUsername(),count);
+                if (candidates.size() != count) throw ReplayReopenException.conflict("可调整次数不足，请刷新统计后重试；待审次数暂不可调整");
+                List<Long> ids = candidates.stream().map(EventRow::id).toList();
+                List<EventRow> selected = lockAll(ids);
+                Map<Long,EventRow> snapshots = new HashMap<>();
+                candidates.forEach(event -> snapshots.put(event.id(),event));
+                for (EventRow event : selected) {
+                    EventRow snapshot = snapshots.get(event.id());
+                    if (event.version() != snapshot.version() || event.pendingAppealId() != null
+                            || !Objects.equals(optional(event.currentOwnerUsername(),128),request.sourceOwnerUsername())
+                            || !Objects.equals(event.batchName(),snapshot.batchName())
+                            || !Objects.equals(event.replayType(),snapshot.replayType())) {
+                        throw ReplayReopenException.conflict("次数归属已变化，请刷新统计后重试");
+                    }
+                }
+                actor = permissions.requireCountTransfer(operator);
+                SysUser target = permissions.requireDeveloper(request.targetOwnerUsername());
+                for (EventRow event : selected) {
+                    events.updateAttribution(event.id(),target.getUsername(),target.getRealName(),event.version());
+                    audit(event,null,"COUNT_TRANSFERRED",actor,at,request.reason(),"数量转移请求 " + request.requestId(),
+                            event.currentOwnerUsername(),event.currentOwnerName(),target.getUsername(),target.getRealName());
+                }
+                store.completeCountTransfer(request.requestId(),selected.get(0).currentOwnerName(),target.getRealName(),writeJson(ids));
+                return new CountTransferResult(request.requestId(),count,request.sourceOwnerUsername(),target.getUsername(),at);
+            });
+        } catch (DuplicateKeyException failure) {
+            CountTransferRow repeated = store.findCountTransfer(request.requestId());
+            if (repeated != null) return sameCountTransfer(repeated,permissions.requireCountTransfer(operator),fingerprint);
+            throw ReplayReopenException.conflict("次数调整发生并发变化，请刷新后重试");
+        }
+    }
+
+    private CountTransferRequest normalizeCountTransfer(CountTransferRequest body) {
+        if (body == null) throw ReplayReopenException.invalid("请填写次数调整信息");
+        String requestId = required(body.requestId(),"请求标识",36);
+        try {
+            if (!UUID.fromString(requestId).toString().equalsIgnoreCase(requestId)) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException failure) {
+            throw ReplayReopenException.invalid("请求标识必须是有效UUID");
+        }
+        int count;
+        try {
+            if (body.count() == null) throw new ArithmeticException();
+            count = body.count().intValueExact();
+        } catch (ArithmeticException failure) {
+            throw ReplayReopenException.invalid("调整次数必须是1至10000的整数");
+        }
+        if (count < 1 || count > 10000) throw ReplayReopenException.invalid("调整次数必须是1至10000的整数");
+        Filter scope = normalize(new Filter(null,null,null,body.replayType(),null,null,false,1,20,null,body.batchNames()),null);
+        String source = optional(body.sourceOwnerUsername(),128);
+        String target = required(body.targetOwnerUsername(),"目标开发负责人",128);
+        if (Objects.equals(source,target)) throw ReplayReopenException.invalid("请选择其他开发负责人");
+        return new CountTransferRequest(requestId.toLowerCase(Locale.ROOT),scope.replayType(),
+                scope.batchNames().stream().sorted().toList(),source,target,BigDecimal.valueOf(count),required(body.reason(),"调整原因",1000));
+    }
+
+    private CountTransferResult sameCountTransfer(CountTransferRow existing, SysUser actor, String fingerprint) {
+        if (!actor.getUsername().equals(existing.operatorUsername())) throw ReplayReopenException.forbidden("该请求标识不属于当前操作人");
+        if (!fingerprint.equals(existing.requestFingerprint())) throw ReplayReopenException.conflict("同一请求标识不能提交不同内容");
+        return existing.result();
+    }
+
     public Map<String,Long> issueCounts(List<String> keys) {
         enabled();
         if(keys==null || keys.size()>200) throw ReplayReopenException.invalid("每次最多查询200个问题的重开次数");
@@ -98,7 +177,7 @@ public class ReplayReopenService {
         String applicant=onlyMine||scope.onlyMine()?actor.getUsername():null;
         String leader=assignedToMe?actor.getUsername():null;
         Filter appealScope=new Filter(scope.issueKey(),scope.batchName(),scope.issueDomain(),scope.replayType(),
-                filter==null?null:optional(filter.ownerUsername(),128),scope.eventId(),onlyMine||scope.onlyMine(),scope.page(),scope.pageSize(),scope.sourceRoundId());
+                filter==null?null:optional(filter.ownerUsername(),128),scope.eventId(),onlyMine||scope.onlyMine(),scope.page(),scope.pageSize(),scope.sourceRoundId(),scope.batchNames());
         Page<AppealRow> page=store.appeals(appealScope,normalizedStatus,applicant,leader);
         return new Page<>(page.items().stream().map(a->view(a,operator)).toList(),page.total(),page.page(),page.pageSize());
     }
@@ -376,8 +455,22 @@ public class ReplayReopenService {
         SysUser actor=f.onlyMine()?permissions.active(operator):null;
         if(f.eventId()!=null&&f.eventId()<=0) throw ReplayReopenException.invalid("重开记录编号不合法");
         if(f.sourceRoundId()!=null&&f.sourceRoundId()<=0) throw ReplayReopenException.invalid("来源导入轮次必须是正整数");
-        return new Filter(optional(f.issueKey(),1024),optional(f.batchName(),128),optional(f.issueDomain(),64),replayType(f.replayType()),
-                f.onlyMine()?(actor==null?null:actor.getUsername()):optional(f.ownerUsername(),128),f.eventId(),f.onlyMine(),Math.max(1,f.page()),f.pageSize()<=0?20:Math.min(200,f.pageSize()),f.sourceRoundId());
+        String type = replayType(f.replayType());
+        String batchName = optional(f.batchName(),128);
+        List<String> requestedBatches = f.batchNames() == null ? List.of() : f.batchNames();
+        if (requestedBatches.size() > 200) throw ReplayReopenException.invalid("每次最多选择200个发生批次");
+        List<String> batchNames = requestedBatches.stream()
+                .map(batch -> optional(batch,128))
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        String prefix = ReplayIssueReplayType.parse(type).batchPrefix();
+        if (prefix != null && ((batchName != null && !batchName.startsWith(prefix))
+                || batchNames.stream().anyMatch(batch -> !batch.startsWith(prefix)))) {
+            throw ReplayReopenException.invalid("所选交易类型仅支持"+prefix+"开头的发生批次");
+        }
+        return new Filter(optional(f.issueKey(),1024),batchName,optional(f.issueDomain(),64),type,
+                f.onlyMine()?(actor==null?null:actor.getUsername()):optional(f.ownerUsername(),128),f.eventId(),f.onlyMine(),Math.max(1,f.page()),f.pageSize()<=0?20:Math.min(200,f.pageSize()),f.sourceRoundId(),batchNames);
     }
 
     private List<String> issueDomains() {

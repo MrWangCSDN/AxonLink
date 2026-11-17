@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCompiledScope;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
@@ -47,6 +48,12 @@ import java.util.Set;
 @Service
 public class ReplayDatabaseComparisonVersionService {
     private com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao;
+    private ReplayDatabaseComparisonCustomSqlAnalyzer customSqlAnalyzer;
+
+    @Autowired(required = false)
+    public void setCustomSqlAnalyzer(ReplayDatabaseComparisonCustomSqlAnalyzer customSqlAnalyzer) {
+        this.customSqlAnalyzer = customSqlAnalyzer;
+    }
 
     @Autowired(required = false)
     public void setTablePersonDao(com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao tablePersonDao) {
@@ -55,6 +62,7 @@ public class ReplayDatabaseComparisonVersionService {
 
     private static final int METADATA_BATCH_SIZE = 200;
     private static final String FULL_TABLE_FILTER_VALUE = "__FULL_TABLE__";
+    private static final String CUSTOM_SQL_FILTER_VALUE = "__CUSTOM_SQL__";
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter VERSION_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
@@ -111,7 +119,7 @@ public class ReplayDatabaseComparisonVersionService {
         List<ReplayDbCompareRegistration> registrations = registrationDao.findAllActiveWithFields();
         if (tablePersonDao == null) return registrations;
         return registrations.stream().map(registration -> {
-            var person = tablePersonDao.findByTableName(registration.tableName());
+            var person = tablePersonDao.findByTableName(registration.sourceTableName());
             String domain = person == null ? "" : person.domain();
             String developer = person == null || person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
             String username = person == null ? "" : person.developerUsernames();
@@ -127,7 +135,8 @@ public class ReplayDatabaseComparisonVersionService {
                     registration.fields(), registration.whereCondition(), registration.compareLimit(),
                     registration.orderingPrimaryKeyNames(), registration.metadataValidation())
                     .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
-                    .withComparisonKey(registration.comparisonKey());
+                    .withComparisonKey(registration.comparisonKey())
+                    .withCustomSql(registration.customSql());
         }).toList();
     }
 
@@ -161,12 +170,14 @@ public class ReplayDatabaseComparisonVersionService {
         String versionNo = newVersionNo(generatedAt);
         int fieldCount = snapshotRegistrations.stream()
                 .mapToInt(registration -> registration.fields().size()).sum();
+        int customSqlCount = (int) snapshotRegistrations.stream()
+                .filter(registration -> registration.customSql() != null).count();
         try {
             ReplayDbCompareVersionSummary summary = transactionTemplate.execute(status -> {
                 Map<String, String> groupOwnerUsernames = new LinkedHashMap<>();
                 long versionId = versionDao.insertVersion(
                         versionNo, configurationHash, snapshotRegistrations.size(), fieldCount,
-                        actorId, actorName, generatedAt);
+                        actorId, actorName, generatedAt, customSqlCount);
                 for (ReplayDbCompareRegistration registration : snapshotRegistrations) {
                     long versionTableId = versionDao.insertVersionTable(
                             versionId, registration,
@@ -175,7 +186,7 @@ public class ReplayDatabaseComparisonVersionService {
                 }
                 return new ReplayDbCompareVersionSummary(
                         versionNo, actorId, actorName, generatedAt,
-                        snapshotRegistrations.size(), fieldCount, true);
+                        snapshotRegistrations.size(), fieldCount, true, customSqlCount);
             });
             if (summary == null) {
                 throw new IllegalStateException("数据库比对字段版本事务未完成");
@@ -225,6 +236,9 @@ public class ReplayDatabaseComparisonVersionService {
 
     private ReplayDbCompareHeaderFilterOption queryConditionOption(
             ReplayDbCompareHeaderFilterOption option) {
+        if (CUSTOM_SQL_FILTER_VALUE.equals(option.value())) {
+            return new ReplayDbCompareHeaderFilterOption(option.value(), "自定义 SQL", option.count());
+        }
         String label = FULL_TABLE_FILTER_VALUE.equals(option.value())
                 ? "全表"
                 : conditionLabeler.label(conditionCodec.decode(option.value()));
@@ -243,10 +257,14 @@ public class ReplayDatabaseComparisonVersionService {
             List<ReplayDbCompareRegistration> batch = registrations.subList(start, end);
             try {
                 Map<String, ReplayBaseMetadataSnapshot> metadata = metadataService.inspectTables(
-                        batch.stream().map(ReplayDbCompareRegistration::tableName).toList());
+                        batch.stream().map(ReplayDbCompareRegistration::sourceTableName).distinct().toList());
                 for (ReplayDbCompareRegistration registration : batch) {
-                    validateRegistration(registration, metadata.get(normalize(registration.tableName())),
-                            valid, errors);
+                    ReplayBaseMetadataSnapshot sourceMetadata = metadata.get(normalize(registration.sourceTableName()));
+                    if (registration.customSql() != null) {
+                        validateCustomSqlRegistration(registration, sourceMetadata, valid, errors);
+                    } else {
+                        validateRegistration(registration, sourceMetadata, valid, errors);
+                    }
                 }
             } catch (ReplayBaseDatabaseUnavailableException exception) {
                 batch.forEach(registration -> errors.add(gateError(
@@ -264,6 +282,66 @@ public class ReplayDatabaseComparisonVersionService {
         return generatedAt.atZone(clock.getZone()).withZoneSameInstant(SHANGHAI).format(VERSION_FORMAT);
     }
 
+    private void validateCustomSqlRegistration(
+            ReplayDbCompareRegistration registration,
+            ReplayBaseMetadataSnapshot metadata,
+            List<ReplayDbCompareRegistration> valid,
+            List<ReplayDbCompareVersionGateError> errors) {
+        if (metadata == null || !metadata.tableExists()) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.TABLE_MISSING,
+                    List.of(), "关联基础表已删除"));
+            return;
+        }
+        int originalErrorCount = errors.size();
+        String domainError = ReplayDatabaseComparisonConfigScriptGenerator.domainMappingError(registration.domainName());
+        if (domainError != null) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.DOMAIN_MAPPING_MISSING,
+                    List.of(), domainError));
+        }
+        try {
+            if (customSqlAnalyzer == null) {
+                throw new ReplayBaseDatabaseUnavailableException("自定义 SQL 解析暂不可用");
+            }
+            ReplayDbCompareKeySelection savedKey = registration.comparisonKey();
+            if (savedKey == null || !"RESULT_KEY".equals(savedKey.indexType())) {
+                throw new IllegalArgumentException("自定义 SQL 必须配置结果比对键");
+            }
+            List<String> fields = registration.fields().stream()
+                    .sorted(Comparator.comparingInt(ReplayDbCompareField::comparisonOrder))
+                    .map(ReplayDbCompareField::columnName).toList();
+            var prepared = customSqlAnalyzer.prepare(registration.customSql().sql(), fields,
+                    savedKey.columnNames(), registration.compareLimit());
+            var analysis = prepared.analysis();
+            if (!normalize(registration.sourceTableName()).equals(normalize(analysis.sourceTableName()))) {
+                throw new IllegalArgumentException("关联基础表在创建后固定，请修正 SQL 来源表");
+            }
+            if (!normalize(registration.schemaName()).equals(normalize(analysis.schemaName()))) {
+                throw new IllegalArgumentException("母库 Schema 已变化，请重新登记自定义 SQL");
+            }
+            if (errors.size() > originalErrorCount) {
+                return;
+            }
+            valid.add(new ReplayDbCompareRegistration(
+                    registration.id(), registration.schemaName(), registration.tableName(),
+                    registration.tableComment(), registration.domainName(), registration.reviserEmpNo(),
+                    registration.reviserUsername(), registration.reviserName(),
+                    registration.groupOwnerEmpNo(), registration.groupOwnerName(),
+                    registration.registeredDate(), false, null, null, null, registration.version(),
+                    registration.createdBy(), registration.createdName(), registration.createdAt(),
+                    registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
+                    prepared.fields(), null, registration.compareLimit(), prepared.comparisonKey().columnNames(), null, null)
+                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                    .withComparisonKey(prepared.comparisonKey())
+                    .withCustomSql(new ReplayDbCompareCustomSql(analysis.sql(), analysis.sourceTableName(), analysis.resultColumns())));
+        } catch (ReplayBaseDatabaseUnavailableException exception) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.UNAVAILABLE,
+                    List.of(), exception.getMessage()));
+        } catch (IllegalArgumentException | ReplayDatabaseComparisonScopeException exception) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.CUSTOM_SQL_INVALID,
+                    List.of(), exception.getMessage()));
+        }
+    }
+
     private void validateRegistration(
             ReplayDbCompareRegistration registration,
             ReplayBaseMetadataSnapshot metadata,
@@ -277,6 +355,12 @@ public class ReplayDatabaseComparisonVersionService {
         Map<String, ReplayBaseColumnOption> columns = new LinkedHashMap<>();
         metadata.columns().forEach(column -> columns.put(normalize(column.columnName()), column));
         int originalErrorCount = errors.size();
+        String domainError = ReplayDatabaseComparisonConfigScriptGenerator.domainMappingError(
+                registration.domainName());
+        if (domainError != null) {
+            errors.add(gateError(registration, ReplayDbCompareMetadataStatus.DOMAIN_MAPPING_MISSING,
+                    List.of(), domainError));
+        }
         List<String> missing = registration.fields().stream()
                 .map(ReplayDbCompareField::columnName)
                 .filter(name -> !columns.containsKey(normalize(name)))
@@ -363,7 +447,8 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
                 registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
-                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withComparisonKey(snapshotKey));
+                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                .withComparisonKey(snapshotKey).withCustomSql(registration.customSql()));
     }
 
     private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {

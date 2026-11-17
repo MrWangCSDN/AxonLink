@@ -19,6 +19,9 @@ import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
@@ -69,7 +72,8 @@ class ReplayDatabaseComparisonVersionServiceTest {
                 new ClassPathResource("db/daoindex/V71__replay_db_compare_ordering_primary_key_snapshot.sql"),
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
-                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"))
+                new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
@@ -82,6 +86,66 @@ class ReplayDatabaseComparisonVersionServiceTest {
         service = new ReplayDatabaseComparisonVersionService(
                 registrationService, metadataService, registrationDao, versionDao,
                 new ReplayDatabaseComparisonConfigurationHasher(), userDao, jdbc, CLOCK);
+    }
+
+    @Test
+    void customSqlGatePreparesFreshResultMetadataAndDoesNotUseLogicalIdsForPhysicalInspection() {
+        insertRegistration("sql_one", "金额汇总", List.of(field("id", "旧标识", 1, false, 1)));
+        var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of());
+        var registration = registrationDao.findAllActiveWithFields().get(0).withCustomSql(definition)
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
+        var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
+        var freshColumns = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "ID", "VARCHAR", 2));
+        var analysis = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(definition.sql(), "base_schema", "acct", "物理表名称", freshColumns, List.of("id"));
+        when(analyzer.prepare(definition.sql(), List.of("id"), List.of("id"), null)).thenReturn(
+                new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(analysis,
+                        List.of(field("id", "ID", 2, false, 1)), registration.comparisonKey()));
+        service.setCustomSqlAnalyzer(analyzer);
+        when(metadataService.inspectTables(List.of("acct"))).thenReturn(Map.of("acct",
+                new ReplayBaseMetadataSnapshot(true, "acct", "物理表名称", List.of())));
+
+        var gate = service.validateAll(List.of(registration));
+
+        assertTrue(gate.valid());
+        var snapshot = gate.registrations().get(0);
+        assertEquals("金额汇总", snapshot.tableComment());
+        assertEquals(freshColumns, snapshot.customSql().resultColumns());
+        assertEquals("ID", snapshot.fields().get(0).columnComment());
+        assertEquals("sql_one", snapshot.tableName());
+        verify(metadataService).inspectTables(List.of("acct"));
+    }
+
+    @Test
+    void customSqlGateCollectsParseFailureAndSourceMismatchWithoutAcceptingPartialSnapshots() {
+        insertRegistration("sql_one", "错误查询", List.of(field("id", "标识", 1, false, 1)));
+        var registration = registrationDao.findAllActiveWithFields().get(0)
+                .withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of()))
+                .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
+        var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
+        service.setCustomSqlAnalyzer(analyzer);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct", new ReplayBaseMetadataSnapshot(true, "acct", "账户", List.of())));
+        when(analyzer.prepare(any(), any(), any(), any())).thenThrow(new IllegalArgumentException("SQL 输出列失效"));
+        var invalid = service.validateAll(List.of(registration));
+        assertFalse(invalid.valid());
+        assertEquals("CUSTOM_SQL_INVALID", invalid.errors().get(0).status().name());
+        assertTrue(invalid.errors().get(0).reason().contains("SQL 输出列失效"));
+        var wrongSource = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(
+                "select id from other_acct", "base_schema", "other_acct", "另一表", List.of(), List.of("id"));
+        doReturn(new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(wrongSource, registration.fields(),
+                registration.comparisonKey())).when(analyzer).prepare(any(), any(), any(), any());
+        var mismatched = service.validateAll(List.of(registration));
+        assertFalse(mismatched.valid());
+        assertEquals("CUSTOM_SQL_INVALID", mismatched.errors().get(0).status().name());
+        assertTrue(mismatched.errors().get(0).reason().contains("关联基础表"));
+        var wrongSchema = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis(
+                "select id from acct", "other_schema", "acct", "另一Schema同名表", List.of(), List.of("id"));
+        doReturn(new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(wrongSchema, registration.fields(),
+                registration.comparisonKey())).when(analyzer).prepare(any(), any(), any(), any());
+        var changedSchema = service.validateAll(List.of(registration));
+        assertFalse(changedSchema.valid());
+        assertEquals("CUSTOM_SQL_INVALID", changedSchema.errors().get(0).status().name());
+        assertTrue(changedSchema.errors().get(0).reason().contains("Schema"));
+        assertNoVersionSnapshots();
     }
 
     @Test void legacyNullSelectionWithoutPhysicalPrimarySynchronizesUniqueAndFreezesItInNewVersion() {
@@ -491,6 +555,112 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals("20260914-110701", generated.versionNo());
         assertEquals(3, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_db_compare_version", Integer.class));
+    }
+
+
+    @Test
+    void missingPersonnelMappingBlocksGenerationBeforeAnyVersionSnapshotIsWritten() {
+        insertRegistration("kdpb_cb_corp_cptl_ermtbk", "对公账户开户登记簿",
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals("VERSION_GATE_BLOCKED", error.errorCode());
+        assertEquals(422, error.status().value());
+        List<ReplayDbCompareVersionGateError> errors = gateErrors(error);
+        assertEquals(1, errors.size());
+        assertEquals(registration.tableName(), errors.get(0).tableName());
+        assertEquals("DOMAIN_MAPPING_MISSING", errors.get(0).status().name());
+        assertTrue(errors.get(0).reason().contains("领域为空"));
+        assertTrue(errors.get(0).reason().contains("人员清单"));
+        assertNoVersionSnapshots();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   ", "未知组"})
+    void invalidPersonnelDomainBlocksVersionAndAllSnapshots(String domain) {
+        insertRegistration("acct_master", "账户主表", List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                registration.tableName(), domain);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals("VERSION_GATE_BLOCKED", error.errorCode());
+        assertEquals("DOMAIN_MAPPING_MISSING", gateErrors(error).get(0).status().name());
+        assertTrue(gateErrors(error).get(0).reason().contains("领域"));
+        assertNoVersionSnapshots();
+    }
+
+    @Test
+    void aggregatesAllUnmappedTablesWithoutPersistingTheValidSubset() {
+        List<ReplayDbCompareField> fields = List.of(field("id", "标识", 1, true, 1));
+        insertRegistration("missing_a", "缺少映射甲", fields);
+        insertRegistration("missing_b", "缺少映射乙", fields);
+        insertRegistration("valid_table", "有效表", fields);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES ('valid_table', '存款组', CURRENT_TIMESTAMP)");
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        Map<String, ReplayBaseMetadataSnapshot> metadata = new LinkedHashMap<>();
+        registrationDao.findAllActiveWithFields().forEach(item -> metadata.put(item.tableName(), metadataFor(item)));
+        when(metadataService.inspectTables(any())).thenReturn(metadata);
+
+        ReplayDatabaseComparisonGenerationException error = assertThrows(
+                ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate("secret", "secret", operator()));
+
+        assertEquals(List.of("missing_a", "missing_b"), gateErrors(error).stream()
+                .map(ReplayDbCompareVersionGateError::tableName).toList());
+        assertTrue(gateErrors(error).stream().allMatch(item ->
+                "DOMAIN_MAPPING_MISSING".equals(item.status().name())));
+        assertNoVersionSnapshots();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"存款组,dept", "贷款组,loan", "公共组,comm", "结算组,sett", "平台组,platform"})
+    void supportedDomainPassesVersionGateAndBothSqlTargets(String domain, String module) {
+        insertRegistration("acct_master", "账户主表", List.of(field("acct_no", "账号", 1, true, 1)));
+        ReplayDbCompareRegistration registration = registrationDao.findAllActiveWithFields().get(0);
+        jdbc.update("INSERT INTO dii_replay_database_table_person"
+                + " (table_name, domain_name, imported_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                registration.tableName(), domain);
+        service.setTablePersonDao(new com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao(jdbc));
+        when(metadataService.inspectTables(any())).thenReturn(Map.of(
+                registration.tableName(), metadataFor(registration)));
+
+        ReplayDbCompareVersionSummary generated = service.generate("secret", "secret", operator());
+        var snapshot = versionDao.findCompleteSnapshot(versionDao.findStoredVersion(generated.versionNo()).id());
+        assertEquals(domain, snapshot.get(0).domainName());
+        ReplayDatabaseComparisonConfigScriptGenerator generator = new ReplayDatabaseComparisonConfigScriptGenerator();
+        for (var script : List.of(generator.generate(generated.versionNo(), snapshot),
+                generator.generateNew(generated.versionNo(), snapshot))) {
+            assertTrue(new String(script.sqlContent(), java.nio.charset.StandardCharsets.UTF_8)
+                    .contains("'" + module + "'"));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<ReplayDbCompareVersionGateError> gateErrors(ReplayDatabaseComparisonGenerationException error) {
+        return (List<ReplayDbCompareVersionGateError>) ((Map<?, ?>) error.data()).get("errors");
+    }
+
+    private void assertNoVersionSnapshots() {
+        for (String table : List.of("dii_replay_db_compare_version", "dii_replay_db_compare_version_table",
+                "dii_replay_db_compare_version_field")) {
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class), table);
+        }
     }
 
     private void insertRegistration(String tableName, String tableComment, List<ReplayDbCompareField> fields) {

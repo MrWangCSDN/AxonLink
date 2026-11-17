@@ -30,12 +30,15 @@ public class ReplayDatabaseIssuePlanDateService {
     public void project(List<Map<String,Object>> rows,ReplayIssueOperator actor){
         var permissions=policy.permissions(actor);
         var user=actor==null?null:users.findActiveByUsername(actor.username());
-        var tables=new LinkedHashSet<String>();rows.forEach(row->tables.add(text(row.get("tableName"))));
-        Set<String> owned=user==null||text(user.getEmpNo()).isBlank()?Set.of():dao.developerTables(user.getUsername(),tables);
+        var comparisons=new LinkedHashSet<ReplayDatabaseIssueDao.TableIdentity>();
+        rows.forEach(row->comparisons.add(ReplayDatabaseIssueDao.TableIdentity.of(row)));
+        Set<ReplayDatabaseIssueDao.TableIdentity> owned=user==null||text(user.getEmpNo()).isBlank()
+                ?Set.of():dao.developerComparisons(user.getUsername(),comparisons);
         for(var row:rows){
             String domain=text(row.get("domain"));
             boolean bypass=permissions.dateLimitBypassGroups().contains(domain);
-            boolean allowed=permissions.editableGroups().contains(domain)||owned.contains(text(row.get("tableName")));
+            boolean allowed=permissions.editableGroups().contains(domain)
+                    ||owned.contains(ReplayDatabaseIssueDao.TableIdentity.of(row));
             row.put("canEditPlanDate",text(row.get("defectRepairDate")).isBlank()&&allowed);
             row.put("canBypassPlanDateLimit",bypass);
         }
@@ -48,7 +51,7 @@ public class ReplayDatabaseIssuePlanDateService {
             if(!Objects.equals(text(before.get("version")),text(request.get("version"))))throw new ReplayDatabaseIssueConflictException();
             if(!text(before.get("defectRepairDate")).isBlank())throw new IllegalArgumentException(ReplayIssuePlanDateService.REPAIRED_DATE_LOCK_MESSAGE);
             var access=new LinkedHashMap<>(before);
-            access.put("domain",dao.metadata(text(before.get("tableName"))).getOrDefault("domain",""));
+            access.put("domain",dao.metadata(ReplayDatabaseIssueDao.TableIdentity.of(before)).getOrDefault("domain",""));
             project(List.of(access),actor);
             if(!Boolean.TRUE.equals(access.get("canEditPlanDate")))throw new SecurityException("没有计划验证日期编辑权限");
             var date=ReplayIssuePlanDateService.parse(text(request.get("plannedCompletionDate")));

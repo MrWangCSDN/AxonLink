@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigScriptValidationError;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTableItem;
 import org.springframework.http.HttpStatus;
@@ -94,8 +95,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             if (newTarget && table.reviserUsername() != null && table.reviserUsername().trim().length() > 100) {
                 errors.add(error(tableName, null, "修订人账号不能超过100个字符"));
             }
-            if (!DOMAIN_MODULES.containsKey(table.domainName())) {
-                errors.add(error(tableName, null, "领域无法映射：" + table.domainName()));
+            String domainError = domainMappingError(table.domainName());
+            if (domainError != null) {
+                errors.add(error(tableName, null, domainError));
             }
             if (!validIdentifier(tableName)) {
                 errors.add(error(tableName, null, "表英文名不是合法数据库标识符"));
@@ -123,6 +125,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             if (table.compareLimit() != null) {
                 validateLimitedTable(table, errors);
             }
+            if (table.customSql() != null) {
+                validateCustomSql(table, errors);
+            }
         }
         if (!errors.isEmpty()) {
             throw new ReplayDatabaseComparisonGenerationException(
@@ -131,6 +136,46 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                     errors.size() + " 项配置无法生成生产脚本",
                     Map.of("errors", List.copyOf(errors)));
         }
+    }
+
+    private void validateCustomSql(ReplayDbCompareVersionTableItem table,
+                                   List<ReplayDbCompareConfigScriptValidationError> errors) {
+        try {
+            var definition = table.customSql();
+            var parsed = ReplayDatabaseComparisonCustomSqlAnalyzer.parseSql(definition.sql());
+            if (!parsed.sourceTableName().equals(definition.sourceTableName())) {
+                throw new IllegalArgumentException("SQL 来源表与版本快照关联表不一致");
+            }
+            if (hasText(table.whereSql()) || table.whereCondition() != null) {
+                throw new IllegalArgumentException("自定义 SQL 快照不能包含普通表查询条件");
+            }
+            if (table.comparisonKey() == null || !"RESULT_KEY".equals(table.comparisonKey().indexType())) {
+                throw new IllegalArgumentException("自定义 SQL 必须包含结果比对键快照");
+            }
+            Map<String, ReplayDbCompareSqlColumn> columns = customColumns(table);
+            Set<Integer> positions = new HashSet<>();
+            for (ReplayDbCompareSqlColumn column : definition.resultColumns()) {
+                String name = ReplayDatabaseComparisonCustomSqlAnalyzer.canonicalColumnName(column.columnLabel());
+                if (!name.equals(column.columnName()) || column.ordinalPosition() < 1
+                        || !positions.add(column.ordinalPosition())) {
+                    throw new IllegalArgumentException("SQL 结果字段元数据不完整或存在重复列");
+                }
+            }
+            if (columns.size() != definition.resultColumns().size()
+                    || table.fields().stream().anyMatch(field -> !columns.containsKey(field.columnName()))) {
+                throw new IllegalArgumentException("SQL 所选字段缺少结果元数据快照");
+            }
+        } catch (IllegalArgumentException exception) {
+            errors.add(error(table.tableName(), null, exception.getMessage()));
+        }
+    }
+
+    /** Shared by version generation and both SQL targets to keep domain eligibility consistent. */
+    static String domainMappingError(String domainName) {
+        if (domainName == null || domainName.isBlank()) {
+            return "领域为空，缺少生产模块映射，请先维护表级人员清单中的领域";
+        }
+        return DOMAIN_MODULES.containsKey(domainName) ? null : "领域无法映射：" + domainName;
     }
 
     private void validateLimitedTable(
@@ -247,23 +292,61 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                         + "  (bcomp_index,orig_sql,orig_database_id,dest_sql,dest_database_id)\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
-                    String fields = String.join(",", orderedFields(table).stream()
-                            .map(ReplayDbCompareVersionField::columnName).toList());
-                    StringBuilder select = new StringBuilder("(select ")
-                            .append(fields).append(" from ").append(table.tableName());
-                    if (hasText(table.whereSql())) {
-                        select.append(" where ").append(table.whereSql());
-                    }
-                    if (table.compareLimit() != null) {
-                        select.append(" order by ")
-                                .append(String.join(",", orderedPrimaryKeyFields(table).stream()
-                                        .map(ReplayDbCompareVersionField::columnName).toList()))
-                                .append(" limit ").append(table.compareLimit());
-                    }
-                    select.append(") ");
-                    return "(" + (index + 1) + "," + quote(select + "orig") + ",1,"
-                            + quote(select + "dest") + ",2)";
+                    String select = table.customSql() == null ? tableSelect(table) : customSelect(table);
+                    return "(" + (index + 1) + "," + quoteQuery(table, select + "orig") + ",1,"
+                            + quoteQuery(table, select + "dest") + ",2)";
                 });
+    }
+
+    private String tableSelect(ReplayDbCompareVersionTableItem table) {
+        String fields = String.join(",", orderedFields(table).stream()
+                .map(ReplayDbCompareVersionField::columnName).toList());
+        StringBuilder select = new StringBuilder("(select ")
+                .append(fields).append(" from ").append(table.tableName());
+        if (hasText(table.whereSql())) {
+            select.append(" where ").append(table.whereSql());
+        }
+        if (table.compareLimit() != null) {
+            select.append(" order by ")
+                    .append(String.join(",", orderedPrimaryKeyFields(table).stream()
+                            .map(ReplayDbCompareVersionField::columnName).toList()))
+                    .append(" limit ").append(table.compareLimit());
+        }
+        return select.append(") ").toString();
+    }
+
+    private String customSelect(ReplayDbCompareVersionTableItem table) {
+        Map<String, ReplayDbCompareSqlColumn> columns = customColumns(table);
+        String fields = String.join(",", orderedFields(table).stream().map(field ->
+                "result_q." + quoteIdentifier(columns.get(field.columnName()).columnLabel())
+                        + " as " + quoteIdentifier(field.columnName())).toList());
+        String sql = ReplayDatabaseComparisonCustomSqlAnalyzer.parseSql(table.customSql().sql()).sql();
+        StringBuilder select = new StringBuilder("(select ").append(fields)
+                .append(" from (\n").append(sql).append("\n) result_q");
+        if (table.compareLimit() != null) {
+            select.append(" order by ")
+                    .append(String.join(",", table.comparisonKey().columnNames().stream()
+                            .map(this::quoteIdentifier).toList()))
+                    .append(" limit ").append(table.compareLimit());
+        }
+        return select.append(") ").toString();
+    }
+
+    private Map<String, ReplayDbCompareSqlColumn> customColumns(ReplayDbCompareVersionTableItem table) {
+        Map<String, ReplayDbCompareSqlColumn> columns = new HashMap<>();
+        table.customSql().resultColumns().forEach(column -> columns.put(column.columnName(), column));
+        return columns;
+    }
+
+    private String quoteIdentifier(String name) {
+        return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    private String quoteQuery(ReplayDbCompareVersionTableItem table, String query) {
+        if (table.customSql() != null && query.indexOf('\\') >= 0) {
+            return "CONVERT(0x" + HexFormat.of().formatHex(query.getBytes(StandardCharsets.UTF_8)) + " USING utf8mb4)";
+        }
+        return quote(query);
     }
 
     private void writeBatches(
