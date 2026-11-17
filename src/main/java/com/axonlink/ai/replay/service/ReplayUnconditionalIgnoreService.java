@@ -9,11 +9,16 @@ import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreCreateRequest;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
+import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreReasonImportResult;
+import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreReasonImportRow;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreUpdateRequest;
 import com.axonlink.ai.replay.persistence.ReplayUnconditionalIgnoreDao;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -26,13 +31,45 @@ public class ReplayUnconditionalIgnoreService {
     private final ReplayUnconditionalIgnoreDao dao;
     private final ReplayConfigServiceCodeResolver resolver;
     private final ReplayConfigPersonResolver personResolver;
+    private final ReplayUnconditionalIgnoreReasonExcelParser reasonParser;
+
+    @Autowired
+    public ReplayUnconditionalIgnoreService(ReplayUnconditionalIgnoreDao dao,
+                                            ReplayConfigServiceCodeResolver resolver,
+                                            ReplayConfigPersonResolver personResolver,
+                                            ReplayUnconditionalIgnoreReasonExcelParser reasonParser) {
+        this.dao = dao;
+        this.resolver = resolver;
+        this.personResolver = personResolver;
+        this.reasonParser = reasonParser;
+    }
 
     public ReplayUnconditionalIgnoreService(ReplayUnconditionalIgnoreDao dao,
                                             ReplayConfigServiceCodeResolver resolver,
                                             ReplayConfigPersonResolver personResolver) {
-        this.dao = dao;
-        this.resolver = resolver;
-        this.personResolver = personResolver;
+        this(dao, resolver, personResolver, new ReplayUnconditionalIgnoreReasonExcelParser());
+    }
+
+    public ReplayUnconditionalIgnoreReasonImportResult importReasons(MultipartFile file,
+                                                                     ReplayConfigOperator operator)
+            throws IOException {
+        List<ReplayUnconditionalIgnoreReasonImportRow> parsed = reasonParser.parse(file);
+        List<Integer> invalidRows = new ArrayList<>();
+        for (var row : parsed) {
+            if (!row.validColumnCount() || row.tranCode().isBlank()
+                    || row.fieldName().isBlank() || row.ignoreReason().isBlank()
+                    || row.ignoreReason().length() > 512) {
+                invalidRows.add(row.rowNumber());
+            }
+        }
+        if (!invalidRows.isEmpty()) {
+            throw new IllegalArgumentException("Excel 格式错误：第 "
+                    + invalidRows.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining("、"))
+                    + " 行必须依次填写交易码、忽略字段、忽略原因三列，且忽略原因不超过 512 字符");
+        }
+        ReplayUnconditionalIgnoreDao.ImportApplyResult applied = dao.applyImportedReasons(parsed, operator);
+        return new ReplayUnconditionalIgnoreReasonImportResult(parsed.size(), applied.updatedRows(),
+                applied.skippedExistingReasonRows(), applied.unmatchedRows(), 0);
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,

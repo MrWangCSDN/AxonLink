@@ -12,8 +12,11 @@ import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreUpdateRequest;
 import com.axonlink.ai.replay.persistence.ReplayUnconditionalIgnoreDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
+import java.io.ByteArrayOutputStream;
 import java.util.List;
 import java.util.HashSet;
 import java.util.Set;
@@ -384,6 +387,50 @@ class ReplayUnconditionalIgnoreServiceTest {
 
         assertEquals(Set.of("公共组", "贷款组"),
                 new HashSet<>(new ReplayConfigPersonResolver(jdbc).listDomains()));
+    }
+
+    @Test
+    void importsReasonsOnlyIntoBlankRowsWithoutResettingApproval() throws Exception {
+        ReplayUnconditionalIgnoreRow blank = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+        ReplayUnconditionalIgnoreRow existing = service.create(
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "status", REASON), OPERATOR);
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET review_status=1 WHERE id IN (?,?)",
+                blank.id(), existing.id());
+        jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=NULL WHERE id=?", blank.id());
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet();
+            sheet.createRow(0).createCell(0).setCellValue("S1&sop");
+            sheet.getRow(0).createCell(1).setCellValue("accountNo");
+            sheet.getRow(0).createCell(2).setCellValue("导入原因");
+            sheet.createRow(1).createCell(0).setCellValue("S1&sop");
+            sheet.getRow(1).createCell(1).setCellValue("status");
+            sheet.getRow(1).createCell(2).setCellValue("覆盖原因");
+            sheet.createRow(2).createCell(0).setCellValue("S9&sop");
+            sheet.getRow(2).createCell(1).setCellValue("missing");
+            sheet.getRow(2).createCell(2).setCellValue("未匹配");
+            workbook.write(output);
+
+            var result = service.importReasons(new MockMultipartFile(
+                    "file", "reasons.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    output.toByteArray()), OPERATOR);
+            assertEquals(3, result.totalRows());
+            assertEquals(1, result.updatedRows());
+            assertEquals(1, result.skippedExistingReasonRows());
+            assertEquals(1, result.unmatchedRows());
+            assertEquals(0, result.invalidRows());
+        }
+        assertEquals("导入原因", jdbc.queryForObject(
+                "SELECT ignore_reason FROM dii_replay_unconditional_ignore WHERE id=?", String.class, blank.id()));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT review_status FROM dii_replay_unconditional_ignore WHERE id=?", Integer.class, blank.id()));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_unconditional_ignore_operation "
+                        + "WHERE config_id=? AND operation_type='UPDATE' AND operation_source='EXCEL'",
+                Integer.class, blank.id()));
+        assertEquals(REASON, jdbc.queryForObject(
+                "SELECT ignore_reason FROM dii_replay_unconditional_ignore WHERE id=?", String.class, existing.id()));
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.axonlink.ai.replay.dto.ReplayConfigPage;
 import com.axonlink.ai.replay.dto.ReplayConfigVersionedId;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreDraft;
 import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreRow;
+import com.axonlink.ai.replay.dto.ReplayUnconditionalIgnoreReasonImportRow;
 import com.axonlink.ai.replay.service.ReplayConfigConflictException;
 import com.axonlink.ai.replay.service.ReplayConfigNotFoundException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -83,6 +84,37 @@ public class ReplayUnconditionalIgnoreDao {
                 "SELECT " + SELECT_COLUMNS + " FROM dii_replay_unconditional_ignore WHERE id=?",
                 this::mapRow, id);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public ImportApplyResult applyImportedReasons(List<ReplayUnconditionalIgnoreReasonImportRow> rows,
+                                                  ReplayConfigOperator operator) {
+        LocalDateTime now = LocalDateTime.now();
+        return tx.execute(status -> {
+            int updated = 0;
+            int existing = 0;
+            int unmatched = 0;
+            for (ReplayUnconditionalIgnoreReasonImportRow row : rows) {
+                List<ReplayUnconditionalIgnoreRow> matches = jdbc.query(
+                        "SELECT " + SELECT_COLUMNS + " FROM dii_replay_unconditional_ignore "
+                                + "WHERE tran_code=? AND field_name=?",
+                        this::mapRow, row.tranCode(), row.fieldName());
+                if (matches.isEmpty()) {
+                    unmatched++;
+                    continue;
+                }
+                ReplayUnconditionalIgnoreRow current = matches.get(0);
+                if (current.ignoreReason() != null && !current.ignoreReason().isBlank()) {
+                    existing++;
+                    continue;
+                }
+                jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=?,updated_at=? WHERE id=?",
+                        row.ignoreReason(), Timestamp.valueOf(now), current.id());
+                insertOperation(current.id(), "UPDATE", null, null, null, null,
+                        current.ignoreReason(), row.ignoreReason(), null, null, operator, now, "EXCEL");
+                updated++;
+            }
+            return new ImportApplyResult(updated, existing, unmatched);
+        });
     }
 
     public ReplayUnconditionalIgnoreRow create(String tranCode, String fieldName, String ignoreReason,
@@ -257,6 +289,14 @@ public class ReplayUnconditionalIgnoreDao {
                                  String newTranCode, String newFieldName, String ignoreReason,
                                  String newIgnoreReason, Integer reviewStatus, Integer newReviewStatus,
                                  ReplayConfigOperator operator, LocalDateTime now) {
+        insertOperation(configId, operationType, tranCode, fieldName, newTranCode, newFieldName,
+                ignoreReason, newIgnoreReason, reviewStatus, newReviewStatus, operator, now, "MANUAL");
+    }
+
+    private void insertOperation(long configId, String operationType, String tranCode, String fieldName,
+                                 String newTranCode, String newFieldName, String ignoreReason,
+                                 String newIgnoreReason, Integer reviewStatus, Integer newReviewStatus,
+                                 ReplayConfigOperator operator, LocalDateTime now, String operationSource) {
         jdbc.update("INSERT INTO dii_replay_unconditional_ignore_operation "
                         + "(config_id,operation_type,tran_code,field_name,new_tran_code,new_field_name,"
                         + "ignore_reason,new_ignore_reason,review_status,new_review_status,operator_username,"
@@ -265,7 +305,7 @@ public class ReplayUnconditionalIgnoreDao {
                 configId, operationType, tranCode, fieldName, newTranCode, newFieldName,
                 ignoreReason, newIgnoreReason, reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
-                operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
+                operator == null ? null : operator.realName(), operationSource, Timestamp.valueOf(now));
     }
 
     private Filter filter(String tranCode, String fieldName, Collection<String> serviceCodes,
@@ -324,5 +364,8 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     private record Filter(String sql, List<Object> args) {
+    }
+
+    public record ImportApplyResult(int updatedRows, int skippedExistingReasonRows, int unmatchedRows) {
     }
 }
