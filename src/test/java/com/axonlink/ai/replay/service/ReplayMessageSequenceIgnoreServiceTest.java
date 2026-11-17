@@ -76,6 +76,10 @@ class ReplayMessageSequenceIgnoreServiceTest {
         ReplayMessageSequenceIgnoreRow row = service.create(new ReplayMessageSequenceIgnoreCreateRequest(
                 "S1&sop", "QUERY", "empty", "原因"), OPERATOR).get(0);
         jdbc.update("UPDATE dii_replay_message_sequence_ignore SET ignore_reason=NULL WHERE id=?", row.id());
+        assertEquals(0, service.list(10, 0, "QUERY", null, null, null,
+                true, true, true, REVIEWER).total());
+        jdbc.update("UPDATE dii_replay_transaction_person SET developer_usernames=? WHERE old_transaction_code=?",
+                "dev,reviewer", "0126");
         assertEquals(1, service.list(10, 0, "QUERY", null, null, null,
                 true, true, true, REVIEWER).total());
         assertEquals(0, service.list(10, 0, "QUERY", null, null, 1,
