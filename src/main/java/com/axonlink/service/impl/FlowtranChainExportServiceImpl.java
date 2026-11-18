@@ -3,12 +3,14 @@ package com.axonlink.service.impl;
 import com.axonlink.dto.FlowtranTransaction;
 import com.axonlink.service.FlowtranChainExportService;
 import com.axonlink.service.FlowtranService;
+import org.apache.poi.ss.SpreadsheetVersion;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.IndexedColors;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.VerticalAlignment;
 import org.apache.poi.ss.util.CellRangeAddress;
 import org.apache.poi.xssf.streaming.SXSSFWorkbook;
 import org.springframework.stereotype.Service;
@@ -18,12 +20,16 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.SortedSet;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 @Service
 public class FlowtranChainExportServiceImpl implements FlowtranChainExportService {
@@ -41,7 +47,7 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
             "交易码", "交易名称", "构件编码", "构件名称", "构件类型", "构件领域编码", "构件领域名称"
     };
     private static final String[] TABLE_HEADERS = {
-            "交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名"
+            "交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名", "DAO方法名"
     };
     private static final String[] DAO_HEADERS = {
             "交易码", "交易名称", "表英文名", "表中文名", "表所属领域编码", "表所属领域名称", "来源工程", "DAO类名", "DAO方法名"
@@ -157,7 +163,7 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
             writeTransactions(workbook, headerStyle, transactions);
             writeNodes(workbook, headerStyle, "服务清单", SERVICE_HEADERS, services);
             writeNodes(workbook, headerStyle, "构件清单", COMPONENT_HEADERS, components);
-            writeTables(workbook, headerStyle, tables);
+            writeTables(workbook, headerStyle, tables, daos);
             writeDaos(workbook, headerStyle, daos);
             workbook.write(output);
             return output.toByteArray();
@@ -202,15 +208,44 @@ public class FlowtranChainExportServiceImpl implements FlowtranChainExportServic
 
     private static void writeTables(SXSSFWorkbook workbook,
                                     CellStyle headerStyle,
-                                    List<TableRow> rows) {
+                                    List<TableRow> rows,
+                                    List<DaoRow> daos) {
         Sheet sheet = createSheet(workbook, "数据库表清单", TABLE_HEADERS, headerStyle);
+        sheet.setColumnWidth(8, 70 * 256);
+        CellStyle methodStyle = workbook.createCellStyle();
+        methodStyle.setWrapText(true);
+        methodStyle.setVerticalAlignment(VerticalAlignment.TOP);
+        // 按宽字符估算折行，为中文标识符和较宽的字母预留空间。
+        int charactersPerLine = Math.max(1, sheet.getColumnWidth(8) / (2 * 256) - 1);
+        Map<String, SortedSet<String>> methodsByTable = new HashMap<>();
+        for (DaoRow dao : daos) {
+            if (dao.metadata.code.isBlank()) continue;
+            String method = dao.metadata.daoClassName.isBlank()
+                    ? dao.methodName : dao.metadata.daoClassName + "." + dao.methodName;
+            methodsByTable.computeIfAbsent(dao.metadata.key(), ignored -> new TreeSet<>()).add(method);
+        }
         int index = 1;
         for (TableRow item : rows) {
             Row row = sheet.createRow(index++);
+            String methods = daoMethodSummary(methodsByTable.getOrDefault(item.key(), Collections.emptySortedSet()));
             strings(row, item.txId, item.txName, item.code, item.name, item.domainKey,
-                    item.domainName, item.projectName, item.daoClassName);
+                    item.domainName, item.projectName, item.daoClassName, methods);
+            row.getCell(8).setCellStyle(methodStyle);
+            int lineCount = methods.lines()
+                    .mapToInt(line -> Math.max(1, (line.length() + charactersPerLine - 1) / charactersPerLine))
+                    .sum();
+            row.setHeightInPoints(Math.min(409.5f, sheet.getDefaultRowHeightInPoints() * Math.max(1, lineCount)));
         }
         finishSheet(sheet, TABLE_HEADERS.length, index);
+    }
+
+    private static String daoMethodSummary(SortedSet<String> methods) {
+        String summary = String.join("\n", methods);
+        int maxLength = SpreadsheetVersion.EXCEL2007.getMaxTextLength();
+        if (summary.length() <= maxLength) return summary;
+        String suffix = "\n…（完整方法见DAO方法清单）";
+        int end = summary.lastIndexOf('\n', maxLength - suffix.length());
+        return summary.substring(0, Math.max(0, end)) + suffix;
     }
 
     private static void writeDaos(SXSSFWorkbook workbook, CellStyle headerStyle, List<DaoRow> rows) {
