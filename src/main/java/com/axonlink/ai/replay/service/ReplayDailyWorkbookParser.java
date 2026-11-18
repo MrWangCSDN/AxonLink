@@ -58,6 +58,8 @@ public class ReplayDailyWorkbookParser {
             .filter(header -> !INTERFACE_SUCCESS_HEADERS.contains(header)).toList();
     private static final List<String> COVERAGE_SUMMARY_HEADERS = List.of("业务领域汇总", "全量交易数", "本次已发送",
             "本次未发送", "不回放", "近期无交易", "待分析", "覆盖率");
+    private static final List<String> COVERAGE_SUMMARY_REQUIRED_HEADERS = COVERAGE_SUMMARY_HEADERS.stream()
+            .filter(header -> !"待分析".equals(header)).toList();
     private static final List<String> COVERAGE_DETAIL_HEADERS = List.of("交易码", "交易描述", "业务领域", "S码", "关联码",
             "是否需要回放", "最近交易日期", "本次发送交易量", "覆盖状态", "未发送原因", "开发负责人", "行内负责人");
     private static final Set<String> COVERAGE_DECORATION_LABELS = Set.of(
@@ -353,7 +355,7 @@ public class ReplayDailyWorkbookParser {
         for (int rowIndex = 0; rowIndex < beforeRow; rowIndex++) {
             Row row = sheet.getRow(rowIndex);
             Map<String, Integer> columns = headers(row, COVERAGE_SUMMARY_HEADERS, formatter, evaluator);
-            if (columns.keySet().containsAll(COVERAGE_SUMMARY_HEADERS)) {
+            if (columns.keySet().containsAll(COVERAGE_SUMMARY_REQUIRED_HEADERS)) {
                 result.add(new CoverageSummaryHeader(new HeaderRegion(rowIndex, rowIndex + 1, columns),
                         rowContains(row, "大组", formatter, evaluator)));
             }

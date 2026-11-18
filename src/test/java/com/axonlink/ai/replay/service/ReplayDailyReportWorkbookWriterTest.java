@@ -22,6 +22,7 @@ import org.apache.poi.xssf.usermodel.XSSFCellStyle;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.ByteArrayInputStream;
@@ -169,9 +170,14 @@ class ReplayDailyReportWorkbookWriterTest {
         }
     }
 
-    @Test
-    void writesCoverageSummaryAndDetailSectionsWithStoredFormatsAndOrder() throws Exception {
-        try (Workbook workbook = workbook()) {
+    @ParameterizedTest
+    @EnumSource(ReplayReportPeriod.class)
+    void writesCoverageSummaryWithoutPendingAnalysisForDailyAndWeeklyReports(ReplayReportPeriod period) throws Exception {
+        CalculatedReport calculated = summary();
+        var summaryView = new ReplayReportSummaryViewFactory().create(period,
+                period == ReplayReportPeriod.WEEKLY ? "RPT-PREVIOUS" : null, "RPT-CURRENT", calculated);
+        byte[] bytes = writer.write(calculated, summaryView, comparisons(), coverageSummaries(), coverageDetails());
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
             Sheet sheet = workbook.getSheet("回放交易覆盖情况");
             int domainHeaderRow = findRow(sheet, "业务领域");
             int groupTitleRow = findRow(sheet, "按大组汇总");
@@ -181,12 +187,13 @@ class ReplayDailyReportWorkbookWriterTest {
             assertEquals(0, sheet.getNumMergedRegions());
             assertEquals("按业务领域汇总", sheet.getRow(0).getCell(0).getStringCellValue());
             assertEquals("005B6B", fillRgb(sheet.getRow(0).getCell(0)));
-            assertDarkTealBand(sheet.getRow(domainHeaderRow), 8);
+            assertDarkTealBand(sheet.getRow(domainHeaderRow), 7);
             assertEquals("005B6B", fillRgb(sheet.getRow(groupTitleRow).getCell(0)));
-            assertDarkTealBand(sheet.getRow(groupHeaderRow), 8);
+            assertDarkTealBand(sheet.getRow(groupHeaderRow), 7);
             assertEquals(List.of("业务领域", "全量清单交易数", "本次已发送", "本次未发送", "不回放",
-                            "近期无交易", "待分析", "覆盖率"),
-                    rowValues(sheet.getRow(domainHeaderRow), 8));
+                            "近期无交易", "覆盖率"),
+                    rowValues(sheet.getRow(domainHeaderRow), 7));
+            assertEquals(7, sheet.getRow(domainHeaderRow).getLastCellNum());
             assertEquals("公共组", sheet.getRow(domainHeaderRow + 1).getCell(0).getStringCellValue());
             assertEquals("存款组", sheet.getRow(domainHeaderRow + 2).getCell(0).getStringCellValue());
             assertEquals("合计", sheet.getRow(domainHeaderRow + 3).getCell(0).getStringCellValue());
@@ -194,16 +201,22 @@ class ReplayDailyReportWorkbookWriterTest {
             assertEquals(20f, sheet.getRow(domainHeaderRow + 1).getHeightInPoints());
             assertEquals(22f, sheet.getRow(domainHeaderRow + 3).getHeightInPoints());
             assertNumericValues(sheet.getRow(domainHeaderRow + 3), 1,
-                    999d, 989d, 10d, 1d, 2d, 3d, 0.5432d);
-            assertEquals("0.00%", sheet.getRow(domainHeaderRow + 3).getCell(7).getCellStyle().getDataFormatString());
+                    999d, 989d, 10d, 1d, 2d, 0.5432d);
+            assertEquals(7, sheet.getRow(domainHeaderRow + 3).getLastCellNum());
+            assertEquals("0.00%", sheet.getRow(domainHeaderRow + 3).getCell(6).getCellStyle().getDataFormatString());
             assertEquals(List.of("大组", "全量清单交易数", "本次已发送", "本次未发送", "不回放",
-                            "近期无交易", "待分析", "覆盖率"),
-                    rowValues(sheet.getRow(groupHeaderRow), 8));
+                            "近期无交易", "覆盖率"),
+                    rowValues(sheet.getRow(groupHeaderRow), 7));
+            assertEquals(7, sheet.getRow(groupHeaderRow).getLastCellNum());
             assertEquals("零售组", sheet.getRow(groupHeaderRow + 1).getCell(0).getStringCellValue());
             assertEquals("合计", sheet.getRow(groupHeaderRow + 2).getCell(0).getStringCellValue());
             assertEquals(26f, sheet.getRow(groupHeaderRow).getHeightInPoints());
             assertEquals(20f, sheet.getRow(groupHeaderRow + 1).getHeightInPoints());
             assertEquals(22f, sheet.getRow(groupHeaderRow + 2).getHeightInPoints());
+            assertNumericValues(sheet.getRow(groupHeaderRow + 2), 1,
+                    300d, 290d, 10d, 1d, 2d, 0.80d);
+            assertEquals(7, sheet.getRow(groupHeaderRow + 2).getLastCellNum());
+            assertEquals("0.00%", sheet.getRow(groupHeaderRow + 2).getCell(6).getCellStyle().getDataFormatString());
 
             assertEquals("交易明细", sheet.getRow(detailHeaderRow - 1).getCell(0).getStringCellValue());
             assertEquals("005B6B", fillRgb(sheet.getRow(detailHeaderRow - 1).getCell(0)));
@@ -213,6 +226,9 @@ class ReplayDailyReportWorkbookWriterTest {
                     rowValues(sheet.getRow(detailHeaderRow), 12));
             assertEquals("0012", sheet.getRow(detailHeaderRow + 1).getCell(0).getStringCellValue());
             assertEquals("0099", sheet.getRow(detailHeaderRow + 2).getCell(0).getStringCellValue());
+            assertEquals(LocalDate.of(2026, 8, 2),
+                    sheet.getRow(detailHeaderRow + 1).getCell(6).getLocalDateTimeCellValue().toLocalDate());
+            assertEquals(12d, sheet.getRow(detailHeaderRow + 1).getCell(7).getNumericCellValue());
             assertEquals("yyyy-mm-dd", sheet.getRow(detailHeaderRow + 1).getCell(6).getCellStyle().getDataFormatString());
             assertEquals("0", sheet.getRow(detailHeaderRow + 1).getCell(7).getCellStyle().getDataFormatString());
             assertEquals("005B6B", fillRgb(sheet.getRow(domainHeaderRow).getCell(0)));

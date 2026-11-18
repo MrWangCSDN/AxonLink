@@ -16,6 +16,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.web.MockMultipartFile;
 
@@ -376,6 +377,131 @@ class ReplayDailyWorkbookParserTest {
                 .toList());
     }
 
+    @ParameterizedTest
+    @EnumSource(ReplayIssueImportMode.class)
+    void parsesCoverageSummariesWithoutPendingAnalysisColumn(ReplayIssueImportMode mode) throws Exception {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook ->
+                removePendingAnalysisColumn(workbook.getSheet("回放交易覆盖情况"), 1, 2, 3, 5, 6, 7));
+
+        ReplayDailyWorkbookData data = parser.parse(file, mode);
+
+        assertEquals(List.of("DOMAIN_DETAIL", "DOMAIN_TOTAL", "GROUP_DETAIL", "GROUP_TOTAL"),
+                data.coverageSummaries().stream().map(row -> row.rowType().name()).toList());
+        assertEquals(List.of(76L, 714L, 196L, 714L), data.coverageSummaries().stream()
+                .map(ReplayCoverageSummaryRow::fullTransactionCount).toList());
+        assertEquals(List.of(new BigDecimal("0.9079"), new BigDecimal("0.7059"),
+                        new BigDecimal("0.7041"), new BigDecimal("0.7059")),
+                data.coverageSummaries().stream().map(ReplayCoverageSummaryRow::coverageRate).toList());
+        for (ReplayCoverageSummaryRow row : data.coverageSummaries()) {
+            assertNull(row.pendingAnalysisCount());
+            assertFalse(row.rawJson().contains("待分析"));
+            assertEquals(mode.normalizeBatch("RPT20260904-094201-5355"), row.batchNo());
+        }
+        assertEquals(1, data.coverageDetails().size());
+        assertEquals(LocalDate.of(2026, 8, 2), data.coverageDetails().get(0).latestTransactionDate());
+        assertEquals(100L, data.coverageDetails().get(0).sentTransactionCount());
+    }
+
+    @Test
+    void keepsLegacyPendingAnalysisValuesWhenOtherSummaryRegionOmitsTheColumn() throws Exception {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("回放交易覆盖情况");
+            sheet.getRow(2).getCell(6).setCellValue(3);
+            sheet.getRow(3).getCell(6).setCellValue(4);
+            removePendingAnalysisColumn(sheet, 5, 6, 7);
+        });
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        assertEquals(4, data.coverageSummaries().size());
+        assertEquals(3L, data.coverageSummaries().get(0).pendingAnalysisCount());
+        assertEquals(4L, data.coverageSummaries().get(1).pendingAnalysisCount());
+        assertTrue(data.coverageSummaries().get(0).rawJson().contains("\"待分析\":\"3\""));
+        assertNull(data.coverageSummaries().get(2).pendingAnalysisCount());
+        assertNull(data.coverageSummaries().get(3).pendingAnalysisCount());
+        assertFalse(data.coverageSummaries().get(2).rawJson().contains("待分析"));
+        assertEquals(new BigDecimal("0.9079"), data.coverageSummaries().get(0).coverageRate());
+        assertEquals(new BigDecimal("0.7041"), data.coverageSummaries().get(2).coverageRate());
+    }
+
+    @Test
+    void readsReorderedCoverageHeadersWithoutPendingAnalysisByName() throws Exception {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("回放交易覆盖情况");
+            removePendingAnalysisColumn(sheet, 1, 2, 3, 5, 6, 7);
+            int[] order = {6, 2, 0, 5, 1, 4, 3};
+            for (int rowIndex : List.of(1, 2, 3, 5, 6, 7)) {
+                Row row = sheet.getRow(rowIndex);
+                List<String> values = new ArrayList<>();
+                for (int column = 0; column < order.length; column++) {
+                    values.add(row.getCell(column).toString());
+                }
+                row.getCell(0).setCellValue("辅助列");
+                for (int column = 0; column < order.length; column++) {
+                    row.createCell(column + 1).setCellValue(values.get(order[column]));
+                }
+            }
+            sheet.getRow(1).getCell(1).setCellValue(" 覆盖率\n");
+        });
+
+        ReplayDailyWorkbookData data = parser.parse(file, ReplayIssueImportMode.QUERY);
+
+        assertEquals(4, data.coverageSummaries().size());
+        ReplayCoverageSummaryRow domain = data.coverageSummaries().get(0);
+        assertEquals("公共组", domain.businessDomain());
+        assertEquals(76L, domain.fullTransactionCount());
+        assertEquals(69L, domain.sentCount());
+        assertEquals(7L, domain.unsentCount());
+        assertEquals(1L, domain.excludedCount());
+        assertEquals(6L, domain.recentTransactionCount());
+        assertNull(domain.pendingAnalysisCount());
+        assertEquals(new BigDecimal("0.9079"), domain.coverageRate());
+        assertFalse(domain.rawJson().contains("辅助列"));
+        assertEquals(ReplayDailyRowType.GROUP_DETAIL, data.coverageSummaries().get(2).rowType());
+    }
+
+    @Test
+    void stillValidatesLegacyPendingAnalysisWhenPresent() {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> workbook
+                .getSheet("回放交易覆盖情况").getRow(2).getCell(6).setCellValue("待确认"));
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("待分析"));
+        assertTrue(exception.getMessage().contains("待确认"));
+    }
+
+    @Test
+    void stillValidatesCoverageRateAfterRemovingPendingAnalysis() {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("回放交易覆盖情况");
+            removePendingAnalysisColumn(sheet, 1, 2, 3, 5, 6, 7);
+            sheet.getRow(2).getCell(6).setCellValue("五成");
+        });
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("覆盖率"));
+        assertTrue(exception.getMessage().contains("五成"));
+    }
+
+    @Test
+    void stillRequiresOtherCoverageSummaryHeadersWhenPendingAnalysisIsMissing() {
+        MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> {
+            Sheet sheet = workbook.getSheet("回放交易覆盖情况");
+            removePendingAnalysisColumn(sheet, 1, 2, 3, 5, 6, 7);
+            sheet.getRow(1).getCell(5).setCellValue("旧近期无交易");
+            sheet.getRow(5).getCell(5).setCellValue("旧近期无交易");
+        });
+
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> parser.parse(file, ReplayIssueImportMode.QUERY));
+
+        assertTrue(exception.getMessage().contains("回放交易覆盖情况"));
+    }
+
     @Test
     void acceptsLastTransactionDateAsCoverageDateHeader() throws Exception {
         MockMultipartFile file = mutate(screenshotCoverageWorkbook(), workbook -> workbook
@@ -557,6 +683,14 @@ class ReplayDailyWorkbookParserTest {
             row.createCell(index + 1).setCellValue(values[index]);
         }
         row.createCell(7).setCellValue(rate);
+    }
+
+    private static void removePendingAnalysisColumn(Sheet sheet, int... rowIndexes) {
+        for (int rowIndex : rowIndexes) {
+            Row row = sheet.getRow(rowIndex);
+            row.getCell(6).setCellValue(row.getCell(7).toString());
+            row.removeCell(row.getCell(7));
+        }
     }
 
     private static CalculatedReport generatedSummary() {

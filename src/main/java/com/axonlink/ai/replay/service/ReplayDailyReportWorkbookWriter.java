@@ -53,10 +53,10 @@ public class ReplayDailyReportWorkbookWriter {
             "528平均耗时", "CCBS平均耗时");
     private static final List<String> COVERAGE_DOMAIN_HEADERS = List.of(
             "业务领域", "全量清单交易数", "本次已发送", "本次未发送", "不回放",
-            "近期无交易", "待分析", "覆盖率");
+            "近期无交易", "覆盖率");
     private static final List<String> COVERAGE_GROUP_HEADERS = List.of(
             "大组", "全量清单交易数", "本次已发送", "本次未发送", "不回放",
-            "近期无交易", "待分析", "覆盖率");
+            "近期无交易", "覆盖率");
     private static final List<String> COVERAGE_DETAIL_HEADERS = List.of(
             "交易码", "交易描述", "业务领域", "S码", "关联码", "是否需要回放",
             "最近交易日期", "本次发送交易量", "覆盖状态", "未发送原因", "开发负责人", "行内负责人");
@@ -399,8 +399,7 @@ public class ReplayDailyReportWorkbookWriter {
         setNullableNumber(row, 3, value.unsentCount(), integerStyle);
         setNullableNumber(row, 4, value.excludedCount(), integerStyle);
         setNullableNumber(row, 5, value.recentTransactionCount(), integerStyle);
-        setNullableNumber(row, 6, value.pendingAnalysisCount(), integerStyle);
-        setDecimal(row, 7, value.coverageRate(), percentStyle);
+        setDecimal(row, 6, value.coverageRate(), percentStyle);
     }
 
     private void writeCoverageDetailRow(Row row, StylePalette styles,
