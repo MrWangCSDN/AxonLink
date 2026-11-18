@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.regex.Pattern;
 
 /**
  * 慢SQL导入：按 (serviceName, 抽象SQL哈希) 合并，取最大耗时代表行。
@@ -47,6 +48,7 @@ public class SlowSqlImportService {
     private static final int COL_LOCATION = 4;
     private static final int ABSTRACT_SQL_MAX = 60_000;
     private static final int LOCATION_MAX = 512;
+    private static final Pattern EMPTY_PARAMETERS = Pattern.compile("\\[\\s*\\]");
 
     private final DiiSlowSqlDao dao;
     private final com.axonlink.ai.daoindex.sqlinspect.persistence.DiiSlowSqlCollectFilterDao filterDao;
@@ -262,6 +264,7 @@ public class SlowSqlImportService {
 
     /**
      * 根据前两列表头识别导出版本。没有明确表头时保留历史行为，按 A=ServiceName、B=SQL 解析。
+     * A 表头为空且 B 已标明微服务时，兼容 A=SQL、B=ServiceName。
      */
     static ColumnLayout columnLayout(String first, String second) {
         return columnLayout(Arrays.asList(first, second));
@@ -271,7 +274,7 @@ public class SlowSqlImportService {
         List<String> names = headers.stream().map(SlowSqlImportService::normalizeHeader).toList();
         String first = names.isEmpty() ? "" : names.get(0);
         String second = names.size() < 2 ? "" : names.get(1);
-        ColumnLayout fallback = isSqlHeader(first) && isServiceHeader(second)
+        ColumnLayout fallback = (isSqlHeader(first) || first.isBlank()) && isServiceHeader(second)
                 ? new ColumnLayout(1, 0) : ColumnLayout.legacy();
         int count = names.indexOf("ssscount");
         if (count >= 0 && names.lastIndexOf("ssscount") != count) {
@@ -301,13 +304,15 @@ public class SlowSqlImportService {
     private static boolean isSqlHeader(String header) {
         return "slowsqlstatement".equals(header)
                 || "abstractsql".equals(header)
-                || "抽象sql".equals(header);
+                || "抽象sql".equals(header)
+                || "sql".equals(header);
     }
 
     private static boolean isServiceHeader(String header) {
         return "servicename".equals(header)
                 || "service".equals(header)
-                || "微服务".equals(header);
+                || "微服务".equals(header)
+                || "服务名".equals(header);
     }
 
     private static String normalizeHeader(String value) {
@@ -349,6 +354,7 @@ public class SlowSqlImportService {
         long ms = SlowSqlParser.parseCostMs(cost);
         String costRaw = cost == null ? null : cost.trim();
         String p = params == null ? null : params.trim();
+        if (p != null && (p.isEmpty() || EMPTY_PARAMETERS.matcher(p).matches())) p = null;
         // 新版导出 E 列带 [] 包裹——规范化后入库（"[]"→空→存 null）
         String loc = SlowSqlParser.normalizeLocation(location);
         if (loc.isEmpty()) loc = null;

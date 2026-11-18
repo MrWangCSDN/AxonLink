@@ -129,6 +129,85 @@ class SlowSqlImportServiceTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"csv", "xlsx"})
+    void importsAllEmptyArrayParametersWithSuppliedCounts(String format) throws IOException {
+        Object[] headers = {"slowSqlStatement", "serviceName", "slowSqlParameter",
+                "slowSqlTimeCost", "slowSqlLocation", "sssCount"};
+        var result = service.importFile(file(format, headers,
+                new Object[]{SQL, "svcA", "[]", 100, "[source-one]", 12},
+                new Object[]{SQL, "svcA", "[]", 250, "[source-two]", 8}), "test", ROUND);
+
+        Map<String, Object> stored = row("svcA", ROUND);
+        assertEquals(SQL, stored.get("abstract_sql"));
+        assertEquals(20, ((Number) stored.get("exec_count")).intValue());
+        assertEquals(250L, ((Number) stored.get("max_time_cost_ms")).longValue());
+        assertEquals("source-two", stored.get("source_location"));
+        assertNull(stored.get("exec_params"));
+        assertEquals(2, result.get("rawRows"));
+        assertEquals(1, result.get("aggregatedRows"));
+        assertEquals(0, result.get("skipped"));
+        assertEquals(true, result.get("preAggregated"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"csv", "xlsx"})
+    void importsScreenshotLayoutWithBlankSqlHeaderAndCount(String format) throws IOException {
+        Object[] headers = {"", "serviceName", "slowSqlParameter",
+                "slowSqlTimeCost", "slowSqlLocation", "sssCount"};
+        var result = service.importFile(file(format, headers,
+                new Object[]{SQL, "svcA", "[]", 100, "[source-one]", 12},
+                new Object[]{SQL, "svcA", "[]", 250, "[source-two]", 8}), "test", ROUND);
+
+        Map<String, Object> stored = row("svcA", ROUND);
+        assertEquals(SQL, stored.get("abstract_sql"));
+        assertEquals("svcA", stored.get("service_name"));
+        assertEquals(20, ((Number) stored.get("exec_count")).intValue());
+        assertNull(stored.get("exec_params"));
+        assertEquals(2, result.get("rawRows"));
+        assertEquals(1, result.get("aggregatedRows"));
+        assertEquals(true, result.get("preAggregated"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"csv", "xlsx"})
+    void importsBlankSqlHeaderWithoutCountUsingLegacyRowCounting(String format) throws IOException {
+        Object[] headers = {"", "serviceName", "slowSqlParameter", "slowSqlTimeCost", "slowSqlLocation"};
+        var result = service.importFile(file(format, headers,
+                new Object[]{SQL, "svcA", "[]", 100, "[source-one]"},
+                new Object[]{SQL, "svcA", "[]", 250, "[source-two]"}), "test", ROUND);
+
+        Map<String, Object> stored = row("svcA", ROUND);
+        assertEquals(SQL, stored.get("abstract_sql"));
+        assertEquals(2, ((Number) stored.get("exec_count")).intValue());
+        assertNull(stored.get("exec_params"));
+        assertEquals(false, result.get("preAggregated"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"csv", "xlsx"})
+    void normalizesOnlyEmptyParametersAndKeepsLargestCostRowAsSample(String format) throws IOException {
+        var result = service.importFile(file(format, HEADERS,
+                new Object[]{"svc-real", SQL, " [  ] ", 100, "source", 12},
+                new Object[]{"svc-real", SQL, " [\"[]\"] ", 250, "source", 8},
+                new Object[]{"svc-empty", SQL, "[42]", 100, "source", 3},
+                new Object[]{"svc-empty", SQL, "[]", 250, "source", 4},
+                new Object[]{"svc-blank", SQL, " \t ", 100, "source", 5},
+                new Object[]{"svc-null", SQL, null, 100, "source", 6},
+                new Object[]{"svc-spaces", SQL, "[ \t ]", 100, "source", 8}), "test", ROUND);
+
+        assertEquals("[\"[]\"]", row("svc-real", ROUND).get("exec_params"));
+        assertEquals(20, ((Number) row("svc-real", ROUND).get("exec_count")).intValue());
+        assertNull(row("svc-empty", ROUND).get("exec_params"));
+        assertEquals(7, ((Number) row("svc-empty", ROUND).get("exec_count")).intValue());
+        assertEquals(250L, ((Number) row("svc-empty", ROUND).get("max_time_cost_ms")).longValue());
+        assertNull(row("svc-blank", ROUND).get("exec_params"));
+        assertNull(row("svc-null", ROUND).get("exec_params"));
+        assertNull(row("svc-spaces", ROUND).get("exec_params"));
+        assertEquals(7, result.get("rawRows"));
+        assertEquals(5, result.get("aggregatedRows"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"csv", "xlsx"})
     void preservesPerInputRowCountingWithoutCountColumn(String format) throws IOException {
         Object[] headers = {"slowSqlStatement", "ServiceName", "params", "cost", "location"};
         var result = service.importFile(file(format, headers,
@@ -171,8 +250,8 @@ class SlowSqlImportServiceTest {
         insertExisting("svcA", ROUND);
         List<Map<String, Object>> before = roundRows(ROUND);
         MockMultipartFile input = file(format, HEADERS,
-                new Object[]{"svcA", SQL, "valid", "100ms", "source", 12},
-                new Object[]{"svcA", SQL, "invalid", "200ms", "source", invalidCount});
+                new Object[]{"svcA", SQL, "[]", "100ms", "source", 12},
+                new Object[]{"svcA", SQL, "[]", "200ms", "source", invalidCount});
 
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> service.importFile(input, "test", ROUND));
