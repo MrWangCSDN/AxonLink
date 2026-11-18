@@ -34,7 +34,7 @@
 - Produces: nullable `field_chinese_name` and `new_field_chinese_name` on the corresponding three operation tables.
 - Consumed by: all JDBC statements and row mappers in Tasks 2 and 3.
 
-- [ ] **Step 1: Extend the H2 test schema before production persistence code**
+- [x] **Step 1: Extend the H2 test schema before production persistence code**
 
 Add `field_chinese_name VARCHAR(256)` immediately after each field-name column in `dii_replay_unconditional_ignore`, `dii_replay_conditional_rmove`, and `dii_replay_sort_field`. Add both audit columns immediately after the old/new field-name columns in each matching `_operation` fixture table:
 
@@ -45,7 +45,7 @@ new_field_chinese_name VARCHAR(256),
 
 This intentionally makes current DAO tests fail to compile or assert once the record constructors and expectations in Task 2 are added. Per the global constraint, do not run Maven to observe RED.
 
-- [ ] **Step 2: Add the exact V93 migration**
+- [x] **Step 2: Add the exact V93 migration**
 
 ```sql
 ALTER TABLE dii_replay_unconditional_ignore
@@ -67,7 +67,7 @@ ALTER TABLE dii_replay_sort_field_operation
     ADD COLUMN new_field_chinese_name VARCHAR(256) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '新排序字段中文名称' AFTER new_orig_field_name;
 ```
 
-- [ ] **Step 3: Perform static migration verification**
+- [x] **Step 3: Perform static migration verification**
 
 Run only read-only checks, not database execution:
 
@@ -78,7 +78,7 @@ git diff --check
 
 Expected: six `ALTER TABLE` targets are present; fixture columns cover the same six tables; `git diff --check` reports no errors.
 
-- [ ] **Step 4: Commit the migration foundation**
+- [x] **Step 4: Commit the migration foundation**
 
 ```powershell
 git add src/main/resources/db/daoindex/V93__dii_replay_config_field_chinese_name.sql src/test/java/com/axonlink/ai/replay/ReplayConfigTestFixtures.java
@@ -117,7 +117,7 @@ git commit -m "feat: add replay field chinese name schema"
 - Produces: `oldSortFieldChineseName` and `newSortFieldChineseName` only on `ReplaySortFieldCreateRequest`.
 - Consumed by: controllers through existing JSON binding, export service in Task 3, and frontend payloads in Task 4.
 
-- [ ] **Step 1: Write backend regressions first without running them**
+- [x] **Step 1: Write backend regressions first without running them**
 
 For each of the three service test classes, update existing constructors and add assertions covering:
 
@@ -151,7 +151,7 @@ assertTrue(service.operations(renamed.id(), 10, 0).items().get(0).changes().stre
 
 In `ReplaySortFieldServiceTest`, create with `"老核心账号"` and `"新核心账号"`; assert `&sop` has the old value and both `&soap` and `&bzjson` have the new value. Do not execute these tests.
 
-- [ ] **Step 2: Add the shared validation contract**
+- [x] **Step 2: Add the shared validation contract**
 
 Add to `ReplayConfigValidation`:
 
@@ -167,7 +167,7 @@ public static String requireFieldChineseName(String value) {
 }
 ```
 
-- [ ] **Step 3: Extend DTOs with one consistent field contract**
+- [x] **Step 3: Extend DTOs with one consistent field contract**
 
 Use these complete record shapes:
 
@@ -215,7 +215,7 @@ ReplaySortFieldRow(long id, String origTrcd, String origArryName, String origFie
         String domain)
 ```
 
-- [ ] **Step 4: Validate and propagate Chinese names in services**
+- [x] **Step 4: Validate and propagate Chinese names in services**
 
 Call `requireFieldChineseName` in every create, batch-create, and update path. In sort creation, validate the two input names independently and pass the selected name into suffix expansion:
 
@@ -227,7 +227,7 @@ addDraft(drafts, seen, base + "&bzjson", newSortField, newSortFieldChineseName, 
 
 Change `addDraft` to accept `fieldChineseName` and construct `ReplaySortFieldDraft` with it. Do not add Chinese names to error-code or message-sequence DTOs.
 
-- [ ] **Step 5: Persist, map, and audit the field in all three DAOs**
+- [x] **Step 5: Persist, map, and audit the field in all three DAOs**
 
 For each DAO:
 
@@ -250,7 +250,7 @@ int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
 
 For conditional-ignore, include service-code, technical-field, flag, generated-index, and both condition changes in the same expression. For sort-field, include service-code, array-name, and technical-field changes.
 
-- [ ] **Step 6: Perform backend static verification only**
+- [x] **Step 6: Perform backend static verification only**
 
 ```powershell
 rg -n "fieldChineseName|field_chinese_name|new_field_chinese_name|oldSortFieldChineseName|newSortFieldChineseName" src/main/java src/test/java
@@ -260,7 +260,7 @@ git diff --check
 
 Expected: every constructor call reflects the new signatures; all three DAO operation mappers label the field; there are no whitespace errors. Do not run `mvn`, Java, Spring Boot, or backend tests.
 
-- [ ] **Step 7: Commit the backend contract**
+- [x] **Step 7: Commit the backend contract**
 
 ```powershell
 git add src/main/java/com/axonlink/ai/replay src/test/java/com/axonlink/ai/replay
@@ -277,7 +277,7 @@ git commit -m "feat: persist replay field chinese names"
 - Consumes: `fieldChineseName()` from the three row records introduced in Task 2.
 - Produces: three updated sheet layouts; error-code sheet remains byte-for-byte column-compatible.
 
-- [ ] **Step 1: Update export assertions before implementation**
+- [x] **Step 1: Update export assertions before implementation**
 
 Change the expected headers and row offsets to these exact business sections:
 
@@ -289,7 +289,7 @@ List.of("对象/数组名称", "排序字段", "中文名称")
 
 Assert the Chinese value in the cell immediately after `忽略字段` or `排序字段`. Keep the error-code header assertion unchanged. Do not execute the backend test.
 
-- [ ] **Step 2: Add headers and values in the same positions**
+- [x] **Step 2: Add headers and values in the same positions**
 
 Update `writeSheet` calls and business-value lists so headers and row data stay aligned:
 
@@ -302,7 +302,7 @@ List.of(text(row.origArryName()), text(row.origFieldName()), text(row.fieldChine
 
 Historical null names must pass through the existing `text(row.fieldChineseName())` handling and export as empty cells.
 
-- [ ] **Step 3: Verify statically and commit**
+- [x] **Step 3: Verify statically and commit**
 
 ```powershell
 rg -n "中文名称|fieldChineseName" src/main/java/com/axonlink/ai/replay/service/ReplayConfigExportService.java src/test/java/com/axonlink/ai/replay/service/ReplayConfigExportServiceTest.java
@@ -326,7 +326,7 @@ Do not run the export test or any backend code.
 - Produces sort-create JSON `oldSortFieldChineseName` and `newSortFieldChineseName`.
 - Deletes frontend symbol `importUnconditionalIgnoreReasons`; does not change the backend endpoint.
 
-- [ ] **Step 1: Replace import tests with new UI contract tests**
+- [x] **Step 1: Replace import tests with new UI contract tests**
 
 Delete API and component tests for `importUnconditionalIgnoreReasons` and assert the button/modal no longer exists. Add component tests that:
 
@@ -341,7 +341,7 @@ expect(wrapper.find('[data-testid="open-reason-import"]').exists()).toBe(false)
 - assert sort-create payload contains both `oldSortFieldChineseName` and `newSortFieldChineseName`;
 - assert reason cells across all five tabs have the ellipsis class and `title` contains the complete multiline/long reason.
 
-- [ ] **Step 2: Run targeted frontend tests to observe RED**
+- [x] **Step 2: Run targeted frontend tests to observe RED**
 
 ```powershell
 npm test -- --run src/components/replay/ReplayConfigPage.spec.js src/api/replayConfigs.spec.js
@@ -349,7 +349,7 @@ npm test -- --run src/components/replay/ReplayConfigPage.spec.js src/api/replayC
 
 Expected: FAIL because Chinese-name controls and ellipsis class do not exist, and the import UI/API still exist.
 
-- [ ] **Step 3: Remove all frontend reason-import access**
+- [x] **Step 3: Remove all frontend reason-import access**
 
 Delete from `ReplayConfigPage.vue` the import button, modal markup, import API import, four reactive state values, input ref, and `openReasonImport` / `closeReasonImport` / `submitReasonImport`. Delete `importUnconditionalIgnoreReasons` from `replayConfigs.js` and its API test/import. A repository search must return no matches:
 
@@ -359,7 +359,7 @@ rg -n "importUnconditionalIgnoreReasons|open-reason-import|reason-import|reasonI
 
 Expected: exit code 1 with no output.
 
-- [ ] **Step 4: Add the three schema-driven Chinese-name columns and forms**
+- [x] **Step 4: Add the three schema-driven Chinese-name columns and forms**
 
 Insert this column immediately after each technical field column:
 
@@ -382,7 +382,7 @@ For `SORT_CREATE_FORM`, add two separate required inputs:
 
 Place each directly after its matching sort-field input. Add `fieldChineseName` to confirm-field definitions so review dialogs show the value.
 
-- [ ] **Step 5: Give only reason columns single-line ellipsis behavior**
+- [x] **Step 5: Give only reason columns single-line ellipsis behavior**
 
 Replace `long: true` with `ellipsis: true` only for each `ignoreReason` column in all five schemas. Keep long wrapping for conditions and message sequence values. Update the cell binding:
 
@@ -407,7 +407,7 @@ Add stable single-line styling without changing the existing long-cell rule:
 }
 ```
 
-- [ ] **Step 6: Run frontend targeted tests, full tests, and build**
+- [x] **Step 6: Run frontend targeted tests, full tests, and build**
 
 ```powershell
 npm test -- --run src/components/replay/ReplayConfigPage.spec.js src/api/replayConfigs.spec.js
@@ -417,7 +417,7 @@ npm run build
 
 Expected: all Vitest tests pass and Vite build succeeds. Record exact test totals and build output in the handoff; do not copy build output into the backend unless separately requested during execution.
 
-- [ ] **Step 7: Commit frontend changes**
+- [x] **Step 7: Commit frontend changes**
 
 ```powershell
 git add src/components/replay/ReplayConfigPage.vue src/components/replay/ReplayConfigPage.spec.js src/api/replayConfigs.js src/api/replayConfigs.spec.js
@@ -434,7 +434,7 @@ git commit -m "feat: add replay field chinese names"
 - Verifies: migration ↔ DTO ↔ DAO ↔ service ↔ export ↔ frontend property-name consistency.
 - Produces: implementation evidence without executing backend code or tests.
 
-- [ ] **Step 1: Check exact property and column coverage**
+- [x] **Step 1: Check exact property and column coverage**
 
 From the backend repository:
 
@@ -456,7 +456,7 @@ git status --short
 
 Expected: all three property names are present at their intended boundaries; import search has no output; both worktrees are clean except pre-existing unrelated changes.
 
-- [ ] **Step 2: Review the four behavioral invariants**
+- [x] **Step 2: Review the four behavioral invariants**
 
 Inspect diffs and confirm explicitly:
 
@@ -465,17 +465,25 @@ Inspect diffs and confirm explicitly:
 3. Sort suffix expansion assigns old name only to `&sop`, new name only to `&soap` and `&bzjson`.
 4. Error-code and message-sequence persistence/export contracts did not acquire Chinese-name fields.
 
-- [ ] **Step 3: Record verification evidence in this plan**
+- [x] **Step 3: Record verification evidence in this plan**
 
 Append a `## Verification Evidence` section containing frontend targeted/full test totals, build result, static-check results, and the exact statement: `Backend code and tests were not executed per user instruction.` Do not claim backend runtime success.
 
-- [ ] **Step 4: Commit plan evidence**
+- [x] **Step 4: Commit plan evidence**
 
 ```powershell
 git add docs/superpowers/plans/2026-11-17-ignore-field-chinese-names.md
 git commit -m "docs: record replay chinese name verification"
 ```
 
-- [ ] **Step 5: Report delivery state without pushing**
+- [x] **Step 5: Report delivery state without pushing**
 
 Report backend and frontend commit hashes, the migration path, frontend test/build evidence, and the unexecuted backend verification limitation. Do not push either repository or the Obsidian commit until the user explicitly authorizes pushing.
+
+## Verification Evidence
+
+- Frontend targeted Vitest: 2 files, 48 tests passed.
+- Frontend full Vitest: 36 files passed, 677 tests passed; the pre-existing `src/views/TransactionAnalysis.spec.js` suite failed during module setup because the test environment rejected `file:///spd-bank-logo.png` as a filename. No replay-config test failed.
+- Frontend production build: `npm run build` succeeded; Vite transformed 5,651 modules and emitted the static bundle.
+- Static checks: `git diff --check` passed; frontend search confirms the reason-import symbols and UI test IDs are absent; backend property/migration references were reviewed across DTOs, services, DAOs, tests, and V93.
+- Backend code and tests were not executed per user instruction.
