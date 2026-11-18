@@ -200,6 +200,32 @@ public final class ReplayConfigValidation {
         return List.copyOf(values);
     }
 
+    public static String requireOneSideOwnership(String value) {
+        String ownership = requireText(value, "归属").toLowerCase();
+        if (!Set.of("528", "ccbs").contains(ownership)) {
+            throw new IllegalArgumentException("归属只允许 528 或 ccbs");
+        }
+        return ownership;
+    }
+
+    public static List<String> requireOneSideErrorCodes(String value) {
+        String source = value == null ? "" : value;
+        String[] parts = source.split(",", -1);
+        if (parts.length > MAX_MESSAGE_SEQUENCES) {
+            throw new IllegalArgumentException("单次最多新增 100 个忽略错误码");
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        LinkedHashSet<String> duplicates = new LinkedHashSet<>();
+        for (String part : parts) {
+            String item = part.trim();
+            if (item.isEmpty()) throw new IllegalArgumentException("忽略错误码不能为空，多个错误码请使用英文逗号分隔");
+            if (item.length() > 512) throw new IllegalArgumentException("忽略错误码不能超过 512 个字符");
+            if (!values.add(item)) duplicates.add(item);
+        }
+        if (!duplicates.isEmpty()) throw new ReplayConfigConflictException("忽略错误码重复：" + String.join(",", duplicates));
+        return List.copyOf(values);
+    }
+
     public static List<Long> requireBatchIds(ReplayConfigIdBatchRequest request) {
         List<Long> ids = request == null ? null : request.ids();
         if (ids == null || ids.isEmpty()) {

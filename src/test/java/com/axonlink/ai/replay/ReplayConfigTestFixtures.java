@@ -199,5 +199,19 @@ public final class ReplayConfigTestFixtures {
                 + "new_ignore_reason VARCHAR(512),new_review_status TINYINT,operator_username VARCHAR(128),"
                 + "operator_real_name VARCHAR(128),operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL',"
                 + "created_at DATETIME NOT NULL)");
+        jdbc.execute("CREATE TABLE dii_replay_one_side_error_code_ignore ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,service_code VARCHAR(192) NOT NULL,"
+                + "category VARCHAR(16) NOT NULL,ownership VARCHAR(16) NOT NULL,"
+                + "error_code VARCHAR(512) NOT NULL,ignore_reason VARCHAR(512),"
+                + "review_status TINYINT NOT NULL DEFAULT 0,created_at DATETIME NOT NULL,"
+                + "updated_at DATETIME NOT NULL,UNIQUE (category, ownership, error_code))");
+        jdbc.execute("CREATE TABLE dii_replay_one_side_error_code_ignore_operation ("
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,config_id BIGINT NOT NULL,"
+                + "operation_type VARCHAR(16) NOT NULL,service_code VARCHAR(192),category VARCHAR(16),"
+                + "ownership VARCHAR(16),error_code VARCHAR(512),ignore_reason VARCHAR(512),review_status TINYINT,"
+                + "new_service_code VARCHAR(192),new_category VARCHAR(16),new_ownership VARCHAR(16),"
+                + "new_error_code VARCHAR(512),new_ignore_reason VARCHAR(512),new_review_status TINYINT,"
+                + "operator_username VARCHAR(128),operator_real_name VARCHAR(128),"
+                + "operation_source VARCHAR(16) NOT NULL DEFAULT 'MANUAL',created_at DATETIME NOT NULL)");
     }
 }
