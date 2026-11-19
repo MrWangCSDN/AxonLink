@@ -45,26 +45,26 @@ class ReplayDatabaseIssueControllerTest {
     }
     private void assertReleaseBoundary(String manualAt, String expectedStatus) throws Exception {
         importBatch("DB20261014-01",3,0,0);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var row=dao.findByIssueId("koba_off_sheet_acct");
         row.put("issueStatus","修复待验证");row.put("lastManualSaveAt",manualAt);row.put("remark","保留分析");dao.update(row);
         mvc.perform(multipart("/api/ai/parallel-replay/database-issues/import")
                 .file(ReplayDatabaseIssueTest.file(true,"DB20261015-01",2,0,0))
                 .param("releaseAt","2026-10-14T12:00:00"))
                 .andExpect(status().isOk());
-        var after=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var after=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals(expectedStatus,after.get("issueStatus"));
         assertEquals("DB20261015-01",after.get("batchNo"));
         assertEquals(2L,after.get("differenceCount"));
         assertEquals("保留分析",after.get("remark"));
     }
     @Test void protectedPendingIssuesStillAutoFixWhenAbsentAsRequested() throws Exception {
-        importBatch("DB20261014-01",3,0,0);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        importBatch("DB20261014-01",0,0,3);
+        var row=dao.findByIssueId("koba_off_sheet_acct-dtl_sn");
         row.put("issueStatus","修复待验证");row.put("lastManualSaveAt","2026-10-14 15:00:00");dao.update(row);
         mvc.perform(multipart("/api/ai/parallel-replay/database-issues/import")
                 .file(ReplayDatabaseIssueTest.file(true,"DB20261015-01",0,0,0)).param("releaseAt","2026-10-14 12:00:00"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.autoRepairedRows").value(1));
-        assertEquals("已修复",dao.findByIssueId("koba_off_sheet_acct-ccbs").get("issueStatus"));
+        assertEquals("已修复",dao.findByIssueId("koba_off_sheet_acct-dtl_sn").get("issueStatus"));
     }
     @Test void rejectsInvalidReleaseTimeBeforeWriting() throws Exception {
         for(String value:List.of("", "2026-02-30 12:00:00", "2026-10-14 12:00", "not-a-time")) {
@@ -76,17 +76,24 @@ class ReplayDatabaseIssueControllerTest {
     }
     @Test void importListEditAndTrackUseSeparateLevelsAndTypes() throws Exception{
         mvc.perform(multipart("/api/ai/parallel-replay/database-issues/import").file(ReplayDatabaseIssueTest.file(true,"DB20261012-01",3,1,2)))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.createdRows").value(3));
-        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueLevel","仅ccbs"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.items[0].differenceCount").value(3));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.createdRows").value(2));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueLevel","表级"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+            .andExpect(jsonPath("$.data.items[0].issueId").value("koba_off_sheet_acct"))
+            .andExpect(jsonPath("$.data.items[0].differenceCount").value(4))
+            .andExpect(jsonPath("$.data.items[0].onlyCcbsCount").value(3))
+            .andExpect(jsonPath("$.data.items[0].only528Count").value(1));
         mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"打开\",\"issueType\":\"其他问题\",\"remark\":\"处理\"}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.issueLevel").value("仅ccbs")).andExpect(jsonPath("$.data.issueType").value("其他问题"));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.issueLevel").value("表级")).andExpect(jsonPath("$.data.issueType").value("其他问题"));
         mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueType\":\"修改代码\"}"))
             .andExpect(status().isConflict());
         mvc.perform(get("/api/ai/parallel-replay/database-issues/1/tracking"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].batchNo").value("DB20261012-01")).andExpect(jsonPath("$.data[0].events.length()").value(2));
-        mvc.perform(get("/api/ai/parallel-replay/database-issues/options")).andExpect(jsonPath("$.data.issueLevels[2]").value("字段级"));
-        mvc.perform(get("/api/ai/parallel-replay/database-issues/export").param("issueLevel","仅ccbs"))
+        mvc.perform(get("/api/ai/parallel-replay/database-issues/options"))
+            .andExpect(jsonPath("$.data.issueLevels[0]").value("字段级"))
+            .andExpect(jsonPath("$.data.issueLevels[1]").value("表级"))
+            .andExpect(jsonPath("$.data.issueLevels.length()").value(2));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues/export").param("issueLevel","表级"))
             .andExpect(status().isOk()).andExpect(header().string("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
     }
     @Test void requiresLoginForMutationAndRejectsInvalidWorkbook() throws Exception {
@@ -194,7 +201,7 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))) {
             assertEquals(1,workbook.getSheetAt(0).getLastRowNum());
-            assertEquals("extra_table-ccbs",workbook.getSheetAt(0).getRow(1).getCell(8).getStringCellValue());
+            assertEquals("extra_table-ccbs",workbook.getSheetAt(0).getRow(1).getCell(13).getStringCellValue());
         }
     }
     @Test void postFilteringRejectsInvalidCriteria() throws Exception {
@@ -210,17 +217,18 @@ class ReplayDatabaseIssueControllerTest {
         importBatch("DB20261013-01",2,1,0);
         importBatch("DB20261013-01",1,1,0);
         importBatch("DB20261014-01",0,0,0);
-        var issue=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var issue=dao.findByIssueId("koba_off_sheet_acct");
         dao.history(issue,issue,null,"DB20261015-01","人工审核","2026-10-15 09:00:00","editor","编辑人",false);
-        mvc.perform(post("/api/ai/parallel-replay/database-issues").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct-ccbs\"]}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].batchNo").value("DB20261013-01"))
-            .andExpect(jsonPath("$.data.items[0].occurrenceBatches.length()").value(2))
-            .andExpect(jsonPath("$.data.items[0].occurrenceBatches[0]").value("DB20261013-01"))
-            .andExpect(jsonPath("$.data.items[0].occurrenceBatches[1]").value("DB20261012-01"));
-        byte[] content=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct-ccbs\"]}"))
+        mvc.perform(post("/api/ai/parallel-replay/database-issues").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct\"]}"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].batchNo").value("DB20261014-01"))
+            .andExpect(jsonPath("$.data.items[0].occurrenceBatches.length()").value(3))
+            .andExpect(jsonPath("$.data.items[0].occurrenceBatches[0]").value("DB20261014-01"))
+            .andExpect(jsonPath("$.data.items[0].occurrenceBatches[1]").value("DB20261013-01"))
+            .andExpect(jsonPath("$.data.items[0].occurrenceBatches[2]").value("DB20261012-01"));
+        byte[] content=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct\"]}"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))) {
-            assertEquals("DB20261013-01、DB20261012-01",workbook.getSheetAt(0).getRow(1).getCell(16).getStringCellValue());
+            assertEquals("DB20261014-01、DB20261013-01、DB20261012-01",workbook.getSheetAt(0).getRow(1).getCell(21).getStringCellValue());
         }
     }
     @Test void historicalBatchFiltersAndFacetsCountDistinctIssuesAcrossAllOccurrences() throws Exception {
@@ -228,20 +236,21 @@ class ReplayDatabaseIssueControllerTest {
         importBatch("DB20261013-01",2,1,0);
         importBatch("DB20261014-01",0,0,0);
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("batchNos","DB20261012-01").param("limit","1"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(3)).andExpect(jsonPath("$.data.items.length()").value(1));
-        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("batchNos","DB20261012-01","DB20261013-01").param("issueLevels","仅ccbs"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2)).andExpect(jsonPath("$.data.items.length()").value(1));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("batchNos","DB20261012-01","DB20261013-01").param("issueLevels","表级"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("batchNo","DB20261012-01"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         mvc.perform(post("/api/ai/parallel-replay/database-issues/filter-options").contentType("application/json")
                 .content("{\"field\":\"batchNo\",\"batchNos\":[\"DB20261014-01\"],\"batchNo\":\"DB20261014-01\"}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.candidateCount").value(2))
-            .andExpect(jsonPath("$.data.matchedIssueCount").value(3))
-            .andExpect(jsonPath("$.data.items[0].value").value("DB20261013-01")).andExpect(jsonPath("$.data.items[0].count").value(2))
-            .andExpect(jsonPath("$.data.items[1].value").value("DB20261012-01")).andExpect(jsonPath("$.data.items[1].count").value(3));
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.candidateCount").value(3))
+            .andExpect(jsonPath("$.data.matchedIssueCount").value(2))
+            .andExpect(jsonPath("$.data.items[0].value").value("DB20261014-01")).andExpect(jsonPath("$.data.items[0].count").value(1))
+            .andExpect(jsonPath("$.data.items[1].value").value("DB20261013-01")).andExpect(jsonPath("$.data.items[1].count").value(1))
+            .andExpect(jsonPath("$.data.items[2].value").value("DB20261012-01")).andExpect(jsonPath("$.data.items[2].count").value(2));
         mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options").param("field","batchNo").param("keyword","20261013"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.candidateCount").value(1))
-            .andExpect(jsonPath("$.data.matchedIssueCount").value(2)).andExpect(jsonPath("$.data.items[0].count").value(2));
+            .andExpect(jsonPath("$.data.matchedIssueCount").value(1)).andExpect(jsonPath("$.data.items[0].count").value(1));
     }
     @Test void occurrenceBatchesFallBackToCurrentBatchWhenHistoryIsMissing() throws Exception {
         seedFilterRows();
@@ -250,11 +259,11 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(jsonPath("$.data.items[0].occurrenceBatches[0]").value("DB20261012-01"));
     }
     @Test void anActualAppearanceSurvivesAnAbsentOverwriteOfTheSameBatchAndLaterAppearance() throws Exception {
-        importBatch("DB20261012-01",3,0,0);
-        importBatch("DB20261013-01",2,0,0);
+        importBatch("DB20261012-01",0,0,3);
+        importBatch("DB20261013-01",0,0,2);
         importBatch("DB20261013-01",0,0,0);
-        importBatch("DB20261014-01",1,0,0);
-        assertEquals(2,dao.history(((Number)dao.findByIssueId("koba_off_sheet_acct-ccbs").get("id")).longValue())
+        importBatch("DB20261014-01",0,0,1);
+        assertEquals(2,dao.history(((Number)dao.findByIssueId("koba_off_sheet_acct-dtl_sn").get("id")).longValue())
                 .stream().filter(event->event.get("batchNo").equals("DB20261013-01")).count());
         mvc.perform(get("/api/ai/parallel-replay/database-issues"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].occurrenceBatches.length()").value(3))
@@ -284,11 +293,11 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))) {
             var sheet=workbook.getSheetAt(0);
-            var expected=List.of("表英文名/中文名","领域","开发负责人","科技负责人","问题级别","字段英文名","差异笔数","缺陷修复日期","issue_id","问题状态","审核状态","问题类型","需协同人","初步问题分析","最终处理方案","备注","出现批次");
+            var expected=List.of("表英文名/中文名","领域","开发负责人","科技负责人","问题级别","528总量","ccbs总量","仅528存在数量","仅ccbs存在数量","字段英文名","差异笔数","计划验证日期","缺陷修复日期","issue_id","问题状态","审核状态","问题类型","需协同人","初步问题分析","最终处理方案","备注","出现批次");
             assertEquals(expected.size(),sheet.getRow(0).getLastCellNum());
             for(int i=0;i<expected.size();i++)assertEquals(expected.get(i),sheet.getRow(0).getCell(i).getStringCellValue());
             assertEquals("extra_table\n账户,明细",sheet.getRow(1).getCell(0).getStringCellValue());
-            assertEquals("DB20261012-01",sheet.getRow(1).getCell(16).getStringCellValue());
+            assertEquals("DB20261012-01",sheet.getRow(1).getCell(21).getStringCellValue());
         }
     }
     @Test void exportShowsCurrentRegisteredTechnologyOwnerAndReviserSeparately() throws Exception {
@@ -296,7 +305,7 @@ class ReplayDatabaseIssueControllerTest {
         registerTechnologyOwner("public","koba_off_sheet_acct","贷款组","E001");
         jdbc.update("UPDATE dii_replay_db_compare_registration SET reviser_username='c-zhangs3',reviser_name='张三'");
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
-        byte[] first=mvc.perform(get("/api/ai/parallel-replay/database-issues/export").param("issueIds","koba_off_sheet_acct-ccbs"))
+        byte[] first=mvc.perform(get("/api/ai/parallel-replay/database-issues/export").param("issueIds","koba_off_sheet_acct"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(first))){
             var sheet=workbook.getSheetAt(0);
@@ -307,7 +316,7 @@ class ReplayDatabaseIssueControllerTest {
         }
         jdbc.update("UPDATE dii_replay_db_compare_registration SET group_owner_emp_no='E002' WHERE table_name='koba_off_sheet_acct'");
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
-        byte[] refreshed=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct-ccbs\"]}"))
+        byte[] refreshed=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json").content("{\"issueIds\":[\"koba_off_sheet_acct\"]}"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(refreshed))){
             var sheet=workbook.getSheetAt(0);
@@ -320,7 +329,10 @@ class ReplayDatabaseIssueControllerTest {
         registerMetadata("koba_off_sheet_acct","贷款组","张三","c-zhangs3","");
         registerMetadata("another_table","贷款组","张三","c-zhangs3","");
         registerMetadata("excluded_table","存款组","张三","c-zhangs3","");
-        importBatch("DB20261012-01",2,10,100);
+        // Sorting remains compatible with stored directional rows from older imports.
+        insertStoredIssue("koba_off_sheet_acct-ccbs","koba_off_sheet_acct","仅ccbs","",2L);
+        insertStoredIssue("koba_off_sheet_acct-528","koba_off_sheet_acct","仅528","",10L);
+        insertStoredIssue("koba_off_sheet_acct-dtl_sn","koba_off_sheet_acct","字段级","dtl_sn",100L);
         var tied=new LinkedHashMap<String,Object>(dao.findByIssueId("koba_off_sheet_acct-528"));
         tied.put("issueId","another_table-528");tied.put("tableName","another_table");dao.insert(tied);
         var excluded=new LinkedHashMap<String,Object>(tied);
@@ -349,9 +361,9 @@ class ReplayDatabaseIssueControllerTest {
                 .param("differenceCountOrder","asc").param("limit","1").param("offset","100"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(ascending))){
-            var sheet=workbook.getSheetAt(0);assertEquals(4,sheet.getLastRowNum());assertEquals("差异笔数",sheet.getRow(0).getCell(6).getStringCellValue());
+            var sheet=workbook.getSheetAt(0);assertEquals(4,sheet.getLastRowNum());assertEquals("差异笔数",sheet.getRow(0).getCell(10).getStringCellValue());
             assertEquals(List.of("koba_off_sheet_acct-ccbs","another_table-528","koba_off_sheet_acct-528","koba_off_sheet_acct-dtl_sn"),
-                List.of(sheet.getRow(1).getCell(8).getStringCellValue(),sheet.getRow(2).getCell(8).getStringCellValue(),sheet.getRow(3).getCell(8).getStringCellValue(),sheet.getRow(4).getCell(8).getStringCellValue()));
+                List.of(sheet.getRow(1).getCell(13).getStringCellValue(),sheet.getRow(2).getCell(13).getStringCellValue(),sheet.getRow(3).getCell(13).getStringCellValue(),sheet.getRow(4).getCell(13).getStringCellValue()));
         }
         byte[] descending=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json")
                 .content("{\"domains\":[\"贷款组\"],\"differenceCountOrder\":\"DESC\",\"limit\":1,\"offset\":100}"))
@@ -359,7 +371,7 @@ class ReplayDatabaseIssueControllerTest {
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(descending))){
             var sheet=workbook.getSheetAt(0);assertEquals(4,sheet.getLastRowNum());
             assertEquals(List.of("koba_off_sheet_acct-dtl_sn","another_table-528","koba_off_sheet_acct-528","koba_off_sheet_acct-ccbs"),
-                List.of(sheet.getRow(1).getCell(8).getStringCellValue(),sheet.getRow(2).getCell(8).getStringCellValue(),sheet.getRow(3).getCell(8).getStringCellValue(),sheet.getRow(4).getCell(8).getStringCellValue()));
+                List.of(sheet.getRow(1).getCell(13).getStringCellValue(),sheet.getRow(2).getCell(13).getStringCellValue(),sheet.getRow(3).getCell(13).getStringCellValue(),sheet.getRow(4).getCell(13).getStringCellValue()));
         }
     }
     @Test void listsAndExportsRejectInvalidDifferenceCountSortDirections() throws Exception {
@@ -406,8 +418,8 @@ class ReplayDatabaseIssueControllerTest {
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))){
             var sheet=workbook.getSheetAt(0);assertEquals(3,sheet.getLastRowNum());
             assertEquals(List.of("additional_table-ccbs","koba_off_sheet_acct-ccbs","koba_off_sheet_acct-dtl_sn"),
-                List.of(sheet.getRow(1).getCell(8).getStringCellValue(),sheet.getRow(2).getCell(8).getStringCellValue(),sheet.getRow(3).getCell(8).getStringCellValue()));
-            assertEquals("2026-10-12",sheet.getRow(1).getCell(7).getStringCellValue());assertEquals("",sheet.getRow(3).getCell(7).getStringCellValue());
+                List.of(sheet.getRow(1).getCell(13).getStringCellValue(),sheet.getRow(2).getCell(13).getStringCellValue(),sheet.getRow(3).getCell(13).getStringCellValue()));
+            assertEquals("2026-10-12",sheet.getRow(1).getCell(12).getStringCellValue());assertEquals("",sheet.getRow(3).getCell(12).getStringCellValue());
         }
     }
     @Test void collaboratorDisplayFiltersCombineWithOtherColumnsAndSharedPagingSortingAndExport() throws Exception {
@@ -453,8 +465,8 @@ class ReplayDatabaseIssueControllerTest {
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))){
             var sheet=workbook.getSheetAt(0);assertEquals(3,sheet.getLastRowNum());
             assertEquals(List.of("koba_off_sheet_acct-ccbs","koba_off_sheet_acct-dtl_sn","koba_off_sheet_acct-528"),
-                List.of(sheet.getRow(1).getCell(8).getStringCellValue(),sheet.getRow(2).getCell(8).getStringCellValue(),sheet.getRow(3).getCell(8).getStringCellValue()));
-            assertEquals("张三(editor)",sheet.getRow(1).getCell(12).getStringCellValue());assertEquals("",sheet.getRow(2).getCell(12).getStringCellValue());
+                List.of(sheet.getRow(1).getCell(13).getStringCellValue(),sheet.getRow(2).getCell(13).getStringCellValue(),sheet.getRow(3).getCell(13).getStringCellValue()));
+            assertEquals("张三(editor)",sheet.getRow(1).getCell(17).getStringCellValue());assertEquals("",sheet.getRow(2).getCell(17).getStringCellValue());
         }
     }
     @Test void tableTechnologyOwnerControlsReviewAndReturnedRowPermissions() throws Exception {
@@ -477,7 +489,7 @@ class ReplayDatabaseIssueControllerTest {
         mvc.perform(post("/api/ai/parallel-replay/database-issues/1/review").contentType("application/json").content("{\"version\":1,\"reason\":\"合理\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.reviewStatus").value("已审核"))
             .andExpect(jsonPath("$.data.reviewStatusDisplay").value("已审核（已填写原因）"))
-            .andExpect(jsonPath("$.data.issueType").value("规则性差异"))
+            .andExpect(jsonPath("$.data.issueType").value("不参与比对"))
             .andExpect(jsonPath("$.data.canReview").value(true)).andExpect(jsonPath("$.data.canEdit").value(true));
         when(resolver.resolve(any())).thenReturn(new UserPrincipalResolver.Resolved("LDAP","other",null));
         mvc.perform(get("/api/ai/parallel-replay/database-issues"))
@@ -538,20 +550,20 @@ class ReplayDatabaseIssueControllerTest {
             .andExpect(jsonPath("$.data.items[0].reviewStatusDisplay").value("已审核（未填写原因）"));
         byte[] content=mvc.perform(post("/api/ai/parallel-replay/database-issues/export").contentType("application/json").content("{\"reviewStatuses\":[\"已审核（已填写原因）\"]}"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))){assertEquals("审核状态",workbook.getSheetAt(0).getRow(0).getCell(10).getStringCellValue());assertEquals("已审核（已填写原因）",workbook.getSheetAt(0).getRow(1).getCell(10).getStringCellValue());}
+        try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(content))){assertEquals("审核状态",workbook.getSheetAt(0).getRow(0).getCell(15).getStringCellValue());assertEquals("已审核（已填写原因）",workbook.getSheetAt(0).getRow(1).getCell(15).getStringCellValue());}
     }
     @Test void listPermissionsResolveTechnologyOwnersOncePerPageAndDoNotUseNamesAsIdentifiers() throws Exception {
         registerTechnologyOwner("public","koba_off_sheet_acct","贷款组","E001");
         importBatch("DB20261012-01",3,1,2);clearInvocations(users);
         mvc.perform(get("/api/ai/parallel-replay/database-issues"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2))
             .andExpect(jsonPath("$.data.items[0].technologyOwnerDisplay").value("编辑人(E001)"));
         verify(users,times(1)).findByUsernamesOrEmpNos(anyCollection());
         verify(users,never()).findByUsername(anyString());verify(users,never()).findByEmpNo(anyString());
         jdbc.update("UPDATE dii_replay_db_compare_registration SET group_owner_emp_no='编辑人'");
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
         var row=dao.find(1);row.put("issueStatus","无需处理");row.put("reviewStatus","待审核");dao.update(row);
-        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueIds","koba_off_sheet_acct-ccbs"))
+        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueIds","koba_off_sheet_acct"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].canReview").value(false));
     }
     @Test void currentRegistrationDrivesDomainOwnerFilteringOptionsExportAndMutationResponsesWithoutReimport() throws Exception {
@@ -563,15 +575,15 @@ class ReplayDatabaseIssueControllerTest {
         String snapshot=jdbc.queryForObject("SELECT data_snapshot FROM dii_replay_database_issue WHERE id=1",String.class);
         var history=dao.history(1);
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("domains","登记领域").param("owners","登记修订人(c-owner)").param("differenceCountOrder","DESC").param("limit","1").param("offset","1"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(3))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
             .andExpect(jsonPath("$.data.items[0].issueId").value("koba_off_sheet_acct-dtl_sn"))
             .andExpect(jsonPath("$.data.items[0].domain").value("登记领域")).andExpect(jsonPath("$.data.items[0].owner").value("登记修订人(c-owner)"));
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("domain","登记领域").param("owner","c-owner"))
-            .andExpect(jsonPath("$.data.total").value(3));
+            .andExpect(jsonPath("$.data.total").value(2));
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("domain","贷款组"))
             .andExpect(jsonPath("$.data.total").value(0));
         mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options").param("field","domain").param("domains","不存在").param("owners","登记修订人(c-owner)"))
-            .andExpect(jsonPath("$.data.candidateCount").value(1)).andExpect(jsonPath("$.data.items[0].value").value("登记领域")).andExpect(jsonPath("$.data.items[0].count").value(3));
+            .andExpect(jsonPath("$.data.candidateCount").value(1)).andExpect(jsonPath("$.data.items[0].value").value("登记领域")).andExpect(jsonPath("$.data.items[0].count").value(2));
         mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options").param("field","owner").param("owners","不存在").param("domains","登记领域").param("keyword","C-OWNER"))
             .andExpect(jsonPath("$.data.items[0].value").value("登记修订人(c-owner)"));
         mvc.perform(get("/api/ai/parallel-replay/database-issues/options"))
@@ -579,7 +591,7 @@ class ReplayDatabaseIssueControllerTest {
         byte[] exported=mvc.perform(get("/api/ai/parallel-replay/database-issues/export").param("domains","登记领域").param("owners","登记修订人(c-owner)").param("limit","1"))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         try(var workbook=new XSSFWorkbook(new ByteArrayInputStream(exported))){
-            assertEquals(3,workbook.getSheetAt(0).getLastRowNum());
+            assertEquals(2,workbook.getSheetAt(0).getLastRowNum());
             assertEquals("登记领域",workbook.getSheetAt(0).getRow(1).getCell(1).getStringCellValue());
             assertEquals("登记修订人(c-owner)",workbook.getSheetAt(0).getRow(1).getCell(2).getStringCellValue());
         }
@@ -588,7 +600,7 @@ class ReplayDatabaseIssueControllerTest {
         jdbc.update("UPDATE dii_replay_db_compare_registration SET domain_name='最新领域',reviser_username='  ',reviser_emp_no=' R002 '");
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("domains","最新领域").param("owners","登记修订人(R002)"))
-            .andExpect(jsonPath("$.data.total").value(3)).andExpect(jsonPath("$.data.items[0].owner").value("登记修订人(R002)"));
+            .andExpect(jsonPath("$.data.total").value(2)).andExpect(jsonPath("$.data.items[0].owner").value("登记修订人(R002)"));
         mvc.perform(patch("/api/ai/parallel-replay/database-issues/1").contentType("application/json").content("{\"version\":0,\"issueStatus\":\"无需处理\",\"issueType\":\"规则性差异\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.domain").value("最新领域")).andExpect(jsonPath("$.data.owner").value("登记修订人(R002)"))
             .andExpect(jsonPath("$.data.canReview").value(true));
@@ -640,10 +652,21 @@ class ReplayDatabaseIssueControllerTest {
     private void seedFilterRows() throws Exception {
         registerMetadata("koba_off_sheet_acct","贷款组","张三","c-zhangs3","");
         registerMetadata("extra_table","存款组","张三,李四","","");
-        mvc.perform(multipart("/api/ai/parallel-replay/database-issues/import").file(ReplayDatabaseIssueTest.file(true,"DB20261012-01",3,1,2)))
-            .andExpect(status().isOk());
+        // Legacy rows are deliberate query/backward-compatibility fixtures, independent of today's importer.
+        insertStoredIssue("koba_off_sheet_acct-ccbs","koba_off_sheet_acct","仅ccbs","",3L);
+        insertStoredIssue("koba_off_sheet_acct-528","koba_off_sheet_acct","仅528","",1L);
+        insertStoredIssue("koba_off_sheet_acct-dtl_sn","koba_off_sheet_acct","字段级","dtl_sn",2L);
         var row=new LinkedHashMap<String,Object>(dao.findByIssueId("koba_off_sheet_acct-ccbs"));
         row.put("issueId","extra_table-ccbs");row.put("tableName","extra_table");row.put("tableComment","账户,明细");
         row.put("domain","存款组");row.put("owner","张三,李四");row.put("differenceCount",8L);row.put("issueType","修改代码");dao.insert(row);
+    }
+    private void insertStoredIssue(String issueId,String table,String level,String field,long count) {
+        var row=new LinkedHashMap<String,Object>();
+        for(String key:List.of("domain","owner","issueType","initialAnalysis","finalSolution","remark","cooperationPersonUsername","cooperationPersonName","cooperationPerson","plannedCompletionDate","defectRepairDate","lastManualSaveAt","reviewStatus","reviewReason","reviewer","reviewedAt"))row.put(key,"");
+        row.put("issueId",issueId);row.put("tableName",table);row.put("tableComment","表中文名");
+        row.put("issueLevel",level);row.put("fieldName",field);row.put("differenceCount",count);
+        row.put("total528",0L);row.put("totalCcbs",0L);row.put("only528Count",level.equals("仅528")?count:0L);row.put("onlyCcbsCount",level.equals("仅ccbs")?count:0L);
+        row.put("batchNo","DB20261012-01");row.put("issueStatus","新建");row.put("importedAt","2026-10-12 10:00:00");
+        row.put("firstOccurredDate","2026-10-12");row.put("lastOccurredDate","2026-10-12");dao.insert(row);
     }
 }

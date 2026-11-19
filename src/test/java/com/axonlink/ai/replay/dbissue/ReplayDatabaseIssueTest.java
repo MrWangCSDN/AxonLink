@@ -41,21 +41,34 @@ class ReplayDatabaseIssueTest {
     }
     @Test void parsesBothDirectionsAndFieldIdsIgnoringReportOwnerAndKeepingZeroCountScope() {
         var parsed=parser.parse(file(true,"DB20261012-01",3,1,2),null);
-        assertEquals(List.of("koba_off_sheet_acct-ccbs","koba_off_sheet_acct-528","koba_off_sheet_acct-dtl_sn"),
+        assertEquals(List.of("koba_off_sheet_acct","koba_off_sheet_acct-dtl_sn"),
                 parsed.issues().stream().map(ReplayDatabaseIssueExcelParser.IssueInput::issueId).toList());
-        assertEquals(3L,parsed.issues().get(0).differenceCount());
+        assertEquals(4L,parsed.issues().get(0).differenceCount());
+        assertEquals(3L,parsed.issues().get(0).onlyCcbs());
+        assertEquals(1L,parsed.issues().get(0).only528());
         assertEquals("",parsed.issues().get(0).owner());assertEquals("",parsed.issues().get(0).domain());
-        assertEquals("仅ccbs",parsed.issues().get(0).issueLevel());
+        assertEquals("表级",parsed.issues().get(0).issueLevel());
+        assertEquals("字段级",parsed.issues().get(1).issueLevel());
+        assertEquals(2L,parsed.issues().get(1).differenceCount());
         assertEquals(LocalDate.of(2026,10,12),parsed.batchDate());
-        assertTrue(parser.parse(file(false,"",0,0,0),"DB20261012-01").issues().isEmpty());
+        var zero=parser.parse(file(false,"",0,0,0),"DB20261012-01");
+        assertEquals(Set.of("koba_off_sheet_acct"),zero.tables());
+        assertEquals(1,zero.issues().size());
+        assertEquals("koba_off_sheet_acct",zero.issues().get(0).issueId());
+        assertEquals("表级",zero.issues().get(0).issueLevel());
+        assertEquals(0L,zero.issues().get(0).differenceCount());
+        assertEquals(0L,zero.issues().get(0).onlyCcbs());
+        assertEquals(0L,zero.issues().get(0).only528());
         assertEquals(Set.of("koba_off_sheet_acct"),parsed.tables());
     }
     @Test void parsesRealBdExportIncludingDirectionTitleAndAppendedBatch() throws Exception {
         var fixture=new ClassPathResource("replay-db-issues/bd-export-DB20261012-01.xlsx");
         var parsed=parser.parse(new MockMultipartFile("file","bd.xlsx","",fixture.getInputStream()),null);
         assertEquals("DB20261012-01",parsed.batchNo());
-        assertEquals(List.of("koba_off_sheet_acct-ccbs","koba_off_sheet_acct-528","koba_off_sheet_acct-amount"),parsed.issues().stream().map(ReplayDatabaseIssueExcelParser.IssueInput::issueId).toList());
-        assertEquals(List.of(3L,1L,2L),parsed.issues().stream().map(ReplayDatabaseIssueExcelParser.IssueInput::differenceCount).toList());
+        assertEquals(List.of("koba_off_sheet_acct","koba_off_sheet_acct-amount"),parsed.issues().stream().map(ReplayDatabaseIssueExcelParser.IssueInput::issueId).toList());
+        assertEquals(List.of(4L,2L),parsed.issues().stream().map(ReplayDatabaseIssueExcelParser.IssueInput::differenceCount).toList());
+        assertEquals(3L,parsed.issues().get(0).onlyCcbs());
+        assertEquals(1L,parsed.issues().get(0).only528());
     }
     @Test void importsIgnoreMissingOrConflictingReportDomainAndOwnerAndSnapshotCurrentRegistration() throws Exception {
         jdbc.update("INSERT INTO dii_replay_db_compare_registration(schema_name,table_name,table_comment,domain_name,reviser_emp_no,reviser_name,registered_date,created_by,created_name,created_at,updated_by,updated_name,updated_at) VALUES ('public','KOBA_OFF_SHEET_ACCT','登记表中文名','登记领域',' R009 ',' 登记修订人 ','2026-10-12','editor','编辑人',CURRENT_TIMESTAMP,'editor','编辑人',CURRENT_TIMESTAMP)");
@@ -72,7 +85,7 @@ class ReplayDatabaseIssueTest {
             var parsed=parser.parse(input,null);
             assertTrue(parsed.issues().stream().allMatch(row->row.domain().isEmpty()&&row.owner().isEmpty()));
             service.importFile(input,null,actor);
-            var stored=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+            var stored=dao.findByIssueId("koba_off_sheet_acct");
             assertEquals("登记领域",stored.get("domain"));assertEquals("登记修订人(R009)",stored.get("owner"));
             assertEquals("登记表中文名",stored.get("tableComment"));
             var history=dao.history(((Number)stored.get("id")).longValue()).get(0);
@@ -89,7 +102,7 @@ class ReplayDatabaseIssueTest {
             jdbc.update("UPDATE dii_replay_db_compare_registration SET domain_name='更新领域',reviser_name='更新修订人',reviser_emp_no=' R010 '");
             com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
             service.importFile(file(true,"DB20261013-01",0,0,0),null,actor);
-            var repaired=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+            var repaired=dao.findByIssueId("koba_off_sheet_acct");
             assertEquals("已修复",repaired.get("issueStatus"));assertEquals("更新领域",repaired.get("domain"));
             assertEquals("更新修订人(R010)",repaired.get("owner"));
             var events=dao.history(((Number)repaired.get("id")).longValue());
@@ -145,7 +158,7 @@ class ReplayDatabaseIssueTest {
                 var repeated=sheet.createRow(3);for(var cell:sheet.getRow(0))repeated.createCell(cell.getColumnIndex()).setCellValue(cell.getStringCellValue());
             }
             workbook.write(out);
-            assertEquals(3,parser.parse(new MockMultipartFile("file","reordered.xlsx","",out.toByteArray()),null).issues().size());
+            assertEquals(2,parser.parse(new MockMultipartFile("file","reordered.xlsx","",out.toByteArray()),null).issues().size());
             var sheet=workbook.getSheet("表明细");var duplicate=sheet.createRow(4);
             for(var cell:sheet.getRow(1)){var copy=duplicate.createCell(cell.getColumnIndex());if(cell.getCellType()==org.apache.poi.ss.usermodel.CellType.NUMERIC)copy.setCellValue(cell.getNumericCellValue());else copy.setCellValue(cell.getStringCellValue());}
             out.reset();workbook.write(out);
@@ -157,8 +170,9 @@ class ReplayDatabaseIssueTest {
         jdbc.update("INSERT INTO dii_replay_db_compare_registration(schema_name,table_name,table_comment,domain_name,reviser_username,reviser_name,registered_date,created_by,created_name,created_at,updated_by,updated_name,updated_at) VALUES ('public','koba_off_sheet_acct','表外账户','贷款组','c-zhangs3','张三','2026-10-12','editor','编辑人',CURRENT_TIMESTAMP,'editor','编辑人',CURRENT_TIMESTAMP)");
         com.axonlink.ai.replay.ReplayDatabaseTablePersonTestFixtures.sync(jdbc, "koba_off_sheet_acct");
         var result=service.importFile(file(false,"",3,1,2),"DB20261012-01",actor);
-        assertEquals(3,result.get("createdRows"));
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        assertEquals(2,result.get("createdRows"));
+        assertEquals(2,result.get("inputRows"));
+        var row=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("新建",row.get("issueStatus"));
         assertEquals("表外账户",row.get("tableComment"));
         assertEquals("张三(c-zhangs3)",row.get("owner"));
@@ -167,13 +181,13 @@ class ReplayDatabaseIssueTest {
     }
     @Test void preservesHumanContentAndReopensOnlyWhenBatchDateIsAfterManualSaveDate() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var row=dao.findByIssueId("koba_off_sheet_acct");
         long id=((Number)row.get("id")).longValue();
         service.update(id,Map.of("version",row.get("version"),"issueStatus","修复待验证","issueType","其他问题","initialAnalysis","人工分析","finalSolution","修复方案","remark","备注"),actor);
         service.importFile(file(true,"DB20261012-02",2,0,0),null,actor);
-        assertEquals("修复待验证",dao.findByIssueId("koba_off_sheet_acct-ccbs").get("issueStatus"));
+        assertEquals("修复待验证",dao.findByIssueId("koba_off_sheet_acct").get("issueStatus"));
         service.importFile(file(true,"DB20261013-01",1,0,0),null,actor);
-        var after=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var after=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("重新打开",after.get("issueStatus"));
         assertEquals("其他问题",after.get("issueType"));
         assertEquals("人工分析",after.get("initialAnalysis"));
@@ -183,92 +197,111 @@ class ReplayDatabaseIssueTest {
     }
     @Test void protectsSameDayBatchWhenImportedOnALaterSystemDate() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var row=dao.findByIssueId("koba_off_sheet_acct");
         long id=((Number)row.get("id")).longValue();
         service.update(id,Map.of("version",row.get("version"),"issueStatus","修复待验证","issueType","修改代码"),actor);
 
         var laterSystemService=new ReplayDatabaseIssueService(parser,dao,users,
                 Clock.fixed(Instant.parse("2026-10-15T02:00:00Z"),ZoneId.of("Asia/Shanghai")));
         laterSystemService.importFile(file(true,"DB20261012-02",2,0,0),null,actor);
-        var sameDay=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var sameDay=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("修复待验证",sameDay.get("issueStatus"));
         assertEquals("2026-10-15 10:00:00",sameDay.get("importedAt"));
         assertEquals("2026-10-12 10:00:00",sameDay.get("lastManualSaveAt"));
 
         laterSystemService.importFile(file(true,"DB20261013-01",1,0,0),null,actor);
-        var nextDay=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var nextDay=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("重新打开",nextDay.get("issueStatus"));
         assertEquals("DB20261013-01",nextDay.get("batchNo"));
         assertEquals("2026-10-12 10:00:00",nextDay.get("lastManualSaveAt"));
     }
-    @Test void disappearsAsFixedAndReappearsAsNewWithInheritedContent() {
+    @Test void disappearsAsFixedAndReappearsAsNewWithClearedHumanContent() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");long id=((Number)row.get("id")).longValue();
+        var row=dao.findByIssueId("koba_off_sheet_acct");long id=((Number)row.get("id")).longValue();
         service.update(id,Map.of("version",row.get("version"),"issueStatus","打开","issueType","修改代码","remark","保留"),actor);
         service.importFile(file(true,"DB20261013-01",0,0,0),null,actor);
-        var fixed=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        var fixed=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("已修复",fixed.get("issueStatus"));assertEquals("2026-10-13",fixed.get("defectRepairDate"));
         assertEquals(1L,dao.list(Map.of("defectRepairDates",List.of("2026-10-13"))).get("total"));
         assertThrows(IllegalArgumentException.class,()->service.update(id,Map.of("version",fixed.get("version"),"issueType","修改代码"),actor));
         service.importFile(file(true,"DB20261014-01",1,0,0),null,actor);
-        var after=dao.findByIssueId("koba_off_sheet_acct-ccbs");
-        assertEquals("新建",after.get("issueStatus"));assertEquals("保留",after.get("remark"));
+        var after=dao.findByIssueId("koba_off_sheet_acct");
+        assertEquals("新建",after.get("issueStatus"));assertEquals("",after.get("remark"));
+        assertEquals("",after.get("issueType"));
+        assertEquals(id,((Number)after.get("id")).longValue());
+        assertTrue(dao.history(id).stream().anyMatch(event ->
+                "保留".equals(((Map<?,?>)event.get("after")).get("remark"))));
         assertEquals("",after.get("defectRepairDate"));
         assertEquals(0L,dao.list(Map.of("defectRepairDates",List.of("2026-10-13"))).get("total"));
         assertEquals(1L,dao.list(Map.of("defectRepairDates",List.of(""))).get("total"));
     }
     @Test void rejectsStaleVersionAndEarlierBatchWithoutChangingCurrentOrHistory() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");long id=((Number)row.get("id")).longValue();
+        var row=dao.findByIssueId("koba_off_sheet_acct");long id=((Number)row.get("id")).longValue();
         service.update(id,Map.of("version",row.get("version"),"issueType","修改代码"),actor);
         assertThrows(ReplayDatabaseIssueConflictException.class,()->service.update(id,Map.of("version",row.get("version"),"issueType","参数问题"),actor));
         assertThrows(IllegalArgumentException.class,()->service.importFile(file(true,"DB20261011-01",0,0,0),null,actor));
-        assertEquals(3L,dao.findByIssueId("koba_off_sheet_acct-ccbs").get("differenceCount"));
+        assertEquals(3L,dao.findByIssueId("koba_off_sheet_acct").get("differenceCount"));
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_history",Integer.class));
     }
     @Test void repeatBatchUpdatesOriginalSnapshotWithoutDuplicatingHistory() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
         service.importFile(file(true,"DB20261012-01",2,0,0),null,actor);
         assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_history",Integer.class));
-        assertEquals(2L,dao.findByIssueId("koba_off_sheet_acct-ccbs").get("differenceCount"));
+        assertEquals(2L,dao.findByIssueId("koba_off_sheet_acct").get("differenceCount"));
     }
     @Test void zeroDifferenceTableStillRejectsAnEarlierBatch() {
         service.importFile(file(true,"DB20261013-01",0,0,0),null,actor);
         assertThrows(IllegalArgumentException.class,()->service.importFile(file(true,"DB20261012-01",3,0,0),null,actor));
-        assertNull(dao.findByIssueId("koba_off_sheet_acct-ccbs"));
+        var row=dao.findByIssueId("koba_off_sheet_acct");
+        assertEquals("已修复",row.get("issueStatus"));
+        assertEquals("DB20261013-01",row.get("batchNo"));
+        assertEquals(0L,row.get("differenceCount"));
+        assertEquals(1,dao.history(((Number)row.get("id")).longValue()).size());
     }
     @Test void batchAfterAutoRepairCannotBeRolledBackToAnEarlierOccurrence() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
         service.importFile(file(true,"DB20261013-01",0,0,0),null,actor);
         assertThrows(IllegalArgumentException.class,()->service.importFile(file(true,"DB20261012-02",3,0,0),null,actor));
-        assertEquals("已修复",dao.findByIssueId("koba_off_sheet_acct-ccbs").get("issueStatus"));
+        assertEquals("已修复",dao.findByIssueId("koba_off_sheet_acct").get("issueStatus"));
     }
-    @Test void importsOfOtherSuccessfulTablesDoNotRepairUncoveredTables() throws Exception {
+    @Test void importsOfOtherSuccessfulTablesMarkUncoveredTablesNotCompared() throws Exception {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
         try(var workbook=new XSSFWorkbook(file(true,"DB20261013-01",0,0,0).getInputStream());var out=new ByteArrayOutputStream()) {
             workbook.getSheet("表明细").getRow(1).getCell(1).setCellValue("other_table");workbook.write(out);
             service.importFile(new MockMultipartFile("file","other.xlsx","",out.toByteArray()),null,actor);
         }
-        assertEquals("新建",dao.findByIssueId("koba_off_sheet_acct-ccbs").get("issueStatus"));
+        var uncovered=dao.findByIssueId("koba_off_sheet_acct");
+        assertEquals("不参与比对",uncovered.get("issueStatus"));
+        assertEquals(3L,uncovered.get("differenceCount"));
+        assertEquals("2026-10-13",uncovered.get("defectRepairDate"));
+        assertEquals(2,dao.history(((Number)uncovered.get("id")).longValue()).size());
+        assertEquals(0L,dao.list(Map.of("issueIds",List.of("koba_off_sheet_acct"))).get("total"));
     }
     @Test void noActionReviewRequiresPermissionAndPreservesApprovalOnLaterImports() {
         service.importFile(file(true,"DB20261012-01",3,0,0),null,actor);
-        var row=dao.findByIssueId("koba_off_sheet_acct-ccbs");long id=((Number)row.get("id")).longValue();
+        var row=dao.findByIssueId("koba_off_sheet_acct");long id=((Number)row.get("id")).longValue();
         row=service.update(id,Map.of("version",row.get("version"),"issueStatus","无需处理","issueType","规则性差异"),actor);
         var version=row.get("version");
         assertThrows(SecurityException.class,()->service.approve(id,Map.of("version",version,"reason","核实"),actor));
         registerTechnologyOwner();
         service.approve(id,Map.of("version",version,"reason","业务允许"),actor);
         service.importFile(file(true,"DB20261013-01",1,0,0),null,actor);
-        row=dao.findByIssueId("koba_off_sheet_acct-ccbs");
+        row=dao.findByIssueId("koba_off_sheet_acct");
         assertEquals("无需处理",row.get("issueStatus"));assertEquals("已审核",row.get("reviewStatus"));
         assertEquals("业务允许",row.get("reviewReason"));assertEquals("2026-10-12",row.get("defectRepairDate"));
         service.importFile(file(true,"DB20261014-01",0,0,0),null,actor);
-        assertEquals("无需处理",dao.findByIssueId("koba_off_sheet_acct-ccbs").get("issueStatus"));
         row=dao.find(id);
+        assertEquals("已修复",row.get("issueStatus"));
+        assertEquals("2026-10-14",row.get("defectRepairDate"));
+        service.importFile(file(true,"DB20261015-01",1,0,0),null,actor);
+        row=dao.find(id);
+        assertEquals("新建",row.get("issueStatus"));
+        assertEquals("",row.get("reviewStatus"));
+        assertEquals("",row.get("reviewReason"));
         service.update(id,Map.of("version",row.get("version"),"issueStatus","修复待验证","issueType","修改代码"),actor);
         assertEquals(0L,dao.list(Map.of("defectRepairDates",List.of("2026-10-12"))).get("total"));
-        service.importFile(file(true,"DB20261015-01",1,0,0),null,actor);
+        service.importFile(file(true,"DB20261016-01",1,0,0),null,actor);
         assertEquals("重新打开",dao.find(id).get("issueStatus"));
         assertEquals(1L,dao.list(Map.of("defectRepairDates",List.of(""))).get("total"));
     }
