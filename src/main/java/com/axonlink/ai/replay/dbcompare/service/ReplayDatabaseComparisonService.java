@@ -46,6 +46,7 @@ import com.axonlink.ai.replay.persistence.ReplayDatabaseTablePersonDao;
 import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
@@ -310,21 +311,25 @@ public class ReplayDatabaseComparisonService {
         var details = withSampleAudit(withPartitionAudit(
                 auditDiff.compare(null, state(registration), ReplayDbCompareAuditOperation.CREATE),
                 1, partitions), 100, samples);
-        return requiredResult(transactionTemplate.execute(status -> {
-            long id = dao.insertRegistration(registration);
-            writeAudit(id, registration.schemaName(), registration.tableName(), ReplayDbCompareAuditOperation.CREATE,
-                    0, null, actor, now, details);
-            return dao.findByIdIncludingDeleted(id);
-        }));
+        try {
+            return requiredResult(transactionTemplate.execute(status -> {
+                requireAvailableCustomSqlTable(registration, null);
+                long id = dao.insertRegistration(registration);
+                writeAudit(id, registration.schemaName(), registration.tableName(), ReplayDbCompareAuditOperation.CREATE,
+                        0, null, actor, now, details);
+                return dao.findByIdIncludingDeleted(id);
+            }));
+        } catch (DuplicateKeyException exception) {
+            requireAvailableCustomSqlTable(registration, null);
+            throw exception;
+        }
     }
 
     public ReplayDbCompareRegistration updateCustomSql(
             long id, ReplayDbCompareCustomSqlSaveRequest request, ReplayIssueOperator operator) {
         Actor actor = requireActor(operator);
         var snapshot = requireRegistration(id);
-        requireActive(snapshot);
         requireVersion(snapshot, request.version());
-        if (snapshot.customSql() == null) throw new IllegalArgumentException("该登记不是自定义 SQL");
         if (!identifier(snapshot.sourceTableName()).equals(identifier(request.sourceTableName()))) {
             throw new IllegalArgumentException("自定义 SQL 的关联基础表创建后不能更换");
         }
@@ -336,28 +341,53 @@ public class ReplayDatabaseComparisonService {
         }
         var person = customSqlPerson(snapshot.sourceTableName());
         LocalDateTime now = LocalDateTime.now(clock);
-        return requiredResult(transactionTemplate.execute(status -> {
-            var current = requireRegistration(id);
-            requireActive(current);
-            requireVersion(current, request.version());
-            var target = customSqlRegistration(current, request, prepared, person, actor, now, partitions, samples);
-            var details = withSampleAudit(withPartitionAudit(
-                    auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.UPDATE),
-                    current.partitionNum(), partitions), current.sampleLimit(), samples);
-            if (details.isEmpty()) return current;
-            if (!dao.updateCustomSqlRegistration(id, current.version(), target)) {
-                throw new ReplayDatabaseComparisonVersionConflictException();
-            }
-            dao.replaceFields(id, target.fields(), now);
-            writeAudit(id, current.schemaName(), current.tableName(), ReplayDbCompareAuditOperation.UPDATE,
-                    current.version() + 1, null, actor, now, details);
-            return dao.findByIdIncludingDeleted(id);
-        }));
+        try {
+            return requiredResult(transactionTemplate.execute(status -> {
+                var current = requireRegistration(id);
+                requireVersion(current, request.version());
+                if (current.deleted() != snapshot.deleted()) {
+                    throw new ReplayDatabaseComparisonVersionConflictException();
+                }
+                var target = customSqlRegistration(current, request, prepared, person, actor, now, partitions, samples);
+                requireAvailableCustomSqlTable(target, id);
+                var operation = current.deleted() ? ReplayDbCompareAuditOperation.REREGISTER : ReplayDbCompareAuditOperation.UPDATE;
+                var details = withSampleAudit(withPartitionAudit(
+                        auditDiff.compare(current.deleted() ? null : state(current), state(target), operation),
+                        current.partitionNum(), partitions), current.sampleLimit(), samples);
+                if (!current.tableName().equals(target.tableName())) {
+                    var identityDetails = new ArrayList<>(details);
+                    identityDetails.add(new ReplayDbCompareAuditDetailDraft(ReplayDbCompareChangeType.MODIFY,
+                            "tableName", "表英文名", current.tableName(), target.tableName()));
+                    details = List.copyOf(identityDetails);
+                }
+                if (details.isEmpty()) return current;
+                if (!dao.updateCustomSqlRegistration(id, current.version(), target, current.deleted())) {
+                    throw new ReplayDatabaseComparisonVersionConflictException();
+                }
+                dao.replaceFields(id, target.fields(), now);
+                writeAudit(id, target.schemaName(), target.tableName(), operation,
+                        current.version() + 1, current.deleted() ? "重新登记自定义 SQL" : null, actor, now, details);
+                return dao.findByIdIncludingDeleted(id);
+            }));
+        } catch (DuplicateKeyException exception) {
+            requireAvailableCustomSqlTable(customSqlRegistration(snapshot, request, prepared, person,
+                    actor, now, partitions, samples), id);
+            throw exception;
+        }
+    }
+
+    private void requireAvailableCustomSqlTable(ReplayDbCompareRegistration target, Long currentId) {
+        var existing = dao.findBySchemaAndTable(target.schemaName(), target.tableName());
+        if (existing != null && !existing.id().equals(currentId)) {
+            throw new ReplayDatabaseComparisonGenerationException(HttpStatus.CONFLICT,
+                    "DUPLICATE_REGISTRATION", existing.deleted()
+                    ? "该表已登记且已删除，请进入原登记重新登记后编辑自定义 SQL"
+                    : "该表已登记，请进入原登记编辑自定义 SQL",
+                    Map.of("existingId", existing.id(), "schema", target.schemaName(), "tableName", target.tableName()));
+        }
     }
 
     private ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql prepareCustomSql(ReplayDbCompareCustomSqlSaveRequest request) {
-        String title = requireText(request.displayName(), "比对项名称不能为空");
-        if (title.length() > 100) throw new IllegalArgumentException("比对项名称不能超过100字符");
         var prepared = prepareCustomSql(request.sql(), request.fieldNames(), request.resultKeyColumns(), request.compareLimit());
         if (!identifier(prepared.analysis().sourceTableName()).equals(identifier(request.sourceTableName()))) {
             throw new ReplayDatabaseComparisonGenerationException(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -394,8 +424,7 @@ public class ReplayDatabaseComparisonService {
         var analysis = prepared.analysis();
         String developer = person.developer() == null ? "" : person.developer().split("\\(", 2)[0];
         return new ReplayDbCompareRegistration(current == null ? null : current.id(), analysis.schemaName(),
-                current == null ? "sql_" + java.util.UUID.randomUUID().toString().replace("-", "") : current.tableName(),
-                request.displayName().trim(), person.domain(), person.developerEmpNos(), person.developerUsernames(), developer,
+                analysis.sourceTableName(), analysis.sourceTableComment(), person.domain(), person.developerEmpNos(), person.developerUsernames(), developer,
                 person.technologyOwnerEmpNos(), person.technologyOwner(), LocalDate.now(clock), false, null, null, null,
                 current == null ? 0 : current.version() + 1,
                 current == null ? actor.empNo() : current.createdBy(), current == null ? actor.name() : current.createdName(),

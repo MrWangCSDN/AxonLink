@@ -77,21 +77,171 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     }
 
     @Test
-    void savesMultipleQueriesAndResolvesPersonnelByThePhysicalSource() {
-        var first = service.createCustomSql(request("金额汇总", SQL, null, "source_table", 1), operator());
-        var second = service.createCustomSql(request("另一口径", SQL, null, "source_table", 1), operator());
-        assertNotEquals(first.tableName(), second.tableName());
-        assertTrue(first.tableName().startsWith("sql_"));
+    void savesPhysicalTableIdentityAndResolvesPersonnelByThePhysicalSource() {
+        var first = service.createCustomSql(request("客户端伪造名称", SQL, null, "source_table", 1), operator());
+        assertEquals("source_table", first.tableName());
+        assertEquals("来源表", first.tableComment());
         assertEquals("CUSTOM_SQL", first.registrationType());
         assertEquals("source_table", first.sourceTableName());
         var page = service.search(ReplayDbCompareQuery.empty(0, 50));
-        assertEquals(2, page.globalCustomSqlCount());
-        assertEquals(2, page.items().size());
+        assertEquals(1, page.globalCustomSqlCount());
+        assertEquals(1, page.items().size());
         assertTrue(page.items().stream().allMatch(item -> item.customSql() != null && "存款组".equals(item.domainName())));
         var detail = service.detail(first.id());
         assertNotNull(detail.customSql());
         assertEquals(ReplayDbCompareMetadataStatus.VALID, detail.metadataValidation().status());
         assertTrue(detail.fields().stream().anyMatch(field -> field.columnName().equals("total_amt")));
+        assertEquals("表中文名", jdbc.queryForObject("SELECT field_label FROM dii_replay_db_compare_audit_detail WHERE field_code='tableComment'", String.class));
+    }
+
+    @Test
+    void allowsMissingDisplayNameAndMissingDatabaseComment() {
+        var original = analysis(SQL);
+        when(analyzer.prepare(any(), any(), any(), any())).thenReturn(new ReplayDatabaseComparisonCustomSqlAnalyzer.PreparedSql(
+                new ReplayDbCompareSqlAnalysis(SQL, original.schemaName(), original.sourceTableName(), null,
+                        original.resultColumns(), original.candidateKeyColumns()),
+                List.of(new ReplayDbCompareField("id", "标识", 1, true, 1)),
+                new ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id"))));
+        var saved = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
+        assertEquals("source_table", saved.tableName());
+        assertNull(saved.tableComment());
+    }
+
+    @Test
+    void duplicateSqlRegistrationIsRejectedWithoutChangingTheOriginal() {
+        var first = service.createCustomSql(request("来源表", SQL, null, "source_table", 1), operator());
+        var error = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                service.createCustomSql(request("另一名称", SQL.replace("sum(amount)", "sum(amount * 2)"), null, "source_table", 1), operator()));
+        assertEquals(org.springframework.http.HttpStatus.CONFLICT, error.status());
+        assertEquals("DUPLICATE_REGISTRATION", error.errorCode());
+        assertTrue(error.getMessage().contains("原登记"));
+        assertEquals(first, dao.findByIdIncludingDeleted(first.id()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event", Integer.class));
+    }
+
+    @Test
+    void ordinaryRegistrationMustBeEditedAndConvertsInPlaceWithCreationHistoryIntact() {
+        var first = ordinaryRegistration();
+        assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                service.createCustomSql(request("来源表", SQL, null, "source_table", 1), operator()));
+        assertNull(dao.findByIdIncludingDeleted(first.id()).customSql());
+        var updated = service.updateCustomSql(first.id(), request("来源表", SQL, first.version(), "source_table", 1), operator());
+        assertEquals(first.id(), updated.id());
+        assertEquals(first.createdBy(), updated.createdBy());
+        assertEquals(first.createdAt(), updated.createdAt());
+        assertEquals(first.version() + 1, updated.version());
+        assertEquals("source_table", updated.tableName());
+        assertEquals("来源表", updated.tableComment());
+        assertEquals("CUSTOM_SQL", updated.registrationType());
+        assertEquals(SQL, updated.customSql().sql());
+        assertEquals(List.of("id", "total_amt"), updated.fields().stream().map(ReplayDbCompareField::columnName).toList());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event WHERE operation='UPDATE'", Integer.class));
+        assertThrows(ReplayDatabaseComparisonVersionConflictException.class, () ->
+                service.updateCustomSql(first.id(), request("来源表", SQL, first.version(), "source_table", 1), operator()));
+    }
+
+    @Test
+    void legacyAliasEditUsesPhysicalNameAndAuditsIdentityOnlyChanges() {
+        var first = service.createCustomSql(request("来源表", SQL, null, "source_table", 1), operator());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='sql_legacy' WHERE id=?", first.id());
+        var updated = service.updateCustomSql(first.id(), request("来源表", SQL, first.version(), "source_table", 1), operator());
+        assertEquals("source_table", updated.tableName());
+        assertEquals(first.version() + 1, updated.version());
+        assertEquals("sql_legacy", jdbc.queryForObject("SELECT before_value FROM dii_replay_db_compare_audit_detail WHERE field_code='tableName'", String.class));
+        assertEquals("source_table", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail WHERE field_code='tableName'", String.class));
+    }
+
+    @Test
+    void failedFieldReplacementRollsBackTheConversionAndAudit() {
+        var first = ordinaryRegistration();
+        var failingDao = spy(dao);
+        doThrow(new IllegalStateException("field write failed")).when(failingDao).replaceFields(eq(first.id()), any(), any());
+        var failingService = new ReplayDatabaseComparisonService(metadata, failingDao, versions, new SysUserDao(jdbc),
+                new ReplayDatabaseComparisonAuditDiff(), jdbc, CLOCK);
+        failingService.setTablePersonDao(new ReplayDatabaseTablePersonDao(jdbc));
+        failingService.setCustomSqlAnalyzer(analyzer);
+        assertThrows(IllegalStateException.class, () ->
+                failingService.updateCustomSql(first.id(), request("来源表", SQL, first.version(), "source_table", 1), operator()));
+        assertEquals(first, dao.findByIdIncludingDeleted(first.id()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event", Integer.class));
+    }
+
+    @Test
+    void duplicateDiscoveredByTheUniqueKeyReturnsTheSameConflictAfterRollback() {
+        var first = ordinaryRegistration();
+        var racedDao = spy(dao);
+        doReturn(null).doCallRealMethod().when(racedDao).findBySchemaAndTable("base_schema", "source_table");
+        var racedService = serviceWithDao(racedDao);
+        var error = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                racedService.createCustomSql(request(null, SQL, null, "source_table", 1), operator()));
+        assertEquals("DUPLICATE_REGISTRATION", error.errorCode());
+        assertEquals(Map.of("existingId", first.id(), "schema", "base_schema", "tableName", "source_table"), error.data());
+        assertEquals(first, dao.findByIdIncludingDeleted(first.id()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event", Integer.class));
+    }
+
+    @Test
+    void legacyAliasRenameCannotOverwriteAnExistingPhysicalRegistration() {
+        var sql = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='sql_legacy' WHERE id=?", sql.id());
+        var legacy = dao.findByIdIncludingDeleted(sql.id());
+        var physical = ordinaryRegistration();
+        var error = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                service.updateCustomSql(sql.id(), request(null, SQL, sql.version(), "source_table", 1), operator()));
+        assertEquals("DUPLICATE_REGISTRATION", error.errorCode());
+        assertEquals(legacy, dao.findByIdIncludingDeleted(sql.id()));
+        assertEquals(physical, dao.findByIdIncludingDeleted(physical.id()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event", Integer.class));
+    }
+
+    @Test
+    void oldVersionIdentityRemainsFrozenAfterExplicitLegacyAliasEdit() {
+        var first = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='sql_legacy' WHERE id=?", first.id());
+        var generated = versionService.generate("secret", "secret", operator());
+        service.updateCustomSql(first.id(), request(null, SQL, first.version(), "source_table", 1), operator());
+        var oldSnapshot = versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id());
+        assertEquals("sql_legacy", oldSnapshot.get(0).tableName());
+        assertEquals(SQL, oldSnapshot.get(0).customSql().sql());
+        assertEquals("source_table", dao.findByIdIncludingDeleted(first.id()).tableName());
+    }
+
+    @Test
+    void deletedSqlCanBeExplicitlyReregisteredUsingItsOriginalIdAndVersion() {
+        var first = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
+        var deleted = service.delete(first.id(), new ReplayDbCompareDeleteRequest(first.version(), "停用"), operator());
+        var duplicate = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                service.createCustomSql(request(null, SQL, null, "source_table", 1), operator()));
+        assertEquals("DUPLICATE_REGISTRATION", duplicate.errorCode());
+        assertTrue(dao.findByIdIncludingDeleted(first.id()).deleted());
+        String changedSql = SQL.replace("sum(amount)", "sum(amount * 2)");
+        var restored = service.updateCustomSql(first.id(), request(null, changedSql, deleted.version(), "source_table", 1), operator());
+        assertEquals(first.id(), restored.id());
+        assertFalse(restored.deleted());
+        assertNull(restored.deletedAt());
+        assertNull(restored.deletedReason());
+        assertNull(restored.deletedBy());
+        assertEquals(deleted.version() + 1, restored.version());
+        assertEquals(first.createdAt(), restored.createdAt());
+        assertEquals(SQL.replace("sum(amount)", "sum(amount * 2)"), restored.customSql().sql());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event WHERE operation='REREGISTER'", Integer.class));
+        assertThrows(ReplayDatabaseComparisonVersionConflictException.class, () ->
+                service.updateCustomSql(first.id(), request(null, SQL, deleted.version(), "source_table", 1), operator()));
+    }
+
+    @Test
+    void failedSqlReregistrationRollsBackDeletionMarkersFieldsAndAudit() {
+        var first = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
+        var deleted = service.delete(first.id(), new ReplayDbCompareDeleteRequest(first.version(), "停用"), operator());
+        var failingDao = spy(dao);
+        doThrow(new IllegalStateException("field write failed")).when(failingDao).replaceFields(eq(first.id()), any(), any());
+        var failure = assertThrows(IllegalStateException.class, () -> serviceWithDao(failingDao).updateCustomSql(
+                first.id(), request(null, SQL, deleted.version(), "source_table", 1), operator()));
+        assertEquals("field write failed", failure.getMessage());
+        assertEquals(deleted, dao.findByIdIncludingDeleted(first.id()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event WHERE operation='REREGISTER'", Integer.class));
     }
 
     @Test
@@ -116,9 +266,10 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
         var generated = versionService.generate("secret", "secret", operator());
         assertEquals(1, generated.customSqlCount());
         var snapshot = versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id());
+        assertEquals("source_table", snapshot.get(0).tableName());
         assertEquals(SQL, snapshot.get(0).customSql().sql());
         var generator = new ReplayDatabaseComparisonConfigScriptGenerator();
-        assertTrue(new String(generator.generate(generated.versionNo(), snapshot).sqlContent(), java.nio.charset.StandardCharsets.UTF_8).contains(first.tableName()));
+        assertTrue(new String(generator.generate(generated.versionNo(), snapshot).sqlContent(), java.nio.charset.StandardCharsets.UTF_8).contains("," + "'source_table','来源表比对'"));
         assertTrue(new String(generator.generateNew(generated.versionNo(), snapshot).sqlContent(), java.nio.charset.StandardCharsets.UTF_8).contains("sum(amount)"));
         service.updateCustomSql(first.id(), request("变更", SQL.replace("sum(amount)", "sum(amount * 2)"), first.version(), "source_table", 1), operator());
         assertEquals(SQL, versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id()).get(0).customSql().sql());
@@ -160,6 +311,21 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
         return new ReplayDbCompareSqlAnalysis(sql, "base_schema", "source_table", "来源表", List.of(
                 new ReplayDbCompareSqlColumn("id", "id", "VARCHAR", 1),
                 new ReplayDbCompareSqlColumn("total_amt", "total_amt", "NUMERIC", 2)), List.of("id"));
+    }
+    private ReplayDbCompareRegistration ordinaryRegistration() {
+        var now = java.time.LocalDateTime.now(CLOCK).minusDays(2);
+        var item = new ReplayDbCompareRegistration(null, "base_schema", "source_table", "旧中文名", "存款组",
+                "100", "zhangsan", "张三", "101", "赵经理", now.toLocalDate(), false, null, null, null,
+                3, "100", "张三", now, "100", "张三", now,
+                List.of(new ReplayDbCompareField("id", "标识", 1, true, 1)), null, null, List.of("id"), null);
+        return dao.findByIdIncludingDeleted(dao.insertRegistration(item));
+    }
+    private ReplayDatabaseComparisonService serviceWithDao(ReplayDatabaseComparisonDao targetDao) {
+        var target = new ReplayDatabaseComparisonService(metadata, targetDao, versions, new SysUserDao(jdbc),
+                new ReplayDatabaseComparisonAuditDiff(), jdbc, CLOCK);
+        target.setTablePersonDao(new ReplayDatabaseTablePersonDao(jdbc));
+        target.setCustomSqlAnalyzer(analyzer);
+        return target;
     }
     private ReplayDbCompareCustomSqlSaveRequest request(String title, String sql, Long version, String source, int partitions) {
         return new ReplayDbCompareCustomSqlSaveRequest(title, source, sql, List.of("id", "total_amt"), List.of("id"), version, null, partitions, 100);

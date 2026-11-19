@@ -7,17 +7,22 @@ import com.axonlink.ai.replay.persistence.ReplayTransactionPersonDao;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateProperties;
 import com.axonlink.ai.replay.service.ReplayIssuePlanDateService;
 import com.axonlink.ai.user.persistence.SysUserDao;
+import java.io.ByteArrayOutputStream;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
+import org.springframework.mock.web.MockMultipartFile;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -160,6 +165,119 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
         assertEquals(false, item(sql, "dev_a").get("canEditPlanDate"));
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void physicalTableCustomSqlKeepsUnboundIssuesMappedToItsPersonnel(boolean deleted) {
+        currentSql("source_a", "source_a", deleted);
+        long id = issue("source_a", FIRST_BATCH, "legacy");
+
+        assertEquals(java.util.Set.of("source_a"),
+                dao.customSqlComparisonCodes(List.of("SOURCE_A", "source_b")));
+        assertEquals("贷款组", item(id, "owner_a").get("domain"));
+        assertEquals("开发甲(dev_a)", item(id, "owner_a").get("owner"));
+        assertEquals(true, item(id, "owner_a").get("canReview"));
+        assertEquals(false, item(id, "owner_b").get("canReview"));
+        assertEquals(true, item(id, "dev_a").get("canEditPlanDate"));
+        assertEquals(false, item(id, "dev_b").get("canEditPlanDate"));
+        assertEquals(1L, dao.list(Map.of("domains", List.of("贷款组"))).get("total"));
+        assertEquals(0L, dao.list(Map.of("domains", List.of("存款组"))).get("total"));
+        assertEquals("贷款组", dao.metadata("source_a").get("domain"));
+        var people = dao.technologyOwners(List.of(new ReplayDatabaseIssueDao.TableIdentity("source_a", FIRST_BATCH)));
+        assertEquals(1, people.size());
+        assertEquals("dev_a", people.get(0).developerUsernames());
+    }
+
+    @Test
+    void historicalSqlAliasStillRequiresASelectedVersionAfterRegistrationUsesPhysicalTable() {
+        currentSql("source_a", "source_a", false);
+        snapshot(version("v1"), "base", "source_a");
+
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> issues.importFile(aliasFile(), null, actor("dev_a"), null, null));
+
+        assertTrue(error.getMessage().contains("必须关联登记版本"));
+        assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue", Long.class));
+        assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_batch", Long.class));
+        assertEquals(java.util.Set.of(CODE, "source_a"),
+                dao.customSqlComparisonCodes(List.of(CODE.toUpperCase(), "SOURCE_A", "source_b")));
+    }
+
+    @Test
+    void unboundHistoricalSqlAliasNeverUsesPhysicalPersonnelAfterRegistrationUsesPhysicalTable() {
+        currentSql("source_a", "source_a", false);
+        snapshot(version("v1"), "base", "source_a");
+        long id = issue(CODE, FIRST_BATCH, "unbound");
+
+        assertEquals("", item(id, "owner_b").get("domain"));
+        assertEquals("", item(id, "owner_b").get("owner"));
+        assertEquals(false, item(id, "owner_b").get("canReview"));
+        assertEquals(false, item(id, "dev_b").get("canEditPlanDate"));
+        assertEquals(0L, dao.list(Map.of("domains", List.of("错误映射"))).get("total"));
+        assertTrue(dao.distinct("domain_name").isEmpty());
+        assertEquals(List.of(Map.of("value", "", "count", 1L)),
+                dao.filterOptions("domain", Map.of()).get("items"));
+        assertTrue(dao.metadata(CODE).isEmpty());
+        assertTrue(dao.technologyOwners(List.of(new ReplayDatabaseIssueDao.TableIdentity(CODE, FIRST_BATCH))).isEmpty());
+    }
+
+    @Test
+    void boundHistoricalSqlAliasKeepsFrozenPersonnelAfterRegistrationUsesPhysicalTable() {
+        currentSql("source_a", "source_a", false);
+        long version = version("v1");
+        snapshot(version, "base", "source_a");
+
+        issues.importFile(aliasFile(), null, actor("dev_a"), null, "v1");
+
+        assertEquals(version, dao.batchRegistrationVersionId(FIRST_BATCH));
+        var rows = dao.current();
+        assertFalse(rows.isEmpty());
+        for (var row : rows) {
+            long id = ((Number) row.get("id")).longValue();
+            assertEquals("贷款组", item(id, "owner_a").get("domain"));
+            assertEquals("开发甲(dev_a)", item(id, "owner_a").get("owner"));
+            assertEquals(true, item(id, "dev_a").get("canEditPlanDate"));
+            assertEquals(false, item(id, "dev_b").get("canEditPlanDate"));
+        }
+        assertEquals("贷款组", dao.metadata(CODE, version).get("domain"));
+        var people = dao.technologyOwners(List.of(new ReplayDatabaseIssueDao.TableIdentity(CODE, FIRST_BATCH)));
+        assertEquals(1, people.size());
+        assertEquals("dev_a", people.get(0).developerUsernames());
+    }
+
+    private static MockMultipartFile aliasFile() {
+        try (var workbook = new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
+            var tableSheet = workbook.createSheet("表明细");
+            var tableHeaders = tableSheet.createRow(0);
+            var headers = List.of("表", "仅ccbs存在", "仅528存在", "主键相同、字段不同", "批次号");
+            for (int index = 0; index < headers.size(); index++) {
+                tableHeaders.createCell(index).setCellValue(headers.get(index));
+            }
+            var table = tableSheet.createRow(1);
+            table.createCell(0).setCellValue(CODE);
+            table.createCell(1).setCellValue(1);
+            table.createCell(2).setCellValue(0);
+            table.createCell(3).setCellValue(1);
+            table.createCell(4).setCellValue(FIRST_BATCH);
+
+            var fieldSheet = workbook.createSheet("表字段明细");
+            var fieldHeaders = fieldSheet.createRow(0);
+            var names = List.of("表", "字段名称", "差异数量", "批次号");
+            for (int index = 0; index < names.size(); index++) {
+                fieldHeaders.createCell(index).setCellValue(names.get(index));
+            }
+            var field = fieldSheet.createRow(1);
+            field.createCell(0).setCellValue(CODE);
+            field.createCell(1).setCellValue("value");
+            field.createCell(2).setCellValue(1);
+            field.createCell(3).setCellValue(FIRST_BATCH);
+            workbook.write(out);
+            return new MockMultipartFile("file", "database-issues.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", out.toByteArray());
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
     private void person(String source, String domain, String developer, String developerName, String owner, String ownerName) {
         jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,developer_usernames,developer_display,"
                 + "technology_owner_usernames,technology_owner_display,imported_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
@@ -167,10 +285,14 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
     }
 
     private void currentSql(String source, boolean deleted) {
+        currentSql(CODE, source, deleted);
+    }
+
+    private void currentSql(String code, String source, boolean deleted) {
         jdbc.update("INSERT INTO dii_replay_db_compare_registration(schema_name,table_name,domain_name,registered_date,deleted,"
                 + "created_by,created_name,created_at,updated_by,updated_name,updated_at,registration_type,source_table_name,custom_sql,result_columns_json) "
                 + "VALUES ('base',?,'旧领域',CURRENT_DATE,?,'u','User',CURRENT_TIMESTAMP,'u','User',CURRENT_TIMESTAMP,'CUSTOM_SQL',?,'SELECT 1','[]')",
-                CODE, deleted, source);
+                code, deleted, source);
     }
 
     private long version(String name) {

@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.dbissue;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
@@ -72,8 +73,17 @@ public class ReplayDatabaseIssueDao {
     private static final String UNBOUND_SOURCE_SQL = """
             CASE WHEN EXISTS (SELECT 1 FROM dii_replay_db_compare_registration current_registration
                                WHERE LOWER(current_registration.table_name)=LOWER(i.table_name)
-                                 AND current_registration.registration_type='CUSTOM_SQL') THEN NULL
+                                 AND current_registration.registration_type='CUSTOM_SQL'
+                                 AND LOWER(TRIM(COALESCE(current_registration.source_table_name,'')))<>
+                                     LOWER(TRIM(current_registration.table_name))) %s THEN NULL
                  ELSE i.table_name END
+            """;
+    private static final String HISTORICAL_ALIAS_SQL = """
+            OR EXISTS (SELECT 1 FROM dii_replay_db_compare_version_table historical_registration
+                        WHERE LOWER(historical_registration.table_name)=LOWER(i.table_name)
+                          AND historical_registration.registration_type='CUSTOM_SQL'
+                          AND LOWER(TRIM(COALESCE(historical_registration.source_table_name,'')))<>
+                              LOWER(TRIM(historical_registration.table_name)))
             """;
     private static final String ISSUE_SOURCE_SQL = """
             CASE WHEN binding.registration_version_id IS NOT NULL THEN
@@ -83,14 +93,7 @@ public class ReplayDatabaseIssueDao {
                    WHERE snapshot.version_id=binding.registration_version_id
                      AND LOWER(snapshot.table_name)=LOWER(i.table_name))
                  ELSE %s END
-            """.formatted(FROZEN_SOURCE_SQL, UNBOUND_SOURCE_SQL);
-    private static final String ISSUE_FROM = " FROM dii_replay_database_issue i "
-            + "LEFT JOIN dii_replay_database_issue_batch binding ON binding.batch_no=i.batch_no "
-            + "LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER("
-            + ISSUE_SOURCE_SQL + ")";
-    private static final String UNBOUND_ISSUE_FROM = " FROM dii_replay_database_issue i "
-            + "LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER("
-            + UNBOUND_SOURCE_SQL + ")";
+            """;
     private static final String VISIBLE_ISSUE_SQL="i.issue_status<>'不参与比对'";
     // Automatic repairs retain the last actual batch_no, so it also covers rows without import history.
     private static final String OCCURRENCES_SQL="SELECT issue_id AS issue_row_id,batch_no FROM dii_replay_database_issue_history WHERE import_event=1 AND incoming_snapshot IS NOT NULL UNION SELECT id AS issue_row_id,batch_no FROM dii_replay_database_issue";
@@ -245,23 +248,74 @@ public class ReplayDatabaseIssueDao {
                                  JOIN dii_replay_database_issue_batch issue_batch ON issue_batch.batch_no=issue_row.batch_no
                                 WHERE issue_batch.registration_version_id IS NOT NULL)
                 """, Boolean.class);
-        return Boolean.TRUE.equals(hasBoundIssues) ? ISSUE_FROM : UNBOUND_ISSUE_FROM;
+        String unboundSource = UNBOUND_SOURCE_SQL.formatted(hasRegistrationVersionTable() ? HISTORICAL_ALIAS_SQL : "");
+        boolean bound = Boolean.TRUE.equals(hasBoundIssues);
+        String source = bound ? ISSUE_SOURCE_SQL.formatted(FROZEN_SOURCE_SQL, unboundSource) : unboundSource;
+        return " FROM dii_replay_database_issue i "
+                + (bound ? "LEFT JOIN dii_replay_database_issue_batch binding ON binding.batch_no=i.batch_no " : "")
+                + "LEFT JOIN dii_replay_database_table_person registration ON registration.table_name=LOWER("
+                + source + ")";
     }
     public Map<String, String> metadata(String comparisonCode) {
         return metadata(new TableIdentity(comparisonCode));
     }
 
-    /** Soft-deleted SQL registrations retain their permanent comparison identity. */
+    /** Current SQL names and historical aliases require a selected registration version on import. */
     public Set<String> customSqlComparisonCodes(Collection<String> comparisonCodes) {
         List<String> codes = comparisonCodes.stream().map(code -> new TableIdentity(code).tableName())
                 .distinct().toList();
         if (codes.isEmpty()) {
             return Set.of();
         }
-        return new LinkedHashSet<>(jdbc.queryForList(
+        Set<String> result = new LinkedHashSet<>(jdbc.queryForList(
                 "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE registration_type='CUSTOM_SQL' "
                         + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ")",
                 String.class, codes.toArray()));
+        result.addAll(historicalSqlAliasCodes(codes));
+        return result;
+    }
+
+    private Set<String> customSqlAliasCodes(Collection<String> comparisonCodes) {
+        List<String> codes = comparisonCodes.stream().map(code -> new TableIdentity(code).tableName())
+                .distinct().toList();
+        if (codes.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> result = new LinkedHashSet<>(jdbc.queryForList(
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE registration_type='CUSTOM_SQL' "
+                        + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ") "
+                        + "AND LOWER(TRIM(COALESCE(source_table_name,'')))<>LOWER(TRIM(table_name))",
+                String.class, codes.toArray()));
+        result.addAll(historicalSqlAliasCodes(codes));
+        return result;
+    }
+
+    private Set<String> historicalSqlAliasCodes(List<String> codes) {
+        if (!hasRegistrationVersionTable()) {
+            return Set.of();
+        }
+        return new LinkedHashSet<>(jdbc.queryForList(
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_version_table WHERE registration_type='CUSTOM_SQL' "
+                        + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ") "
+                        + "AND LOWER(TRIM(COALESCE(source_table_name,'')))<>LOWER(TRIM(table_name))",
+                String.class, codes.toArray()));
+    }
+
+    /** Legacy unbound issues remain usable before the optional registration-version tables are installed. */
+    private boolean hasRegistrationVersionTable() {
+        return Boolean.TRUE.equals(jdbc.execute((ConnectionCallback<Boolean>) connection -> {
+            DatabaseMetaData metadata = connection.getMetaData();
+            String tableName = "dii_replay_db_compare_version_table";
+            String pattern = metadata.storesUpperCaseIdentifiers() ? tableName.toUpperCase(Locale.ROOT) : tableName;
+            try (ResultSet tables = metadata.getTables(connection.getCatalog(), connection.getSchema(), pattern, null)) {
+                while (tables.next()) {
+                    if (tableName.equalsIgnoreCase(tables.getString("TABLE_NAME"))) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }));
     }
 
     /** Import already has a selected version before the new batch binding is persisted. */
@@ -336,8 +390,8 @@ public class ReplayDatabaseIssueDao {
         }
         if (!unbound.isEmpty()) {
             List<String> codes = unbound.stream().map(TableIdentity::tableName).distinct().toList();
-            Set<String> sqlCodes = customSqlComparisonCodes(codes);
-            unbound.stream().filter(identity -> !sqlCodes.contains(identity.tableName()))
+            Set<String> sqlAliases = customSqlAliasCodes(codes);
+            unbound.stream().filter(identity -> !sqlAliases.contains(identity.tableName()))
                     .forEach(identity -> result.put(identity, new ResolvedSource(identity.tableName(), null)));
         }
         return result;

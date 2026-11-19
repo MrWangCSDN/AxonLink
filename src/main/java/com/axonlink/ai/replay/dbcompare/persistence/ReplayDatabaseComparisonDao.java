@@ -1003,24 +1003,30 @@ public class ReplayDatabaseComparisonDao {
 
     public boolean updateCustomSqlRegistration(
             long id, long expectedVersion, ReplayDbCompareRegistration target) {
+        return updateCustomSqlRegistration(id, expectedVersion, target, false);
+    }
+
+    public boolean updateCustomSqlRegistration(
+            long id, long expectedVersion, ReplayDbCompareRegistration target, boolean expectedDeleted) {
         if (target.customSql() == null) {
             throw new IllegalArgumentException("自定义SQL定义不能为空");
         }
         return jdbc.update("""
                         UPDATE dii_replay_db_compare_registration
-                           SET table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
+                           SET table_name=?,table_comment=?,domain_name=?,group_owner_emp_no=?,group_owner_name=?,
                                registered_date=?,reviser_emp_no=?,reviser_username=?,reviser_name=?,
                                updated_by=?,updated_name=?,updated_at=?,where_condition_json=NULL,compare_limit=?,
                                order_by_primary_keys_json=?,partition_num=?,sample_limit=?,comparison_key_json=?,
-                               custom_sql=?,result_columns_json=?,version=version+1
-                         WHERE id=? AND version=? AND deleted=0 AND registration_type='CUSTOM_SQL'
-                           AND source_table_name=?
-                        """, target.tableComment(), target.domainName(), target.groupOwnerEmpNo(), target.groupOwnerName(),
+                               registration_type='CUSTOM_SQL',source_table_name=?,custom_sql=?,result_columns_json=?,
+                               deleted=0,deleted_reason=NULL,deleted_by=NULL,deleted_at=NULL,version=version+1
+                         WHERE id=? AND version=? AND deleted=?
+                           AND LOWER(TRIM(COALESCE(NULLIF(source_table_name,''),table_name)))=?
+                        """, target.tableName(), target.tableComment(), target.domainName(), target.groupOwnerEmpNo(), target.groupOwnerName(),
                 Date.valueOf(target.registeredDate()), target.reviserEmpNo(), target.reviserUsername(), target.reviserName(),
                 target.updatedBy(), target.updatedName(), Timestamp.valueOf(target.updatedAt()), target.compareLimit(),
                 encodeOrderingPrimaryKeys(target.orderingPrimaryKeyNames()), target.partitionNum(), target.sampleLimit(),
-                ReplayDatabaseComparisonKeys.encode(target.comparisonKey()), target.customSql().sql(),
-                ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(target.customSql()), id, expectedVersion,
+                ReplayDatabaseComparisonKeys.encode(target.comparisonKey()), target.sourceTableName(), target.customSql().sql(),
+                ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(target.customSql()), id, expectedVersion, expectedDeleted,
                 target.sourceTableName()) == 1;
     }
 

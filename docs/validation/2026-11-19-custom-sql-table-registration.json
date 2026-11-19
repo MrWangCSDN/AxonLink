@@ -1,0 +1,324 @@
+{
+  "date": "2026-11-19",
+  "backend_java": 17,
+  "backend_command": "mvn -q test",
+  "backend_totals": {
+    "tests": 1563,
+    "failures": 9,
+    "errors": 31,
+    "skipped": 6
+  },
+  "baseline_exact": true,
+  "unexpected": [],
+  "resolved": [],
+  "known_failures": [
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "anActualAppearanceSurvivesAnAbsentOverwriteOfTheSameBatchAndLaterAppearance",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "candidateSearchEscapesWildcardsAndRejectsInvalidFieldAndCounts",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "collaboratorDisplayFiltersCombineWithOtherColumnsAndSharedPagingSortingAndExport",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "currentRegistrationDrivesDomainOwnerFilteringOptionsExportAndMutationResponsesWithoutReimport",
+      "failure",
+      "java.lang.AssertionError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "differenceCountSortingIsNumericStableFilteredAndSharedByPagedListsAndExports",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "exactRepeatedValuesPreserveCommasAndOtherColumns",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "exportRejectsInvalidRepeatedCriteriaAsBadRequest",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "exportShowsCurrentRegisteredTechnologyOwnerAndReviserSeparately",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "exportUsesTheCurrentVisibleColumnsAndMergedTableNames",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "facetsReportTruncationAndCountsWithoutScanningOnlyTheCurrentPage",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "facetsUseAllScopedRowsExcludeTheirOwnFilterAndKeepBlankCandidates",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "historicalBatchFiltersAndFacetsCountDistinctIssuesAcrossAllOccurrences",
+      "failure",
+      "java.lang.AssertionError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "importListEditAndTrackUseSeparateLevelsAndTypes",
+      "failure",
+      "java.lang.AssertionError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "listPermissionsResolveTechnologyOwnersOncePerPageAndDoNotUseNamesAsIdentifiers",
+      "failure",
+      "java.lang.AssertionError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "mergedTableFacetSearchesChineseNameAndIncludesDeterministicDisplayLabel",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "occurrenceBatchesFallBackToCurrentBatchWhenHistoryIsMissing",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "occurrenceBatchesIncludeEveryActualImportNewestFirstAndExportThem",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "oldReleaseProtectsPendingVerificationDespiteNewBatchDate",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "postFilteringAndExportSupportSelectionsLargerThanNormalUrlLimits",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "protectedPendingIssuesStillAutoFixWhenAbsentAsRequested",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "rejectsBlankNumericFilterValues",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "repairDateFiltersAndCandidatesUseAllScopedRowsAndShareSortedExportCriteria",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "repeatedFiltersApplyOrWithinColumnsAndAndBetweenColumnsBeforePagingAndExport",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "reviewFacetAndExportUseTheThreeDisplayStatusesWithoutChangingRawValues",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "saveAtReleaseTimeCanBeReopened",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "saveBeforeReleaseTimeCanBeReopened",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueControllerTest",
+      "tableTechnologyOwnerControlsReviewAndReturnedRowPermissions",
+      "failure",
+      "java.lang.AssertionError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "acceptsReorderedColumnsAndRepeatedHeadersButRejectsDuplicateTables",
+      "failure",
+      "org.opentest4j.AssertionFailedError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "batchAfterAutoRepairCannotBeRolledBackToAnEarlierOccurrence",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "disappearsAsFixedAndReappearsAsNewWithInheritedContent",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "firstImportCreatesNewIssuesAndUsesExistingRegistrationMetadataForOldFiles",
+      "failure",
+      "org.opentest4j.AssertionFailedError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "importsIgnoreMissingOrConflictingReportDomainAndOwnerAndSnapshotCurrentRegistration",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "importsOfOtherSuccessfulTablesDoNotRepairUncoveredTables",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "noActionReviewRequiresPermissionAndPreservesApprovalOnLaterImports",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "parsesBothDirectionsAndFieldIdsIgnoringReportOwnerAndKeepingZeroCountScope",
+      "failure",
+      "org.opentest4j.AssertionFailedError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "parsesRealBdExportIncludingDirectionTitleAndAppendedBatch",
+      "failure",
+      "org.opentest4j.AssertionFailedError"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "preservesHumanContentAndReopensOnlyWhenBatchDateIsAfterManualSaveDate",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "protectsSameDayBatchWhenImportedOnALaterSystemDate",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "rejectsStaleVersionAndEarlierBatchWithoutChangingCurrentOrHistory",
+      "error",
+      "java.lang.NullPointerException"
+    ],
+    [
+      "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueTest",
+      "repeatBatchUpdatesOriginalSnapshotWithoutDuplicatingHistory",
+      "error",
+      "java.lang.NullPointerException"
+    ]
+  ],
+  "related_suites": [
+    {
+      "name": "com.axonlink.ai.replay.dbcompare.controller.ReplayDatabaseComparisonControllerTest",
+      "tests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonDaoTest",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonAuditDiffTest",
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonCustomSqlAnalyzerTest",
+      "tests": 38,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonCustomSqlServiceTest",
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueCustomSqlIdentityTest",
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "name": "com.axonlink.ai.replay.dbissue.ReplayDatabaseIssueRegistrationVersionTest",
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "frontend_command": "npm test -- --exclude '**/.worktrees/**' --exclude '**/.claude-worktrees/**' --maxWorkers=2",
+  "frontend": {
+    "files": 37,
+    "tests": 696,
+    "failed": 0,
+    "commit": "4c3d379"
+  },
+  "frontend_build": {
+    "command": "npm run build",
+    "exit_code": 0,
+    "output": "src/main/resources/static"
+  },
+  "review_fixes": [
+    "Explicit same-ID SQL reregistration after soft deletion, version/deleted state guards and REREGISTER audit",
+    "Historical SQL aliases still require selected registration versions and cannot fall back to unrelated personnel"
+  ],
+  "docs_pr": "https://github.com/MrWangCSDN/obsidian-vault/pull/16"
+}

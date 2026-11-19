@@ -37,7 +37,7 @@ public class ReplayDatabaseComparisonAuditDiff {
         }
 
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
-        addModify(details, "tableComment", after.customSql() == null ? "表中文名" : "比对项名称",
+        addModify(details, "tableComment", "表中文名",
                 text(before.tableComment()), text(after.tableComment()));
         addModify(details, "domainName", "领域",
                 text(before.domainName()), text(after.domainName()));
@@ -62,7 +62,7 @@ public class ReplayDatabaseComparisonAuditDiff {
             throw new IllegalArgumentException("新增或重新登记必须提供修改后状态");
         }
         List<ReplayDbCompareAuditDetailDraft> details = new ArrayList<>();
-        addAdded(details, "tableComment", after.customSql() == null ? "表中文名" : "比对项名称", text(after.tableComment()));
+        addAdded(details, "tableComment", "表中文名", text(after.tableComment()));
         addAdded(details, "domainName", "领域", text(after.domainName()));
         addAdded(details, "groupOwner", "科技负责人", owner(after));
         addAdded(details, "registeredDate", "登记日期", value(after.registeredDate()));
