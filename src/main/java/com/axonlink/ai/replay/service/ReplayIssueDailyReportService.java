@@ -127,7 +127,8 @@ public class ReplayIssueDailyReportService {
         var calculated = calculator.calculate(
                 snapshot.previousSummaries(), snapshot.previousIssues(), snapshot.previousComparisons(),
                 snapshot.currentSummaries(), snapshot.currentIssues(), snapshot.comparisons(),
-                snapshot.previousMetricIssues(), snapshot.currentMetricIssues(), snapshot.context());
+                snapshot.previousMetricIssues(), snapshot.currentMetricIssues(),
+                snapshot.previousResolutionIssues(), snapshot.context());
         ReplayReportSummaryView summaryView = summaryViewFactory.create(
                 ReplayReportPeriod.DAILY, null, batchNo, calculated, snapshot.context());
         byte[] workbook = workbookWriter.write(calculated, summaryView, snapshot.comparisons(),
@@ -153,6 +154,9 @@ public class ReplayIssueDailyReportService {
         List<String> notices = new ArrayList<>();
         if (previous != null) notices.addAll(previous.notices());
         notices.addAll(current.notices());
+        if (previous != null && previous.availability().issueStatisticsAvailable()) {
+            notices.add(ReplayReportCalculationDataLoader.RESOLUTION_NOTICE);
+        }
         var context = new ReplayReportCalculationContext(
                 previous == null ? ReplayReportCalculationContext.Side.complete() : previous.availability(),
                 current.availability(), notices);
@@ -167,7 +171,8 @@ public class ReplayIssueDailyReportService {
                 dailyDataDao.findCoverageSummaries(batchNo),
                 dailyDataDao.findCoverageDetails(batchNo),
                 previous == null ? List.of() : previous.metricIssues(),
-                current.metricIssues(), context);
+                current.metricIssues(),
+                previous == null ? List.of() : previous.resolutionIssues(), context);
     }
 
     private static void validateBatchNo(String batchNo) {
@@ -211,6 +216,7 @@ public class ReplayIssueDailyReportService {
             List<ReplayCoverageDetailRow> coverageDetails,
             List<ReplayDailyIssueStatisticRow> previousMetricIssues,
             List<ReplayDailyIssueStatisticRow> currentMetricIssues,
+            List<ReplayDailyIssueStatisticRow> previousResolutionIssues,
             ReplayReportCalculationContext context) {
 
         private ReportSnapshot {
@@ -224,6 +230,7 @@ public class ReplayIssueDailyReportService {
             coverageDetails = List.copyOf(coverageDetails);
             previousMetricIssues = List.copyOf(previousMetricIssues);
             currentMetricIssues = List.copyOf(currentMetricIssues);
+            previousResolutionIssues = List.copyOf(previousResolutionIssues);
             context = Objects.requireNonNull(context);
         }
     }

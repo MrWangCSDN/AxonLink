@@ -139,7 +139,8 @@ public class ReplayWeeklyReportService {
         var calculated = calculator.calculate(
                 snapshot.startSummaries(), snapshot.startIssues(), snapshot.startComparisons(),
                 snapshot.endSummaries(), snapshot.endIssues(), snapshot.comparisons(),
-                snapshot.startMetrics().metricIssues(), snapshot.endMetrics().metricIssues(), snapshot.context());
+                snapshot.startMetrics().metricIssues(), snapshot.endMetrics().metricIssues(),
+                snapshot.startMetrics().resolutionIssues(), snapshot.context());
         ReplayReportSummaryView summaryView = summaryViewFactory.create(
                 ReplayReportPeriod.WEEKLY, startBatchNo, endBatchNo, calculated, snapshot.context());
         byte[] bytes = workbookWriter.write(calculated, summaryView, snapshot.comparisons(),
@@ -169,6 +170,9 @@ public class ReplayWeeklyReportService {
         notices.add("周报按各批次数据选择新旧算法；完整新数据按同类全部批次最新审核／修复结论回算，历史数据沿用原算法。数量分别取所选两个批次，不累加历史数量。");
         notices.addAll(start.notices());
         notices.addAll(end.notices());
+        if (start.availability().issueStatisticsAvailable()) {
+            notices.add(ReplayReportCalculationDataLoader.RESOLUTION_NOTICE);
+        }
         var context = new ReplayReportCalculationContext(start.availability(), end.availability(), notices);
         return new ReportSnapshot(start.summaries(), start.historicalIssues(), start.comparisons(),
                 end.summaries(), end.historicalIssues(), end.comparisons(),

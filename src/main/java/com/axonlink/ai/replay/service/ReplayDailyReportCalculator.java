@@ -73,6 +73,21 @@ public final class ReplayDailyReportCalculator {
                                       List<ReplayDailyIssueStatisticRow> previousMetricIssues,
                                       List<ReplayDailyIssueStatisticRow> currentMetricIssues,
                                       ReplayReportCalculationContext context) {
+        return calculate(previousSummaries, previousIssues, previousComparisons, currentSummaries, currentIssues,
+                currentComparisons, previousMetricIssues, currentMetricIssues, previousIssues, context);
+    }
+
+    /** Resolution uses latest states for the fixed historical reportable cohort only. */
+    public CalculatedReport calculate(List<ReplayDailySummaryRow> previousSummaries,
+                                      List<ReplayDailyIssueStatisticRow> previousIssues,
+                                      List<ReplayInterfaceComparisonRow> previousComparisons,
+                                      List<ReplayDailySummaryRow> currentSummaries,
+                                      List<ReplayDailyIssueStatisticRow> currentIssues,
+                                      List<ReplayInterfaceComparisonRow> currentComparisons,
+                                      List<ReplayDailyIssueStatisticRow> previousMetricIssues,
+                                      List<ReplayDailyIssueStatisticRow> currentMetricIssues,
+                                      List<ReplayDailyIssueStatisticRow> previousResolutionIssues,
+                                      ReplayReportCalculationContext context) {
         List<ReplayDailySummaryRow> safePreviousSummaries = copy(previousSummaries);
         List<ReplayDailyIssueStatisticRow> safePreviousIssues = copy(previousIssues);
         List<ReplayDailySummaryRow> safeCurrentSummaries = copy(currentSummaries);
@@ -84,8 +99,12 @@ public final class ReplayDailyReportCalculator {
                 indexIssues(reportableIssues(safePreviousIssues));
         Map<String, List<ReplayDailyIssueStatisticRow>> reportableCurrentByDomain =
                 indexIssues(reportableIssues(safeCurrentIssues));
+        Map<Long, ReplayDailyIssueStatisticRow> latestResolutionById = new LinkedHashMap<>();
+        for (ReplayDailyIssueStatisticRow issue : copy(previousResolutionIssues)) {
+            latestResolutionById.putIfAbsent(issue.issueId(), issue);
+        }
         Map<String, PreviousUnresolved> unresolvedByDomain = unresolvedByDomain(
-                safePreviousSummaries, reportablePreviousByDomain);
+                safePreviousSummaries, reportablePreviousByDomain, latestResolutionById);
         PreviousUnresolved previousUnresolved = totalPreviousUnresolved(
                 safePreviousSummaries, reportablePreviousByDomain, unresolvedByDomain);
 
@@ -286,13 +305,14 @@ public final class ReplayDailyReportCalculator {
 
     private Map<String, PreviousUnresolved> unresolvedByDomain(
             List<ReplayDailySummaryRow> previousSummaries,
-            Map<String, List<ReplayDailyIssueStatisticRow>> previousByDomain) {
+            Map<String, List<ReplayDailyIssueStatisticRow>> previousByDomain,
+            Map<Long, ReplayDailyIssueStatisticRow> latestResolutionById) {
         Map<String, PreviousUnresolved> result = new LinkedHashMap<>();
         for (ReplayDailySummaryRow summary : previousSummaries) {
             String domain = displayDomain(summary.domain());
             List<ReplayDailyIssueStatisticRow> issues = previousByDomain.getOrDefault(domain, List.of());
             result.put(domain, previousUnresolved(
-                    issues, issues.size()));
+                    issues, issues.size(), latestResolutionById));
         }
         return result;
     }
@@ -321,16 +341,18 @@ public final class ReplayDailyReportCalculator {
                 dataMigrationIssue, codeNotReleased);
     }
 
-    private PreviousUnresolved previousUnresolved(List<ReplayDailyIssueStatisticRow> issues, long issueTotal) {
+    private PreviousUnresolved previousUnresolved(List<ReplayDailyIssueStatisticRow> issues, long issueTotal,
+                                                  Map<Long, ReplayDailyIssueStatisticRow> latestResolutionById) {
         long unanalyzed = 0L;
         long analyzedPendingFix = 0L;
         long notFullyFixed = 0L;
         long dataMigrationIssue = 0L;
         long codeNotReleased = 0L;
         for (ReplayDailyIssueStatisticRow issue : issues) {
-            String status = normalizeText(issue.issueStatus());
+            ReplayDailyIssueStatisticRow resolutionState = resolutionState(issue, latestResolutionById);
+            String status = normalizeText(resolutionState.issueStatus());
             if (NEW.equals(status)) {
-                if (issue.reopenedAfterFixed()) {
+                if (resolutionState.reopenedAfterFixed()) {
                     notFullyFixed++;
                 } else {
                     unanalyzed++;
@@ -347,6 +369,19 @@ public final class ReplayDailyReportCalculator {
         }
         return PreviousUnresolved.of(issueTotal, unanalyzed, analyzedPendingFix, notFullyFixed,
                 dataMigrationIssue, codeNotReleased);
+    }
+
+    private ReplayDailyIssueStatisticRow resolutionState(ReplayDailyIssueStatisticRow historical,
+                                                         Map<Long, ReplayDailyIssueStatisticRow> latestResolutionById) {
+        ReplayDailyIssueStatisticRow latest = latestResolutionById.get(historical.issueId());
+        if (latest == null) {
+            return historical;
+        }
+        // Missing or unrecognized latest states must not silently turn historical unresolved issues into resolved ones.
+        return switch (normalizeText(latest.issueStatus())) {
+            case NEW, "打开", "重新打开", "延后修复", "修复待验证", "已修复", NO_ACTION -> latest;
+            default -> historical;
+        };
     }
 
     private IssueStatistics issueStatistics(List<ReplayDailyIssueStatisticRow> issues, long issueTotal) {

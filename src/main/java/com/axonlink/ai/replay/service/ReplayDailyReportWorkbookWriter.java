@@ -120,7 +120,7 @@ public class ReplayDailyReportWorkbookWriter {
         int headerRow = startRow + 1;
         writeSummaryHeaderBase(sheet, headerRow, lastColumn, styles.upperHeader(), styles.classificationHeader(), 13);
         mergeParent(sheet, headerRow, 4, 10, "交易核对分类统计", styles.upperHeader());
-        mergeParent(sheet, headerRow, 14, 23, "已解决问题分类统计", styles.classificationHeader());
+        mergeParent(sheet, headerRow, 14, 23, "已分析问题分类统计", styles.classificationHeader());
         writeCommonVerticalHeaders(sheet, headerRow, styles.upperHeader(), styles.upperHeader());
         setVerticalHeader(sheet, headerRow, 13, "问题总数", styles.classificationHeader());
         setVerticalHeader(sheet, headerRow, 24, "问题排查进度", styles.classificationHeader());

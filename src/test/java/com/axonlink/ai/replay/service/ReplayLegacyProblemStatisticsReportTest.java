@@ -10,6 +10,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueStatus;
 import com.axonlink.ai.replay.dto.ReplayReportSummaryView;
 import com.axonlink.ai.replay.persistence.ReplayDailyDataDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
+import com.axonlink.ai.replay.persistence.ReplayWeeklyReportDao;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
@@ -25,6 +26,7 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayLegacyProblemStatisticsReportTest {
     private static final String PREVIOUS = "RPT20261103-090016-9885";
@@ -139,7 +141,7 @@ class ReplayLegacyProblemStatisticsReportTest {
     }
 
     @Test
-    void keepsCompleteFrozenStatisticsInsteadOfReplacingThemWithLegacyCurrentConclusions() throws Exception {
+    void keepsCompleteFrozenStatisticsButUsesLatestResolutionConclusions() throws Exception {
         saveBatch(PREVIOUS, PREVIOUS_AT, 1L);
         issueDao.beginBatchStatistics(PREVIOUS, PREVIOUS_AT);
         insertIssue(21L, PREVIOUS, "打开", "字段级", "字段", "0");
@@ -156,10 +158,65 @@ class ReplayLegacyProblemStatisticsReportTest {
             assertEquals(1d, previous.getCell(14).getNumericCellValue());
             assertEquals(0d, previous.getCell(15).getNumericCellValue());
             Row current = findBatch(sheet, CURRENT);
-            assertEquals(1d, current.getCell(14).getNumericCellValue());
-            assertEquals(0d, current.getCell(15).getNumericCellValue());
-            assertEquals(1d, current.getCell(17).getNumericCellValue());
+            assertEquals(0d, current.getCell(14).getNumericCellValue());
+            assertEquals(1d, current.getCell(15).getNumericCellValue());
+            assertEquals(0d, current.getCell(17).getNumericCellValue());
         }
+    }
+
+    @Test
+    void regeneratesDailyAndWeeklyProgressWithoutChangingTheFrozenCohortOrCachedDownloads() throws Exception {
+        saveBatch(PREVIOUS, PREVIOUS_AT, 2L);
+        issueDao.beginBatchStatistics(PREVIOUS, PREVIOUS_AT);
+        for (long id : List.of(71L, 72L)) {
+            insertIssue(id, PREVIOUS, "打开", "字段级", "字段" + id, "0");
+            issueDao.upsertOccurrenceBatch(id, "legacy-" + id, PREVIOUS, PREVIOUS_AT, ReplayIssueStatus.OPEN);
+        }
+        saveBatch(CURRENT, CURRENT_AT, 1L);
+        issueDao.beginBatchStatistics(CURRENT, CURRENT_AT);
+        insertIssue(73L, CURRENT, "打开", "字段级", "新增字段", "0");
+        issueDao.upsertOccurrenceBatch(73L, "legacy-73", CURRENT, CURRENT_AT, ReplayIssueStatus.OPEN);
+        var weekly = new ReplayWeeklyReportService(dailyDao, issueDao, new ReplayWeeklyReportDao(jdbc),
+                new ReplayDailyReportCalculator(), new ReplayDailyReportWorkbookWriter(), jdbc);
+        byte[] firstDaily = service.generate(CURRENT);
+        byte[] firstWeekly = weekly.generate(PREVIOUS, CURRENT).content();
+
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='已修复',issue_type='参数问题' WHERE id=71");
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='修复待验证' WHERE id=72");
+
+        assertArrayEquals(firstDaily, service.generate(CURRENT));
+        assertArrayEquals(firstWeekly, weekly.generate(PREVIOUS, CURRENT).content());
+        byte[] dailyBytes = service.regenerate(CURRENT);
+        var weeklyReport = weekly.regenerate(PREVIOUS, CURRENT);
+        var dailyView = new ReplayReportSummaryCodec().decode(
+                dailyDao.findReportSnapshot(CURRENT).orElseThrow().summaryViewJson());
+        var weeklyView = new ReplayReportSummaryCodec().decode(weeklyReport.summaryViewJson());
+
+        for (var view : List.of(dailyView, weeklyView)) {
+            assertEquals(1L, ((Number) view.totalRow().values().get("issueTotal")).longValue());
+            assertEquals(1L, ((Number) view.totalRow().values().get("previousUnresolvedTotal")).longValue());
+            assertEquals(1L, ((Number) view.totalRow().values().get("codeNotReleased")).longValue());
+            assertEquals(0, new BigDecimal("0.5").compareTo(
+                    new BigDecimal(view.totalRow().values().get("previousResolutionRate").toString())));
+            assertTrue(new ReplayReportMailHtmlRenderer().render("处理进展", List.of(view)).contains(">50.00%</td>"));
+        }
+        for (byte[] bytes : List.of(dailyBytes, weeklyReport.content())) {
+            try (var workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+                var sheet = workbook.getSheet("汇总信息");
+                var previous = findBatch(sheet, PREVIOUS);
+                assertEquals(2d, previous.getCell(13).getNumericCellValue());
+                assertEquals(2d, previous.getCell(14).getNumericCellValue(), "历史代码问题分类仍是2，不能改成最新参数类型");
+                var current = findBatch(sheet, CURRENT);
+                assertEquals(1d, current.getCell(14).getNumericCellValue());
+                assertEquals(0.5d, current.getCell(15).getNumericCellValue());
+                assertEquals(1d, current.getCell(20).getNumericCellValue());
+                assertTrue(java.util.stream.StreamSupport.stream(sheet.spliterator(), false)
+                        .flatMap(row -> java.util.stream.StreamSupport.stream(row.spliterator(), false))
+                        .anyMatch(cell -> "已分析问题分类统计".equals(cell.toString())));
+            }
+        }
+        assertEquals(List.of("打开", "打开"), issueDao.findBatchReportIssueStatistics(PREVIOUS).stream()
+                .map(row -> row.issueStatus()).toList(), "生成不能回写冻结的历史状态");
     }
 
     private void saveBatch(String batch, LocalDateTime at, long sourceIssueTotal) {

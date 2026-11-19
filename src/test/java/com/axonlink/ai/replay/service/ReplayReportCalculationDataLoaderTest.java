@@ -16,6 +16,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -54,6 +55,7 @@ class ReplayReportCalculationDataLoaderTest {
         assertEquals(1, result.historicalIssues().size());
         assertEquals(id, result.historicalIssues().get(0).issueId());
         assertEquals(0L, result.historicalIssues().get(0).affectedTransactionCount(), "旧问题统计与交易量隔离");
+        assertEquals(result.historicalIssues(), result.resolutionIssues(), "旧批次继续使用同批成员的当前结论");
         assertTrue(result.availability().noActionUnknownDomains().contains("公共组"));
         assertTrue(result.notices().get(0).contains("当前处理结论"));
     }
@@ -69,6 +71,7 @@ class ReplayReportCalculationDataLoaderTest {
         assertEquals(1, result.comparisons().size());
         assertTrue(result.historicalIssues().isEmpty());
         assertTrue(result.metricIssues().isEmpty());
+        assertTrue(result.resolutionIssues().isEmpty());
         assertFalse(result.availability().issueStatisticsAvailable());
         assertEquals(Set.of("公共组"), result.availability().noActionUnknownDomains());
         assertEquals(Set.of("公共组"), result.availability().breakdownUnknownDomains());
@@ -95,6 +98,60 @@ class ReplayReportCalculationDataLoaderTest {
         assertEquals(ReplayIssueReviewStatus.APPROVED, result.metricIssues().get(0).reviewStatus());
         assertTrue(result.availability().noActionUnknownDomains().isEmpty());
         assertEquals(Set.of("公共组"), result.availability().legacyRateDomains());
+    }
+
+    @Test
+    void frozenHistoricalStatisticsKeepTheirOriginalStatusAndQuantityWhileResolutionUsesCurrentConclusion() {
+        save(START, 100L, List.of(comparison(START, "6208", ReplayDailyRowType.DETAIL, 74L, 0L)));
+        long id = freezeOpenTransaction("frozen-open");
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='已修复',review_status='APPROVED',"
+                + "defect_repair_date='2026-11-04',affected_transaction_count='旧版影响笔数说明',group_name='变更组' WHERE id=?", id);
+
+        var result = loader.loadHistorical(START);
+
+        assertEquals("打开", result.historicalIssues().get(0).issueStatus());
+        assertEquals("公共组", result.historicalIssues().get(0).groupName());
+        assertEquals(9L, result.metricIssues().get(0).affectedTransactionCount());
+        assertTrue(result.availability().issueStatisticsAvailable());
+        assertTrue(result.availability().noActionUnknownDomains().isEmpty());
+        var resolution = result.resolutionIssues();
+        assertEquals(1, resolution.size());
+        assertEquals(id, resolution.get(0).issueId());
+        assertEquals("已修复", resolution.get(0).issueStatus());
+        assertEquals("变更组", resolution.get(0).groupName());
+        assertEquals(LocalDate.of(2026, 11, 4), resolution.get(0).defectRepairDate());
+        assertEquals(0L, resolution.get(0).affectedTransactionCount(), "当前结论不读取旧版文本影响笔数");
+        assertThrows(UnsupportedOperationException.class, resolution::clear);
+    }
+
+    @Test
+    void weeklyResolutionIncludesCurrentNoActionForExactBatchMembersWithoutBorrowingOtherIssues() {
+        save(START, 100L, List.of(comparison(START, "6208", ReplayDailyRowType.DETAIL, 74L, 0L)));
+        save(END, 200L, List.of(comparison(END, "6208", ReplayDailyRowType.DETAIL, 74L, 0L)));
+        long id = freezeOpenTransaction("moved-member");
+        jdbc.update("UPDATE dii_replay_issue SET batch_no=?,issue_status='无需处理',review_status='APPROVED',"
+                + "defect_repair_date='2026-11-04',affected_transaction_count='旧版影响笔数说明' WHERE id=?", END, id);
+        approvedTransaction("other-same-family", END, "25");
+        approvedTransaction("other-family", "DZ20261104-194516-0435", "30");
+
+        var result = loader.loadLatest(START, issueDao.findCurrentReportIssues(START, END));
+
+        assertEquals("打开", result.historicalIssues().get(0).issueStatus());
+        var resolution = result.resolutionIssues();
+        assertEquals(1, resolution.size(), "解决进度只读取起始批次成员，不扩到回放家族或另一家族");
+        assertEquals(id, resolution.get(0).issueId());
+        assertEquals("无需处理", resolution.get(0).issueStatus(), "当前无需处理仍须交给解决进度计算器判断");
+        assertEquals(ReplayIssueReviewStatus.APPROVED, resolution.get(0).reviewStatus());
+        assertEquals(0L, resolution.get(0).affectedTransactionCount());
+    }
+
+    @Test
+    void currentConclusionQueryFailurePropagatesAfterHistoricalSnapshotWasLoaded() {
+        save(START, 100L, List.of(comparison(START, "6208", ReplayDailyRowType.DETAIL, 74L, 0L)));
+        freezeOpenTransaction("current-query-error");
+        jdbc.execute("DROP TABLE dii_replay_issue_history");
+
+        assertThrows(DataAccessException.class, () -> loader.loadHistorical(START));
     }
 
     @Test
@@ -261,6 +318,15 @@ class ReplayReportCalculationDataLoaderTest {
                 batch, key, count, AT);
         long id = jdbc.queryForObject("SELECT id FROM dii_replay_issue WHERE issue_key=?", Long.class, key);
         issueDao.upsertOccurrenceBatch(id, key, batch, AT, ReplayIssueStatus.NO_ACTION);
+        return id;
+    }
+
+    private long freezeOpenTransaction(String key) {
+        long id = approvedTransaction(key, START, "9");
+        jdbc.update("UPDATE dii_replay_issue SET issue_status='打开',review_status='PENDING',defect_repair_date=NULL WHERE id=?", id);
+        issueDao.beginBatchStatistics(START, AT);
+        issueDao.upsertOccurrenceBatch(id, key, START, AT, ReplayIssueStatus.OPEN);
+        issueDao.beginBatchStatistics(END, AT.plusDays(1));
         return id;
     }
 

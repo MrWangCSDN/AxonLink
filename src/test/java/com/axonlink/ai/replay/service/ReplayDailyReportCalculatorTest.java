@@ -219,6 +219,116 @@ class ReplayDailyReportCalculatorTest {
     }
 
     @Test
+    void resolvesFrozenPreviousIssuesWithLatestStatusAndRetainsHistoricalStatistics() {
+        ReplayDailySummaryRow previous = summary("RPT-PREVIOUS", "公共组",
+                20L, 1L, 10L, 0L, "0.55", 99L);
+        ReplayDailyIssueStatisticRow historical = issue(1L, "公共组", false, "代码问题",
+                "交易级", "528成功ccbs失败", "打开", 7L, false);
+        ReplayDailyIssueStatisticRow latest = issue(1L, "存款组", true, "参数问题",
+                "字段级", "其他字段", "已修复", 99L, true);
+
+        CalculatedReport report = calculator.calculate(
+                List.of(previous), List.of(historical), comparisonMembership(List.of(previous), List.of(historical)),
+                List.of(summary("RPT-CURRENT", "公共组", 20L, 1L, 10L, 0L, "0.55", 0L)),
+                List.of(), List.of(), List.of(historical), List.of(), List.of(latest), null);
+
+        ReplayDailySummaryCalculatedRow previousRow = report.previousRows().get(0);
+        assertEquals(1L, previousRow.issueTotal());
+        assertEquals(1L, previousRow.codeIssueCount());
+        assertEquals(0L, previousRow.parameterIssueCount());
+        assertEquals(BigDecimal.ONE.setScale(8), previousRow.investigationProgress());
+        assertEquals(7L, previousRow.c528SuccessCcbsFail());
+        assertEquals(new BigDecimal("0.55000000"), previousRow.successRate());
+        assertEquals(new BigDecimal("0.55000000"), previousRow.matchPassRate());
+        assertEquals(0L, report.previousUnresolved().total());
+        assertEquals(BigDecimal.ONE.setScale(8), report.previousUnresolved().resolutionRate());
+        assertEquals(0L, report.currentRows().get(0).previousUnresolvedTotal());
+        assertEquals(BigDecimal.ONE.setScale(8), report.currentTotal().previousResolutionRate());
+    }
+
+    @Test
+    void mapsLatestResolutionStatesOntoFrozenDomainsAndWeightsTheHistoricalCohort() {
+        List<ReplayDailySummaryRow> previous = List.of(
+                summary("RPT-PREVIOUS", "公共组", 10L, 0L, 10L, 0L, "1", 0L),
+                summary("RPT-PREVIOUS", "沙箱-存款组", 30L, 0L, 30L, 0L, "1", 0L));
+        ReplayDailyIssueStatisticRow duplicate = issue(2L, "公共组", false, "代码问题",
+                "字段级", "任意", "打开", 1L, false);
+        List<ReplayDailyIssueStatisticRow> historical = List.of(
+                issue(1L, "公共组", false, "代码问题", "字段级", "任意", "打开", 1L, false),
+                duplicate, duplicate,
+                issue(3L, "公共组", false, "代码问题", "字段级", "任意", "打开", 1L, false),
+                issue(4L, "公共组", false, "代码问题", "字段级", "任意", "打开", 1L, false),
+                issue(5L, "存款组", true, "参数问题", "字段级", "任意", "打开", 1L, false),
+                issue(6L, "存款组", true, "参数问题", "字段级", "任意", "新建", 1L, false),
+                issue(7L, "存款组", true, "参数问题", "字段级", "任意", "打开", 1L, false),
+                issue(8L, "存款组", true, "参数问题", "字段级", "任意", "打开", 1L, false),
+                issue(9L, "存款组", true, "参数问题", "字段级", "任意", "打开", 1L, false),
+                issue(10L, "公共组", false, "合理差异", "字段级", "任意", "无需处理", 1L, false));
+        List<ReplayDailyIssueStatisticRow> latest = List.of(
+                issue(1L, "其他组", true, "外围问题", "字段级", "任意", "新建", 1L, false),
+                issue(2L, "其他组", true, "外围问题", "字段级", "任意", "打开", 1L, false),
+                issue(3L, "其他组", true, "外围问题", "字段级", "任意", "重新打开", 1L, false),
+                issue(4L, "其他组", true, "外围问题", "字段级", "任意", "延后修复", 1L, false),
+                issue(5L, "其他组", false, "外围问题", "字段级", "任意", "修复待验证", 1L, false),
+                issue(6L, "其他组", false, "外围问题", "字段级", "任意", "新建", 1L, true),
+                issue(7L, "其他组", false, "外围问题", "字段级", "任意", "已修复", 1L, false),
+                issue(8L, "其他组", false, "外围问题", "字段级", "任意", "无需处理", 1L, false),
+                issue(10L, "公共组", false, "合理差异", "字段级", "任意", "打开", 1L, false),
+                issue(99L, "公共组", false, "代码问题", "字段级", "任意", "新建", 1L, false));
+        List<ReplayDailySummaryRow> current = List.of(
+                summary("RPT-CURRENT", "公共组", 10L, 0L, 10L, 0L, "1", 0L),
+                summary("RPT-CURRENT", "沙箱-存款组", 30L, 0L, 30L, 0L, "1", 0L));
+
+        CalculatedReport report = calculator.calculate(previous, historical, List.of(), current, List.of(),
+                List.of(), historical, List.of(), latest, null);
+        ReplayDailyReportCalculator.PreviousUnresolved unresolved = report.previousUnresolved();
+
+        assertEquals(1L, unresolved.unanalyzed());
+        assertEquals(2L, unresolved.analyzedPendingFix());
+        assertEquals(2L, unresolved.notFullyFixed());
+        assertEquals(1L, unresolved.dataMigrationIssue());
+        assertEquals(1L, unresolved.codeNotReleased());
+        assertEquals(7L, unresolved.total());
+        assertEquals(new BigDecimal("0.22222222"), unresolved.resolutionRate());
+        assertEquals(9L, report.previousTotal().issueTotal());
+        assertEquals(4L, report.previousRows().get(0).issueTotal());
+        assertEquals(4L, report.previousRows().get(0).codeIssueCount());
+        assertEquals(4L, report.currentRows().get(0).previousUnresolvedTotal());
+        assertEquals(BigDecimal.ZERO.setScale(8), report.currentRows().get(0).previousResolutionRate());
+        assertEquals(5L, report.previousRows().get(1).issueTotal());
+        assertEquals(4L, report.previousRows().get(1).parameterIssueCount());
+        assertEquals(new BigDecimal("0.80000000"), report.previousRows().get(1).investigationProgress());
+        assertEquals(3L, report.currentRows().get(1).previousUnresolvedTotal());
+        assertEquals(new BigDecimal("0.40000000"), report.currentRows().get(1).previousResolutionRate());
+        assertEquals(new BigDecimal("0.22222222"), report.currentTotal().previousResolutionRate());
+    }
+
+    @Test
+    void retainsHistoricalResolutionStateWhenLatestStatusIsUnknownOrMissing() {
+        List<ReplayDailySummaryRow> previous = List.of(
+                summary("RPT-PREVIOUS", "公共组", 10L, 0L, 10L, 0L, "1", 0L));
+        List<ReplayDailyIssueStatisticRow> historical = List.of(
+                unresolvedIssue(1L, "打开"),
+                unresolvedIssue(2L, "修复待验证"),
+                issue(3L, "公共组", false, "代码问题", "字段级", "任意", "新建", 1L, true),
+                unresolvedIssue(4L, "延后修复"));
+        List<ReplayDailyIssueStatisticRow> latest = List.of(
+                unresolvedIssue(1L, "未知状态"),
+                unresolvedIssue(2L, null),
+                unresolvedIssue(3L, " "));
+
+        CalculatedReport report = calculator.calculate(previous, historical, List.of(), previous, List.of(),
+                List.of(), historical, List.of(), latest, null);
+
+        assertEquals(1L, report.previousUnresolved().analyzedPendingFix());
+        assertEquals(1L, report.previousUnresolved().notFullyFixed());
+        assertEquals(1L, report.previousUnresolved().dataMigrationIssue());
+        assertEquals(1L, report.previousUnresolved().codeNotReleased());
+        assertEquals(4L, report.previousUnresolved().total());
+        assertEquals(BigDecimal.ZERO.setScale(8), report.previousUnresolved().resolutionRate());
+    }
+
+    @Test
     void calculatesTotalsFromCountsInsteadOfAveragingDomainRates() {
         List<ReplayDailySummaryRow> current = List.of(
                 summary("RPT-CURRENT", "甲", 10L, 0L, 10L, 0L, "1", 0L),

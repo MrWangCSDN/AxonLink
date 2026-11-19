@@ -18,6 +18,8 @@ import java.util.Set;
 
 /** Loads one report endpoint inside the caller's result-database snapshot transaction. */
 public final class ReplayReportCalculationDataLoader {
+    public static final String RESOLUTION_NOTICE =
+            "上一批次问题解决进展按该批次原问题范围及生成时最新处理状态统计；问题总数和已分析分类保留原批次口径。";
     private final ReplayDailyDataDao dailyDataDao;
     private final ReplayIssueDao issueDao;
     private final ReplayWeeklyLatestIssueResolver latestIssueResolver;
@@ -109,7 +111,8 @@ public final class ReplayReportCalculationDataLoader {
         unknownMatch.addAll(missingScope);
         var availability = new ReplayReportCalculationContext.Side(historical.available(), unknownNoAction,
                 unknownBreakdown, unknownMatch, legacyDomains);
-        return new SideData(summaries, comparisons, historical.rows(), metrics, availability,
+        var resolutionIssues = historical.legacy() ? historical.rows() : issueDao.findLegacyReportIssueStatistics(batch);
+        return new SideData(summaries, comparisons, historical.rows(), metrics, resolutionIssues, availability,
                 notices(batch, historical, missingScope, legacyDomains, unknownNoAction, unknownBreakdown));
     }
 
@@ -196,6 +199,7 @@ public final class ReplayReportCalculationDataLoader {
             List<ReplayInterfaceComparisonRow> comparisons,
             List<ReplayDailyIssueStatisticRow> historicalIssues,
             List<ReplayDailyIssueStatisticRow> metricIssues,
+            List<ReplayDailyIssueStatisticRow> resolutionIssues,
             ReplayReportCalculationContext.Side availability,
             List<String> notices) {
         public SideData {
@@ -203,6 +207,7 @@ public final class ReplayReportCalculationDataLoader {
             comparisons = List.copyOf(comparisons);
             historicalIssues = List.copyOf(historicalIssues);
             metricIssues = List.copyOf(metricIssues);
+            resolutionIssues = List.copyOf(resolutionIssues);
             notices = List.copyOf(notices);
         }
     }
