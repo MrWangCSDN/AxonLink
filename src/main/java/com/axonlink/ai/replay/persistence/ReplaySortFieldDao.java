@@ -30,7 +30,7 @@ import java.util.Objects;
 public class ReplaySortFieldDao {
 
     private static final String SELECT_COLUMNS =
-            "id,orig_trcd,orig_arry_name,orig_field_name,ignore_reason,tran_mode,review_status,created_at,"
+            "id,orig_trcd,orig_arry_name,orig_field_name,field_chinese_name,ignore_reason,tran_mode,review_status,created_at,"
                     + "updated_at,version";
 
     private final JdbcTemplate jdbc;
@@ -88,11 +88,13 @@ public class ReplaySortFieldDao {
     }
 
     public ReplaySortFieldRow create(String origTrcd, String origArryName, String origFieldName,
-                                     String ignoreReason, ReplayConfigOperator operator) {
+                                     String fieldChineseName, String ignoreReason,
+                                     ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
-            long id = insertConfig(origTrcd, origArryName, origFieldName, ignoreReason, now);
-            insertOperation(id, "CREATE", null, null, null, origTrcd, origArryName, origFieldName,
+            long id = insertConfig(origTrcd, origArryName, origFieldName, fieldChineseName, ignoreReason, now);
+            insertOperation(id, "CREATE", null, null, null, null, origTrcd, origArryName, origFieldName,
+                    fieldChineseName,
                     null, ignoreReason, null, 0, operator, now);
             return findById(id);
         });
@@ -105,9 +107,10 @@ public class ReplaySortFieldDao {
             List<ReplaySortFieldRow> created = new ArrayList<>();
             for (ReplaySortFieldDraft draft : drafts) {
                 long id = insertConfig(draft.origTrcd(), draft.origArryName(), draft.origFieldName(),
-                        draft.ignoreReason(), now);
-                insertOperation(id, "CREATE", null, null, null, draft.origTrcd(), draft.origArryName(),
-                        draft.origFieldName(), null, draft.ignoreReason(), null, 0, operator, now);
+                        draft.fieldChineseName(), draft.ignoreReason(), now);
+                insertOperation(id, "CREATE", null, null, null, null, draft.origTrcd(), draft.origArryName(),
+                        draft.origFieldName(), draft.fieldChineseName(), null, draft.ignoreReason(),
+                        null, 0, operator, now);
                 created.add(findById(id));
             }
             return created;
@@ -115,21 +118,22 @@ public class ReplaySortFieldDao {
     }
 
     public ReplaySortFieldRow update(ReplaySortFieldRow current, String newOrigTrcd, String newOrigArryName,
-                                     String newOrigFieldName, String newIgnoreReason,
+                                     String newOrigFieldName, String newFieldChineseName, String newIgnoreReason,
                                      ReplayConfigOperator operator) {
         LocalDateTime now = LocalDateTime.now();
         return tx.execute(status -> {
             boolean trcdChanged = changed(current.origTrcd(), newOrigTrcd);
             boolean arryChanged = changed(current.origArryName(), newOrigArryName);
             boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
-            boolean businessChanged = trcdChanged || arryChanged || fieldChanged;
+            boolean chineseNameChanged = changed(current.fieldChineseName(), newFieldChineseName);
+            boolean businessChanged = trcdChanged || arryChanged || fieldChanged || chineseNameChanged;
             int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"
-                            + "ignore_reason=?,review_status=?,updated_at=?,version=version+1 "
+                            + "field_chinese_name=?,ignore_reason=?,review_status=?,updated_at=?,version=version+1 "
                             + "WHERE id=? AND version=?",
-                    newOrigTrcd, newOrigArryName, newOrigFieldName, newIgnoreReason, nextReviewStatus,
-                    Timestamp.valueOf(now),
+                    newOrigTrcd, newOrigArryName, newOrigFieldName, newFieldChineseName, newIgnoreReason,
+                    nextReviewStatus, Timestamp.valueOf(now),
                     current.id(), current.version());
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
@@ -140,9 +144,11 @@ public class ReplaySortFieldDao {
                     trcdChanged ? current.origTrcd() : null,
                     arryChanged ? current.origArryName() : null,
                     fieldChanged ? current.origFieldName() : null,
+                    chineseNameChanged ? current.fieldChineseName() : null,
                     trcdChanged ? newOrigTrcd : null,
                     arryChanged ? newOrigArryName : null,
                     fieldChanged ? newOrigFieldName : null,
+                    chineseNameChanged ? newFieldChineseName : null,
                     reasonChanged ? current.ignoreReason() : null,
                     reasonChanged ? newIgnoreReason : null,
                     reviewChanged ? current.reviewStatus() : null, reviewChanged ? 0 : null, operator, now);
@@ -160,7 +166,7 @@ public class ReplaySortFieldDao {
             if (rows == 0) {
                 throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
             }
-            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null,
+            insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null, null, null,
                     current.reviewStatus(), 1, operator, now);
             return findById(current.id());
         });
@@ -170,7 +176,8 @@ public class ReplaySortFieldDao {
         LocalDateTime now = LocalDateTime.now();
         tx.executeWithoutResult(status -> {
             insertOperation(current.id(), "DELETE", current.origTrcd(), current.origArryName(),
-                    current.origFieldName(), null, null, null, current.ignoreReason(), null,
+                    current.origFieldName(), current.fieldChineseName(), null, null, null, null,
+                    current.ignoreReason(), null,
                     current.reviewStatus(), null, operator, now);
             int rows = jdbc.update("DELETE FROM dii_replay_sort_field WHERE id=? AND version=?",
                     current.id(), current.version());
@@ -193,7 +200,8 @@ public class ReplaySortFieldDao {
                     throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
                 }
                 insertOperation(current.id(), "DELETE", current.origTrcd(), current.origArryName(),
-                        current.origFieldName(), null, null, null, current.ignoreReason(), null,
+                        current.origFieldName(), current.fieldChineseName(), null, null, null, null,
+                        current.ignoreReason(), null,
                         current.reviewStatus(), null, operator, now);
                 int rows = jdbc.update("DELETE FROM dii_replay_sort_field WHERE id=? AND version=?",
                         current.id(), current.version());
@@ -224,7 +232,7 @@ public class ReplaySortFieldDao {
                 if (rows == 0) {
                     continue;
                 }
-                insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null,
+                insertOperation(current.id(), "REVIEW", null, null, null, null, null, null, null, null, null, null,
                         current.reviewStatus(), 1, operator, now);
                 approved++;
             }
@@ -243,21 +251,22 @@ public class ReplaySortFieldDao {
         return new ReplayConfigPage<>(total == null ? 0 : total, items);
     }
 
-    private long insertConfig(String origTrcd, String origArryName, String origFieldName, String ignoreReason,
-                              LocalDateTime now) {
+    private long insertConfig(String origTrcd, String origArryName, String origFieldName,
+                              String fieldChineseName, String ignoreReason, LocalDateTime now) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO dii_replay_sort_field "
-                            + "(orig_trcd,orig_arry_name,orig_field_name,ignore_reason,tran_mode,review_status,"
-                            + "created_at,updated_at,version) VALUES (?,?,?,?,1,0,?,?,0)",
+                            + "(orig_trcd,orig_arry_name,orig_field_name,field_chinese_name,ignore_reason,tran_mode,review_status,"
+                            + "created_at,updated_at,version) VALUES (?,?,?,?,?,1,0,?,?,0)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, origTrcd);
             statement.setString(2, origArryName);
             statement.setString(3, origFieldName);
-            statement.setString(4, ignoreReason);
-            statement.setTimestamp(5, Timestamp.valueOf(now));
+            statement.setString(4, fieldChineseName);
+            statement.setString(5, ignoreReason);
             statement.setTimestamp(6, Timestamp.valueOf(now));
+            statement.setTimestamp(7, Timestamp.valueOf(now));
             return statement;
         }, holder);
         Number key = holder.getKey();
@@ -268,17 +277,18 @@ public class ReplaySortFieldDao {
     }
 
     private void insertOperation(long configId, String operationType, String origTrcd, String origArryName,
-                                 String origFieldName, String newOrigTrcd, String newOrigArryName,
-                                 String newOrigFieldName, String ignoreReason, String newIgnoreReason,
+                                 String origFieldName, String fieldChineseName, String newOrigTrcd,
+                                 String newOrigArryName, String newOrigFieldName, String newFieldChineseName,
+                                 String ignoreReason, String newIgnoreReason,
                                  Integer reviewStatus, Integer newReviewStatus,
                                  ReplayConfigOperator operator, LocalDateTime now) {
         jdbc.update("INSERT INTO dii_replay_sort_field_operation "
-                        + "(config_id,operation_type,orig_trcd,orig_arry_name,orig_field_name,new_orig_trcd,"
-                        + "new_orig_arry_name,new_orig_field_name,ignore_reason,new_ignore_reason,review_status,"
+                        + "(config_id,operation_type,orig_trcd,orig_arry_name,orig_field_name,field_chinese_name,new_orig_trcd,"
+                        + "new_orig_arry_name,new_orig_field_name,new_field_chinese_name,ignore_reason,new_ignore_reason,review_status,"
                         + "new_review_status,operator_username,operator_real_name,operation_source,created_at) "
-                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                configId, operationType, origTrcd, origArryName, origFieldName, newOrigTrcd,
-                newOrigArryName, newOrigFieldName, ignoreReason, newIgnoreReason,
+                        + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                configId, operationType, origTrcd, origArryName, origFieldName, fieldChineseName, newOrigTrcd,
+                newOrigArryName, newOrigFieldName, newFieldChineseName, ignoreReason, newIgnoreReason,
                 reviewStatus, newReviewStatus,
                 operator == null ? null : operator.username(),
                 operator == null ? null : operator.realName(), "MANUAL", Timestamp.valueOf(now));
@@ -315,7 +325,8 @@ public class ReplaySortFieldDao {
 
     private ReplaySortFieldRow mapRow(ResultSet rs, int rowNum) throws SQLException {
         return new ReplaySortFieldRow(rs.getLong("id"), rs.getString("orig_trcd"),
-                rs.getString("orig_arry_name"), rs.getString("orig_field_name"), rs.getString("ignore_reason"),
+                rs.getString("orig_arry_name"), rs.getString("orig_field_name"),
+                rs.getString("field_chinese_name"), rs.getString("ignore_reason"),
                 rs.getInt("tran_mode"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
                 ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), rs.getInt("version"),
@@ -329,6 +340,8 @@ public class ReplaySortFieldDao {
                 rs.getString("new_orig_arry_name"));
         addChange(changes, "orig_field_name", "排序字段", rs.getString("orig_field_name"),
                 rs.getString("new_orig_field_name"));
+        addChange(changes, "field_chinese_name", "中文名称", rs.getString("field_chinese_name"),
+                rs.getString("new_field_chinese_name"));
         addChange(changes, "ignore_reason", "忽略原因", rs.getString("ignore_reason"),
                 rs.getString("new_ignore_reason"));
         addChange(changes, "review_status", "审核状态", rs.getObject("review_status"),
