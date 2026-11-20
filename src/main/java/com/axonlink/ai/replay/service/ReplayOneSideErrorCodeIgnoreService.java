@@ -40,7 +40,7 @@ public class ReplayOneSideErrorCodeIgnoreService {
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
         boolean onlyReviewableByMe = Boolean.TRUE.equals(reviewableByMe);
         if (onlyReviewableByMe && Integer.valueOf(1).equals(resolvedReviewStatus)) return new ReplayConfigPage<>(0, List.of());
-        Integer effectiveReviewStatus = onlyReviewableByMe ? 0 : resolvedReviewStatus;
+        Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 onlyReviewableByMe ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo()) : null,
                 Boolean.TRUE.equals(developedByMe) ? personResolver.findDevelopedServiceCodes(operator == null ? null : operator.username()) : null);

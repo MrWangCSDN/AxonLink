@@ -60,10 +60,20 @@ class ReplayOneSideErrorCodeIgnoreServiceTest {
     }
 
     @Test
+    void listsAllReviewStatusesWhenReviewStatusIsNotProvided() {
+        service.create(new ReplayOneSideErrorCodeIgnoreCreateRequest(
+                "S1&sop", "QUERY", "528", "E015", "原因"), OPERATOR);
+
+        assertEquals(1, service.list(10, 0, null, null, null, null,
+                null, null, null, null, OPERATOR).total());
+    }
+
+    @Test
     void exportsOnlyReviewedCodesInCategoryOwnershipGroups() {
         List<ReplayOneSideErrorCodeIgnoreRow> rows = service.create(new ReplayOneSideErrorCodeIgnoreCreateRequest(
                 "S1&sop", "QUERY", "528", "E020,E021", "原因"), OPERATOR);
         rows.forEach(row -> jdbc.update("UPDATE dii_replay_one_side_error_code_ignore SET review_status=1 WHERE id=?", row.id()));
-        assertEquals(2, service.list(10, 0, "QUERY", null, "528", null, null, null, null, OPERATOR).total());
+        assertEquals(2, service.list(10, 0, "QUERY", null, "528", null,
+                null, null, null, null, OPERATOR).total());
     }
 }
