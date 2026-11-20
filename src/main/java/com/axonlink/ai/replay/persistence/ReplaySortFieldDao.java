@@ -126,7 +126,7 @@ public class ReplaySortFieldDao {
             boolean arryChanged = changed(current.origArryName(), newOrigArryName);
             boolean fieldChanged = changed(current.origFieldName(), newOrigFieldName);
             boolean chineseNameChanged = changed(current.fieldChineseName(), newFieldChineseName);
-            boolean businessChanged = trcdChanged || arryChanged || fieldChanged || chineseNameChanged;
+            boolean businessChanged = trcdChanged || arryChanged || fieldChanged;
             int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_sort_field SET orig_trcd=?,orig_arry_name=?,orig_field_name=?,"

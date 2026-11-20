@@ -115,7 +115,7 @@ class ReplayConditionalRmoveServiceTest {
     }
 
     @Test
-    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+    void reasonAndChineseNameChangesKeepApprovalButConditionChangeResetsIt() {
         ReplayConditionalRmoveRow created = create(CODE, "accounts");
         jdbc.update("UPDATE dii_replay_conditional_rmove SET review_status=1 WHERE id=?", created.id());
 
@@ -127,8 +127,13 @@ class ReplayConditionalRmoveServiceTest {
         ReplayConditionalRmoveRow chineseNameUpdated = service.update(created.id(),
                 new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", "客户账号", 1,
                         null, null, "新原因", 1), OPERATOR);
-        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertEquals(1, chineseNameUpdated.reviewStatus());
         assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
                 .anyMatch(change -> "field_chinese_name".equals(change.field())));
+
+        ReplayConditionalRmoveRow conditionUpdated = service.update(created.id(),
+                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", "客户账号", 1,
+                        "status == 1", null, "新原因", chineseNameUpdated.version()), OPERATOR);
+        assertEquals(0, conditionUpdated.reviewStatus());
     }
 }

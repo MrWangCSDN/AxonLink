@@ -149,8 +149,7 @@ public class ReplayConditionalRmoveDao {
             boolean flagChanged = current.fieldFileFlag() != newFieldFileFlag;
             boolean origCondChanged = !Objects.equals(current.origFieldCond(), newOrigFieldCond);
             boolean destCondChanged = !Objects.equals(current.destFieldCond(), newDestFieldCond);
-            boolean businessChanged = codeChanged || fieldNameChanged || chineseNameChanged
-                    || indexChanged || flagChanged
+            boolean businessChanged = codeChanged || fieldNameChanged || indexChanged || flagChanged
                     || origCondChanged || destCondChanged;
             int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update("UPDATE dii_replay_conditional_rmove SET orig_trcd=?,field_rmove_name=?,"

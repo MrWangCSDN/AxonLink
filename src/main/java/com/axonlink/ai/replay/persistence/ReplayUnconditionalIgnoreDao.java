@@ -159,7 +159,7 @@ public class ReplayUnconditionalIgnoreDao {
             boolean fieldChanged = !Objects.equals(current.fieldName(), newFieldName);
             boolean chineseNameChanged = !Objects.equals(current.fieldChineseName(), newFieldChineseName);
             boolean reasonChanged = !Objects.equals(current.ignoreReason(), newIgnoreReason);
-            boolean businessChanged = tranChanged || fieldChanged || chineseNameChanged;
+            boolean businessChanged = tranChanged || fieldChanged;
             int nextReviewStatus = businessChanged ? 0 : current.reviewStatus();
             int rows = jdbc.update(
                     "UPDATE dii_replay_unconditional_ignore SET tran_code=?,field_name=?,field_chinese_name=?,"

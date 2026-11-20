@@ -124,7 +124,7 @@ class ReplaySortFieldServiceTest {
     }
 
     @Test
-    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+    void reasonAndChineseNameChangesKeepApprovalButSortFieldChangeResetsIt() {
         ReplaySortFieldRow created = service.create(
                 new ReplaySortFieldCreateRequest("6208", "a.a1", "排序字段",
                         "b.b1", "新核心排序字段", "原因"), OPERATOR).get(0);
@@ -138,8 +138,13 @@ class ReplaySortFieldServiceTest {
         ReplaySortFieldRow chineseNameUpdated = service.update(created.id(),
                 new ReplaySortFieldUpdateRequest(created.origTrcd(), created.origArryName(),
                         created.origFieldName(), "新排序字段", "新原因", 1), OPERATOR);
-        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertEquals(1, chineseNameUpdated.reviewStatus());
         assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
                 .anyMatch(change -> "field_chinese_name".equals(change.field())));
+
+        ReplaySortFieldRow fieldUpdated = service.update(created.id(),
+                new ReplaySortFieldUpdateRequest(created.origTrcd(), created.origArryName(),
+                        "a2", "新排序字段", "新原因", chineseNameUpdated.version()), OPERATOR);
+        assertEquals(0, fieldUpdated.reviewStatus());
     }
 }

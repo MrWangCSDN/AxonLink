@@ -450,7 +450,7 @@ class ReplayUnconditionalIgnoreServiceTest {
     }
 
     @Test
-    void reasonOnlyUpdateKeepsApprovalButBusinessUpdateResetsIt() {
+    void reasonAndChineseNameChangesKeepApprovalButFieldChangeResetsIt() {
         ReplayUnconditionalIgnoreRow created = service.create(
                 new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", CHINESE_NAME, REASON), OPERATOR);
         jdbc.update("UPDATE dii_replay_unconditional_ignore SET review_status=1 WHERE id=?", created.id());
@@ -461,12 +461,18 @@ class ReplayUnconditionalIgnoreServiceTest {
         assertEquals(1, reasonUpdated.reviewStatus());
 
         ReplayUnconditionalIgnoreRow chineseNameUpdated = service.update(created.id(),
-                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", "客户账号", "新原因", 1),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "accountNo", "客户账号", "再次补充原因", 1),
                 OPERATOR);
-        assertEquals(0, chineseNameUpdated.reviewStatus());
+        assertEquals(1, chineseNameUpdated.reviewStatus());
+        assertEquals("再次补充原因", chineseNameUpdated.ignoreReason());
         assertTrue(service.operations(created.id(), 10, 0).items().get(0).changes().stream()
                 .anyMatch(change -> "field_chinese_name".equals(change.field())
                         && CHINESE_NAME.equals(change.oldValue()) && "客户账号".equals(change.newValue())));
+
+        ReplayUnconditionalIgnoreRow fieldUpdated = service.update(created.id(),
+                new ReplayUnconditionalIgnoreUpdateRequest("S1&sop", "customerNo", "客户账号", "再次补充原因",
+                        chineseNameUpdated.version()), OPERATOR);
+        assertEquals(0, fieldUpdated.reviewStatus());
     }
 
     private void seedServiceAndPerson(String esfServiceCode, String tranCode, String domain, String name,
