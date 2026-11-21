@@ -164,14 +164,19 @@ public class ReplayIssueCompletionStatsService {
         long unfinished = 0;
         long overdue = 0;
         long pendingVerification = 0;
+        long lateDays = 0;
+        long overdueDays = 0;
         for (ReplayIssueCompletionCounts row : rows) {
             onTime += row.onTimeFixedCount();
             late += row.lateFixedCount();
             unfinished += row.unfinishedCount();
             overdue += row.overdueUnfinishedCount();
             pendingVerification += row.pendingVerificationCount();
+            lateDays += row.lateFixedDaysTotal();
+            overdueDays += row.overdueUnfinishedDaysTotal();
         }
-        return ReplayIssueCompletionCounts.of(onTime, late, unfinished, overdue, pendingVerification);
+        return ReplayIssueCompletionCounts.of(onTime, late, unfinished, overdue, pendingVerification,
+                lateDays, overdueDays);
     }
 
     private static Comparator<ReplayIssueCompletionDeveloperRow> developerComparator() {

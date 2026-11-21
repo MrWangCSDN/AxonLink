@@ -4,6 +4,7 @@ import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.persistence.ReplayIssueCompletionStatsDao;
 import com.axonlink.ai.replay.persistence.ReplayIssueDao;
 import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -70,6 +71,45 @@ class ReplayIssueCompletionStatsServiceTest {
         assertEquals(LocalDate.of(2026, 8, 27), dashboard.today());
         assertEquals(2, dashboard.summary().plannedTotal());
         assertEquals(1, dashboard.groups().size());
+    }
+
+    @Test
+    void recomputesWeightedAverageDaysFromIssueTotalsAtEveryLevel() {
+        var issues = java.util.stream.IntStream.rangeClosed(1, 10)
+                .mapToObj(index -> ReplayIssueTestFixtures.row(
+                        index <= 8 ? "公共组" : "存款组", false, index,
+                        index == 1 || index == 5 ? "9001" : index <= 8 ? "9002" : "9003", "延期问题" + index))
+                .toList();
+        new ReplayIssueDao(jdbc).replaceAll(issues, LocalDateTime.of(2026, 8, 27, 9, 0));
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-10', "
+                + "defect_repair_date=CASE WHEN issue_key='key-1' THEN DATE '2026-08-11' "
+                + "WHEN issue_key IN ('key-2','key-3','key-4','key-9') THEN DATE '2026-08-20' ELSE NULL END");
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-26' WHERE issue_key='key-5'");
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-17' "
+                + "WHERE issue_key IN ('key-6','key-7','key-8')");
+        jdbc.update("UPDATE dii_replay_issue SET planned_completion_date='2026-08-22' WHERE issue_key='key-10'");
+        jdbc.batchUpdate("INSERT INTO dii_replay_transaction_person "
+                        + "(domain,old_transaction_code,old_transaction_name,developer,imported_at) VALUES (?,?,?,?,?)",
+                List.of(new Object[]{"公共组", "9001", "交易1", "A负责人", LocalDateTime.of(2026, 8, 27, 8, 0)},
+                        new Object[]{"公共组", "9002", "交易2", "B负责人", LocalDateTime.of(2026, 8, 27, 8, 0)}));
+
+        var dashboard = service.dashboard("2026-08-10", "2026-08-26");
+        var json = new ObjectMapper().findAndRegisterModules().valueToTree(dashboard);
+
+        // A has 1 day for each category, B has three issues of 10 days each: 31 / 4 = 7.75.
+        // Another group adds 10 late-fixed days and 5 overdue days: 41/5 and 36/5.
+        assertEquals(8.20, json.path("summary").path("averageLateFixedDays").asDouble(-1));
+        assertEquals(7.20, json.path("summary").path("averageOverdueUnfinishedDays").asDouble(-1));
+        var group = json.path("groups").get(0);
+        assertEquals(7.75, group.path("averageLateFixedDays").asDouble(-1));
+        assertEquals(7.75, group.path("averageOverdueUnfinishedDays").asDouble(-1));
+        var developers = dashboard.groups().get(0).developers();
+        var developerA = new ObjectMapper().valueToTree(developers.stream()
+                .filter(row -> row.matchedDeveloper().equals("A负责人")).findFirst().orElseThrow());
+        var developerB = new ObjectMapper().valueToTree(developers.stream()
+                .filter(row -> row.matchedDeveloper().equals("B负责人")).findFirst().orElseThrow());
+        assertEquals(1.0, developerA.path("averageLateFixedDays").asDouble(-1));
+        assertEquals(10.0, developerB.path("averageOverdueUnfinishedDays").asDouble(-1));
     }
 
     @Test
