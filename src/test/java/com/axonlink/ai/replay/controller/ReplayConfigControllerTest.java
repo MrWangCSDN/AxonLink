@@ -92,13 +92,15 @@ class ReplayConfigControllerTest {
     void listCarriesDomainAndFiltersByIt() throws Exception {
         seedServiceAndPerson();
         mvc.perform(post(PREFIX).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"ignoreReason\":\"测试原因\"}"))
-                .andExpect(status().isOk());
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"fieldChineseName\":\"账号\",\"ignoreReason\":\"测试原因\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.fieldChineseName").value("账号"));
 
         mvc.perform(get(PREFIX).param("domain", "公共组"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1))
-                .andExpect(jsonPath("$.data.items[0].domain").value("公共组"));
+                .andExpect(jsonPath("$.data.items[0].domain").value("公共组"))
+                .andExpect(jsonPath("$.data.items[0].fieldChineseName").value("账号"));
 
         mvc.perform(get(PREFIX).param("domain", "不存在的领域"))
                 .andExpect(status().isOk())
@@ -107,11 +109,12 @@ class ReplayConfigControllerTest {
 
     @Test
     void createConflictUpdateConflictDeleteAndOperations() throws Exception {
-        String body = "{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"ignoreReason\":\"测试原因\"}";
+        String body = "{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNo\",\"fieldChineseName\":\"账号\",\"ignoreReason\":\"测试原因\"}";
         mvc.perform(post(PREFIX).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(0))
-                .andExpect(jsonPath("$.data.enableFlag").value(1));
+                .andExpect(jsonPath("$.data.enableFlag").value(1))
+                .andExpect(jsonPath("$.data.fieldChineseName").value("账号"));
 
         long id = jdbc.queryForObject(
                 "SELECT MAX(id) FROM dii_replay_unconditional_ignore", Long.class);
@@ -121,14 +124,15 @@ class ReplayConfigControllerTest {
                 .andExpect(jsonPath("$.code").value(409));
 
         mvc.perform(patch(PREFIX + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"ignoreReason\":\"测试原因\",\"version\":99}"))
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"fieldChineseName\":\"账号\",\"ignoreReason\":\"测试原因\",\"version\":99}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
 
         mvc.perform(patch(PREFIX + "/" + id).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"ignoreReason\":\"测试原因\",\"version\":0}"))
+                        .content("{\"tranCode\":\"S1&sop\",\"fieldName\":\"accountNumber\",\"fieldChineseName\":\"账号\",\"ignoreReason\":\"测试原因\",\"version\":0}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.version").value(1));
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.fieldChineseName").value("账号"));
 
         mvc.perform(get(PREFIX + "/" + id + "/operations"))
                 .andExpect(status().isOk())

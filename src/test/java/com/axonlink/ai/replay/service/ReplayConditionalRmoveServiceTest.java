@@ -103,9 +103,11 @@ class ReplayConditionalRmoveServiceTest {
         assertEquals("测试原因", created.ignoreReason());
 
         ReplayConditionalRmoveRow unchanged = service.update(created.id(),
-                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", 2, null, "x == 1", "测试原因", 0),
+                new ReplayConditionalRmoveUpdateRequest(CODE, "accounts", CHINESE_NAME, 2,
+                        null, "x == 1", "测试原因", 0),
                 OPERATOR);
         assertEquals(0, unchanged.version());
+        assertEquals(CHINESE_NAME, unchanged.fieldChineseName());
         assertEquals(1, service.operations(created.id(), 10, 0).total());
     }
 
