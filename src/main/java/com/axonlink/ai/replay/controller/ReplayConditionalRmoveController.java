@@ -53,9 +53,10 @@ public class ReplayConditionalRmoveController extends AbstractReplayConfigContro
             @RequestParam(required = false) Boolean reviewableByMe,
             @RequestParam(required = false) Boolean developedByMe,
             @RequestParam(required = false) Boolean reasonEmpty,
+            @RequestParam(required = false) Boolean fieldChineseNameEmpty,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName,
-                fieldFileFlag, reviewStatus, reviewableByMe, developedByMe, reasonEmpty,
+                fieldFileFlag, reviewStatus, reviewableByMe, developedByMe, reasonEmpty, fieldChineseNameEmpty,
                 resolveOperator(request)));
     }
 

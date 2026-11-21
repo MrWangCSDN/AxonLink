@@ -33,11 +33,29 @@ public class ReplayConfigReasonImportService {
             case "error-code-ignores" -> Format.ERROR_CODE;
             default -> throw new IllegalArgumentException("该页签不支持原因导入");
         };
+        return importValues(format, "ignore_reason", file, operator, ReplayConfigValidation::requireIgnoreReason);
+    }
+
+    public ChineseNameResult importChineseNames(String resource, MultipartFile file, ReplayConfigOperator operator) throws IOException {
+        Format format = switch (resource) {
+            case "unconditional-ignores" -> Format.UNCONDITIONAL;
+            case "conditional-ignores" -> Format.CONDITIONAL;
+            case "sort-fields" -> Format.SORT;
+            default -> throw new IllegalArgumentException("该页签不支持字段中文名称导入");
+        };
+        Result result = importValues(format, "field_chinese_name", file, operator,
+                ReplayConfigValidation::requireFieldChineseName);
+        return new ChineseNameResult(result.totalRows(), result.updatedRows(), result.skippedExistingReasonRows(),
+                result.unmatchedRows(), result.invalidRows(), result.ambiguousRows());
+    }
+
+    private Result importValues(Format format, String column, MultipartFile file, ReplayConfigOperator operator,
+                                java.util.function.UnaryOperator<String> validateValue) throws IOException {
         List<ImportRow> rows = new ArrayList<>();
         List<String> errors = new ArrayList<>();
-        for (var row : parser.parse(file, 4)) {
+        for (var row : parser.parse(file, format.columns.size() + 1)) {
             try {
-                rows.add(validate(format, row));
+                rows.add(validate(format, row, validateValue));
             } catch (IllegalArgumentException ex) {
                 errors.add("第 " + row.rowNumber() + " 行：" + ex.getMessage());
             }
@@ -45,16 +63,21 @@ public class ReplayConfigReasonImportService {
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException("Excel 格式错误：" + String.join("；", errors));
         }
-        return tx.execute(status -> apply(format, rows, operator));
+        return tx.execute(status -> apply(format, column, rows, operator));
     }
 
-    private ImportRow validate(Format format, ReplayUnconditionalIgnoreReasonExcelParser.ExcelRow row) {
-        if (!row.validColumnCount()) throw new IllegalArgumentException("请按页签说明填写四列");
+    private ImportRow validate(Format format, ReplayUnconditionalIgnoreReasonExcelParser.ExcelRow row,
+                               java.util.function.UnaryOperator<String> validateValue) {
+        if (!row.validColumnCount()) throw new IllegalArgumentException("请按页签说明填写 " + (format.columns.size() + 1) + " 列");
         List<String> cells = row.cells();
         String serviceCode = ReplayConfigValidation.requireText(cells.get(0), "服务码");
         String second;
         Object third;
         switch (format) {
+            case UNCONDITIONAL -> {
+                second = ReplayConfigValidation.requireText(cells.get(1), "忽略字段");
+                third = null;
+            }
             case CONDITIONAL -> {
                 second = ReplayConfigValidation.requireText(cells.get(1), "忽略字段");
                 try {
@@ -77,10 +100,10 @@ public class ReplayConfigReasonImportService {
             }
             default -> throw new IllegalStateException("Unsupported import format");
         }
-        return new ImportRow(serviceCode, second, third, ReplayConfigValidation.requireIgnoreReason(cells.get(3)));
+        return new ImportRow(serviceCode, second, third, validateValue.apply(cells.get(format.columns.size())));
     }
 
-    private Result apply(Format format, List<ImportRow> rows, ReplayConfigOperator operator) {
+    private Result apply(Format format, String column, List<ImportRow> rows, ReplayConfigOperator operator) {
         int updated = 0;
         int existing = 0;
         int unmatched = 0;
@@ -91,11 +114,11 @@ public class ReplayConfigReasonImportService {
             List<String> predicates = new ArrayList<>();
             addMatch(predicates, args, format.columns.get(0), row.serviceCode());
             addMatch(predicates, args, format.columns.get(1), row.second());
-            addMatch(predicates, args, format.columns.get(2), row.third());
+            if (format.columns.size() == 3) addMatch(predicates, args, format.columns.get(2), row.third());
             List<Match> matches = jdbc.query(
-                    "SELECT id,ignore_reason FROM " + format.table + " WHERE "
+                    "SELECT id," + column + " FROM " + format.table + " WHERE "
                             + String.join(" AND ", predicates) + " LIMIT 2 FOR UPDATE",
-                    (rs, i) -> new Match(rs.getLong("id"), rs.getString("ignore_reason")), args.toArray());
+                    (rs, i) -> new Match(rs.getLong("id"), rs.getString(column)), args.toArray());
             if (matches.isEmpty()) {
                 unmatched++;
                 continue;
@@ -105,16 +128,16 @@ public class ReplayConfigReasonImportService {
                 continue;
             }
             Match match = matches.get(0);
-            if (match.reason() != null && !match.reason().isBlank()) {
+            if (match.value() != null && !match.value().isBlank()) {
                 existing++;
                 continue;
             }
-            jdbc.update("UPDATE " + format.table + " SET ignore_reason=?,updated_at=?,version=version+1 WHERE id=?",
-                    row.reason(), now, match.id());
+            jdbc.update("UPDATE " + format.table + " SET " + column + "=?,updated_at=?,version=version+1 WHERE id=?",
+                    row.value(), now, match.id());
             jdbc.update("INSERT INTO " + format.table + "_operation "
-                            + "(config_id,operation_type,ignore_reason,new_ignore_reason,operator_username,"
+                            + "(config_id,operation_type," + column + ",new_" + column + ",operator_username,"
                             + "operator_real_name,operation_source,created_at) VALUES (?,'UPDATE',?,?,?,?,'EXCEL',?)",
-                    match.id(), match.reason(), row.reason(), operator == null ? null : operator.username(),
+                    match.id(), match.value(), row.value(), operator == null ? null : operator.username(),
                     operator == null ? null : operator.realName(), now);
             updated++;
         }
@@ -131,6 +154,7 @@ public class ReplayConfigReasonImportService {
     }
 
     private enum Format {
+        UNCONDITIONAL("dii_replay_unconditional_ignore", "tran_code", "field_name"),
         CONDITIONAL("dii_replay_conditional_rmove", "orig_trcd", "field_rmove_name", "field_file_indx"),
         SORT("dii_replay_sort_field", "orig_trcd", "orig_arry_name", "orig_field_name"),
         ERROR_CODE("dii_replay_error_code_ignore_config", "service_code", "old_resp_code", "new_resp_code");
@@ -144,9 +168,12 @@ public class ReplayConfigReasonImportService {
         }
     }
 
-    private record ImportRow(String serviceCode, String second, Object third, String reason) {}
-    private record Match(long id, String reason) {}
+    private record ImportRow(String serviceCode, String second, Object third, String value) {}
+    private record Match(long id, String value) {}
 
     public record Result(int totalRows, int updatedRows, int skippedExistingReasonRows,
                          int unmatchedRows, int invalidRows, int ambiguousRows) {}
+
+    public record ChineseNameResult(int totalRows, int updatedRows, int skippedExistingNameRows,
+                                    int unmatchedRows, int invalidRows, int ambiguousRows) {}
 }

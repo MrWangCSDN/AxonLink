@@ -44,15 +44,17 @@ public class ReplayConditionalRmoveDao {
 
     public long count(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
                       Collection<String> serviceCodes, Integer reviewStatus) {
-        return count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, null);
+        return count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, null, null);
     }
 
     public long count(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
-                      Collection<String> serviceCodes, Integer reviewStatus, Boolean reasonEmpty) {
+                      Collection<String> serviceCodes, Integer reviewStatus,
+                      Boolean reasonEmpty, Boolean fieldChineseNameEmpty) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, reasonEmpty);
+        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus,
+                reasonEmpty, fieldChineseNameEmpty);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_conditional_rmove WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -62,16 +64,17 @@ public class ReplayConditionalRmoveDao {
     public List<ReplayConditionalRmoveRow> list(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
                                                 Collection<String> serviceCodes, Integer reviewStatus,
                                                 int limit, int offset) {
-        return list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, null, limit, offset);
+        return list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, null, null, limit, offset);
     }
 
     public List<ReplayConditionalRmoveRow> list(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
                                                 Collection<String> serviceCodes, Integer reviewStatus,
-                                                Boolean reasonEmpty, int limit, int offset) {
+                                                Boolean reasonEmpty, Boolean fieldChineseNameEmpty, int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus, reasonEmpty);
+        Filter filter = filter(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, reviewStatus,
+                reasonEmpty, fieldChineseNameEmpty);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -348,7 +351,8 @@ public class ReplayConditionalRmoveDao {
     }
 
     private Filter filter(String origTrcd, String fieldRmoveName, Integer fieldFileFlag,
-                          Collection<String> serviceCodes, Integer reviewStatus, Boolean reasonEmpty) {
+                          Collection<String> serviceCodes, Integer reviewStatus, Boolean reasonEmpty,
+                          Boolean fieldChineseNameEmpty) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -372,6 +376,9 @@ public class ReplayConditionalRmoveDao {
         }
         if (Boolean.TRUE.equals(reasonEmpty)) {
             sql.append(" AND TRIM(COALESCE(ignore_reason,''))=''");
+        }
+        if (Boolean.TRUE.equals(fieldChineseNameEmpty)) {
+            sql.append(" AND TRIM(COALESCE(field_chinese_name,''))=''");
         }
         return new Filter(sql.toString(), args);
     }

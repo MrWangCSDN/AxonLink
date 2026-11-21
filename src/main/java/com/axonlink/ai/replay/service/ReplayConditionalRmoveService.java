@@ -86,6 +86,18 @@ public class ReplayConditionalRmoveService {
                                                             Integer reviewStatus, Boolean reviewableByMe,
                                                             Boolean developedByMe, Boolean reasonEmpty,
                                                             ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName, fieldFileFlag,
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
+                                                            String internalTransactionCode, String domain,
+                                                            String origTrcd,
+                                                            String fieldRmoveName, Integer fieldFileFlag,
+                                                            Integer reviewStatus, Boolean reviewableByMe,
+                                                            Boolean developedByMe, Boolean reasonEmpty,
+                                                            Boolean fieldChineseNameEmpty,
+                                                            ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
@@ -108,12 +120,12 @@ public class ReplayConditionalRmoveService {
                                 operator == null ? null : operator.username())
                         : null);
         long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, effectiveReviewStatus,
-                reasonEmpty);
+                reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplayConditionalRmoveRow> rows = dao.list(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes,
-                effectiveReviewStatus, reasonEmpty, resolvedLimit, resolvedOffset);
+                effectiveReviewStatus, reasonEmpty, fieldChineseNameEmpty, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 

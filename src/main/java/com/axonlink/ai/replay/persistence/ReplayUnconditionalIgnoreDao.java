@@ -44,15 +44,16 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     public long count(String tranCode, String fieldName, Collection<String> serviceCodes, Integer reviewStatus) {
-        return count(tranCode, fieldName, serviceCodes, reviewStatus, null);
+        return count(tranCode, fieldName, serviceCodes, reviewStatus, null, null);
     }
 
     public long count(String tranCode, String fieldName, Collection<String> serviceCodes, Integer reviewStatus,
-                      Boolean reasonEmpty) {
+                      Boolean reasonEmpty, Boolean fieldChineseNameEmpty) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return 0;
         }
-        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus, reasonEmpty);
+        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus,
+                reasonEmpty, fieldChineseNameEmpty);
         Long total = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM dii_replay_unconditional_ignore WHERE 1=1" + filter.sql,
                 Long.class, filter.args.toArray());
@@ -62,16 +63,17 @@ public class ReplayUnconditionalIgnoreDao {
     public List<ReplayUnconditionalIgnoreRow> list(String tranCode, String fieldName,
                                                    Collection<String> serviceCodes, Integer reviewStatus,
                                                    int limit, int offset) {
-        return list(tranCode, fieldName, serviceCodes, reviewStatus, null, limit, offset);
+        return list(tranCode, fieldName, serviceCodes, reviewStatus, null, null, limit, offset);
     }
 
     public List<ReplayUnconditionalIgnoreRow> list(String tranCode, String fieldName,
                                                    Collection<String> serviceCodes, Integer reviewStatus,
-                                                   Boolean reasonEmpty, int limit, int offset) {
+                                                   Boolean reasonEmpty, Boolean fieldChineseNameEmpty, int limit, int offset) {
         if (serviceCodes != null && serviceCodes.isEmpty()) {
             return List.of();
         }
-        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus, reasonEmpty);
+        Filter filter = filter(tranCode, fieldName, serviceCodes, reviewStatus,
+                reasonEmpty, fieldChineseNameEmpty);
         filter.args.add(limit);
         filter.args.add(offset);
         return jdbc.query(
@@ -327,7 +329,8 @@ public class ReplayUnconditionalIgnoreDao {
     }
 
     private Filter filter(String tranCode, String fieldName, Collection<String> serviceCodes,
-                          Integer reviewStatus, Boolean reasonEmpty) {
+                          Integer reviewStatus, Boolean reasonEmpty,
+                          Boolean fieldChineseNameEmpty) {
         StringBuilder sql = new StringBuilder();
         List<Object> args = new ArrayList<>();
         if (serviceCodes != null) {
@@ -347,6 +350,9 @@ public class ReplayUnconditionalIgnoreDao {
         }
         if (Boolean.TRUE.equals(reasonEmpty)) {
             sql.append(" AND TRIM(COALESCE(ignore_reason,''))=''");
+        }
+        if (Boolean.TRUE.equals(fieldChineseNameEmpty)) {
+            sql.append(" AND TRIM(COALESCE(field_chinese_name,''))=''");
         }
         return new Filter(sql.toString(), args);
     }

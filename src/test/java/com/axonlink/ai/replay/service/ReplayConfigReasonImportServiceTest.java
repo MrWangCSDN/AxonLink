@@ -73,6 +73,27 @@ class ReplayConfigReasonImportServiceTest {
         assertNull(jdbc.queryForObject("SELECT ignore_reason FROM dii_replay_sort_field", String.class));
     }
 
+    @Test
+    void chineseNameImportFillsOnlyBlankNamesAndPreservesReasonAndApproval() throws IOException {
+        jdbc.update("INSERT INTO dii_replay_unconditional_ignore "
+                + "(tran_code,field_name,field_chinese_name,ignore_reason,review_status,created_at,updated_at) VALUES "
+                + "('S1&sop','amount',NULL,'原原因',1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+                + "('S1&sop','status','原状态',NULL,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)");
+        var result = service.importChineseNames("unconditional-ignores", excel(
+                new String[]{"S1&sop", "amount", "金额"},
+                new String[]{"S1&sop", "status", "不覆盖"},
+                new String[]{"S1&sop", "missing", "不新增"}), operator);
+        assertEquals(1, result.updatedRows());
+        assertEquals(1, result.skippedExistingNameRows());
+        assertEquals(1, result.unmatchedRows());
+        assertEquals("金额", jdbc.queryForObject("SELECT field_chinese_name FROM dii_replay_unconditional_ignore "
+                + "WHERE field_name='amount' AND ignore_reason='原原因' AND review_status=1 AND version=1", String.class));
+        assertEquals("原状态", jdbc.queryForObject("SELECT field_chinese_name FROM dii_replay_unconditional_ignore "
+                + "WHERE field_name='status' AND version=0", String.class));
+        assertEquals("EXCEL", jdbc.queryForObject("SELECT operation_source FROM dii_replay_unconditional_ignore_operation "
+                + "WHERE new_field_chinese_name='金额'", String.class));
+    }
+
     private static MockMultipartFile excel(String[]... rows) throws IOException {
         try (var workbook = new XSSFWorkbook(); var bytes = new ByteArrayOutputStream()) {
             var sheet = workbook.createSheet();

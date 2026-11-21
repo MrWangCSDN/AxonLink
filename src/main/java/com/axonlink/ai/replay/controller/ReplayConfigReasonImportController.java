@@ -32,4 +32,12 @@ public class ReplayConfigReasonImportController extends AbstractReplayConfigCont
             HttpServletRequest request) throws IOException {
         return R.ok(service.importReasons(type, file, resolveOperator(request)));
     }
+
+    @PostMapping(value = "/{type:unconditional-ignores|conditional-ignores|sort-fields}/import-field-chinese-names",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public R<ReplayConfigReasonImportService.ChineseNameResult> importChineseNames(
+            @PathVariable("type") String type, @RequestPart("file") MultipartFile file,
+            HttpServletRequest request) throws IOException {
+        return R.ok(service.importChineseNames(type, file, resolveOperator(request)));
+    }
 }
