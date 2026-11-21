@@ -97,7 +97,7 @@ public class ReplayUnconditionalIgnoreDao {
             for (ReplayUnconditionalIgnoreReasonImportRow row : rows) {
                 List<ReplayUnconditionalIgnoreRow> matches = jdbc.query(
                         "SELECT " + SELECT_COLUMNS + " FROM dii_replay_unconditional_ignore "
-                                + "WHERE tran_code=? AND field_name=?",
+                                + "WHERE tran_code=? AND field_name=? FOR UPDATE",
                         this::mapRow, row.tranCode(), row.fieldName());
                 if (matches.isEmpty()) {
                     unmatched++;
@@ -108,7 +108,7 @@ public class ReplayUnconditionalIgnoreDao {
                     existing++;
                     continue;
                 }
-                jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=?,updated_at=? WHERE id=?",
+                jdbc.update("UPDATE dii_replay_unconditional_ignore SET ignore_reason=?,updated_at=?,version=version+1 WHERE id=?",
                         row.ignoreReason(), Timestamp.valueOf(now), current.id());
                 insertOperation(current.id(), "UPDATE", null, null, null, null, null, null,
                         current.ignoreReason(), row.ignoreReason(), null, null, operator, now, "EXCEL");
