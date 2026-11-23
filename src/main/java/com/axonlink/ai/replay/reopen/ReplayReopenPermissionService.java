@@ -46,8 +46,7 @@ public class ReplayReopenPermissionService {
         return user;
     }
     private boolean configuredAdmin(SysUser user) {
-        return user != null && user.getEmpNo() != null && !user.getEmpNo().isBlank()
-                && properties.getAdminEmpNos().contains(user.getEmpNo());
+        return configuredIdentity(user, properties.getAdminEmpNos());
     }
 
     public boolean canTransferCounts(ReplayIssueOperator operator) {
@@ -61,8 +60,17 @@ public class ReplayReopenPermissionService {
     }
 
     private boolean configuredCountTransfer(SysUser user) {
-        return user != null && user.getEmpNo() != null && !user.getEmpNo().isBlank()
-                && properties.getCountTransferEmpNos().contains(user.getEmpNo());
+        return configuredIdentity(user, properties.getCountTransferEmpNos());
+    }
+
+    /** Existing employee numbers stay authoritative; only users without one use their database username. */
+    private static boolean configuredIdentity(SysUser user, List<String> entries) {
+        if (user == null) return false;
+        String identity = user.getEmpNo();
+        if (identity == null || identity.isBlank()) identity = user.getUsername();
+        if (identity == null || identity.isBlank()) return false;
+        String normalized = identity.trim();
+        return entries.stream().anyMatch(entry -> entry != null && normalized.equals(entry.trim()));
     }
 
     public boolean isLeader(String domain, ReplayIssueOperator operator) {

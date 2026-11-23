@@ -42,6 +42,72 @@ class ReplayReopenPermissionServiceTest {
         assertEquals("开发甲(deva)", permissions.option(permissions.requireActive(op("deva"))).displayName());
     }
 
+    @Test void activeUserWithoutEmployeeNumberUsesIndependentUsernameAllowLists() {
+        ReplayReopenTestSupport.user(jdbc,"c-wangsh8","无工号用户",null,1);
+        var actor = op("c-wangsh8");
+        assertFalse(permissions.canManage(actor));
+        assertFalse(permissions.canTransferCounts(actor));
+
+        properties.setAdminEmpNos(List.of("c-wangsh8"));
+        assertTrue(permissions.canManage(actor));
+        assertEquals("c-wangsh8", permissions.requireAdmin(actor).getUsername());
+        assertFalse(permissions.canTransferCounts(actor));
+        failure(403, () -> permissions.requireCountTransfer(actor));
+
+        properties.setAdminEmpNos(List.of());
+        properties.setCountTransferEmpNos(List.of("c-wangsh8"));
+        assertTrue(permissions.canTransferCounts(actor));
+        assertEquals("c-wangsh8", permissions.requireCountTransfer(actor).getUsername());
+        assertFalse(permissions.canManage(actor));
+        failure(403, () -> permissions.requireAdmin(actor));
+    }
+
+    @Test void nullEmptyAndWhitespaceEmployeeNumbersFallBackToExactNormalizedUsername() {
+        String[] employeeNumbers = {null, "", " \t "};
+        for (int i=0; i<employeeNumbers.length; i++) {
+            String username = "ldap-user-" + i;
+            ReplayReopenTestSupport.user(jdbc,username,"LDAP用户",employeeNumbers[i],1);
+            var entries = java.util.Arrays.asList(null,"", "  ", "  " + username + "\t");
+            properties.setAdminEmpNos(entries);
+            properties.setCountTransferEmpNos(entries);
+            assertTrue(permissions.canManage(op(username)));
+            assertTrue(permissions.canTransferCounts(op(username)));
+            properties.setAdminEmpNos(List.of(username.toUpperCase(java.util.Locale.ROOT)));
+            properties.setCountTransferEmpNos(List.of(username.toUpperCase(java.util.Locale.ROOT)));
+            assertFalse(permissions.canManage(op(username)));
+            assertFalse(permissions.canTransferCounts(op(username)));
+        }
+    }
+
+    @Test void existingEmployeeNumberRemainsTheOnlyIdentityEvenIfUsernameIsListed() {
+        jdbc.update("UPDATE ccbs_ai_sys_user SET emp_no=' 900 ' WHERE username='admin'");
+        properties.setAdminEmpNos(List.of("admin"));
+        properties.setCountTransferEmpNos(List.of("admin"));
+        assertFalse(permissions.canManage(op("admin")));
+        assertFalse(permissions.canTransferCounts(op("admin")));
+        failure(403, () -> permissions.requireAdmin(op("admin")));
+        failure(403, () -> permissions.requireCountTransfer(op("admin")));
+
+        properties.setAdminEmpNos(List.of(" 900\t"));
+        properties.setCountTransferEmpNos(List.of(" 900\t"));
+        assertTrue(permissions.canManage(op("admin")));
+        assertTrue(permissions.canTransferCounts(op("admin")));
+    }
+
+    @Test void usernameFallbackDoesNotAuthorizeDisabledMissingOrSpoofedIdentities() {
+        ReplayReopenTestSupport.user(jdbc,"disabled-ldap","停用用户",null,0);
+        properties.setAdminEmpNos(List.of("disabled-ldap","not-a-user","授权显示名"));
+        properties.setCountTransferEmpNos(List.of("disabled-ldap","not-a-user","授权显示名"));
+        for (var actor : java.util.Arrays.asList(null,op("disabled-ldap"),op("not-a-user"),
+                new ReplayIssueOperator("deva","授权显示名"))) {
+            assertFalse(permissions.canManage(actor));
+            assertFalse(permissions.canTransferCounts(actor));
+        }
+        failure(401, () -> permissions.requireCountTransfer(op("disabled-ldap")));
+        failure(401, () -> permissions.requireAdmin(op("not-a-user")));
+        failure(403, () -> permissions.requireCountTransfer(new ReplayIssueOperator("deva","授权显示名")));
+    }
+
     @Test void adminDoesNotGainLeaderPermissionAndPolicyChangesAreEffectiveImmediately() {
         properties.setAdminEmpNos(List.of("900"));
         store.savePolicy("公共组", List.of("leader", "backup"), "leader", 0, "admin", now);
