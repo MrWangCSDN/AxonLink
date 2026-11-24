@@ -117,7 +117,7 @@ public class ReplayUnconditionalIgnoreService {
                                                                Boolean reviewableByMe, Boolean developedByMe,
                                                                Boolean reasonEmpty, ReplayConfigOperator operator) {
         return list(limit, offset, internalTransactionCode, domain, tranCode, fieldName,
-                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, operator);
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, null, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
@@ -126,6 +126,7 @@ public class ReplayUnconditionalIgnoreService {
                                                                String fieldName, Integer reviewStatus,
                                                                Boolean reviewableByMe, Boolean developedByMe,
                                                                Boolean reasonEmpty, Boolean fieldChineseNameEmpty,
+                                                               Boolean domainEmpty, String developer, Boolean developerEmpty,
                                                                ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
@@ -148,6 +149,9 @@ public class ReplayUnconditionalIgnoreService {
                         ? personResolver.findDevelopedServiceCodes(
                                 operator == null ? null : operator.username())
                         : null);
+        serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
+                personResolver.resolveConfigServiceCodes("unconditional-ignores", domain, developer,
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
         long total = dao.count(tranCode, fieldName, serviceCodes, effectiveReviewStatus,
                 reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {

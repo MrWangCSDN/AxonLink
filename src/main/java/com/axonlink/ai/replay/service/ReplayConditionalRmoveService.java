@@ -76,7 +76,7 @@ public class ReplayConditionalRmoveService {
                                                             Integer reviewStatus, Boolean reviewableByMe,
                                                             Boolean reasonEmpty, ReplayConfigOperator operator) {
         return list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName, fieldFileFlag,
-                reviewStatus, reviewableByMe, null, reasonEmpty, operator);
+                reviewStatus, reviewableByMe, null, reasonEmpty, null, null, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
@@ -87,7 +87,7 @@ public class ReplayConditionalRmoveService {
                                                             Boolean developedByMe, Boolean reasonEmpty,
                                                             ReplayConfigOperator operator) {
         return list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName, fieldFileFlag,
-                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, operator);
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, null, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
@@ -96,7 +96,8 @@ public class ReplayConditionalRmoveService {
                                                             String fieldRmoveName, Integer fieldFileFlag,
                                                             Integer reviewStatus, Boolean reviewableByMe,
                                                             Boolean developedByMe, Boolean reasonEmpty,
-                                                            Boolean fieldChineseNameEmpty,
+                                                            Boolean fieldChineseNameEmpty, Boolean domainEmpty,
+                                                            String developer, Boolean developerEmpty,
                                                             ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
@@ -119,6 +120,9 @@ public class ReplayConditionalRmoveService {
                         ? personResolver.findDevelopedServiceCodes(
                                 operator == null ? null : operator.username())
                         : null);
+        serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
+                personResolver.resolveConfigServiceCodes("conditional-ignores", domain, developer,
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
         long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, effectiveReviewStatus,
                 reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {

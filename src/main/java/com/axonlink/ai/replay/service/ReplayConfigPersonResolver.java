@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -58,7 +59,8 @@ public class ReplayConfigPersonResolver {
                             + "p.old_transaction_code AS person_code, p.domain, p.developer, p.bank_owner, p.bank_owner_emp_nos "
                             + "FROM znzx_service z "
                             + "LEFT JOIN dii_replay_transaction_person p ON p.old_transaction_code = z.tran_code "
-                            + "WHERE REPLACE(z.esf_service_code,'.','') IN (" + placeholders + ")",
+                            + "WHERE REPLACE(z.esf_service_code,'.','') IN (" + placeholders + ") "
+                            + "ORDER BY service_base, CASE WHEN p.old_transaction_code IS NULL THEN 1 ELSE 0 END, p.id",
                     rs -> {
                         String base = rs.getString("service_base");
                         String personCode = rs.getString("person_code");
@@ -172,6 +174,76 @@ public class ReplayConfigPersonResolver {
                 "SELECT DISTINCT domain FROM dii_replay_transaction_person "
                         + "WHERE TRIM(COALESCE(domain,'')) <> '' ORDER BY domain",
                 String.class);
+    }
+
+    public List<String> listDevelopers() {
+        return jdbc.queryForList(
+                "SELECT DISTINCT developer FROM dii_replay_transaction_person "
+                        + "WHERE TRIM(COALESCE(developer,'')) <> '' ORDER BY developer",
+                String.class);
+    }
+
+    public Set<String> resolveFinalServiceCodesByDeveloper(String developer, boolean empty) {
+        String condition = empty ? "TRIM(COALESCE(p.developer,'')) = ''" : "p.developer = ?";
+        List<String> codes = empty
+                ? jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE " + condition, String.class)
+                : jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE " + condition, String.class, developer.trim());
+        return finalCodes(codes);
+    }
+
+    public Set<String> resolveFinalServiceCodesByEmptyDomain() {
+        return finalCodes(jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE TRIM(COALESCE(p.domain,'')) = ''", String.class));
+    }
+
+    private Set<String> finalCodes(List<String> esfCodes) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String esfCode : esfCodes) {
+            if (esfCode == null || esfCode.isBlank()) continue;
+            String base = esfCode.replace(".", "");
+            result.add(base + "&sop"); result.add(base + "&soap"); result.add(base + "&bzjson");
+        }
+        return result;
+    }
+
+    /** 按忽略配置表的服务码和人员字段筛选，保留未映射人员的空值语义。 */
+    public Set<String> resolveConfigServiceCodes(String resource, String domain, String developer,
+                                                 boolean domainEmpty, boolean developerEmpty) {
+        String table;
+        String codeColumn;
+        switch (resource) {
+            case "unconditional-ignores" -> { table = "dii_replay_unconditional_ignore"; codeColumn = "tran_code"; }
+            case "conditional-ignores" -> { table = "dii_replay_conditional_rmove"; codeColumn = "orig_trcd"; }
+            case "error-code-ignores" -> { table = "dii_replay_error_code_ignore_config"; codeColumn = "service_code"; }
+            case "sort-fields" -> { table = "dii_replay_sort_field"; codeColumn = "orig_trcd"; }
+            default -> throw new IllegalArgumentException("不支持的忽略清单类型");
+        }
+        if ((domain == null || domain.isBlank()) && (developer == null || developer.isBlank())
+                && !domainEmpty && !developerEmpty) {
+            return null;
+        }
+        List<String> configCodes = jdbc.queryForList(
+                "SELECT DISTINCT " + codeColumn + " FROM " + table, String.class);
+        Map<String, ReplayConfigPersonInfo> personByCode = resolveByServiceCodes(configCodes);
+        Set<String> result = new LinkedHashSet<>();
+        for (String configCode : configCodes) {
+            ReplayConfigPersonInfo person = personByCode.get(configCode);
+            boolean domainMatches = domainEmpty
+                    ? person == null || isBlank(person.domain())
+                    : domain == null || domain.isBlank()
+                    || person != null && Objects.equals(person.domain(), domain.trim());
+            boolean developerMatches = developerEmpty
+                    ? person == null || isBlank(person.developer())
+                    : developer == null || developer.isBlank()
+                    || person != null && Objects.equals(person.developer(), developer.trim());
+            if (domainMatches && developerMatches) {
+                result.add(configCode);
+            }
+        }
+        return result;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     /** 服务码集合求交；任一侧为 {@code null} 表示不限制。 */

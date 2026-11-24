@@ -73,7 +73,7 @@ public class ReplayErrorCodeIgnoreService {
                                                            Integer reviewStatus, Boolean reviewableByMe,
                                                            Boolean reasonEmpty, ReplayConfigOperator operator) {
         return list(limit, offset, internalTransactionCode, domain, serviceCode, oldRespCode, newRespCode,
-                reviewStatus, reviewableByMe, null, reasonEmpty, operator);
+                reviewStatus, reviewableByMe, null, reasonEmpty, null, null, null, operator);
     }
 
     public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
@@ -82,6 +82,7 @@ public class ReplayErrorCodeIgnoreService {
                                                            String oldRespCode, String newRespCode,
                                                            Integer reviewStatus, Boolean reviewableByMe,
                                                            Boolean developedByMe, Boolean reasonEmpty,
+                                                           Boolean domainEmpty, String developer, Boolean developerEmpty,
                                                            ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
@@ -104,6 +105,9 @@ public class ReplayErrorCodeIgnoreService {
                         ? personResolver.findDevelopedServiceCodes(
                                 operator == null ? null : operator.username())
                         : null);
+        serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
+                personResolver.resolveConfigServiceCodes("error-code-ignores", domain, developer,
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
         long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, effectiveReviewStatus,
                 reasonEmpty);
         if (total == 0) {
