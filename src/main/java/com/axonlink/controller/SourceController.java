@@ -632,16 +632,7 @@ public class SourceController {
     }
 
     private Path preferSourceMetadataPath(Path originalPath) {
-        String normalized = originalPath.toString().replace('\\', '/');
-        if (!normalized.endsWith(".xml")) {
-            return originalPath;
-        }
-        String candidateText = normalized.replace("/target/classes/", "/src/main/resources/");
-        if (candidateText.equals(normalized)) {
-            return originalPath;
-        }
-        Path candidate = Paths.get(candidateText).toAbsolutePath().normalize();
-        return Files.exists(candidate) ? candidate : originalPath;
+        return com.axonlink.service.SourceFiles.preferred(originalPath);
     }
 
     private Path preferSourceMetadataPath(String originalPath) {

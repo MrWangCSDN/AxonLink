@@ -251,6 +251,7 @@ public class FlowtransMetaGraphBuilder {
                     flowNodes.add(node(
                         "key", flowKey,
                         "txId", txId,
+                        "orderVersion", 1,
                         "id", attr(flowEl, "id"),
                         "longname", attr(flowEl, "longname"),
                         "desc", attr(flowEl, "desc"),
@@ -333,7 +334,7 @@ public class FlowtransMetaGraphBuilder {
         String previousKey = null;
         int order = 0;
 
-        for (Element child : childElements(container)) {
+        for (Element child : FlowChildren.steps(container)) {
             String tag = child.getTagName();
             String currentKey = null;
 
@@ -400,7 +401,10 @@ public class FlowtransMetaGraphBuilder {
                 parseStepMappings(currentKey, txId, child, fieldIndex);
             } else if ("case".equals(tag)) {
                 order++;
-                currentKey = txKey(txId) + ":CASE:" + order + ":" + attr(child, "id");
+                String caseId = attr(child, "id");
+                currentKey = parentKey.equals(txKey(txId) + ":FLOW")
+                    ? txKey(txId) + ":CASE:" + order + ":" + keySegment(caseId)
+                    : flowStepKey(txId, parentKey, "CASE", order, caseId, null);
                 caseNodes.add(node(
                     "key", currentKey,
                     "txId", txId,
@@ -415,7 +419,7 @@ public class FlowtransMetaGraphBuilder {
                 int branchOrder = 0;
                 for (Element whenEl : childElements(child, "when")) {
                     branchOrder++;
-                    String whenKey = currentKey + ":WHEN:" + branchOrder + ":" + attr(whenEl, "id");
+                    String whenKey = currentKey + ":WHEN:" + branchOrder + ":" + keySegment(attr(whenEl, "id"));
                     whenNodes.add(node(
                         "key", whenKey,
                         "txId", txId,
@@ -428,13 +432,6 @@ public class FlowtransMetaGraphBuilder {
                     graphEdges.add(edge("HAS_BRANCH", currentKey, whenKey));
                     parseContainer(whenKey, "EXECUTES", txId, txClassFqn, whenEl, fieldIndex, serviceTypes);
                 }
-            } else {
-                // 其它任意流程容器（loop / if / switch / 循环里再嵌 case、case 里再嵌 loop …）：
-                // 不管谁嵌套谁，一律透明递归到底，把最里层的 method / service 步骤都挖出来挂到当前
-                // parent 下（与外层步骤同层）。原先只认 method/service/case → loop、if 等容器里的步骤
-                // 被整段丢弃、链路「流程编排」不显示。递归天然覆盖任意深度、任意组合的嵌套；
-                // method/service 是叶子由上面分支处理，故这里的兜底只会往下找步骤、不会误建节点。
-                parseContainer(parentKey, relationType, txId, txClassFqn, child, fieldIndex, serviceTypes);
             }
 
             if (currentKey != null && previousKey != null) {
