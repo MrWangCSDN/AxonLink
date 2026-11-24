@@ -1,0 +1,14 @@
+server:
+  # 本地源码扫描入口，仅监听回环地址。
+  address: 127.0.0.1
+  # 与 AxonLink 正式服务的默认端口分开。
+  port: 8133
+
+lab:
+  # SQLite 文件，按进程工作目录解析相对路径。
+  database: ./data/flowtran-local.db
+
+logging:
+  level:
+    # INFO 输出扫描阶段和诊断摘要，DEBUG 输出逐文件、建边和过滤细节。
+    com.axonlink.local: INFO

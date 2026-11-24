@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serviceType id="CheckComponent" longname="账户校验构件" package="cn.sunline.ltts.busi.demo">
+    <service id="verifyAccount" name="verify" longname="检查账户"/>
+</serviceType>

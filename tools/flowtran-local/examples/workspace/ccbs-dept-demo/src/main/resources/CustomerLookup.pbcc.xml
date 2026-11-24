@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<serviceType id="CustomerLookup" longname="客户查询构件" package="cn.sunline.ltts.busi.demo">
+    <service id="findCustomer" name="load" longname="查询客户"/>
+</serviceType>

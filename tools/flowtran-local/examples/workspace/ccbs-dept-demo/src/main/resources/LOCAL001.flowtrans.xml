@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<flowtran id="LOCAL001" longname="本地转账示例" package="cn.sunline.ltts.busi.demo">
+    <flow id="main" longname="转账编排">
+        <method id="prepare" method="prepare" longname="准备交易"/>
+        <method id="postDirect" method="postDirect" longname="直接获取服务"/>
+        <case id="decision" longname="审核结果">
+            <when id="approved" longname="审核通过" test="approved">
+                <service id="post" serviceName="TransferService.submit" longname="执行转账"/>
+                <loop id="retry">
+                    <service id="retryPost" serviceName="TransferService.submit" longname="重试转账"/>
+                </loop>
+            </when>
+            <when id="rejected" longname="审核拒绝" test="!approved">
+                <method id="audit" method="audit" longname="记录拒绝"/>
+                <method id="missing" method="missing" longname="未绑定的方法步骤"/>
+            </when>
+        </case>
+    </flow>
+</flowtran>

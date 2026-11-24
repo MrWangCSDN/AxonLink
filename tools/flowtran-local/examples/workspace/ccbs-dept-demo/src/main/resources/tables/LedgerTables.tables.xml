@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schema id="LedgerTables" package="cn.sunline.ltts.busi.demo">
+    <table id="customer" longname="客户表"/>
+</schema>

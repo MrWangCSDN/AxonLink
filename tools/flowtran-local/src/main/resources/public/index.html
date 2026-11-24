@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交易链路本地验证</title>
+  <link rel="stylesheet" href="/lab.css">
+  <script type="module" src="/lab.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <h1>交易链路本地验证</h1>
+      <span class="storage" title="本地 SQLite 快照">SQLite</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar" aria-label="扫描与交易">
+      <section class="panel">
+        <h2>扫描源码</h2>
+        <form id="scan-form">
+          <label for="workspace">工作区目录</label>
+          <textarea id="workspace" rows="2" placeholder="包含一个或多个业务模块的目录"></textarea>
+          <label for="source-roots">额外的 Java 源码目录</label>
+          <textarea id="source-roots" rows="2" placeholder="可选，可用换行或逗号分隔"></textarea>
+          <div class="scan-options">
+            <div>
+              <label for="packages">Java 包前缀</label>
+              <input id="packages" type="text" spellcheck="false">
+            </div>
+            <div>
+              <label for="max-kb">上限 KB</label>
+              <input id="max-kb" type="number" min="1" step="1">
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit" id="scan-button" class="primary">开始扫描</button>
+            <button type="button" id="sample-button">扫描示例</button>
+          </div>
+        </form>
+        <p id="scan-status" class="status" role="status">正在读取 SQLite 快照…</p>
+        <p id="scan-error" class="error" role="alert" hidden></p>
+        <p id="database" class="file-path" hidden></p>
+        <details id="scan-notes" class="scan-notes" hidden>
+          <summary id="scan-notes-title"></summary>
+          <ul id="scan-notes-list"></ul>
+        </details>
+      </section>
+      <section class="panel">
+        <div class="section-heading">
+          <h2>交易</h2>
+          <span id="tx-count" class="count"></span>
+        </div>
+        <input id="search" type="search" aria-label="筛选交易" placeholder="筛选交易码或名称">
+        <div id="transactions" class="transactions" aria-label="交易列表"></div>
+      </section>
+    </aside>
+
+    <section class="workspace">
+      <div class="panel chain-header">
+        <div class="section-heading">
+          <div>
+            <h2 id="chain-title">查看交易链路</h2>
+            <p class="muted mono" id="chain-file" hidden></p>
+          </div>
+          <span id="chain-domain" class="tag" hidden></span>
+        </div>
+        <div id="chain-counts" class="chain-counts" hidden></div>
+      </div>
+
+      <div class="chain-columns">
+        <section class="panel chain-panel">
+          <div class="tabs" aria-label="链路视图">
+            <button type="button" data-view="logical" aria-pressed="true">聚合链路</button>
+            <button type="button" data-view="components" aria-pressed="false">构件调用</button>
+            <button type="button" data-view="tables" aria-pressed="false">表访问</button>
+            <button type="button" data-view="xml" aria-pressed="false">XML 步骤</button>
+            <button type="button" data-view="export" aria-pressed="false">导出 JSON</button>
+          </div>
+          <div id="chain" class="chain" aria-live="polite">
+            <p class="empty">扫描业务源码或内置示例后，选择一笔交易。</p>
+          </div>
+        </section>
+
+        <section class="panel node-panel" id="node-panel" aria-labelledby="node-heading">
+          <div class="section-heading">
+            <h2 id="node-heading">原始节点</h2>
+            <button type="button" id="node-back" hidden>返回上一级</button>
+          </div>
+          <details class="method-search">
+            <summary>查找 Java 方法</summary>
+            <form id="method-form">
+              <input id="method-query" type="search" required aria-label="类名或方法签名" placeholder="类名或方法签名">
+              <button type="submit">查找</button>
+            </form>
+            <div id="method-results" class="edge-list" aria-live="polite"></div>
+          </details>
+          <div id="node" aria-live="polite">
+            <p class="empty">选择链路节点查看调用方向和源码行。</p>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <template id="chain-export-template">
+    <section class="chain-export" aria-label="交易链路 JSON 导出">
+      <div class="actions export-actions">
+        <button type="button" class="primary" data-copy>复制 JSON 字符串</button>
+        <button type="button" data-download>下载 .json</button>
+      </div>
+      <p class="status" data-feedback role="status" hidden></p>
+      <details class="json-preview">
+        <summary>预览 JSON 字符串</summary>
+        <textarea aria-label="完整交易链路 JSON" rows="12" wrap="off" readonly spellcheck="false"></textarea>
+      </details>
+      <h3>静态调用顺序</h3>
+      <p class="status" data-range></p>
+      <ol class="ordered-relations"></ol>
+      <nav class="actions" aria-label="调用顺序分页" data-pages hidden>
+        <button type="button" data-prev>上一页</button>
+        <button type="button" data-next>下一页</button>
+      </nav>
+    </section>
+  </template>
+</body>
+</html>
