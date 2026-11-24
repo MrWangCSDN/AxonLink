@@ -99,6 +99,22 @@ class ReplayDatabaseComparisonControllerTest {
     }
 
     @Test
+    void rejectsInvalidMaximumJsonBeforeCallingAnySaveOrQueryService() throws Exception {
+        String base = "/api/ai/parallel-replay/database-comparison-fields";
+        for (String suffix : List.of("", "/custom-sql", "/1/reregister")) {
+            mvc.perform(post(base + suffix).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"maxPartitionNum\":64.5}"))
+                    .andExpect(status().isBadRequest());
+        }
+        for (String suffix : List.of("/search", "/header-filter-options", "/versions/v1/search", "/versions/v1/header-filter-options")) {
+            mvc.perform(post(base + suffix).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"maxPartitionNums\":[64.5]}"))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(service, versionService);
+    }
+
+    @Test
     void customSqlEndpointsRequireHumanLoginAndPreserveTheSaveContract() throws Exception {
         String path = "/api/ai/parallel-replay/database-comparison-fields/custom-sql";
         mvc.perform(post(path + "/analyze").contentType(MediaType.APPLICATION_JSON)
@@ -274,7 +290,7 @@ class ReplayDatabaseComparisonControllerTest {
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
         when(configScriptService.download(versionNo)).thenReturn(
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
-        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
+        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.NEW)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/versions/"
@@ -297,8 +313,15 @@ class ReplayDatabaseComparisonControllerTest {
                 .andExpect(header().string("X-Content-SHA256", sha256))
                 .andExpect(content().bytes(sql));
 
+        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
+                .thenAnswer(invocation -> invocation.getArgument(1));
+        mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/versions/"
+                        + versionNo + "/config-script/download").param("targetVersion", "LEGACY"))
+                .andExpect(status().isOk()).andExpect(content().bytes(sql));
+        verify(configScriptService).forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY));
+
         verify(configScriptService).generate(eq(versionNo), any(ReplayIssueOperator.class));
-        verify(configScriptService).download(versionNo);
+        verify(configScriptService, org.mockito.Mockito.times(2)).download(versionNo);
     }
 
     @Test
@@ -321,7 +344,7 @@ class ReplayDatabaseComparisonControllerTest {
         when(configScriptService.generate(versionNo, new ReplayIssueOperator("A012345", "A012345")))
                 .thenReturn(new ReplayDatabaseComparisonConfigScriptService.ScriptFile(
                         "replay-db-compare-config-20260914-172637.sql", "a".repeat(64), sql));
-        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
+        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.NEW)))
                 .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/versions/"

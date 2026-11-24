@@ -51,10 +51,37 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);
+    }
+
+    @Test
+    void frozenMaximumsSupportExactSearchAndSelfExcludingHeaderCandidates() {
+        long version = dao.insertVersion("max-version", "c".repeat(64), 2, 2, "100", "张三", now);
+        var first = registration(1L, 1L, "acct_master", "账户", "存款组", "100", "张三",
+                List.of(field("id", "编号", 1, true, 1))).withMaxPartitionNum(100);
+        var second = registration(2L, 1L, "loan_master", "贷款", "存款组", "100", "张三",
+                List.of(field("id", "编号", 1, true, 1))).withMaxPartitionNum(256);
+        long firstTable = dao.insertVersionTable(version, first);
+        long secondTable = dao.insertVersionTable(version, second);
+        dao.insertVersionFields(firstTable, first.fields());
+        dao.insertVersionFields(secondTable, second.fields());
+        var result = dao.searchVersion("max-version", new ReplayDbCompareVersionQuery(0, 20, null, null,
+                List.of(), List.of(), List.of(), null, null, List.of(), List.of(), List.of(), List.of(), List.of(100)));
+        assertEquals(1, result.total());
+        assertEquals(100, result.items().get(0).maxPartitionNum());
+        var candidates = dao.versionHeaderFilterOptions("max-version", new ReplayDbCompareHeaderFilterRequest(
+                "maxPartitionNum", null, 20, null, null, List.of("存款组"), List.of(), List.of(), null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(100)));
+        assertEquals(2, candidates.matchedRegistrationCount());
+        assertEquals(java.util.Set.of("100", "256"), candidates.options().stream().map(option -> option.value()).collect(java.util.stream.Collectors.toSet()));
+        var tables = dao.versionHeaderFilterOptions("max-version", new ReplayDbCompareHeaderFilterRequest(
+                "tableName", null, 20, null, null, List.of(), List.of(), List.of(), null, null,
+                List.of(), List.of(), List.of(), List.of(), List.of(100)));
+        assertEquals(List.of("acct_master"), tables.options().stream().map(option -> option.value()).toList());
     }
 
     @Test

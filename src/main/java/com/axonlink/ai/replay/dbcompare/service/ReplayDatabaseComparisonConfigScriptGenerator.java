@@ -62,7 +62,14 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             String versionNo,
             List<ReplayDbCompareVersionTableItem> snapshotTables,
             boolean newTarget) {
-        return generate(versionNo,snapshotTables,newTarget,null);
+        Map<String,Integer> maximums = null;
+        if (newTarget) {
+            maximums = new HashMap<>();
+            for (var table : snapshotTables == null ? List.<ReplayDbCompareVersionTableItem>of() : snapshotTables) {
+                maximums.put(table.tableName(), table.maxPartitionNum());
+            }
+        }
+        return generate(versionNo,snapshotTables,newTarget,maximums);
     }
 
     private GeneratedScript generate(
@@ -83,7 +90,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
             }
             if (!errors.isEmpty()) throw new ReplayDatabaseComparisonGenerationException(
                     HttpStatus.UNPROCESSABLE_ENTITY,"SCRIPT_CONFIG_VALIDATION_FAILED",
-                    "命名脚本配置校验失败",Map.of("errors",List.copyOf(errors)));
+                    "脚本配置校验失败",Map.of("errors",List.copyOf(errors)));
         }
         tables.sort(Comparator
                 .comparingInt((ReplayDbCompareVersionTableItem table) ->

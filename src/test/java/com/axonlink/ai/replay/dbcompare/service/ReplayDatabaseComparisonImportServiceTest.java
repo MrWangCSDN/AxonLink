@@ -61,7 +61,8 @@ class ReplayDatabaseComparisonImportServiceTest {
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
@@ -112,7 +113,8 @@ class ReplayDatabaseComparisonImportServiceTest {
                         input("存款", "acct_master", "acct_no", "创建人"))),
                 new ReplayIssueOperator("editor", "编辑人"));
         ReplayDbCompareRegistration created = dao.findBySchemaAndTable("base_schema", "acct_master");
-        jdbc.update("UPDATE dii_replay_db_compare_registration SET partition_num=16,sample_limit=23,group_owner_emp_no='101',group_owner_name='赵经理' WHERE id=?",
+        assertEquals(64, created.maxPartitionNum());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET max_partition_num=100,partition_num=16,sample_limit=23,group_owner_emp_no='101',group_owner_name='赵经理' WHERE id=?",
                 created.id());
 
         ReplayDbCompareImportResult second = service.importFile(
@@ -134,6 +136,7 @@ class ReplayDatabaseComparisonImportServiceTest {
         assertEquals("赵经理", merged.groupOwnerName());
         assertEquals(16, merged.partitionNum());
         assertEquals(23, merged.sampleLimit());
+        assertEquals(100, merged.maxPartitionNum());
         assertEquals(List.of("系统", "系统"),
                 dao.searchAuditEvents(ReplayDbCompareAuditQuery.empty(0, 50)).items().stream()
                         .map(event -> event.operatorName()).toList());

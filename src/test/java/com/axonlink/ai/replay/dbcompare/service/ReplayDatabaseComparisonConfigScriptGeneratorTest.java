@@ -27,25 +27,44 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
-    @Test void namedConfigurationAddsOnlyTheExplicitFourteenthNewTargetColumn() {
+    @Test void allNewConfigurationsIncludeTheFourteenthMaxPartitionColumn() {
         var input = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
         var originalNew = sql(generator.generateNew("v1",List.of(input)));
         var named = sql(generator.generateNamed("named-1",List.of(input),Map.of("acct_master",100)));
-        assertFalse(originalNew.contains("bcomp_max_partition_num"));
+        assertTrue(originalNew.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
+        assertTrue(originalNew.contains(",1,'HASH',100,'张三','zhangsan',64)"));
         assertTrue(named.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
         assertTrue(named.contains(",1,'HASH',100,'张三','zhangsan',100)"));
         assertTrue(named.contains("INSERT INTO tss_bcomp_conf_new"));
         assertEquals(originalNew,sql(generator.generateNew("v1",List.of(input))));
     }
 
-    @Test void backslashMemoHexEncodingIsLimitedToTheNamedConfigurationTarget() {
+    @Test void allNewConfigurationsPreserveBackslashTextForBdImport() {
         var input=table("acct_master","A\\B","存款组",field("id","A\\'B",true,1));
         String builtin=sql(generator.generateNew("v1",List.of(input)));
         String named=sql(generator.generateNamed("named-1",List.of(input),Map.of("acct_master",64)));
-        assertTrue(builtin.contains("'A\\B比对'"));
-        assertFalse(builtin.contains("CONVERT(0x415c"));
+        assertTrue(builtin.contains("CONVERT(0x415c42e6af94e5afb9 USING utf8mb4)"));
+        assertTrue(builtin.contains("CONVERT(0x415c2742 USING utf8mb4)"));
+        assertTrue(sql(generator.generate("v1",List.of(input))).contains("'A\\B比对'"));
         assertTrue(named.contains("CONVERT(0x415c42e6af94e5afb9 USING utf8mb4)"));
         assertTrue(named.contains("CONVERT(0x415c2742 USING utf8mb4)"));
+    }
+
+    @Test void newTargetUsesEachSnapshotsMaximumAndKeepsNamedOverridesIndependent() {
+        var first = table("acct_master", "账户", "存款组", field("id", "编号", true, 1))
+                .withPartitionNum(8).withSampleLimit(33).withMaxPartitionNum(100);
+        var second = table("loan_detail", "贷款", "贷款组", field("id", "编号", true, 1))
+                .withMaxPartitionNum(256);
+        String builtin = sql(generator.generateNew("v2",List.of(first, second)));
+        assertTrue(builtin.contains(",1,'HASH',33,'张三','zhangsan',100)"));
+        assertTrue(builtin.contains(",1,'HASH',100,'张三','zhangsan',256)"));
+        assertFalse(sql(generator.generate("v2",List.of(first))).contains("bcomp_max_partition_num"));
+        String named = sql(generator.generateNamed("profile",List.of(first),Map.of("acct_master",64)));
+        assertTrue(named.contains(",1,'HASH',33,'张三','zhangsan',64)"));
+        for (int invalid : List.of(0,257)) {
+            assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                    () -> generator.generateNew("v2",List.of(first.withMaxPartitionNum(invalid))));
+        }
     }
 
     @Test

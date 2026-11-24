@@ -64,9 +64,33 @@ class ReplayDatabaseComparisonDaoTest {
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonDao(jdbc);
+    }
+
+    @Test
+    void filtersMaximumsExactlyAndSelfExcludesOnlyTheMaximumHeaderCondition() {
+        long account = insert("acct_master", "账户", "存款组", "001", "张三", "101", "赵经理", LocalDate.of(2026, 9, 10), false, field("acct_no", "账号", 1, 1));
+        insert("customer_master", "客户", "存款组", "001", "张三", "101", "赵经理", LocalDate.of(2026, 9, 10), false, field("id", "编号", 1, 1));
+        long loan = insert("loan_master", "贷款", "贷款组", "002", "李四", "102", "钱经理", LocalDate.of(2026, 9, 10), false, field("id", "编号", 1, 1));
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET max_partition_num=100 WHERE id=?", account);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET max_partition_num=256 WHERE id=?", loan);
+        var query = new ReplayDbCompareQuery(null, null, List.of(), List.of(), List.of(), null, null,
+                0, 20, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(100, 256));
+        var matched = dao.search(query);
+        assertEquals(2, matched.total());
+        assertEquals(List.of(100, 256), matched.items().stream().map(ReplayDbCompareListItem::maxPartitionNum).toList());
+        assertEquals(0, dao.search(new ReplayDbCompareQuery(null, null, List.of(), List.of(), List.of(), null, null,
+                0, 20, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(10))).total());
+        var candidates = dao.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest("maxPartitionNum", null, 20,
+                null, null, List.of("存款组"), List.of(), List.of(), null, null, List.of(), List.of(), List.of(), List.of(), List.of(100)));
+        assertEquals(2, candidates.matchedRegistrationCount());
+        assertEquals(java.util.Set.of("64", "100"), candidates.options().stream().map(option -> option.value()).collect(java.util.stream.Collectors.toSet()));
+        var tableCandidates = dao.headerFilterOptions(new ReplayDbCompareHeaderFilterRequest("tableName", null, 20,
+                null, null, List.of(), List.of(), List.of(), null, null, List.of(), List.of(), List.of(), List.of(), List.of(100)));
+        assertEquals(List.of("acct_master"), tableCandidates.options().stream().map(option -> option.value()).toList());
     }
 
     @Test

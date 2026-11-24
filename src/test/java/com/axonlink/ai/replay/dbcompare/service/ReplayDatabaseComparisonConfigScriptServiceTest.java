@@ -57,7 +57,8 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
         scriptDao = new ReplayDatabaseComparisonVersionScriptDao(jdbc);
@@ -84,14 +85,29 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         assertTrue(sql.contains("TRUNCATE TABLE tss_bcomp_conf_new;"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_field_new"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_table_sql_new"));
-        assertTrue(sql.contains("bcomp_sample_limit,reviser_name,reviser_username)"));
-        assertTrue(sql.contains("'张三','zhangsan')"));
+        assertTrue(sql.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
+        assertTrue(sql.contains("'张三','zhangsan',64)"));
         assertTrue(converted.fileName().endsWith("-new.sql"));
         assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                 .digest(converted.content())), converted.sha256());
         assertArrayEquals(legacy.content(), service.download(VERSION_NO).content());
         assertEquals(legacy.sha256(), service.status(VERSION_NO).sha256());
         assertFalse(new String(legacy.content(), StandardCharsets.UTF_8).contains("reviser_name"));
+    }
+
+    @Test
+    void newTargetUsesFrozenCapsAfterCurrentRegistrationChangesAndLeavesLegacyBytesUntouched() {
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET max_partition_num=100 WHERE version_id=?",versionId);
+        var legacy = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
+        var registrationDao = new com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonDao(jdbc);
+        registrationDao.insertRegistration(registration("acct_master",List.of(field("acct_no","账号",true,1)))
+                .withMaxPartitionNum(256));
+        String sql = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW)
+                .content(), StandardCharsets.UTF_8);
+        assertTrue(sql.contains("'张三','zhangsan',100)"));
+        assertFalse(sql.contains("'张三','zhangsan',256)"));
+        assertArrayEquals(legacy.content(),service.download(VERSION_NO).content());
+        assertEquals(legacy.sha256(),service.status(VERSION_NO).sha256());
     }
 
     @Test
@@ -148,10 +164,10 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=?,reviser_username=? WHERE version_id=?",
                 "王'山河", "c-wangsh8", versionId);
         String sql = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
-        assertTrue(sql.contains("'王''山河','c-wangsh8')"));
+        assertTrue(sql.contains("'王''山河','c-wangsh8',64)"));
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=NULL,reviser_username=NULL WHERE version_id=?", versionId);
         String noReviser = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
-        assertTrue(noReviser.contains(",'HASH',100,NULL,NULL)"));
+        assertTrue(noReviser.contains(",'HASH',100,NULL,NULL,64)"));
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=? WHERE version_id=?",
                 "王".repeat(101), versionId);
         assertThrows(ReplayDatabaseComparisonGenerationException.class,

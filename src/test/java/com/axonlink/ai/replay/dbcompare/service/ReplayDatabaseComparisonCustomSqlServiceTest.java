@@ -47,7 +47,8 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,developer_display,developer_usernames,developer_emp_nos,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('source_table','存款组','张三(zhangsan)','zhangsan','100','赵经理','101',CURRENT_TIMESTAMP)");
@@ -77,8 +78,30 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     }
 
     @Test
+    void maximumHashPartitionChangesUseOrdinarySavePermissionAndFreezeSqlSnapshots() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+        var values = json.valueToTree(request("来源表", SQL, null, "source_table", 1));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) values).put("maxPartitionNum", 100);
+        var created = service.createCustomSql(json.treeToValue(values, ReplayDbCompareCustomSqlSaveRequest.class), operator());
+        assertEquals(100, created.maxPartitionNum());
+        assertEquals(100, service.detail(created.id()).maxPartitionNum());
+        assertEquals(100, service.search(ReplayDbCompareQuery.empty(0, 20)).items().get(0).maxPartitionNum());
+        var generated = versionService.generate("secret", "secret", operator());
+        assertEquals(100, versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id()).get(0).maxPartitionNum());
+        var updatedValues = json.valueToTree(request("来源表", SQL, created.version(), "source_table", 1));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) updatedValues).put("maxPartitionNum", 256);
+        var updated = service.updateCustomSql(created.id(), json.treeToValue(updatedValues, ReplayDbCompareCustomSqlSaveRequest.class), operator());
+        assertEquals(256, updated.maxPartitionNum());
+        assertEquals(created.version() + 1, updated.version());
+        assertEquals(256, service.updateCustomSql(updated.id(), request("来源表", SQL, updated.version(), "source_table", 1), operator()).maxPartitionNum());
+        assertEquals(100, versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id()).get(0).maxPartitionNum());
+        assertEquals("256", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail WHERE field_code='maxPartitionNum' AND before_value='100'", String.class));
+    }
+
+    @Test
     void savesPhysicalTableIdentityAndResolvesPersonnelByThePhysicalSource() {
         var first = service.createCustomSql(request("客户端伪造名称", SQL, null, "source_table", 1), operator());
+        assertEquals(64, first.maxPartitionNum());
         assertEquals("source_table", first.tableName());
         assertEquals("来源表", first.tableComment());
         assertEquals("CUSTOM_SQL", first.registrationType());

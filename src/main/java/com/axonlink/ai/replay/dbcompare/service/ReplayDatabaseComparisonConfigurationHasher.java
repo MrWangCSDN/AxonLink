@@ -45,6 +45,7 @@ public class ReplayDatabaseComparisonConfigurationHasher {
             putLong(digest, registration.compareLimit());
             putInt(digest, registration.partitionNum());
             putInt(digest, registration.sampleLimit());
+            putInt(digest, registration.maxPartitionNum());
             if (registration.comparisonKey() != null) {
                 putString(digest, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
             }

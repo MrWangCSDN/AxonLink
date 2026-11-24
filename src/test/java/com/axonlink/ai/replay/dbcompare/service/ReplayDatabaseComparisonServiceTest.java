@@ -92,6 +92,68 @@ class ReplayDatabaseComparisonServiceTest {
                 ReplayDbCompareSaveRequest.class);
     }
 
+    private ReplayDbCompareSaveRequest maxSave(Long version, String value) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper()
+                .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .readValue("{\"tableName\":\"acct_master\",\"domainName\":\"存款组\",\"groupOwnerEmpNo\":\"101\","
+                        + "\"fieldNames\":[\"acct_no\"],\"version\":" + version + ",\"maxPartitionNum\":" + value + "}",
+                        ReplayDbCompareSaveRequest.class);
+    }
+
+    private int maximum(Object value) {
+        return new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules()
+                .valueToTree(value).path("maxPartitionNum").asInt();
+    }
+
+    @Test
+    void maximumHashPartitionsDefaultTo64AndAreEditableWithoutPartitionAdmin() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(maxSave(null, "null"), operator);
+        assertEquals(64, maximum(created));
+        var changed = service.update(created.id(), maxSave(created.version(), "100"), operator);
+        assertEquals(100, maximum(changed));
+        assertEquals(1, changed.partitionNum());
+        assertEquals(100, changed.sampleLimit());
+        assertEquals(created.version() + 1, changed.version());
+        assertEquals(changed.version(), service.update(changed.id(), maxSave(changed.version(), "100"), operator).version());
+        assertEquals(100, maximum(service.update(changed.id(), maxSave(changed.version(), "null"), operator)));
+        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
+        assertEquals(100, maximum(service.detail(changed.id())));
+        assertEquals(100, maximum(service.search(ReplayDbCompareQuery.empty(0, 50)).items().get(0)));
+        assertEquals("64", jdbc.queryForObject("SELECT before_value FROM dii_replay_db_compare_audit_detail WHERE field_code='maxPartitionNum'", String.class));
+        assertEquals("100", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail WHERE field_code='maxPartitionNum'", String.class));
+        assertThrows(ReplayDatabaseComparisonVersionConflictException.class,
+                () -> service.update(changed.id(), maxSave(created.version(), "256"), operator));
+        doThrow(new IllegalStateException("field write failed")).when(dao).replaceFields(org.mockito.ArgumentMatchers.anyLong(), any(), any());
+        assertThrows(IllegalStateException.class,
+                () -> service.update(changed.id(), maxSave(changed.version(), "256"), operator));
+        assertEquals(100, maximum(dao.findByIdIncludingDeleted(changed.id())));
+        assertEquals(changed.version(), dao.findByIdIncludingDeleted(changed.id()).version());
+    }
+
+    @Test
+    void maximumHashPartitionsSurviveMetadataMaintenanceAndReregistration() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var created = service.create(maxSave(null, "256"), operator);
+        assertEquals(256, maximum(created));
+        var currentMetadata = metadata("acct_master", List.of("acct_no"), List.of("acct_no"));
+        when(metadataService.inspectTable("acct_master")).thenReturn(currentMetadata);
+        when(metadataService.inspectTables(any())).thenReturn(Map.of("acct_master", currentMetadata));
+        service.synchronizePrimaryKeys();
+        var current = dao.findByIdIncludingDeleted(created.id());
+        assertEquals(256, maximum(current));
+        var deleted = service.delete(current.id(), new ReplayDbCompareDeleteRequest(current.version(), "删除"), operator);
+        var restored = service.reregister(current.id(), new ReplayDbCompareReregisterRequest(deleted.version(),
+                "存款组", "101", List.of("acct_no"), "恢复"), operator);
+        assertEquals(256, maximum(restored));
+        var deletedAgain = service.delete(restored.id(), new ReplayDbCompareDeleteRequest(restored.version(), "删除"), operator);
+        var changedOnRestore = service.reregister(restored.id(), new ReplayDbCompareReregisterRequest(deletedAgain.version(),
+                "存款组", "101", List.of("acct_no"), "恢复", null, null, null, null, null, 100), operator);
+        assertEquals(100, maximum(changedOnRestore));
+    }
+
     @Test void sampleLimitUsesPartitionPermissionAndPreservesOnOrdinarySave() throws Exception {
         var operator = new ReplayIssueOperator("creator", "创建人");
         var created = service.create(save("acct_master", "存款组", "101", List.of("acct_no"), null), operator);
@@ -314,7 +376,8 @@ class ReplayDatabaseComparisonServiceTest {
                 new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
-                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));
