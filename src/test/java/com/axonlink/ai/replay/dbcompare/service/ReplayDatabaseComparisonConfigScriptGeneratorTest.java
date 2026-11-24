@@ -27,6 +27,27 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
+    @Test void namedConfigurationAddsOnlyTheExplicitFourteenthNewTargetColumn() {
+        var input = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
+        var originalNew = sql(generator.generateNew("v1",List.of(input)));
+        var named = sql(generator.generateNamed("named-1",List.of(input),Map.of("acct_master",100)));
+        assertFalse(originalNew.contains("bcomp_max_partition_num"));
+        assertTrue(named.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
+        assertTrue(named.contains(",1,'HASH',100,'张三','zhangsan',100)"));
+        assertTrue(named.contains("INSERT INTO tss_bcomp_conf_new"));
+        assertEquals(originalNew,sql(generator.generateNew("v1",List.of(input))));
+    }
+
+    @Test void backslashMemoHexEncodingIsLimitedToTheNamedConfigurationTarget() {
+        var input=table("acct_master","A\\B","存款组",field("id","A\\'B",true,1));
+        String builtin=sql(generator.generateNew("v1",List.of(input)));
+        String named=sql(generator.generateNamed("named-1",List.of(input),Map.of("acct_master",64)));
+        assertTrue(builtin.contains("'A\\B比对'"));
+        assertFalse(builtin.contains("CONVERT(0x415c"));
+        assertTrue(named.contains("CONVERT(0x415c42e6af94e5afb9 USING utf8mb4)"));
+        assertTrue(named.contains("CONVERT(0x415c2742 USING utf8mb4)"));
+    }
+
     @Test
     void customSqlProjectsSelectedAliasesInOrderForBothTargetsAndLimitsOutsideAggregation() {
         var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql(

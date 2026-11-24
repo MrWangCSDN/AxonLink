@@ -50,13 +50,41 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         return generate(versionNo, snapshotTables, true);
     }
 
+    /** Independent named configurations use the new schema's explicit per-table maximum. */
+    public GeneratedScript generateNamed(String artifactVersion,
+                                         List<ReplayDbCompareVersionTableItem> snapshotTables,
+                                         Map<String,Integer> maxPartitionNums) {
+        if (maxPartitionNums == null) throw new IllegalArgumentException("命名脚本必须指定最大hash分区数");
+        return generate(artifactVersion,snapshotTables,true,maxPartitionNums);
+    }
+
     private GeneratedScript generate(
             String versionNo,
             List<ReplayDbCompareVersionTableItem> snapshotTables,
             boolean newTarget) {
+        return generate(versionNo,snapshotTables,newTarget,null);
+    }
+
+    private GeneratedScript generate(
+            String versionNo,
+            List<ReplayDbCompareVersionTableItem> snapshotTables,
+            boolean newTarget,
+            Map<String,Integer> maxPartitionNums) {
         List<ReplayDbCompareVersionTableItem> tables = new ArrayList<>(
                 snapshotTables == null ? List.of() : snapshotTables);
         validate(tables, newTarget);
+        if (maxPartitionNums != null) {
+            List<ReplayDbCompareConfigScriptValidationError> errors = new ArrayList<>();
+            for (var table : tables) {
+                Integer maximum = maxPartitionNums.get(table.tableName());
+                if (maximum == null || maximum < 1 || maximum > 256) {
+                    errors.add(error(table.tableName(),null,"最大hash分区数必须为1到256的整数"));
+                }
+            }
+            if (!errors.isEmpty()) throw new ReplayDatabaseComparisonGenerationException(
+                    HttpStatus.UNPROCESSABLE_ENTITY,"SCRIPT_CONFIG_VALIDATION_FAILED",
+                    "命名脚本配置校验失败",Map.of("errors",List.copyOf(errors)));
+        }
         tables.sort(Comparator
                 .comparingInt((ReplayDbCompareVersionTableItem table) ->
                         DOMAIN_ORDER.indexOf(table.domainName()))
@@ -66,9 +94,9 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         int fieldCount = tables.stream().mapToInt(table -> table.fields().size()).sum();
         try (ScriptOutput output = new ScriptOutput()) {
             writePreamble(output, newTarget);
-            writeConfigurationRows(output, tables, newTarget);
-            writeFieldRows(output, tables, newTarget);
-            writeTableSqlRows(output, tables, newTarget);
+            writeConfigurationRows(output, tables, newTarget, maxPartitionNums);
+            writeFieldRows(output, tables, newTarget, maxPartitionNums!=null);
+            writeTableSqlRows(output, tables, newTarget, maxPartitionNums!=null);
             output.write("COMMIT;\n\n");
             output.write("-- Version: " + versionNo + "\n");
             output.write("-- Tables: " + tables.size() + "\n");
@@ -225,30 +253,34 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private void writeConfigurationRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget,
+            Map<String,Integer> maxPartitionNums) throws IOException {
         writeBatches(output, tables.size(),
                 "INSERT INTO tss_bcomp_conf" + (newTarget ? "_new" : "") + "\n"
                         + "  (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,"
                         + "bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit"
-                        + (newTarget ? ",reviser_name,reviser_username" : "") + ")\nVALUES\n",
+                        + (newTarget ? ",reviser_name,reviser_username" : "")
+                        + (maxPartitionNums != null ? ",bcomp_max_partition_num" : "") + ")\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String memoBase = hasText(table.tableComment())
                             ? table.tableComment().trim() : table.tableName();
                     String memo = memoBase.endsWith("比对") ? memoBase : memoBase + "比对";
+                    boolean named=maxPartitionNums!=null;
                     return "(" + (index + 1)
                             + "," + quote(DOMAIN_MODULES.get(table.domainName()))
                             + "," + quote(table.tableName())
-                            + "," + quote(memo)
+                            + "," + (named?quoteNamed(memo):quote(memo))
                             + ",'2','1','3','1',1,'HASH'," + table.sampleLimit()
-                            + (newTarget ? "," + quoteNullable(table.reviserName()) + "," + quoteNullable(table.reviserUsername()) : "")
+                            + (newTarget ? "," + quoteNullable(table.reviserName(),named) + "," + quoteNullable(table.reviserUsername(),named) : "")
+                            + (maxPartitionNums != null ? "," + maxPartitionNums.get(table.tableName()) : "")
                             + ")";
                 });
     }
 
     private void writeFieldRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget, boolean named) throws IOException {
         String header = "INSERT INTO tss_bcomp_field" + (newTarget ? "_new" : "") + "\n"
                 + "  (bcomp_index,field_name,field_type,field_memo,field_old_index,"
                 + "field_new_index,field_index_flag,field_enum_flag)\nVALUES\n";
@@ -267,7 +299,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                 int order = fieldIndex + 1;
                 output.write("(" + (tableIndex + 1)
                         + "," + quote(field.columnName())
-                        + ",'1'," + quote(memo)
+                        + ",'1'," + (named?quoteNamed(memo):quote(memo))
                         + "," + quote(String.valueOf(order))
                         + "," + quote(String.valueOf(order))
                         + "," + quote(isComparisonKey(tables.get(tableIndex), field) ? "1" : "0")
@@ -286,15 +318,15 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private void writeTableSqlRows(
             ScriptOutput output,
-            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) throws IOException {
+            List<ReplayDbCompareVersionTableItem> tables, boolean newTarget, boolean named) throws IOException {
         writeBatches(output, tables.size(),
                 "INSERT INTO tss_bcomp_table_sql" + (newTarget ? "_new" : "") + "\n"
                         + "  (bcomp_index,orig_sql,orig_database_id,dest_sql,dest_database_id)\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String select = table.customSql() == null ? tableSelect(table) : customSelect(table);
-                    return "(" + (index + 1) + "," + quoteQuery(table, select + "orig") + ",1,"
-                            + quoteQuery(table, select + "dest") + ",2)";
+                    return "(" + (index + 1) + "," + quoteQuery(table, select + "orig",named) + ",1,"
+                            + quoteQuery(table, select + "dest",named) + ",2)";
                 });
     }
 
@@ -342,7 +374,8 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         return "\"" + name.replace("\"", "\"\"") + "\"";
     }
 
-    private String quoteQuery(ReplayDbCompareVersionTableItem table, String query) {
+    private String quoteQuery(ReplayDbCompareVersionTableItem table, String query,boolean named) {
+        if (named) return quoteNamed(query);
         if (table.customSql() != null && query.indexOf('\\') >= 0) {
             return "CONVERT(0x" + HexFormat.of().formatHex(query.getBytes(StandardCharsets.UTF_8)) + " USING utf8mb4)";
         }
@@ -390,8 +423,15 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         return "'" + value.replace("'", "''") + "'";
     }
 
-    private String quoteNullable(String value) {
-        return hasText(value) ? quote(value.trim()) : "NULL";
+    private String quoteNullable(String value,boolean named) {
+        return hasText(value) ? (named?quoteNamed(value.trim()):quote(value.trim())) : "NULL";
+    }
+
+    private String quoteNamed(String value) {
+        if (value.indexOf('\0')>=0) throw new IllegalArgumentException("命名脚本文本不能包含NUL字符");
+        return value.indexOf('\\')>=0
+                ? "CONVERT(0x"+HexFormat.of().formatHex(value.getBytes(StandardCharsets.UTF_8))+" USING utf8mb4)"
+                : quote(value);
     }
 
     private boolean hasText(String value) {
