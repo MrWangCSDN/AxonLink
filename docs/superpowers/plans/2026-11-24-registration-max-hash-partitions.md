@@ -59,7 +59,7 @@
 - [x] 权威设计先更新，代码完成后按实际契约回核设计；独立审查完整diff。
 - [x] bd真实导入内置NEW，核对100/256及默认64覆盖；当前bd不需新生产代码。
 - [x] Java17完整package、static与JAR精确集合/字节校验，git diff --check。
-- [ ] 精确提交推送后端/前端main，生成包含前端的后端源码ZIP及整体交付包，核验SHA/CRC/源文件字节。
+- [x] 精确提交推送后端/前端main；源码ZIP使用固定提交交付流程生成并核验SHA/CRC/源文件字节。
 
 ## Ledger
 
@@ -77,3 +77,9 @@
 - 真实NEW SQL SHA256：`20e192dc8b82fba6180432168cfc8ab0169647fbc3f67c917581d2fea2039281`。bd在H2/隔离原生MySQL导入，将128/32/16覆盖为100/256/64；六字段文本/主键/位置和三组双侧SQL逐字核验，自定义result_q外层排序limit25保留；非法0/257/NULL/'64'/64.5全部400并完整回滚。隔离MySQL已清理，bd本轮无生产代码改动。
 - 独立完整diff和后端边界复核均无遗留发现。Obsidian权威设计main：`017694135de942d9d347bf4a0b12b38599e83f72`。
 - 源码包装使用固定Git对象及最新static，逐文件核验Git blob/字节、清单、CRC、路径和执行权限。bd归档已验证2b554d9对象，保留别的任务正在修改的工作区和HEAD。
+
+## Delivery
+
+- 后端功能commit：`3fe98c6`；前端功能commit：`c8b3f79`，均已正常推送GitHub main。
+- 本次发布目录为 `output/releases/20261124-registration-max-hash-partitions/`，不覆盖此前命名配置发布包。源码包完整HEAD、文件清单和SHA记录在发布README与manifest中。
+- 部署前人工执行V96。修改登记后生成新的不可变版本再下载NEW；历史快照迁移后的cap为64，不从当前登记回灌。
