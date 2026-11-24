@@ -17,9 +17,34 @@ public record ReplayDbCompareQuery(
         List<String> tableNames,
         List<String> fieldNames,
         List<LocalDate> registeredDates,
+        List<String> whereConditionValues,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(contentUsing = ReplayDbCompareMaxPartitionNumDeserializer.class)
+        List<Integer> maxPartitionNums) {
+
+    public ReplayDbCompareQuery(
+        String tableKeyword,
+        String fieldKeyword,
+        List<String> domains,
+        List<String> reviserEmpNos,
+        List<String> groupOwnerEmpNos,
+        LocalDate registeredDateFrom,
+        LocalDate registeredDateTo,
+        int page,
+        int size,
+        List<ReplayDbCompareMetadataStatus> metadataStatuses,
+        List<String> tableNames,
+        List<String> fieldNames,
+        List<LocalDate> registeredDates,
         List<String> whereConditionValues) {
+        this(tableKeyword, fieldKeyword, domains, reviserEmpNos, groupOwnerEmpNos, registeredDateFrom, registeredDateTo, page, size, metadataStatuses, tableNames, fieldNames, registeredDates, whereConditionValues, List.of());
+    }
+
 
     public ReplayDbCompareQuery {
+        maxPartitionNums = maxPartitionNums == null ? List.of() : List.copyOf(maxPartitionNums);
+        if (maxPartitionNums.stream().anyMatch(value -> value < 1 || value > 256)) {
+            throw new IllegalArgumentException("最大HASH分区数必须为 1 到 256 的整数");
+        }
         domains = copy(domains);
         reviserEmpNos = copy(reviserEmpNos);
         groupOwnerEmpNos = copy(groupOwnerEmpNos);

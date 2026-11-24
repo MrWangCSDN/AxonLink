@@ -165,9 +165,9 @@ public class ReplayDatabaseIssueService {
             if(!status.equals(oldStatus)&&!ReplayIssueStatus.fromDisplayValue(status).isManuallySelectable())throw new IllegalArgumentException("该问题状态不能手工选择");
             if(oldStatus.equals("重新打开")&&status.equals("打开"))throw new IllegalArgumentException("重新打开的问题不能改回打开状态");
             String type=text(request.get("issueType")).trim();
-            if(status.equals("无需处理")&&!ReplayDatabaseIssueTypes.NO_ACTION.contains(type))throw new IllegalArgumentException("无需处理的问题类型只能选择：不参与比对、规则性差异");
+            if(status.equals("无需处理")&&!ReplayDatabaseIssueTypes.NO_ACTION.contains(type))throw new IllegalArgumentException("无需处理的问题类型只能选择："+String.join("、",ReplayDatabaseIssueTypes.ALL.stream().filter(ReplayDatabaseIssueTypes.NO_ACTION::contains).toList()));
             if(!ReplayDatabaseIssueTypes.ALL.contains(type))throw new IllegalArgumentException("请选择有效问题类型");
-            if(!status.equals("无需处理")&&!ReplayDatabaseIssueTypes.ACTIONABLE.contains(type))throw new IllegalArgumentException("其他状态的问题类型只能选择：修改比对规则、修改迁移规则、修改代码、前后交易差异、参数问题、其他问题");
+            if(!status.equals("无需处理")&&!ReplayDatabaseIssueTypes.ACTIONABLE.contains(type))throw new IllegalArgumentException("其他状态的问题类型只能选择："+String.join("、",ReplayDatabaseIssueTypes.ALL.stream().filter(ReplayDatabaseIssueTypes.ACTIONABLE::contains).toList()));
             var after=new LinkedHashMap<>(before);after.put("issueStatus",status);after.put("issueType",type);
             for(String field:List.of("initialAnalysis","finalSolution","remark")){String value=text(request.get(field));if(value.length()>500)throw new IllegalArgumentException("分析、方案和备注各不能超过500个字符");after.put(field,value);}
             String username=text(request.get("cooperationPersonUsername")).trim();String name="";

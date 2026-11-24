@@ -10,6 +10,7 @@ import java.util.List;
 @ConfigurationProperties(prefix = "dii.replay.issue-reopen")
 public class ReplayReopenProperties {
     private boolean enabled;
+    // Employee number when present; otherwise the active user's database username.
     private List<String> adminEmpNos = new ArrayList<>();
     private List<String> countTransferEmpNos = new ArrayList<>();
 

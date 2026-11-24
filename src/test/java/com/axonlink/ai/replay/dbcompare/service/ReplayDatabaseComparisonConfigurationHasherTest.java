@@ -23,10 +23,10 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
             new ReplayDatabaseComparisonConfigurationHasher();
 
     @Test
-    void preservesThePreviouslyEncodedTableHashByteForByte() {
+    void includesTheNewMaximumDimensionWithoutReusingTheOldConfigurationHash() {
         var table = registration(1L, "acct_master", "账户主表", 3,
                 List.of(field("acct_no", "账号", 1, true, 1)));
-        assertEquals("bbd6260ed52d600cebe977d31d0c7f3ceaeac4ef98a57d3594c9ae89e792660c",
+        assertNotEquals("bbd6260ed52d600cebe977d31d0c7f3ceaeac4ef98a57d3594c9ae89e792660c",
                 hasher.hash(List.of(table)));
     }
 
@@ -87,6 +87,7 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
 
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(original.withPartitionNum(16))));
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(original.withSampleLimit(17))));
+        assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(original.withMaxPartitionNum(100))));
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(reordered)));
         assertNotEquals(hasher.hash(List.of(original)), hasher.hash(List.of(renamed)));
     }

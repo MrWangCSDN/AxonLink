@@ -17,6 +17,44 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReplayDatabaseComparisonMigrationTest {
 
     @Test
+    void maximumMigrationBackfillsIndependent64DefaultsAndPreservesHistoricalHashes() {
+        JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
+        new ResourceDatabasePopulator(
+                new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
+                new ClassPathResource("db/daoindex/V63__dii_replay_database_comparison_versions.sql"),
+                new ClassPathResource("db/daoindex/V74__replay_db_compare_partition_num.sql"),
+                new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"))
+                .execute(jdbc.getDataSource());
+        String registration = "INSERT INTO dii_replay_db_compare_registration "
+                + "(schema_name,table_name,domain_name,registered_date,created_by,created_name,created_at,updated_by,updated_name,updated_at,partition_num,sample_limit) "
+                + "VALUES ('base',?,'存款组',CURRENT_DATE,'u','User',CURRENT_TIMESTAMP,'u','User',CURRENT_TIMESTAMP,8,25)";
+        jdbc.update(registration, "old_table");
+        jdbc.update("INSERT INTO dii_replay_db_compare_version "
+                + "(version_no,configuration_hash,table_count,field_count,generated_by,generated_name,generated_at) "
+                + "VALUES ('old',?,1,0,'u','User',CURRENT_TIMESTAMP)", "a".repeat(64));
+        String snapshot = "INSERT INTO dii_replay_db_compare_version_table "
+                + "(version_id,source_registration_id,source_registration_version,schema_name,table_name,domain_name,registered_date,partition_num,sample_limit) "
+                + "VALUES (1,1,0,'base',?,'存款组',CURRENT_DATE,8,25)";
+        jdbc.update(snapshot, "old_table");
+        new ResourceDatabasePopulator(new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
+                .execute(jdbc.getDataSource());
+        jdbc.update(registration, "new_table");
+        jdbc.update(snapshot, "new_table");
+        for (String table : List.of("dii_replay_db_compare_registration", "dii_replay_db_compare_version_table")) {
+            assertEquals(List.of(64, 64), jdbc.queryForList("SELECT max_partition_num FROM " + table + " ORDER BY table_name", Integer.class));
+            assertEquals(List.of(8, 8), jdbc.queryForList("SELECT partition_num FROM " + table, Integer.class));
+            assertEquals(List.of(25, 25), jdbc.queryForList("SELECT sample_limit FROM " + table, Integer.class));
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                    () -> jdbc.update("UPDATE " + table + " SET max_partition_num=0"));
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                    () -> jdbc.update("UPDATE " + table + " SET max_partition_num=257"));
+            jdbc.update("UPDATE " + table + " SET max_partition_num=100 WHERE table_name='old_table'");
+            jdbc.update("UPDATE " + table + " SET max_partition_num=256 WHERE table_name='new_table'");
+        }
+        assertEquals("a".repeat(64), jdbc.queryForObject("SELECT configuration_hash FROM dii_replay_db_compare_version", String.class));
+    }
+
+    @Test
     void customSqlMigrationPreservesExistingTableRegistrationsAndVersions() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(

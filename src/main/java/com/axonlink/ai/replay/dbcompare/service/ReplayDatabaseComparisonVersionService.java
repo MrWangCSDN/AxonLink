@@ -134,7 +134,7 @@ public class ReplayDatabaseComparisonVersionService {
                     registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                     registration.fields(), registration.whereCondition(), registration.compareLimit(),
                     registration.orderingPrimaryKeyNames(), registration.metadataValidation())
-                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
                     .withComparisonKey(registration.comparisonKey())
                     .withCustomSql(registration.customSql());
         }).toList();
@@ -330,7 +330,7 @@ public class ReplayDatabaseComparisonVersionService {
                     registration.createdBy(), registration.createdName(), registration.createdAt(),
                     registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                     prepared.fields(), null, registration.compareLimit(), prepared.comparisonKey().columnNames(), null, null)
-                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                    .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
                     .withComparisonKey(prepared.comparisonKey())
                     .withCustomSql(new ReplayDbCompareCustomSql(analysis.sql(), analysis.sourceTableName(), analysis.resultColumns())));
         } catch (ReplayBaseDatabaseUnavailableException exception) {
@@ -447,7 +447,7 @@ public class ReplayDatabaseComparisonVersionService {
                 registration.updatedBy(), registration.updatedName(), registration.updatedAt(),
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
                 registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
-                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit())
+                .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
                 .withComparisonKey(snapshotKey).withCustomSql(registration.customSql()));
     }
 

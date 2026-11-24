@@ -78,6 +78,12 @@ public class ReplayIssueCompletionStatsDao {
                        SUM(CASE WHEN completion_category='LATE_FIXED' THEN 1 ELSE 0 END) AS late_count,
                        SUM(CASE WHEN completion_category='UNFINISHED' THEN 1 ELSE 0 END) AS unfinished_count,
                        SUM(CASE WHEN completion_category='OVERDUE_UNFINISHED' THEN 1 ELSE 0 END) AS overdue_count,
+                       SUM(CASE WHEN completion_category='LATE_FIXED'
+                                THEN TIMESTAMPDIFF(DAY, planned_completion_date, defect_repair_date)
+                                ELSE 0 END) AS late_days_total,
+                       SUM(CASE WHEN completion_category='OVERDUE_UNFINISHED'
+                                THEN TIMESTAMPDIFF(DAY, planned_completion_date, ?)
+                                ELSE 0 END) AS overdue_days_total,
                        SUM(CASE WHEN defect_repair_date IS NULL AND issue_status='修复待验证'
                                 THEN 1 ELSE 0 END) AS pending_verification_count
                   FROM (
@@ -86,13 +92,14 @@ public class ReplayIssueCompletionStatsDao {
                  GROUP BY group_name, matched_developer
                  ORDER BY group_name, matched_developer
                 """;
-        List<Object> args = new ArrayList<>(List.of(sqlDate(today), sqlDate(startDate), sqlDate(endDate)));
+        List<Object> args = new ArrayList<>(List.of(sqlDate(today), sqlDate(today), sqlDate(startDate), sqlDate(endDate)));
         args.addAll(classifiedSource.args());
         return jdbc.query(sql, (rs, rowNum) -> new CompletionAggregateRow(
                         rs.getString("group_name"), rs.getString("matched_developer"),
                         ReplayIssueCompletionCounts.of(rs.getLong("on_time_count"), rs.getLong("late_count"),
                                 rs.getLong("unfinished_count"), rs.getLong("overdue_count"),
-                                rs.getLong("pending_verification_count"))),
+                                rs.getLong("pending_verification_count"), rs.getLong("late_days_total"),
+                                rs.getLong("overdue_days_total"))),
                 args.toArray());
     }
 

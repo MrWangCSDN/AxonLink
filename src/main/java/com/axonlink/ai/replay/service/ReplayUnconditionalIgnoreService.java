@@ -116,6 +116,17 @@ public class ReplayUnconditionalIgnoreService {
                                                                String fieldName, Integer reviewStatus,
                                                                Boolean reviewableByMe, Boolean developedByMe,
                                                                Boolean reasonEmpty, ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, tranCode, fieldName,
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, null, operator);
+    }
+
+    public ReplayConfigPage<ReplayUnconditionalIgnoreRow> list(Integer limit, Integer offset,
+                                                               String internalTransactionCode, String domain,
+                                                               String tranCode,
+                                                               String fieldName, Integer reviewStatus,
+                                                               Boolean reviewableByMe, Boolean developedByMe,
+                                                               Boolean reasonEmpty, Boolean fieldChineseNameEmpty,
+                                                               ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
@@ -137,12 +148,13 @@ public class ReplayUnconditionalIgnoreService {
                         ? personResolver.findDevelopedServiceCodes(
                                 operator == null ? null : operator.username())
                         : null);
-        long total = dao.count(tranCode, fieldName, serviceCodes, effectiveReviewStatus, reasonEmpty);
+        long total = dao.count(tranCode, fieldName, serviceCodes, effectiveReviewStatus,
+                reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {
             return new ReplayConfigPage<>(0, List.of());
         }
         List<ReplayUnconditionalIgnoreRow> rows = dao.list(tranCode, fieldName, serviceCodes,
-                effectiveReviewStatus, reasonEmpty, resolvedLimit, resolvedOffset);
+                effectiveReviewStatus, reasonEmpty, fieldChineseNameEmpty, resolvedLimit, resolvedOffset);
         return new ReplayConfigPage<>(total, enrich(rows, operator));
     }
 
@@ -162,10 +174,12 @@ public class ReplayUnconditionalIgnoreService {
                                                ReplayConfigOperator operator) {
         String tranCode = ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode());
         String fieldName = ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段");
+        String fieldChineseName = ReplayConfigValidation.requireFieldChineseName(
+                request == null ? null : request.fieldChineseName());
         String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
                 request == null ? null : request.ignoreReason());
         try {
-            return enrich(dao.create(tranCode, fieldName, ignoreReason, operator), operator);
+            return enrich(dao.create(tranCode, fieldName, fieldChineseName, ignoreReason, operator), operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
@@ -180,6 +194,8 @@ public class ReplayUnconditionalIgnoreService {
             drafts.add(new ReplayUnconditionalIgnoreDraft(
                     ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode()),
                     ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段"),
+                    ReplayConfigValidation.requireFieldChineseName(
+                            request == null ? null : request.fieldChineseName()),
                     ReplayConfigValidation.requireIgnoreReason(request == null ? null : request.ignoreReason())));
         }
         try {
@@ -194,6 +210,8 @@ public class ReplayUnconditionalIgnoreService {
         ReplayConfigValidation.requirePositiveId(id);
         String tranCode = ReplayConfigValidation.requireServiceCode(request == null ? null : request.tranCode());
         String fieldName = ReplayConfigValidation.requireText(request == null ? null : request.fieldName(), "忽略字段");
+        String fieldChineseName = ReplayConfigValidation.requireFieldChineseName(
+                request == null ? null : request.fieldChineseName());
         String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
                 request == null ? null : request.ignoreReason());
         int version = ReplayConfigValidation.requireVersion(request == null ? null : request.version());
@@ -205,11 +223,13 @@ public class ReplayUnconditionalIgnoreService {
             throw new ReplayConfigConflictException("数据已被其他用户修改，请刷新后重试");
         }
         if (Objects.equals(current.tranCode(), tranCode) && Objects.equals(current.fieldName(), fieldName)
+                && Objects.equals(current.fieldChineseName(), fieldChineseName)
                 && Objects.equals(current.ignoreReason(), ignoreReason)) {
             return enrich(current, operator);
         }
         try {
-            return enrich(dao.update(current, tranCode, fieldName, ignoreReason, operator), operator);
+            return enrich(dao.update(current, tranCode, fieldName, fieldChineseName, ignoreReason, operator),
+                    operator);
         } catch (DuplicateKeyException exception) {
             throw new ReplayConfigConflictException("配置已存在（服务码与忽略字段重复）");
         }
@@ -287,8 +307,8 @@ public class ReplayUnconditionalIgnoreService {
     private ReplayUnconditionalIgnoreRow enrich(ReplayUnconditionalIgnoreRow row, ReplayConfigPersonInfo info,
                                                 ReplayConfigOperator operator) {
         String reason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
-        return new ReplayUnconditionalIgnoreRow(row.id(), row.tranCode(), row.fieldName(), row.ignoreReason(),
-                row.enableFlag(),
+        return new ReplayUnconditionalIgnoreRow(row.id(), row.tranCode(), row.fieldName(),
+                row.fieldChineseName(), row.ignoreReason(), row.enableFlag(),
                 row.createdAt(), row.updatedAt(), row.version(), row.reviewStatus(),
                 info == null ? null : info.oldTransactionCode(),
                 info == null ? null : info.developer(),

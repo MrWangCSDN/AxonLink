@@ -27,6 +27,7 @@ class ReplayDatabaseTablePersonMappingTest {
                 new ClassPathResource("db/daoindex/V75__replay_db_compare_sample_limit.sql"),
                 new ClassPathResource("db/daoindex/V81__replay_db_compare_comparison_key.sql"),
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
+                new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"),
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),
                 new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),

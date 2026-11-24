@@ -16,6 +16,7 @@ public final class ReplayConfigValidation {
     public static final int DEFAULT_LIMIT = 10;
     public static final int MAX_BATCH_DELETE = 100;
     public static final int MAX_BATCH_CREATE = 3;
+    public static final int MAX_FIELD_CHINESE_NAME = 256;
     public static final int MAX_IGNORE_REASON = 512;
     public static final int MAX_MESSAGE_SEQUENCES = 100;
     private static final Set<Integer> ALLOWED_LIMITS = Set.of(10, 30, 50, 100);
@@ -50,6 +51,15 @@ public final class ReplayConfigValidation {
         String trimmed = requireText(value, "忽略原因");
         if (trimmed.length() > MAX_IGNORE_REASON) {
             throw new IllegalArgumentException("忽略原因不能超过 512 个字符");
+        }
+        return trimmed;
+    }
+
+    /** 字段中文名称：必填、去除首尾空格、长度不超过 256。 */
+    public static String requireFieldChineseName(String value) {
+        String trimmed = requireText(value, "中文名称");
+        if (trimmed.length() > MAX_FIELD_CHINESE_NAME) {
+            throw new IllegalArgumentException("中文名称不能超过 256 个字符");
         }
         return trimmed;
     }
@@ -187,6 +197,32 @@ public final class ReplayConfigValidation {
         if (!duplicates.isEmpty()) {
             throw new ReplayConfigConflictException("流水号重复：" + String.join(",", duplicates));
         }
+        return List.copyOf(values);
+    }
+
+    public static String requireOneSideOwnership(String value) {
+        String ownership = requireText(value, "归属").toLowerCase();
+        if (!Set.of("528", "ccbs").contains(ownership)) {
+            throw new IllegalArgumentException("归属只允许 528 或 ccbs");
+        }
+        return ownership;
+    }
+
+    public static List<String> requireOneSideErrorCodes(String value) {
+        String source = value == null ? "" : value;
+        String[] parts = source.split(",", -1);
+        if (parts.length > MAX_MESSAGE_SEQUENCES) {
+            throw new IllegalArgumentException("单次最多新增 100 个忽略错误码");
+        }
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        LinkedHashSet<String> duplicates = new LinkedHashSet<>();
+        for (String part : parts) {
+            String item = part.trim();
+            if (item.isEmpty()) throw new IllegalArgumentException("忽略错误码不能为空，多个错误码请使用英文逗号分隔");
+            if (item.length() > 512) throw new IllegalArgumentException("忽略错误码不能超过 512 个字符");
+            if (!values.add(item)) duplicates.add(item);
+        }
+        if (!duplicates.isEmpty()) throw new ReplayConfigConflictException("忽略错误码重复：" + String.join(",", duplicates));
         return List.copyOf(values);
     }
 

@@ -6,7 +6,9 @@ import com.axonlink.ai.user.persistence.SysUserDao;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EmptySource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -18,6 +20,7 @@ import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -86,8 +89,8 @@ class ReplayDatabaseIssueTypeRulesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"不参与比对", "规则性差异"})
-    void savesEitherNoActionTypeWithoutChangingTheSelectedType(String type) {
+    @ValueSource(strings = {"不参与比对", "规则性差异", "合理差异"})
+    void savesNoActionTypeWithoutChangingTheSelectedType(String type) {
         long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
 
         var updated = service.update(id,
@@ -97,20 +100,56 @@ class ReplayDatabaseIssueTypeRulesTest {
         assertEquals(type, updated.get("issueType"));
         assertEquals("待审核", updated.get("reviewStatus"));
         assertEquals(type, dao.find(id).get("issueType"));
+        assertEquals(type, ((Map<?, ?>) dao.history(id).get(0).get("after")).get("issueType"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("newActionableTypes")
+    void savesNewTypesAcrossActionableStatusesAndKeepsThemInOptionsHistoryAndFilters(String status, String type) {
+        long id = ((Number) dao.findByIssueId("type-rule").get("id")).longValue();
+
+        var updated = service.update(id, Map.of("version", 0, "issueStatus", status, "issueType", type), actor);
+
+        assertTrue(((List<?>) service.options(actor).get("issueTypes")).contains(type));
+        assertEquals(status, updated.get("issueStatus"));
+        assertEquals(type, updated.get("issueType"));
+        assertEquals(type, dao.find(id).get("issueType"));
+        assertEquals(type, ((Map<?, ?>) dao.history(id).get(0).get("after")).get("issueType"));
+        assertEquals(1L, dao.list(Map.of("issueTypes", List.of(type))).get("total"));
+    }
+
+    static Stream<Arguments> newActionableTypes() {
+        return Stream.of("打开", "延后修复", "修复待验证").flatMap(status -> Stream.of(
+                "迁移问题", "新老批量执行差异", "528生产版本差异", "数据问题", "规则差异")
+                .map(type -> Arguments.of(status, type)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"不参与比对", "规则性差异", "合理差异"})
+    void rejectsNoActionOnlyTypesForAnOpenIssueWithoutChangingItsHistory(String type) {
+        var before = dao.findByIssueId("type-rule");
+        long id = ((Number) before.get("id")).longValue();
+
+        assertThrows(IllegalArgumentException.class, () -> service.update(id,
+                Map.of("version", 0, "issueStatus", "打开", "issueType", type), actor));
+
+        assertEquals(before.get("version"), dao.find(id).get("version"));
+        assertEquals("修改代码", dao.find(id).get("issueType"));
+        assertEquals(0, dao.history(id).size());
     }
 
     @ParameterizedTest
     @EmptySource
     @ValueSource(strings = {"修改比对规则", "修改迁移规则", "修改代码", "前后交易差异", "参数问题", "其他问题",
-            "合理差异", "规则性差异问题", "外围问题"})
-    void rejectsInvalidNoActionTypeWithTheTwoAllowedChoices(String type) {
+            "迁移问题", "新老批量执行差异", "528生产版本差异", "数据问题", "规则差异", "规则性差异问题", "外围问题"})
+    void rejectsInvalidNoActionTypeWithTheThreeAllowedChoices(String type) {
         var before = dao.findByIssueId("type-rule");
         long id = ((Number) before.get("id")).longValue();
 
         var failure = assertThrows(IllegalArgumentException.class, () -> service.update(id,
                 Map.of("version", 0, "issueStatus", "无需处理", "issueType", type), actor));
 
-        assertEquals("无需处理的问题类型只能选择：不参与比对、规则性差异", failure.getMessage());
+        assertEquals("无需处理的问题类型只能选择：不参与比对、规则性差异、合理差异", failure.getMessage());
         assertEquals(before.get("version"), dao.find(id).get("version"));
         assertEquals("打开", dao.find(id).get("issueStatus"));
         assertEquals("修改代码", dao.find(id).get("issueType"));

@@ -5,6 +5,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueCompletionCategory;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionCounts;
 import com.axonlink.ai.replay.dto.ReplayIssueCompletionDatePoint;
 import com.axonlink.ai.replay.dto.ReplayIssueReplayType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -45,10 +46,26 @@ class ReplayIssueCompletionStatsDaoTest {
                 LocalDate.of(2026, 8, 27));
 
         assertEquals(3, rows.size());
-        assertAggregate(rows.get(0), "公共组", "张三、李四", ReplayIssueCompletionCounts.of(1, 1, 1, 2, 2));
+        assertAggregate(rows.get(0), "公共组", "张三、李四", ReplayIssueCompletionCounts.of(1, 1, 1, 2, 2, 1, 3));
         assertAggregate(rows.get(1), "存款组", "未匹配负责人", ReplayIssueCompletionCounts.of(0, 0, 1, 0));
-        assertAggregate(rows.get(2), "贷款组", "未匹配负责人", ReplayIssueCompletionCounts.of(0, 0, 0, 1));
+        assertAggregate(rows.get(2), "贷款组", "未匹配负责人", ReplayIssueCompletionCounts.of(0, 0, 0, 1, 0, 0, 2));
         assertEquals(7, rows.stream().mapToLong(row -> row.counts().plannedTotal()).sum());
+    }
+
+    @Test
+    void averagesOnlyDelayedIssuesWithTheSameServerTodayAsClassification() {
+        var rows = dao.aggregate(LocalDate.of(2026, 8, 20), LocalDate.of(2026, 8, 27),
+                LocalDate.of(2026, 8, 27));
+        var common = new ObjectMapper().valueToTree(rows.get(0).counts());
+
+        // 1 late repair: Aug 21 - Aug 20 = 1 day, despite its pending-verification status.
+        // 2 overdue unrepaired issues: Aug 27 - Aug 26/25 = 1 and 2 days.
+        // Today's unrepaired issues and on-time repairs never enter either average.
+        assertEquals(1.0, common.path("averageLateFixedDays").asDouble(-1));
+        assertEquals(1.5, common.path("averageOverdueUnfinishedDays").asDouble(-1));
+        var noDelays = new ObjectMapper().valueToTree(rows.get(1).counts());
+        assertEquals(true, noDelays.path("averageLateFixedDays").isNull());
+        assertEquals(true, noDelays.path("averageOverdueUnfinishedDays").isNull());
     }
 
     @Test

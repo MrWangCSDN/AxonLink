@@ -19,6 +19,12 @@ import java.util.List;
 public class ReplayUnconditionalIgnoreReasonExcelParser {
 
     public List<ReplayUnconditionalIgnoreReasonImportRow> parse(MultipartFile file) throws IOException {
+        return parse(file, 3).stream().map(row -> new ReplayUnconditionalIgnoreReasonImportRow(
+                row.rowNumber(), row.cells().get(0), row.cells().get(1), row.cells().get(2),
+                row.validColumnCount())).toList();
+    }
+
+    List<ExcelRow> parse(MultipartFile file, int columns) throws IOException {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("请选择要导入的 Excel 文件");
         }
@@ -29,19 +35,19 @@ public class ReplayUnconditionalIgnoreReasonExcelParser {
             Sheet sheet = workbook.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
             FormulaEvaluator evaluator = workbook.getCreationHelper().createFormulaEvaluator();
-            List<ReplayUnconditionalIgnoreReasonImportRow> rows = new ArrayList<>();
+            List<ExcelRow> rows = new ArrayList<>();
             for (int index = 0; index <= sheet.getLastRowNum(); index++) {
                 Row row = sheet.getRow(index);
                 if (row == null || isBlank(row, formatter, evaluator)) {
                     continue;
                 }
-                String tranCode = value(row, 0, formatter, evaluator);
-                String fieldName = value(row, 1, formatter, evaluator);
-                String reason = value(row, 2, formatter, evaluator);
-                boolean validColumnCount = hasNoNonBlankCellAfter(row, 2, formatter, evaluator)
-                        && row.getLastCellNum() >= 3;
-                rows.add(new ReplayUnconditionalIgnoreReasonImportRow(
-                        index + 1, tranCode, fieldName, reason, validColumnCount));
+                List<String> cells = new ArrayList<>(columns);
+                for (int column = 0; column < columns; column++) {
+                    cells.add(value(row, column, formatter, evaluator));
+                }
+                boolean validColumnCount = hasNoNonBlankCellAfter(row, columns - 1, formatter, evaluator)
+                        && row.getLastCellNum() >= columns;
+                rows.add(new ExcelRow(index + 1, List.copyOf(cells), validColumnCount));
             }
             if (rows.isEmpty()) {
                 throw new IllegalArgumentException("Excel 中没有可导入数据");
@@ -53,6 +59,8 @@ public class ReplayUnconditionalIgnoreReasonExcelParser {
             throw new IllegalArgumentException("Excel 文件无法读取，请检查文件是否损坏或加密", exception);
         }
     }
+
+    record ExcelRow(int rowNumber, List<String> cells, boolean validColumnCount) {}
 
     private boolean isBlank(Row row, DataFormatter formatter, FormulaEvaluator evaluator) {
         for (int index = 0; index < row.getLastCellNum(); index++) {

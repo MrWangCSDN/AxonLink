@@ -28,7 +28,37 @@ public record ReplayDbCompareListItem(
         int partitionNum,
         int sampleLimit,
         ReplayDbCompareKeySelection comparisonKey,
+        ReplayDbCompareCustomSql customSql,
+        int maxPartitionNum) {
+
+    public ReplayDbCompareListItem(
+        long id,
+        String schemaName,
+        String tableName,
+        String tableComment,
+        String domainName,
+        String reviserEmpNo,
+        String reviserUsername,
+        String reviserName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        long version,
+        int fieldCount,
+        List<String> fieldPreview,
+        ReplayDbCompareConditionTree whereCondition,
+        boolean whereConditionConfigured,
+        Long compareLimit,
+        ReplayDbCompareMetadataValidation metadataValidation,
+        List<String> primaryKeyNames,
+        List<String> orderingPrimaryKeyNames,
+        int partitionNum,
+        int sampleLimit,
+        ReplayDbCompareKeySelection comparisonKey,
         ReplayDbCompareCustomSql customSql) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, 64);
+    }
+
 
     public ReplayDbCompareListItem(
             long id,
@@ -90,7 +120,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
     }
 
     public ReplayDbCompareListItem(
@@ -123,7 +153,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
     }
 
     public ReplayDbCompareListItem(
@@ -158,7 +188,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
     }
 
     public ReplayDbCompareListItem {
@@ -216,7 +246,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
     }
 
     @JsonProperty("registrationType")
@@ -232,5 +262,9 @@ public record ReplayDbCompareListItem(
     @JsonProperty("sourceTableName")
     public String sourceTableName() {
         return customSql == null ? tableName : customSql.sourceTableName();
+    }
+
+    public ReplayDbCompareListItem withMaxPartitionNum(int maxPartitionNum) {
+        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
     }
 }

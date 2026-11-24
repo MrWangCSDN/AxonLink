@@ -114,8 +114,8 @@ public class ReplayDatabaseComparisonVersionDao {
                             + "schema_name,table_name,table_comment,domain_name,reviser_emp_no,"
                             + "reviser_username,reviser_name,group_owner_emp_no,group_owner_username,"
                             + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date,partition_num,sample_limit,comparison_key_json,"
-                            + "registration_type,source_table_name,custom_sql,result_columns_json) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            + "registration_type,source_table_name,custom_sql,result_columns_json,max_partition_num) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setLong(1, versionId);
             statement.setLong(2, registration.id());
@@ -141,6 +141,7 @@ public class ReplayDatabaseComparisonVersionDao {
             statement.setString(22, registration.customSql() == null ? null : registration.sourceTableName());
             statement.setString(23, registration.customSql() == null ? null : registration.customSql().sql());
             statement.setString(24, ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(registration.customSql()));
+            statement.setInt(25, registration.maxPartitionNum());
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -210,7 +211,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withMaxPartitionNum(row.getInt("max_partition_num")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
                                 .withCustomSql(ReplayDatabaseComparisonCustomSqlCodec.decode(row.getString("registration_type"),
                                         row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))),
                 versionId);
@@ -276,7 +277,7 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getString("where_sql"),
                                 row.getObject("compare_limit", Long.class),
                                 row.getDate("registered_date").toLocalDate(),
-                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
+                                row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withMaxPartitionNum(row.getInt("max_partition_num")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
                                 .withCustomSql(ReplayDatabaseComparisonCustomSqlCodec.decode(row.getString("registration_type"),
                                         row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))),
                 arguments.toArray());
@@ -298,7 +299,7 @@ public class ReplayDatabaseComparisonVersionDao {
                 request.reviserEmpNos(), request.groupOwnerEmpNos(),
                 request.registeredDateFrom(), request.registeredDateTo(),
                 request.tableNames(), request.fieldNames(), request.registeredDates(),
-                request.whereConditionValues());
+                request.whereConditionValues(), request.maxPartitionNums());
         VersionFilter filter = buildVersionFilter(versionId, query, column.queryKey());
         StringBuilder sql = new StringBuilder("SELECT ")
                 .append(column.valueExpression()).append(" AS option_value,")
@@ -381,6 +382,11 @@ public class ReplayDatabaseComparisonVersionDao {
         }
         if (!"whereCondition".equals(excludedKey) && !query.whereConditionValues().isEmpty()) {
             appendWhereConditionValues(sql, arguments, query.whereConditionValues());
+        }
+        if (!"maxPartitionNum".equals(excludedKey) && !query.maxPartitionNums().isEmpty()) {
+            sql.append(" AND t.max_partition_num IN (")
+                    .append(String.join(",", Collections.nCopies(query.maxPartitionNums().size(), "?"))).append(')');
+            arguments.addAll(query.maxPartitionNums());
         }
         appendValues(sql, arguments, "domainName", excludedKey, "t.domain_name", query.domains());
         appendValues(sql, arguments, "reviser", excludedKey,
@@ -494,7 +500,7 @@ public class ReplayDatabaseComparisonVersionDao {
                 item.reviserEmpNo(), item.reviserUsername(), item.reviserName(),
                 item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(),
                 item.whereCondition(), item.whereSql(), item.compareLimit(), item.registeredDate(),
-                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql());
+                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withMaxPartitionNum(item.maxPartitionNum()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql());
     }
 
     private boolean hasText(String value) {
@@ -579,6 +585,9 @@ public class ReplayDatabaseComparisonVersionDao {
                         "CONCAT(COALESCE(t.group_owner_emp_no,''),' ',"
                                 + "COALESCE(t.group_owner_username,''),' ',COALESCE(t.group_owner_name,''))",
                         false);
+                case "maxPartitionNum" -> new VersionHeaderColumn(
+                        key, "CONCAT('',t.max_partition_num)", "CONCAT('',t.max_partition_num)",
+                        "CONCAT('',t.max_partition_num)", false);
                 case "registeredDate" -> new VersionHeaderColumn(
                         key,
                         "CASE WHEN t.registered_date IS NULL THEN '" + EMPTY_FILTER_VALUE + "' ELSE CAST(t.registered_date AS CHAR) END",

@@ -82,14 +82,16 @@ class ReplayConfigExportServiceTest {
     void exportsOnlyReviewedRowsWithReviewerAndDomain() throws Exception {
         // 无条件忽略：一条已审核 + 一条未审核
         ReplayUnconditionalIgnoreRow reviewedUnconditional = unconditionalService.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", REASON), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "accountNo", "账号", REASON), OPERATOR);
         unconditionalService.review(reviewedUnconditional.id(), 0, REVIEWER);
         unconditionalService.create(
-                new ReplayUnconditionalIgnoreCreateRequest("S1&sop", "unreviewedField", REASON), OPERATOR);
+                new ReplayUnconditionalIgnoreCreateRequest(
+                        "S1&sop", "unreviewedField", "未审核字段", REASON), OPERATOR);
 
         // 有条件忽略：已审核（字段标识=2 → 导出中文）
         ReplayConditionalRmoveRow conditional = conditionalService.create(
-                new ReplayConditionalRmoveCreateRequest("S1&sop", "items", 2, "type=1", "type=2", REASON),
+                new ReplayConditionalRmoveCreateRequest(
+                        "S1&sop", "items", "项目列表", 2, "type=1", "type=2", REASON),
                 OPERATOR);
         conditionalService.review(conditional.id(), conditional.version(), REVIEWER);
 
@@ -100,7 +102,8 @@ class ReplayConfigExportServiceTest {
 
         // 排序字段：一条请求展开成 3 条，审核其中一条
         List<ReplaySortFieldRow> sortRows = sortFieldService.create(
-                new ReplaySortFieldCreateRequest("Y444", "A.B", "A(C,D)", REASON), OPERATOR);
+                new ReplaySortFieldCreateRequest(
+                        "Y444", "A.B", "老核心排序字段", "A(C,D)", "新核心排序字段", REASON), OPERATOR);
         sortFieldService.review(sortRows.get(0).id(), sortRows.get(0).version(), REVIEWER);
 
         byte[] bytes = exportService.exportReviewedConfigs();
@@ -112,9 +115,9 @@ class ReplayConfigExportServiceTest {
 
             // ---- 无条件忽略 ----
             Sheet un = wb.getSheet("无条件忽略");
-            assertEquals(11, un.getRow(0).getLastCellNum(), "无条件忽略应为 11 列");
+            assertEquals(12, un.getRow(0).getLastCellNum(), "无条件忽略应为 12 列");
             List<String> header = rowValues(un, 0);
-            assertEquals(List.of("交易码", "内部核心交易码", "领域", "忽略字段", "忽略原因",
+            assertEquals(List.of("交易码", "内部核心交易码", "领域", "忽略字段", "中文名称", "忽略原因",
                     "审核人", "审核通过时间", "开发人员", "行方负责人", "最后更新时间", "创建时间"), header);
             assertEquals(1, un.getLastRowNum(), "只导已审核：应只有 1 行数据");
             List<String> line = rowValues(un, 1);
@@ -122,27 +125,29 @@ class ReplayConfigExportServiceTest {
             assertEquals("Y444", line.get(1));
             assertEquals("公共组", line.get(2));
             assertEquals("accountNo", line.get(3));
-            assertEquals(REASON, line.get(4));
-            assertEquals("李四（lisi）", line.get(5), "审核人取最后一次 REVIEW 的姓名（账号）");
-            assertFalse(line.get(6).isEmpty(), "审核通过时间应有值");
-            assertEquals("张三", line.get(7));
-            assertEquals("李四", line.get(8));
-            assertFalse(line.get(9).isEmpty(), "最后更新时间应有值");
-            assertFalse(line.get(10).isEmpty(), "创建时间应有值");
+            assertEquals("账号", line.get(4));
+            assertEquals(REASON, line.get(5));
+            assertEquals("李四（lisi）", line.get(6), "审核人取最后一次 REVIEW 的姓名（账号）");
+            assertFalse(line.get(7).isEmpty(), "审核通过时间应有值");
+            assertEquals("张三", line.get(8));
+            assertEquals("李四", line.get(9));
+            assertFalse(line.get(10).isEmpty(), "最后更新时间应有值");
+            assertFalse(line.get(11).isEmpty(), "创建时间应有值");
 
             // ---- 有条件忽略 ----
             Sheet cond = wb.getSheet("有条件忽略");
-            assertEquals(List.of("交易码", "内部核心交易码", "领域", "忽略字段", "字段索引", "字段标识",
+            assertEquals(List.of("交易码", "内部核心交易码", "领域", "忽略字段", "中文名称", "字段索引", "字段标识",
                             "主系统字段忽略条件", "备系统字段忽略条件", "忽略原因", "审核人", "审核通过时间",
                             "开发人员", "行方负责人", "最后更新时间", "创建时间"),
                     rowValues(cond, 0));
             assertEquals(1, cond.getLastRowNum());
             List<String> condLine = rowValues(cond, 1);
             assertEquals("items", condLine.get(3));
-            assertEquals("1", condLine.get(4), "字段索引");
-            assertEquals("对象或数组", condLine.get(5), "字段标识应导出中文");
-            assertEquals("type=1", condLine.get(6));
-            assertEquals("type=2", condLine.get(7));
+            assertEquals("项目列表", condLine.get(4));
+            assertEquals("1", condLine.get(5), "字段索引");
+            assertEquals("对象或数组", condLine.get(6), "字段标识应导出中文");
+            assertEquals("type=1", condLine.get(7));
+            assertEquals("type=2", condLine.get(8));
 
             // ---- 错误码忽略 ----
             Sheet err = wb.getSheet("错误码忽略");
@@ -155,7 +160,7 @@ class ReplayConfigExportServiceTest {
 
             // ---- 排序字段 ----
             Sheet sort = wb.getSheet("排序字段");
-            assertEquals(List.of("交易码", "内部核心交易码", "领域", "对象/数组名称", "排序字段", "忽略原因",
+            assertEquals(List.of("交易码", "内部核心交易码", "领域", "对象/数组名称", "排序字段", "中文名称", "忽略原因",
                     "审核人", "审核通过时间", "开发人员", "行方负责人", "最后更新时间", "创建时间"),
                     rowValues(sort, 0));
             assertEquals(1, sort.getLastRowNum(), "3 条里只导已审核的 1 条");
@@ -163,6 +168,7 @@ class ReplayConfigExportServiceTest {
             assertEquals("S1&sop", sortLine.get(0));
             assertEquals("A", sortLine.get(3), "对象/数组名称");
             assertEquals("B", sortLine.get(4), "排序字段");
+            assertEquals("老核心排序字段", sortLine.get(5));
         }
     }
 

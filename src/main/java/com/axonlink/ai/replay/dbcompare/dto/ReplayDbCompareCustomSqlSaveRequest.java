@@ -12,7 +12,23 @@ public record ReplayDbCompareCustomSqlSaveRequest(
         Long version,
         Long compareLimit,
         @JsonDeserialize(using = ReplayDbComparePartitionNumDeserializer.class) Integer partitionNum,
-        @JsonDeserialize(using = ReplayDbCompareSampleLimitDeserializer.class) Integer sampleLimit) {
+        @JsonDeserialize(using = ReplayDbCompareSampleLimitDeserializer.class) Integer sampleLimit,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = ReplayDbCompareMaxPartitionNumDeserializer.class)
+        Integer maxPartitionNum) {
+
+    public ReplayDbCompareCustomSqlSaveRequest(
+        String displayName,
+        String sourceTableName,
+        String sql,
+        List<String> fieldNames,
+        List<String> resultKeyColumns,
+        Long version,
+        Long compareLimit,
+        Integer partitionNum,
+        Integer sampleLimit) {
+        this(displayName, sourceTableName, sql, fieldNames, resultKeyColumns, version, compareLimit, partitionNum, sampleLimit, null);
+    }
+
     public ReplayDbCompareCustomSqlSaveRequest {
         fieldNames = fieldNames == null ? List.of() : List.copyOf(fieldNames);
         resultKeyColumns = resultKeyColumns == null ? List.of() : List.copyOf(resultKeyColumns);

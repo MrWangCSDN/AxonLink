@@ -31,13 +31,14 @@ class ReplayReopenCountTransferControllerTest {
     private SysUserDao users;
     private UserPrincipalResolver resolver;
     private MockMvc mvc;
+    private ReplayReopenProperties properties;
     private final ObjectMapper json = new ObjectMapper();
 
     @BeforeEach
     void setup() {
         jdbc = ReplayReopenTestSupport.database();
         users = new SysUserDao(jdbc);
-        ReplayReopenProperties properties = new ReplayReopenProperties();
+        properties = new ReplayReopenProperties();
         properties.setEnabled(true);
         properties.setAdminEmpNos(List.of("900"));
         new Binder(new MapConfigurationPropertySource(Map.of(
@@ -90,6 +91,41 @@ class ReplayReopenCountTransferControllerTest {
         mvc.perform(get(BASE + "/permissions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.canTransferCounts").value(true));
+    }
+
+    @Test
+    void ldapUserWithoutEmployeeNumberCanTransferAndIsRecheckedAfterIdentityChanges() throws Exception {
+        ReplayReopenTestSupport.user(jdbc,"c-wangsh8","无工号用户",null,1);
+        properties.setCountTransferEmpNos(List.of("c-wangsh8"));
+        login("c-wangsh8");
+        mvc.perform(get(BASE + "/permissions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.currentUser.username").value("c-wangsh8"))
+                .andExpect(jsonPath("$.data.canTransferCounts").value(true))
+                .andExpect(jsonPath("$.data.canManagePermissions").value(false));
+
+        String id = UUID.randomUUID().toString();
+        String body = request(id,1,List.of("RPT20261022-01"));
+        mvc.perform(post(BASE + "/count-transfers").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.count").value(1));
+        mvc.perform(get(BASE + "/events/2"))
+                .andExpect(jsonPath("$.data.event.currentOwnerUsername").value("devb"));
+        mvc.perform(get(BASE + "/statistics"))
+                .andExpect(jsonPath("$.data.totalEvents").value(2));
+        org.junit.jupiter.api.Assertions.assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_reopen_audit WHERE action='COUNT_TRANSFERRED' "
+                        + "AND operator_username='c-wangsh8'", Integer.class));
+
+        // A newly assigned employee number takes precedence over the existing username entry,
+        // including an otherwise idempotent retry of a previously successful transfer.
+        jdbc.update("UPDATE ccbs_ai_sys_user SET emp_no='NEW-EMP' WHERE username='c-wangsh8'");
+        mvc.perform(get(BASE + "/permissions"))
+                .andExpect(jsonPath("$.data.canTransferCounts").value(false));
+        mvc.perform(post(BASE + "/count-transfers").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
+        org.junit.jupiter.api.Assertions.assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM dii_replay_reopen_audit WHERE action='COUNT_TRANSFERRED'", Integer.class));
     }
 
     @Test
