@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<serviceType id="LegacyService" longname="通用审核服务" package="cn.sunline.ltts.busi.demo">
-    <service id="audit" name="audit" longname="记录审核"/>
-</serviceType>

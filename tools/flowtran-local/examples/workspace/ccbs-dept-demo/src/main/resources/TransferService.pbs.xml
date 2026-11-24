@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<serviceType id="TransferService" longname="转账服务" package="cn.sunline.ltts.busi.demo">
-    <service id="submit" name="post" longname="提交转账"/>
-</serviceType>
