@@ -138,9 +138,7 @@ public class ReplayUnconditionalIgnoreService {
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 ReplayConfigPersonResolver.intersect(
-                        ReplayConfigPersonResolver.intersect(
-                                resolver.resolveFinalServiceCodes(internalTransactionCode),
-                                personResolver.resolveFinalServiceCodesByDomain(domain)),
+                        resolver.resolveServiceCodesForSearch(internalTransactionCode),
                         onlyReviewableByMe
                                 ? personResolver.findReviewableServiceCodes(
                                         operator == null ? null : operator.empNo())

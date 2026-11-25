@@ -31,9 +31,18 @@ public class ReplayConfigServiceCodeResolver {
         if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
             return null;
         }
-        List<String> esfCodes = jdbc.queryForList(
-                "SELECT esf_service_code FROM znzx_service WHERE tran_code = ?",
-                String.class, internalTransactionCode.trim());
+        return expandServiceCodes(findEsfServiceCodes(internalTransactionCode), false);
+    }
+
+    /** 列表查询同时匹配存量无后缀服务码与标准服务码。 */
+    public Set<String> resolveServiceCodesForSearch(String internalTransactionCode) {
+        if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
+            return null;
+        }
+        return expandServiceCodes(findEsfServiceCodes(internalTransactionCode), true);
+    }
+
+    static Set<String> expandServiceCodes(List<String> esfCodes, boolean includeLegacy) {
         Set<String> result = new LinkedHashSet<>();
         for (String esfCode : esfCodes) {
             if (esfCode == null) {
@@ -42,6 +51,9 @@ public class ReplayConfigServiceCodeResolver {
             String base = esfCode.replace(".", "");
             if (base.isBlank()) {
                 continue;
+            }
+            if (includeLegacy) {
+                result.add(base);
             }
             result.add(base + "&sop");
             result.add(base + "&soap");

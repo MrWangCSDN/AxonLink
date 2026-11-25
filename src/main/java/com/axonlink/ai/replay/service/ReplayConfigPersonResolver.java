@@ -85,7 +85,7 @@ public class ReplayConfigPersonResolver {
      * 解析某工号作为行方负责人可审核的全部最终服务码集合。
      *
      * <p>路径：人员清单 bank_owner_emp_nos 命中该工号 → old_transaction_code →
-     * znzx_service.tran_code → esf_service_code 去点号 → 追加三种后缀。
+     * znzx_service.tran_code → esf_service_code 去点号 → 匹配无后缀存量码及三种标准后缀。
      */
     public Set<String> findReviewableServiceCodes(String empNo) {
         return findServiceCodesByIdentity("bank_owner_emp_nos", empNo);
@@ -120,52 +120,7 @@ public class ReplayConfigPersonResolver {
         List<String> esfCodes = jdbc.queryForList(
                 "SELECT esf_service_code FROM znzx_service WHERE tran_code IN (" + placeholders + ")",
                 String.class, transactionCodes.toArray());
-        Set<String> result = new LinkedHashSet<>();
-        for (String esfCode : esfCodes) {
-            if (esfCode == null) {
-                continue;
-            }
-            String base = esfCode.replace(".", "");
-            if (base.isBlank()) {
-                continue;
-            }
-            result.add(base + "&sop");
-            result.add(base + "&soap");
-            result.add(base + "&bzjson");
-        }
-        return result;
-    }
-
-    /**
-     * 把「领域」解析为它覆盖的最终服务码集合。
-     *
-     * <p>路径：{@code dii_replay_transaction_person.domain} 对应的 {@code old_transaction_code}
-     * → {@code znzx_service.tran_code} → {@code esf_service_code}（去点）→ 追加三种后缀。
-     * 领域为空表示不筛选（返回 {@code null}）；领域下无映射时返回空集合，调用方据此返回空页。
-     */
-    public Set<String> resolveFinalServiceCodesByDomain(String domain) {
-        if (domain == null || domain.isBlank()) {
-            return null;
-        }
-        List<String> esfCodes = jdbc.queryForList(
-                "SELECT z.esf_service_code FROM dii_replay_transaction_person p "
-                        + "JOIN znzx_service z ON z.tran_code = p.old_transaction_code "
-                        + "WHERE p.domain = ?",
-                String.class, domain.trim());
-        Set<String> result = new LinkedHashSet<>();
-        for (String esfCode : esfCodes) {
-            if (esfCode == null) {
-                continue;
-            }
-            String base = esfCode.replace(".", "");
-            if (base.isBlank()) {
-                continue;
-            }
-            result.add(base + "&sop");
-            result.add(base + "&soap");
-            result.add(base + "&bzjson");
-        }
-        return result;
+        return ReplayConfigServiceCodeResolver.expandServiceCodes(esfCodes, true);
     }
 
     /** 全部领域选项，取自全量交易人员清单。 */
@@ -183,29 +138,7 @@ public class ReplayConfigPersonResolver {
                 String.class);
     }
 
-    public Set<String> resolveFinalServiceCodesByDeveloper(String developer, boolean empty) {
-        String condition = empty ? "TRIM(COALESCE(p.developer,'')) = ''" : "p.developer = ?";
-        List<String> codes = empty
-                ? jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE " + condition, String.class)
-                : jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE " + condition, String.class, developer.trim());
-        return finalCodes(codes);
-    }
-
-    public Set<String> resolveFinalServiceCodesByEmptyDomain() {
-        return finalCodes(jdbc.queryForList("SELECT z.esf_service_code FROM dii_replay_transaction_person p JOIN znzx_service z ON z.tran_code=p.old_transaction_code WHERE TRIM(COALESCE(p.domain,'')) = ''", String.class));
-    }
-
-    private Set<String> finalCodes(List<String> esfCodes) {
-        Set<String> result = new LinkedHashSet<>();
-        for (String esfCode : esfCodes) {
-            if (esfCode == null || esfCode.isBlank()) continue;
-            String base = esfCode.replace(".", "");
-            result.add(base + "&sop"); result.add(base + "&soap"); result.add(base + "&bzjson");
-        }
-        return result;
-    }
-
-    /** 按忽略配置表的服务码和人员字段筛选，保留未映射人员的空值语义。 */
+    /** 复用列表展示的人员映射，按配置表实际存储的服务码筛选领域和开发人员。 */
     public Set<String> resolveConfigServiceCodes(String resource, String domain, String developer,
                                                  boolean domainEmpty, boolean developerEmpty) {
         String table;
