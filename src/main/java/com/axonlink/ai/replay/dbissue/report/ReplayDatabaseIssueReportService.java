@@ -9,9 +9,11 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 
 import static com.axonlink.ai.replay.dbissue.report.ReplayDatabaseIssueReport.Row;
@@ -41,11 +43,13 @@ public class ReplayDatabaseIssueReportService {
         String batch = requested.isEmpty() ? dao.latestBatchName() : requested;
         if (!requested.isEmpty() && !dao.batchExists(requested)) throw new IllegalArgumentException("所选批次不存在，请刷新报表批次后重试");
         var registration = batch == null ? null : dao.registrationSnapshot(batch);
+        String previousBatch = batch == null ? null : dao.previousDateBatchName(batch);
         TreeSet<String> types = new TreeSet<>();
         dao.currentIssueTypes().stream().map(ReplayDatabaseIssueReportService::normalized).filter(value -> !value.isEmpty()).forEach(types::add);
         Map<String, DomainTotals> domains = new LinkedHashMap<>();
         STANDARD_DOMAINS.forEach(name -> domains.put(name, new DomainTotals(name)));
         Map<String, TableTotals> tables = new LinkedHashMap<>();
+        Map<Long, DomainTotals> unrepairedCandidates = new HashMap<>();
         boolean[] legacy = {false};
         boolean[] excludedMember = {false};
         if (batch != null) {
@@ -65,6 +69,9 @@ public class ReplayDatabaseIssueReportService {
                     domain.issues = add(domain.issues, 1);
                     if (type.isEmpty()) domain.unprocessed = add(domain.unprocessed, 1);
                     else domain.types.merge(type, 1L, ReplayDatabaseIssueReportService::add);
+                    if (previousBatch != null && normalized(input.defectRepairDate()).isEmpty()) {
+                        unrepairedCandidates.put(input.id(), domain);
+                    }
                 }
                 TableTotals table = tables.computeIfAbsent(input.tableName(), ignored -> new TableTotals(domain.name));
                 if ("表级".equals(input.issueLevel())) {
@@ -81,8 +88,19 @@ public class ReplayDatabaseIssueReportService {
                 } else if ("字段级".equals(input.issueLevel())) {
                     table.fieldDifference = add(table.fieldDifference, difference);
                     domain.fieldDifference = add(domain.fieldDifference, difference);
+                    if (difference > 0) table.differingFieldIds.add(input.id());
                 } else {
                     legacy[0] = true;
+                }
+            });
+        }
+        // Consume the selected stream completely before opening another Connector/J streaming result set.
+        if (previousBatch != null && !unrepairedCandidates.isEmpty()) {
+            dao.forEachImportedIssue(previousBatch, input -> {
+                DomainTotals domain = unrepairedCandidates.remove(input.id());
+                if (domain == null || "不参与比对".equals(input.issueStatus())) return;
+                if (number(readSnapshot(input), "differenceCount", input) > 0) {
+                    domain.previousUnrepairedIssues = add(domain.previousUnrepairedIssues, 1);
                 }
             });
         }
@@ -112,7 +130,11 @@ public class ReplayDatabaseIssueReportService {
             domain.sameKeyDifferentRowsUnknown |= table.sameKeyDifferentRowsUnknown;
             Long count = registration == null ? configuredFields.get(name) : Long.valueOf(registration.table(name).fieldCount());
             if (count == null) domain.fieldsUnknown = true;
-            else domain.fields = add(domain.fields, count);
+            else {
+                domain.fields = add(domain.fields, count);
+                if (table.differingFieldIds.size() > count) domain.fieldsInconsistent = true;
+                else domain.identicalFields = add(domain.identicalFields, count - table.differingFieldIds.size());
+            }
         });
         List<String> orderedDomains = new ArrayList<>(STANDARD_DOMAINS);
         domains.keySet().stream().filter(name -> !STANDARD_DOMAINS.contains(name)).sorted().forEach(orderedDomains::add);
@@ -120,7 +142,7 @@ public class ReplayDatabaseIssueReportService {
         DomainTotals total = new DomainTotals("合计");
         for (String name : orderedDomains) {
             DomainTotals current = domains.get(name);
-            rows.add(current.row(types));
+            rows.add(current.row(types, tableMetricsComplete));
             total.include(current);
         }
         List<String> notes = new ArrayList<>(List.of(
@@ -130,6 +152,10 @@ public class ReplayDatabaseIssueReportService {
                 "问题总数为差异笔数大于零的表级及字段级问题数量，包含目前已修复的问题；问题类型使用数据库当前实际值。",
                 "未处理表示当前问题类型为空；排查进度=(问题总数-未处理)/问题总数，合计按总问题数计算，空数据为0%。",
                 "主键相同、字段不同取所选批次表明细保存的原始数量，每张参与表累计一次，再按领域汇总。字段级差异数量用于字段问题统计。",
+                "字段总数按每张表的登记字段分别计数，例如A表.a和B表.a共计2个字段。比对一致字段数量=字段总数-本批正差异字段数量，一个字段差异多笔仍只扣1个字段，表级问题不扣字段数。字段总数未知或表级原始明细不完整时，比对一致字段数量显示为—。",
+                previousBatch == null
+                        ? "上一批遗留问题总数：无更早日期批次，遗留数为0。"
+                        : "上一日期批次：" + previousBatch + "；取最近一个更早业务日期最后导入的批次，导入时间相同时按批次号倒序选择。上一批遗留问题总数仅统计两批都实际有正差异、且当前缺陷修复日期为空的相同问题；所选批次没有出现的ID直接忽略，归所选批次领域。",
                 registration == null
                         ? "字段总数取参与表当前唯一有效登记配置，不代表历史批次原始字段数；缺登记或多份有效登记时留空。"
                         : "登记历史版本为 " + registration.versionNo() + "。字段总数取本批次参与表在该版本中的字段数量，零字段计为0。",
@@ -139,10 +165,11 @@ public class ReplayDatabaseIssueReportService {
         if (total.sameKeyDifferentRowsUnknown) {
             notes.add("部分参与表未保存主键相同、字段不同的原始数量，对应领域及合计显示为—。需从原始Excel补回该批次每表数量后重新生成。历史批次使用自己的导入快照。普通重新导入仍会执行现有的问题状态更新规则。");
         }
-        if (!tableMetricsComplete) notes.add("此批次含旧格式或遗留问题，缺少完整表级原始明细；528/ccbs总量、两侧独有数、参与表数、字段总数及一致表数无法可靠还原，在汇总表显示为—，不以0代替未知值。字段差异和问题分类仍按已保存输入统计。");
+        if (total.fieldsInconsistent) notes.add("部分参与表的差异字段数量超过登记字段总数，字段来源与导入数据不匹配；对应领域及合计的比对一致字段数量显示为—，请核对登记版本或当前字段配置。");
+        if (!tableMetricsComplete) notes.add("此批次含旧格式或遗留问题，缺少完整表级原始明细；528/ccbs总量、两侧独有数、参与表数、字段总数、比对一致字段数量及一致表数无法可靠还原，在汇总表显示为—，不以0代替未知值。字段差异和问题分类仍按已保存输入统计。");
         else if (legacy[0]) notes.add("此批次含旧格式问题级别（仅528/仅ccbs等），未知级别未作为字段级差异累计；表级指标仅使用完整表级原始明细。");
-        return new ReplayDatabaseIssueReport(batch, new ArrayList<>(types), rows, total.row(types), notes,
-                tableMetricsComplete, registration == null ? null : registration.versionNo());
+        return new ReplayDatabaseIssueReport(batch, new ArrayList<>(types), rows, total.row(types, tableMetricsComplete), notes,
+                tableMetricsComplete, registration == null ? null : registration.versionNo(), previousBatch);
     }
 
     private JsonNode readSnapshot(ReplayDatabaseIssueReportDao.ImportedIssue input) {
@@ -184,6 +211,7 @@ public class ReplayDatabaseIssueReportService {
         long total528, totalCcbs, only528, onlyCcbs, tableDifference, fieldDifference;
         long sameKeyDifferentRows;
         boolean sameKeyDifferentRowsUnknown;
+        final Set<Long> differingFieldIds = new HashSet<>();
         TableTotals(String domain) { this.domain = domain; }
     }
 
@@ -191,6 +219,8 @@ public class ReplayDatabaseIssueReportService {
         final String name;
         long total528, totalCcbs, only528, onlyCcbs, fieldDifference, tables, fields, identical, issues, unprocessed;
         boolean fieldsUnknown;
+        boolean fieldsInconsistent;
+        long identicalFields, previousUnrepairedIssues;
         long sameKeyDifferentRows;
         boolean sameKeyDifferentRowsUnknown;
         final Map<String, Long> types = new HashMap<>();
@@ -200,18 +230,23 @@ public class ReplayDatabaseIssueReportService {
             only528 = add(only528, other.only528); onlyCcbs = add(onlyCcbs, other.onlyCcbs);
             fieldDifference = add(fieldDifference, other.fieldDifference); tables = add(tables, other.tables);
             fields = add(fields, other.fields); identical = add(identical, other.identical);
+            identicalFields = add(identicalFields, other.identicalFields);
+            previousUnrepairedIssues = add(previousUnrepairedIssues, other.previousUnrepairedIssues);
             issues = add(issues, other.issues); unprocessed = add(unprocessed, other.unprocessed);
             fieldsUnknown |= other.fieldsUnknown;
+            fieldsInconsistent |= other.fieldsInconsistent;
             sameKeyDifferentRows = add(sameKeyDifferentRows, other.sameKeyDifferentRows);
             sameKeyDifferentRowsUnknown |= other.sameKeyDifferentRowsUnknown;
             other.types.forEach((key, value) -> types.merge(key, value, ReplayDatabaseIssueReportService::add));
         }
-        Row row(Iterable<String> catalog) {
+        Row row(Iterable<String> catalog, boolean tableMetricsComplete) {
             Map<String, Long> counts = new LinkedHashMap<>();
             catalog.forEach(type -> counts.put(type, types.getOrDefault(type, 0L)));
             return new Row(name, total528, totalCcbs, only528, onlyCcbs, fieldDifference, tables,
                     fieldsUnknown ? null : fields, identical, issues, unprocessed, counts,
-                    sameKeyDifferentRowsUnknown ? null : sameKeyDifferentRows);
+                    sameKeyDifferentRowsUnknown ? null : sameKeyDifferentRows,
+                    !tableMetricsComplete || fieldsUnknown || fieldsInconsistent ? null : identicalFields,
+                    previousUnrepairedIssues);
         }
     }
 }

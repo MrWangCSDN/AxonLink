@@ -13,14 +13,20 @@ public record ReplayDatabaseIssueReport(
         Row total,
         List<String> notes,
         boolean tableMetricsComplete,
-        String registrationVersionNo) {
+        String registrationVersionNo,
+        String previousBatchNo) {
     public ReplayDatabaseIssueReport(String batchNo, List<String> issueTypes, List<Row> rows, Row total, List<String> notes) {
-        this(batchNo, issueTypes, rows, total, notes, true, null);
+        this(batchNo, issueTypes, rows, total, notes, true, null, null);
     }
 
     public ReplayDatabaseIssueReport(String batchNo, List<String> issueTypes, List<Row> rows, Row total,
                                      List<String> notes, boolean tableMetricsComplete) {
-        this(batchNo, issueTypes, rows, total, notes, tableMetricsComplete, null);
+        this(batchNo, issueTypes, rows, total, notes, tableMetricsComplete, null, null);
+    }
+
+    public ReplayDatabaseIssueReport(String batchNo, List<String> issueTypes, List<Row> rows, Row total,
+                                     List<String> notes, boolean tableMetricsComplete, String registrationVersionNo) {
+        this(batchNo, issueTypes, rows, total, notes, tableMetricsComplete, registrationVersionNo, null);
     }
 
     public ReplayDatabaseIssueReport {
@@ -29,7 +35,7 @@ public record ReplayDatabaseIssueReport(
         notes = List.copyOf(notes);
     }
 
-    /** Keeps field observations separate from original differing records. A null row count denotes missing source facts. */
+    /** Keeps field observations separate from differing records; nullable counts denote missing source facts. */
     public record Row(
             String domain,
             long total528,
@@ -43,12 +49,21 @@ public record ReplayDatabaseIssueReport(
             long issueCount,
             long unprocessedCount,
             Map<String, Long> typeCounts,
-            Long sameKeyDifferentRowCount) {
+            Long sameKeyDifferentRowCount,
+            Long identicalFieldCount,
+            long previousUnrepairedIssueCount) {
         public Row(String domain, long total528, long totalCcbs, long only528Count, long onlyCcbsCount,
                    long fieldDifferenceCount, long comparedTableCount, Long fieldCount, long identicalTableCount,
                    long issueCount, long unprocessedCount, Map<String, Long> typeCounts) {
             this(domain, total528, totalCcbs, only528Count, onlyCcbsCount, fieldDifferenceCount, comparedTableCount,
-                    fieldCount, identicalTableCount, issueCount, unprocessedCount, typeCounts, null);
+                    fieldCount, identicalTableCount, issueCount, unprocessedCount, typeCounts, null, null, 0);
+        }
+
+        public Row(String domain, long total528, long totalCcbs, long only528Count, long onlyCcbsCount,
+                   long fieldDifferenceCount, long comparedTableCount, Long fieldCount, long identicalTableCount,
+                   long issueCount, long unprocessedCount, Map<String, Long> typeCounts, Long sameKeyDifferentRowCount) {
+            this(domain, total528, totalCcbs, only528Count, onlyCcbsCount, fieldDifferenceCount, comparedTableCount,
+                    fieldCount, identicalTableCount, issueCount, unprocessedCount, typeCounts, sameKeyDifferentRowCount, null, 0);
         }
 
         public Row {

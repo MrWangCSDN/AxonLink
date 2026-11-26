@@ -30,6 +30,7 @@ class ReplayDatabaseIssueReportRegistrationVersionTest {
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"))
                 .execute(jdbc.getDataSource());
+        jdbc.execute("ALTER TABLE dii_replay_database_issue ADD COLUMN defect_repair_date VARCHAR(32) NOT NULL DEFAULT ''");
         service = new ReplayDatabaseIssueReportService(new ReplayDatabaseIssueReportDao(jdbc));
         version(10, VERSION, 107);
         snapshotTable(101, 10, "base", "a", 3);

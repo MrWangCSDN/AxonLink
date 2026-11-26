@@ -16,7 +16,8 @@ import java.util.List;
 @Component
 public class ReplayDatabaseIssueReportWorkbookWriter {
     private static final List<String> FIXED_HEADERS = List.of("领域", "528总量", "ccbs总量", "仅528存在", "仅ccbs存在",
-            "主键相同、字段不同", "参与比对表数量", "字段总数", "比对一致表数量", "问题总数（注）", "未处理");
+            "主键相同、字段不同", "参与比对表数量", "字段总数", "比对一致字段数量", "比对一致表数量", "问题总数（注）",
+            "上一批遗留问题总数", "未处理");
 
     public byte[] write(ReplayDatabaseIssueReport report) {
         List<String> headers = new ArrayList<>(FIXED_HEADERS);
@@ -34,13 +35,16 @@ public class ReplayDatabaseIssueReportWorkbookWriter {
             String batch = report.batchNo() == null ? "暂无已导入批次" : report.batchNo();
             String registration = report.registrationVersionNo() == null ? "字段总数为当前登记配置"
                     : "登记历史版本 " + report.registrationVersionNo() + "，领域和字段总数取该版本参与表快照";
-            String description = "统计批次 " + batch + "。" + registration + "。主键相同、字段不同按批次表明细原始数量逐表汇总。";
+            String previousBatch = report.previousBatchNo() == null ? "无上一日期批次，上一批遗留问题总数为0"
+                    : "上一日期批次 " + report.previousBatchNo();
+            String description = "统计批次 " + batch + "。" + previousBatch + "。" + registration
+                    + "。主键相同、字段不同按批次表明细原始数量逐表汇总。";
             if (!report.tableMetricsComplete()) description += " 旧格式缺少完整表明细，部分表级指标不可还原（—），详见统计口径。";
             text(metadata, 0, description, styles.note);
             sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, headers.size() - 1));
             var header = sheet.createRow(2); header.setHeightInPoints(42);
             for (int index = 0; index < headers.size(); index++) {
-                text(header, index, headers.get(index), index < 9 ? styles.purpleHeader : styles.yellowHeader);
+                text(header, index, headers.get(index), index < 10 ? styles.purpleHeader : styles.yellowHeader);
                 sheet.setColumnWidth(index, (index == 0 ? 13 : index == 1 || index == 2 ? 21 : index == 5 ? 21 : 16) * 256);
             }
             int rowIndex = 3;
@@ -79,11 +83,14 @@ public class ReplayDatabaseIssueReportWorkbookWriter {
         else count(row, 6, data.comparedTableCount(), number);
         if (!report.tableMetricsComplete() || data.fieldCount() == null) text(row, 7, "—", plain);
         else count(row, 7, data.fieldCount(), number);
-        if (!report.tableMetricsComplete()) text(row, 8, "—", plain);
-        else count(row, 8, data.identicalTableCount(), number);
-        count(row, 9, data.issueCount(), number);
-        count(row, 10, data.unprocessedCount(), number);
-        int column = 11;
+        if (!report.tableMetricsComplete() || data.identicalFieldCount() == null) text(row, 8, "—", plain);
+        else count(row, 8, data.identicalFieldCount(), number);
+        if (!report.tableMetricsComplete()) text(row, 9, "—", plain);
+        else count(row, 9, data.identicalTableCount(), number);
+        count(row, 10, data.issueCount(), number);
+        count(row, 11, data.previousUnrepairedIssueCount(), number);
+        count(row, 12, data.unprocessedCount(), number);
+        int column = 13;
         for (String type : report.issueTypes()) count(row, column++, data.typeCounts().getOrDefault(type, 0L), number);
         var progress = row.createCell(column);
         double ratio = data.issueCount() == 0 ? 0 : BigDecimal.valueOf(data.issueCount() - data.unprocessedCount())
@@ -100,11 +107,16 @@ public class ReplayDatabaseIssueReportWorkbookWriter {
         var batch = sheet.createRow(1);
         text(batch, 0, "统计批次", styles.text);
         text(batch, 1, report.batchNo() == null ? "暂无已导入批次" : report.batchNo(), styles.note);
-        int index = 2;
+        var previousBatch = sheet.createRow(2);
+        text(previousBatch, 0, "上一日期批次", styles.text);
+        text(previousBatch, 1, report.previousBatchNo() == null ? "无上一日期批次，上一批遗留问题总数为0"
+                : report.previousBatchNo(), styles.note);
+        int index = 3;
         for (String note : report.notes()) {
             var row = sheet.createRow(index);
-            text(row, 0, "口径 " + (index - 1), styles.text); text(row, 1, note, styles.note);
-            row.setHeightInPoints(44); index++;
+            text(row, 0, "口径 " + (index - 2), styles.text); text(row, 1, note, styles.note);
+            // Reserve about 50 Chinese characters per wrapped line at the note column's width.
+            row.setHeightInPoints(Math.max(44, ((note.length() + 49) / 50) * 16)); index++;
         }
         sheet.createFreezePane(0, 1);
     }

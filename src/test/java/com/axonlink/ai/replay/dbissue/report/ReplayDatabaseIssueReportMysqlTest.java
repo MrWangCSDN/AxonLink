@@ -7,6 +7,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -34,6 +35,7 @@ class ReplayDatabaseIssueReportMysqlTest {
                     new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                     new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"))
                     .execute(source);
+            jdbc.execute("ALTER TABLE dii_replay_database_issue ADD COLUMN defect_repair_date VARCHAR(32) NOT NULL DEFAULT ''");
             jdbc.update("INSERT INTO dii_replay_database_issue_batch(batch_no,batch_date,imported_at,input_rows,created_rows,updated_rows,auto_repaired_rows) VALUES "
                     + "('DB20261028-01','2026-10-28','2026-10-29 23:00:00',0,0,0,0),"
                     + "('DB20261029-01','2026-10-29','2026-10-29 10:00:00',3,3,0,0)");
@@ -51,12 +53,29 @@ class ReplayDatabaseIssueReportMysqlTest {
             insertImport(jdbc, 2, field);
             insertImport(jdbc, 3, field);
             insertImport(jdbc, 3, null);
+            insertImport(jdbc, 1, table, "DB20261028-01");
+            insertImport(jdbc, 2, field, "DB20261028-01");
             // The imported metrics must win over a subsequently changed current snapshot.
             jdbc.update("UPDATE dii_replay_database_issue SET data_snapshot='{}' WHERE id=1");
 
-            var service = new ReplayDatabaseIssueReportService(new ReplayDatabaseIssueReportDao(jdbc));
+            var dao = new ReplayDatabaseIssueReportDao(jdbc);
+            dao.readConsistently(() -> {
+                assertEquals("DB20261028-01", dao.previousDateBatchName("DB20261029-01"));
+                var previousIds = new ArrayList<Long>();
+                dao.forEachImportedIssue("DB20261028-01", input -> previousIds.add(input.id()));
+                var selectedIds = new ArrayList<Long>();
+                dao.forEachImportedIssue("DB20261029-01", input -> selectedIds.add(input.id()));
+                assertEquals(List.of(1L, 2L), previousIds.stream().sorted().toList());
+                assertEquals(List.of(1L, 2L), selectedIds.stream().sorted().toList());
+                // Both streaming result sets must be consumed and closed before this query.
+                assertEquals(2L, dao.configuredFieldCounts(List.of("a")).get("a"));
+                return null;
+            });
+            var service = new ReplayDatabaseIssueReportService(dao);
             var report = assertDoesNotThrow(() -> service.build(null));
             assertEquals("DB20261029-01", report.batchNo());
+            assertEquals("DB20261028-01", report.previousBatchNo());
+            assertEquals(2, report.total().previousUnrepairedIssueCount());
             assertTrue(report.tableMetricsComplete());
             assertEquals(100, report.total().total528());
             assertEquals(105, report.total().totalCcbs());
@@ -65,6 +84,7 @@ class ReplayDatabaseIssueReportMysqlTest {
             assertEquals(1, report.total().comparedTableCount());
             // This query follows consumption/closure of Connector/J's streaming result set.
             assertEquals(2L, report.total().fieldCount());
+            assertEquals(1L, report.total().identicalFieldCount());
             assertEquals(2, report.total().issueCount());
             assertEquals(1, report.total().unprocessedCount());
             assertEquals(1L, report.total().typeCounts().get("修改代码"));
@@ -88,6 +108,7 @@ class ReplayDatabaseIssueReportMysqlTest {
             var historical = assertDoesNotThrow(() -> service.build(null));
             assertEquals("20261027-141302", historical.registrationVersionNo());
             assertEquals(1L, historical.total().fieldCount());
+            assertEquals(0L, historical.total().identicalFieldCount());
             var historicalDomain = historical.rows().stream().filter(row -> row.domain().equals("历史领域")).findFirst().orElseThrow();
             assertEquals(100, historicalDomain.total528());
             assertEquals(1L, historicalDomain.fieldCount());
@@ -97,6 +118,7 @@ class ReplayDatabaseIssueReportMysqlTest {
             insertImport(jdbc, 4, field);
             var overlappingFields = service.build(null);
             assertEquals(4, overlappingFields.total().fieldDifferenceCount());
+            assertNull(overlappingFields.total().identicalFieldCount());
             assertEquals(2L, overlappingFields.total().sameKeyDifferentRowCount());
 
             jdbc.update("UPDATE dii_replay_database_issue SET issue_status='不参与比对'");
@@ -104,10 +126,12 @@ class ReplayDatabaseIssueReportMysqlTest {
             assertTrue(excluded.tableMetricsComplete());
             assertEquals(0, excluded.total().total528());
             assertEquals(0L, excluded.total().fieldCount());
+            assertEquals(0L, excluded.total().identicalFieldCount());
+            assertEquals(0, excluded.total().previousUnrepairedIssueCount());
             assertEquals(0, excluded.total().issueCount());
             assertTrue(excluded.issueTypes().isEmpty());
             assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue", Long.class));
-            assertEquals(5, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_history", Long.class));
+            assertEquals(7, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_history", Long.class));
 
             jdbc.update("UPDATE dii_replay_database_issue SET issue_status='已修复' WHERE id=1");
             jdbc.update("UPDATE dii_replay_database_issue SET issue_status='无需处理',issue_type='不参与比对' WHERE id=2");
@@ -126,7 +150,11 @@ class ReplayDatabaseIssueReportMysqlTest {
     }
 
     private static void insertImport(JdbcTemplate jdbc, long id, String snapshot) {
+        insertImport(jdbc, id, snapshot, "DB20261029-01");
+    }
+
+    private static void insertImport(JdbcTemplate jdbc, long id, String snapshot, String batch) {
         jdbc.update("INSERT INTO dii_replay_database_issue_history(issue_id,batch_no,operation_type,operation_at,import_event,after_snapshot,incoming_snapshot) "
-                + "VALUES(?,'DB20261029-01','导入','2026-10-29 10:00:00',1,'{}',?)", id, snapshot);
+                + "VALUES(?,?,'导入','2026-10-29 10:00:00',1,'{}',?)", id, batch, snapshot);
     }
 }

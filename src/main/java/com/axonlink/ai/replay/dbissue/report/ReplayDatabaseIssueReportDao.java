@@ -48,6 +48,13 @@ public class ReplayDatabaseIssueReportDao {
         return names.isEmpty() ? null : names.get(0);
     }
 
+    String previousDateBatchName(String batchNo) {
+        var names = jdbc.queryForList("SELECT batch_no FROM dii_replay_database_issue_batch "
+                + "WHERE batch_date < (SELECT batch_date FROM dii_replay_database_issue_batch WHERE batch_no=?) "
+                + "ORDER BY batch_date DESC, imported_at DESC, batch_no DESC LIMIT 1", String.class, batchNo);
+        return names.isEmpty() ? null : names.get(0);
+    }
+
     boolean batchExists(String batchNo) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_batch WHERE batch_no=?", Long.class, batchNo) > 0;
     }
@@ -90,7 +97,8 @@ public class ReplayDatabaseIssueReportDao {
                 + "WHERE issue_status<>'不参与比对' AND issue_type IS NOT NULL AND TRIM(issue_type)<>'' ORDER BY TRIM(issue_type)", String.class);
     }
 
-    record ImportedIssue(long id, String tableName, String issueLevel, String issueType, String issueStatus, String domain, String rawSnapshot) {}
+    record ImportedIssue(long id, String tableName, String issueLevel, String issueType, String issueStatus, String domain,
+                         String rawSnapshot, String defectRepairDate) {}
 
     void forEachImportedIssue(String batchNo, Consumer<ImportedIssue> consumer) {
         String sql = """
@@ -101,7 +109,7 @@ public class ReplayDatabaseIssueReportDao {
                     WHERE batch_no=? AND import_event=1
                 )
                 SELECT i.id, LOWER(i.table_name) AS table_name, i.issue_level, i.issue_type, i.issue_status,
-                       p.domain_name,
+                       p.domain_name, i.defect_repair_date,
                        CASE WHEN h.issue_id IS NULL THEN i.data_snapshot ELSE h.incoming_snapshot END AS raw_snapshot
                 FROM dii_replay_database_issue i
                 LEFT JOIN ranked_imports h ON h.issue_id=i.id AND h.rn=1
@@ -119,7 +127,8 @@ public class ReplayDatabaseIssueReportDao {
             return statement;
         }, (RowCallbackHandler) rs -> consumer.accept(new ImportedIssue(
                 rs.getLong("id"), rs.getString("table_name"), rs.getString("issue_level"),
-                rs.getString("issue_type"), rs.getString("issue_status"), rs.getString("domain_name"), rs.getString("raw_snapshot"))));
+                rs.getString("issue_type"), rs.getString("issue_status"), rs.getString("domain_name"), rs.getString("raw_snapshot"),
+                rs.getString("defect_repair_date"))));
     }
 
     /** Missing keys and explicit null values both mean the field total cannot be established. */
