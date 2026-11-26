@@ -4,12 +4,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -50,10 +53,55 @@ public class DiiAnalysisTaskDao {
             "       trigger_type, owner, error_msg, created_at, updated_at " +
             "  FROM dii_analysis_task WHERE id = ?";
 
-    private static final String LIST =
-            "SELECT id, task_no, env, status, total_sqls, analyzed_sqls, failed_sqls, skipped_sqls, " +
-            "       trigger_type, owner, error_msg, created_at, updated_at " +
-            "  FROM dii_analysis_task ORDER BY id DESC LIMIT ? OFFSET ?";
+    private static final String LIST = """
+            SELECT id, task_no, env, status, total_sqls, analyzed_sqls, failed_sqls, skipped_sqls,
+                   trigger_type, owner, error_msg, created_at, updated_at, inspect_done_at
+              FROM dii_analysis_task
+             WHERE 1=1""";
+
+    private static final String TASK_STATS = """
+            SELECT t.id,
+                   (COALESCE(s.explain_err, 0) + COALESCE(p.pool_explain_err, 0)) AS explain_err,
+                   (COALESCE(s.llm_done,    0) + COALESCE(p.pool_llm_done,    0)) AS llm_done,
+                   (COALESCE(s.llm_failed,  0) + COALESCE(p.pool_llm_failed,  0)) AS llm_failed,
+                   (COALESCE(s.llm_running, 0) + COALESCE(p.pool_llm_running, 0)) AS llm_running,
+                   COALESCE(p.pool_count, 0) AS pool_count
+              FROM dii_analysis_task t
+              LEFT JOIN (
+                SELECT task_id,
+                       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> ''
+                                THEN 1 ELSE 0 END) AS explain_err,
+                       SUM(CASE WHEN llm_status='DONE'
+                                 AND llm_suggestions_json IS NOT NULL
+                                 AND llm_suggestions_json NOT IN ('','[]')
+                                THEN 1 ELSE 0 END) AS llm_done,
+                       SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS llm_failed,
+                       SUM(CASE WHEN llm_status='PENDING' OR llm_pending=1
+                                THEN 1 ELSE 0 END) AS llm_running
+                  FROM dii_analysis_item
+                 WHERE task_id IN (:taskIds)
+                 GROUP BY task_id
+              ) s ON s.task_id = t.id
+              LEFT JOIN (
+                SELECT env AS p_env, COUNT(*) AS pool_count,
+                       SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> ''
+                                THEN 1 ELSE 0 END) AS pool_explain_err,
+                       SUM(CASE WHEN llm_status='DONE'
+                                 AND llm_suggestions_json IS NOT NULL
+                                 AND llm_suggestions_json NOT IN ('','[]')
+                                THEN 1 ELSE 0 END) AS pool_llm_done,
+                       SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS pool_llm_failed,
+                       SUM(CASE WHEN llm_status='PENDING' THEN 1 ELSE 0 END) AS pool_llm_running
+                  FROM dii_sql_pool
+                 WHERE env IS NOT NULL AND env <> ''
+                   AND env IN (SELECT env FROM dii_analysis_task WHERE id IN (:taskIds))
+                 GROUP BY env
+              ) p ON p.p_env = t.env
+             WHERE t.id IN (:taskIds)
+            """;
+
+    private static final Map<String, Object> EMPTY_STATS = Map.of(
+            "explain_err", 0L, "llm_done", 0L, "llm_failed", 0L, "llm_running", 0L, "pool_count", 0L);
 
     // 「一天一次·覆盖式」：查当天（结果库 MySQL 本地时区）已存在的巡检任务。
     // CURDATE() 取数据库当天日期，DATE(created_at) 把 created_at 截断到日，
@@ -68,9 +116,11 @@ public class DiiAnalysisTaskDao {
             "DELETE FROM dii_analysis_task WHERE id = ?";
 
     private final JdbcTemplate jdbc;
+    private final NamedParameterJdbcTemplate namedJdbc;
 
     public DiiAnalysisTaskDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
+        this.namedJdbc = new NamedParameterJdbcTemplate(diiResultJdbcTemplate);
     }
 
     /** 创建新任务。返回 taskId。 */
@@ -193,7 +243,7 @@ public class DiiAnalysisTaskDao {
     }
 
     /**
-     * 列出任务，可选 env / status 过滤；每行带回 4 项 dii_analysis_item 聚合统计。
+     * 列出任务，可选 env / status 过滤；每行带回该任务明细和同环境 SQL 池的聚合统计。
      *
      * <p>聚合统计字段（<b>全集口径</b>，覆盖该任务下所有 SQL，不再仅限 POOR）：
      * <ul>
@@ -203,16 +253,12 @@ public class DiiAnalysisTaskDao {
      *   <li>{@code llm_running}   — llm_status='PENDING' 或 llm_pending=1（保留供后续诊断）</li>
      * </ul>
      *
-     * <p>"巡检总数"直接用 task 表的 {@code total_sqls} 字段，无需聚合。
+     * <p>前端把 task 表的 {@code total_sqls} 加上同环境的 {@code pool_count} 作为巡检总数。
      *
      * <p>{@code status} 参数支持特殊值 {@code RUNNING_OR_PENDING}，DAO 翻译为
      * {@code WHERE status IN ('PENDING','RUNNING')}，方便前端"进行中"过滤。
      *
-     * <p><b>性能兜底：</b>子查询全表扫 {@code dii_analysis_item} 然后 GROUP BY task_id。
-     * 如果实测慢可加索引：
-     * <pre>{@code
-     *   CREATE INDEX idx_item_task ON dii_analysis_item(task_id);
-     * }</pre>
+     * <p>先查任务页，再按页内任务 ID 和环境聚合，环境匹配遵循数据库排序规则。
      *
      * @param limit  限制条数（1~500）
      * @param offset 偏移
@@ -222,68 +268,27 @@ public class DiiAnalysisTaskDao {
      */
     public List<Map<String, Object>> list(int limit, int offset, String env, String status) {
         int eff = Math.min(Math.max(limit, 1), 500);
-        StringBuilder sb = new StringBuilder(
-                "SELECT t.id, t.task_no, t.env, t.status, t.total_sqls, t.analyzed_sqls, " +
-                "       t.failed_sqls, t.skipped_sqls, t.trigger_type, t.owner, " +
-                "       t.error_msg, t.created_at, t.updated_at, t.inspect_done_at, " +
-                // V2 修复：4 个统计列都 = item 聚合 + 池聚合（之前只有 pool_count 合并了）
-                "       (COALESCE(s.explain_err, 0) + COALESCE(p.pool_explain_err, 0)) AS explain_err, " +
-                "       (COALESCE(s.llm_done,    0) + COALESCE(p.pool_llm_done,    0)) AS llm_done, " +
-                "       (COALESCE(s.llm_failed,  0) + COALESCE(p.pool_llm_failed,  0)) AS llm_failed, " +
-                "       (COALESCE(s.llm_running, 0) + COALESCE(p.pool_llm_running, 0)) AS llm_running, " +
-                // 巡检总数中并入池总数（前端 mergedTotal = total_sqls + pool_count）
-                "       COALESCE(p.pool_count,  0) AS pool_count " +
-                "  FROM dii_analysis_task t " +
-                "  LEFT JOIN ( " +
-                "    SELECT task_id, " +
-                "           SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' " +
-                "                    THEN 1 ELSE 0 END) AS explain_err, " +
-                "           SUM(CASE WHEN llm_status='DONE' " +
-                "                     AND llm_suggestions_json IS NOT NULL " +
-                "                     AND llm_suggestions_json NOT IN ('','[]') " +
-                "                    THEN 1 ELSE 0 END) AS llm_done, " +
-                "           SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS llm_failed, " +
-                "           SUM(CASE WHEN llm_status='PENDING' OR llm_pending=1 " +
-                "                    THEN 1 ELSE 0 END) AS llm_running " +
-                "      FROM dii_analysis_item " +
-                "     GROUP BY task_id " +
-                "  ) s ON s.task_id = t.id " +
-                // V2：池聚合补齐 explain_err / llm_done / llm_failed / llm_running 四档
-                // （含未标 env 的池行——env IS NULL/'' 视为对所有 env 可见，与看板口径一致）
-                "  LEFT JOIN ( " +
-                "    SELECT env AS p_env, COUNT(*) AS pool_count, " +
-                "           SUM(CASE WHEN explain_error IS NOT NULL AND explain_error <> '' " +
-                "                    THEN 1 ELSE 0 END) AS pool_explain_err, " +
-                "           SUM(CASE WHEN llm_status='DONE' " +
-                "                     AND llm_suggestions_json IS NOT NULL " +
-                "                     AND llm_suggestions_json NOT IN ('','[]') " +
-                "                    THEN 1 ELSE 0 END) AS pool_llm_done, " +
-                "           SUM(CASE WHEN llm_status='FAILED' THEN 1 ELSE 0 END) AS pool_llm_failed, " +
-                "           SUM(CASE WHEN llm_status='PENDING' THEN 1 ELSE 0 END) AS pool_llm_running " +
-                "      FROM dii_sql_pool " +
-                "     WHERE env IS NOT NULL AND env <> '' " +
-                "     GROUP BY env " +
-                "  ) p ON p.p_env = t.env " +
-                " WHERE 1=1");
-        List<Object> args = new java.util.ArrayList<>();
-        if (env != null && !env.isBlank()) {
-            sb.append(" AND t.env = ?");
-            args.add(env.trim());
-        }
-        if (status != null && !status.isBlank()) {
-            String st = status.trim();
-            if ("RUNNING_OR_PENDING".equalsIgnoreCase(st)) {
-                // 前端"进行中"过滤的特殊值，DAO 翻译为 IN 子句
-                sb.append(" AND t.status IN ('PENDING','RUNNING')");
-            } else {
-                sb.append(" AND t.status = ?");
-                args.add(st);
-            }
-        }
-        sb.append(" ORDER BY t.id DESC LIMIT ? OFFSET ?");
+        StringBuilder sql = new StringBuilder(LIST);
+        List<Object> args = new ArrayList<>();
+        appendFilters(sql, args, env, status);
+        sql.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
         args.add(eff);
         args.add(Math.max(offset, 0));
-        return jdbc.queryForList(sb.toString(), args.toArray());
+        List<Map<String, Object>> page = jdbc.queryForList(sql.toString(), args.toArray());
+        if (page.isEmpty()) {
+            return page;
+        }
+
+        List<Object> taskIds = page.stream().map(task -> task.get("id")).toList();
+        Map<Object, Map<String, Object>> statsByTaskId = new HashMap<>();
+        for (Map<String, Object> stats : namedJdbc.queryForList(TASK_STATS, Map.of("taskIds", taskIds))) {
+            statsByTaskId.put(stats.remove("id"), stats);
+        }
+        for (Map<String, Object> task : page) {
+            // 覆盖式重跑可能在两次查询之间删除旧任务，退回零计数。
+            task.putAll(statsByTaskId.getOrDefault(task.get("id"), EMPTY_STATS));
+        }
+        return page;
     }
 
     /**
@@ -297,23 +302,27 @@ public class DiiAnalysisTaskDao {
      * @return 符合条件的任务总数
      */
     public long countAll(String env, String status) {
-        StringBuilder sb = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_task WHERE 1=1");
-        List<Object> args = new java.util.ArrayList<>();
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM dii_analysis_task WHERE 1=1");
+        List<Object> args = new ArrayList<>();
+        appendFilters(sql, args, env, status);
+        Long n = jdbc.queryForObject(sql.toString(), Long.class, args.toArray());
+        return n == null ? 0L : n;
+    }
+
+    private static void appendFilters(StringBuilder sql, List<Object> args, String env, String status) {
         if (env != null && !env.isBlank()) {
-            sb.append(" AND env = ?");
+            sql.append(" AND env = ?");
             args.add(env.trim());
         }
         if (status != null && !status.isBlank()) {
             String st = status.trim();
             if ("RUNNING_OR_PENDING".equalsIgnoreCase(st)) {
-                sb.append(" AND status IN ('PENDING','RUNNING')");
+                sql.append(" AND status IN ('PENDING','RUNNING')");
             } else {
-                sb.append(" AND status = ?");
+                sql.append(" AND status = ?");
                 args.add(st);
             }
         }
-        Long n = jdbc.queryForObject(sb.toString(), Long.class, args.toArray());
-        return n == null ? 0L : n;
     }
 
     private static String truncate(String s, int max) {
