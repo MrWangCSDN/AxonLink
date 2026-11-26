@@ -263,6 +263,39 @@ class ReplayBaseMetadataServiceTest {
     }
 
     @Test
+    void explicitSourceUsesSelectedSchemaAndTimeoutForEveryCatalogQuery() throws Exception {
+        Connection source = mock(Connection.class);
+        PreparedStatement tables = mock(PreparedStatement.class);
+        PreparedStatement columns = mock(PreparedStatement.class);
+        PreparedStatement indexes = emptyIndexStatement();
+        ResultSet tableRows = mock(ResultSet.class);
+        ResultSet columnRows = mock(ResultSet.class);
+        when(source.prepareStatement(anyString())).thenReturn(tables, columns, indexes);
+        when(tables.executeQuery()).thenReturn(tableRows);
+        when(tableRows.next()).thenReturn(true, false);
+        when(tableRows.getString("table_name")).thenReturn("acct_master");
+        when(columns.executeQuery()).thenReturn(columnRows);
+        when(columnRows.next()).thenReturn(true, false);
+        when(columnRows.getString("table_name")).thenReturn("acct_master");
+        when(columnRows.getString("column_name")).thenReturn("custom_id");
+        when(columnRows.getString("primary_key_attnums")).thenReturn("1");
+        when(columnRows.getInt("ordinal_position")).thenReturn(1);
+
+        var result = service.inspectTables(source, "Staging", List.of("acct_master"));
+
+        assertThat(result.get("acct_master").columns()).extracting(ReplayBaseColumnOption::columnName)
+                .containsExactly("custom_id");
+        for (PreparedStatement statement : List.of(tables, columns, indexes)) {
+            verify(statement).setString(1, "Staging");
+            verify(statement).setString(2, "acct_master");
+            verify(statement).setQueryTimeout(30);
+            verify(statement).close();
+        }
+        verify(registry, never()).requireDataSource();
+        verify(source, never()).close(); // The operation owns the connection across batches.
+    }
+
+    @Test
     void inspectTablesDoesNotConvertColumnQueryFailureIntoMissingMetadata() throws Exception {
         PreparedStatement tableStatement = mock(PreparedStatement.class);
         PreparedStatement columnStatement = mock(PreparedStatement.class);

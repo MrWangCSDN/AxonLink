@@ -21,7 +21,8 @@ class ReplayDatabaseComparisonScriptConfigurationDaoTest {
     @BeforeEach void setup() {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(new ClassPathResource(
-                "db/daoindex/V95__replay_named_script_configuration.sql")).execute(jdbc.getDataSource());
+                "db/daoindex/V95__replay_named_script_configuration.sql"), new ClassPathResource(
+                "db/daoindex/V97__replay_script_config_datasource.sql")).execute(jdbc.getDataSource());
         dao = new ReplayDatabaseComparisonScriptConfigurationDao(jdbc);
     }
 
@@ -30,7 +31,7 @@ class ReplayDatabaseComparisonScriptConfigurationDaoTest {
     private ReplayDatabaseComparisonScriptConfigurationDao.WriteConfiguration data(String name, String key) {
         return new ReplayDatabaseComparisonScriptConfigurationDao.WriteConfiguration(name, key,
                 "{\"tables\":[]}", "config.sql", new byte[]{1, 2, 3}, "a".repeat(64),
-                123, 2, 8, "operator", at);
+                123, 2, 8, "operator", at, null, null);
     }
 
     @Test void persistsIndependentConfigurationsAndListsTheirOwnRevisions() {

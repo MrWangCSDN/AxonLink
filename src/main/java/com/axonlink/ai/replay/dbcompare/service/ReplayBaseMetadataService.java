@@ -185,7 +185,7 @@ public class ReplayBaseMetadataService {
             }
             List<ReplayBaseColumnOption> columns = queryColumns(connection, normalizedTable, "%%");
             List<ReplayBaseKeyOption> keys = queryKeysByTables(
-                    connection, Map.of(normalizedTable, columns)).getOrDefault(normalizedTable, List.of());
+                    connection, schema(), Map.of(normalizedTable, columns), 0).getOrDefault(normalizedTable, List.of());
             return new ReplayBaseMetadataSnapshot(
                     true, table.tableName(), table.tableComment(),
                     columns, keys);
@@ -196,9 +196,23 @@ public class ReplayBaseMetadataService {
 
     public Map<String, ReplayBaseMetadataSnapshot> inspectTables(Collection<String> tableNames) {
         LinkedHashSet<String> normalizedNames = normalizedIdentifiers(tableNames);
-        if (normalizedNames.isEmpty()) {
-            return Map.of();
+        if (normalizedNames.isEmpty()) return Map.of();
+        try (Connection connection = registry.requireDataSource().getConnection()) {
+            return inspectTables(connection, schema(), normalizedNames, 0);
+        } catch (SQLException exception) {
+            throw unavailable();
         }
+    }
+
+    public Map<String, ReplayBaseMetadataSnapshot> inspectTables(
+            Connection connection, String schema, Collection<String> tableNames) throws SQLException {
+        return inspectTables(connection, schema, normalizedIdentifiers(tableNames), 30);
+    }
+
+    private Map<String, ReplayBaseMetadataSnapshot> inspectTables(
+            Connection connection, String schema, LinkedHashSet<String> normalizedNames,
+            int queryTimeoutSeconds) throws SQLException {
+        if (normalizedNames.isEmpty()) return Map.of();
 
         String tablePlaceholders = String.join(",", Collections.nCopies(normalizedNames.size(), "?"));
         String tableSql = """
@@ -212,40 +226,43 @@ public class ReplayBaseMetadataService {
                  ORDER BY lower(c.relname)
                 """.formatted(tablePlaceholders);
 
-        try (Connection connection = registry.requireDataSource().getConnection()) {
-            Map<String, String> existingTables = new LinkedHashMap<>();
-            try (PreparedStatement statement = connection.prepareStatement(tableSql)) {
-                statement.setString(1, schema());
-                int index = 2;
-                for (String tableName : normalizedNames) {
-                    statement.setString(index++, tableName);
-                }
-                try (ResultSet rows = statement.executeQuery()) {
-                    while (rows.next()) {
-                        existingTables.put(
-                                normalizeIdentifier(rows.getString("table_name")),
-                                rows.getString("table_comment"));
-                    }
-                }
-            }
-
-            Map<String, List<ReplayBaseColumnOption>> columnsByTable = queryColumnsByTables(
-                    connection, existingTables.keySet());
-            Map<String, List<ReplayBaseKeyOption>> keysByTable = queryKeysByTables(connection, columnsByTable);
-            LinkedHashMap<String, ReplayBaseMetadataSnapshot> result = new LinkedHashMap<>();
+        Map<String, String> existingTables = new LinkedHashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement(tableSql)) {
+            configureBatchQuery(statement, schema, queryTimeoutSeconds);
+            int index = 2;
             for (String tableName : normalizedNames) {
-                boolean exists = existingTables.containsKey(tableName);
-                result.put(tableName, new ReplayBaseMetadataSnapshot(
-                        exists,
-                        tableName,
-                        existingTables.get(tableName),
-                        columnsByTable.getOrDefault(tableName, List.of()),
-                        keysByTable.getOrDefault(tableName, List.of())));
+                statement.setString(index++, tableName);
             }
-            return Collections.unmodifiableMap(result);
-        } catch (SQLException exception) {
-            throw unavailable();
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    existingTables.put(
+                            normalizeIdentifier(rows.getString("table_name")),
+                            rows.getString("table_comment"));
+                }
+            }
         }
+
+        Map<String, List<ReplayBaseColumnOption>> columnsByTable = queryColumnsByTables(
+                connection, schema, existingTables.keySet(), queryTimeoutSeconds);
+        Map<String, List<ReplayBaseKeyOption>> keysByTable = queryKeysByTables(
+                connection, schema, columnsByTable, queryTimeoutSeconds);
+        LinkedHashMap<String, ReplayBaseMetadataSnapshot> result = new LinkedHashMap<>();
+        for (String tableName : normalizedNames) {
+            boolean exists = existingTables.containsKey(tableName);
+            result.put(tableName, new ReplayBaseMetadataSnapshot(
+                    exists,
+                    tableName,
+                    existingTables.get(tableName),
+                    columnsByTable.getOrDefault(tableName, List.of()),
+                    keysByTable.getOrDefault(tableName, List.of())));
+        }
+        return Collections.unmodifiableMap(result);
+    }
+
+    private void configureBatchQuery(PreparedStatement statement, String schema, int queryTimeoutSeconds)
+            throws SQLException {
+        if (queryTimeoutSeconds > 0) statement.setQueryTimeout(queryTimeoutSeconds);
+        statement.setString(1, schema);
     }
 
     public String schemaName() {
@@ -346,8 +363,8 @@ public class ReplayBaseMetadataService {
     }
 
     private Map<String, List<ReplayBaseColumnOption>> queryColumnsByTables(
-            Connection connection,
-            Collection<String> tableNames) throws SQLException {
+            Connection connection, String schema, Collection<String> tableNames,
+            int queryTimeoutSeconds) throws SQLException {
         if (tableNames.isEmpty()) {
             return Map.of();
         }
@@ -371,7 +388,7 @@ public class ReplayBaseMetadataService {
                 """.formatted(placeholders);
         Map<String, List<ReplayBaseColumnOption>> result = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, schema());
+            configureBatchQuery(statement, schema, queryTimeoutSeconds);
             int index = 2;
             for (String tableName : tableNames) {
                 statement.setString(index++, tableName);
@@ -397,8 +414,8 @@ public class ReplayBaseMetadataService {
     }
 
     private Map<String, List<ReplayBaseKeyOption>> queryKeysByTables(
-            Connection connection,
-            Map<String, List<ReplayBaseColumnOption>> columnsByTable) throws SQLException {
+            Connection connection, String schema, Map<String, List<ReplayBaseColumnOption>> columnsByTable,
+            int queryTimeoutSeconds) throws SQLException {
         if (columnsByTable.isEmpty()) {
             return Map.of();
         }
@@ -431,7 +448,7 @@ public class ReplayBaseMetadataService {
         });
         Map<String, List<ReplayBaseKeyOption>> result = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, schema());
+            configureBatchQuery(statement, schema, queryTimeoutSeconds);
             int parameter = 2;
             for (String tableName : columnsByTable.keySet()) {
                 statement.setString(parameter++, tableName);

@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.controller;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonScriptConfigurationDao;
@@ -10,6 +11,7 @@ import com.axonlink.security.DiiTokenBypassFilter;
 import com.axonlink.security.UserPrincipalResolver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,10 +21,12 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.mock.web.MockPart;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -43,7 +47,8 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
     @BeforeEach void setup() {
         jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(new ClassPathResource(
-                "db/daoindex/V95__replay_named_script_configuration.sql")).execute(jdbc.getDataSource());
+                "db/daoindex/V95__replay_named_script_configuration.sql"), new ClassPathResource(
+                "db/daoindex/V97__replay_script_config_datasource.sql")).execute(jdbc.getDataSource());
         metadata = mock(ReplayBaseMetadataService.class);
         when(metadata.inspectTables(anyCollection())).thenReturn(Map.of("accounts", new ReplayBaseMetadataSnapshot(
                 true, "accounts", "账户", List.of(
@@ -55,9 +60,10 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
         login("c-wangsh8");
         var service = new ReplayDatabaseComparisonScriptConfigurationService(
                 new ReplayDatabaseComparisonScriptConfigurationDao(jdbc), metadata,
-                new ReplayDatabaseComparisonConfigScriptGenerator(), new ReplayDatabaseComparisonTablesExcelParser());
+                new ReplayDatabaseComparisonConfigScriptGenerator(), new ReplayDatabaseComparisonTablesExcelParser(),
+                new ReplayScriptConfigDataSource(), new ReplayScriptConfigPasswordCipher(new ReplayDatabaseComparisonProperties()));
         mvc = MockMvcBuilders.standaloneSetup(
-                new ReplayDatabaseComparisonScriptConfigurationController(service, resolver)).build();
+                new ReplayDatabaseComparisonScriptConfigurationController(service, resolver, json)).build();
     }
 
     @AfterEach void close() { jdbc.execute("SHUTDOWN"); }
@@ -147,8 +153,55 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
         mvc.perform(get(BASE)).andExpect(jsonPath("$.data.items.length()").value(0));
     }
 
-    @Test void importPreviewsRealWorkbookWithFieldsButDoesNotPersist() throws Exception {
-        byte[] content;
+    @Test void rejectsMissingCustomPasswordAndFractionalPortWithoutSavingABaseScript() throws Exception {
+        var payload = (ObjectNode) json.readTree(body("独立数据源", 64, 0L, List.of()));
+        var connection = payload.putObject("connection")
+                .put("mode", "CUSTOM").put("host", "db.example.test").put("port", 5432)
+                .put("database", "migration").put("schema", "public").put("username", "compare_reader");
+
+        mvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isBadRequest());
+
+        connection.put("port", 5432.5).put("password", "test-only-password");
+        mvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(get(BASE)).andExpect(jsonPath("$.data.items.length()").value(0));
+        verifyNoInteractions(metadata);
+    }
+
+    @Test void previewsExistingBaseConfigurationWithoutCheckingDraftIgnoresOrChangingIt() throws Exception {
+        long id = create().path("id").asLong();
+        var payload = (ObjectNode) json.readTree(body("主键比对", 256, 1L, List.of("removed_field")));
+        payload.put("configurationId", id);
+
+        mvc.perform(post(BASE + "/preview-metadata")
+                        .contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.tables[0].ignoredFields.length()").value(0))
+                .andExpect(jsonPath("$.data.tables[0].fields.length()").value(4));
+
+        payload.put("revision", 2L);
+        payload.putObject("connection").put("mode", "CUSTOM").put("host", "db.example.test")
+                .put("database", "Migration").put("schema", "staging").put("username", "Reader")
+                .put("password", "new-password");
+        mvc.perform(post(BASE + "/preview-metadata")
+                        .contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isConflict());
+        payload.remove("revision");
+        mvc.perform(post(BASE + "/preview-metadata")
+                        .contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isBadRequest());
+        payload.put("revision", 1.1);
+        mvc.perform(post(BASE + "/preview-metadata")
+                        .contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(BASE + "/" + id))
+                .andExpect(jsonPath("$.data.revision").value(1))
+                .andExpect(jsonPath("$.data.connection.mode").value("BASE"));
+    }
+
+    private MockMultipartFile excelFile() throws Exception {
         try (var workbook = new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
             var sheet = workbook.createSheet("tables");
             var header = sheet.createRow(0);
@@ -161,14 +214,41 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
             row.createCell(3).setCellValue("张三");
             row.createCell(4).setCellValue(256);
             workbook.write(out);
-            content = out.toByteArray();
+            return new MockMultipartFile("file", "tables.xlsx", "application/octet-stream", out.toByteArray());
         }
-        mvc.perform(multipart(BASE + "/import-tables").file(
-                        new MockMultipartFile("file", "tables.xlsx", "application/octet-stream", content)))
+    }
+
+    @Test void importPreviewsRealWorkbookWithFieldsButDoesNotPersist() throws Exception {
+        mvc.perform(multipart(BASE + "/import-tables").file(excelFile()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.tables[0].maxPartitionNum").value(256))
                 .andExpect(jsonPath("$.data.tables[0].fields.length()").value(4));
         mvc.perform(get(BASE)).andExpect(jsonPath("$.data.items.length()").value(0));
+    }
+
+    @Test void importAcceptsAnOrdinaryConnectionTextPartAndProtectsParseErrors() throws Exception {
+        long id = create().path("id").asLong();
+        var workbook = excelFile();
+        byte[] source = """
+                {"mode":"CUSTOM","host":"db.example.test","port":5432,"database":"Migration",
+                 "schema":"staging","username":"Reader","password":" 测试密码 "}
+                """.getBytes(StandardCharsets.UTF_8);
+        var part = new MockPart("connection", source);
+
+        mvc.perform(multipart(BASE + "/import-tables").file(workbook).part(part)
+                        .param("configurationId", Long.toString(id)).param("revision", "2"))
+                .andExpect(status().isConflict());
+        mvc.perform(multipart(BASE + "/import-tables").file(workbook).part(part)
+                        .param("configurationId", Long.toString(id)).param("revision", "1"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.data.errorCode").value("SCRIPT_CONFIG_PASSWORD_UNAVAILABLE"));
+
+        byte[] malformed = "{\"password\":\"sentinel-password\"".getBytes(StandardCharsets.UTF_8);
+        var response = mvc.perform(multipart(BASE + "/import-tables").file(workbook)
+                        .part(new MockPart("connection", malformed)))
+                .andExpect(status().isBadRequest()).andReturn().getResponse();
+        assertFalse(response.getContentAsString().contains("sentinel-password"));
+        mvc.perform(get(BASE + "/" + id)).andExpect(jsonPath("$.data.revision").value(1));
     }
 
     @Test void writesRequireHumanLoginAndRejectOversizedOrWrongFormatUploads() throws Exception {
@@ -180,6 +260,8 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
                 "UNKNOWN", DiiTokenBypassFilter.DII_PRINCIPAL, null));
         mvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON)
                         .content(body("口令", 64, 0L, List.of())))
+                .andExpect(status().isForbidden());
+        mvc.perform(post(BASE + "/preview-metadata").contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isForbidden());
         login("c-wangsh8");
         mvc.perform(multipart(BASE + "/import-tables").file(

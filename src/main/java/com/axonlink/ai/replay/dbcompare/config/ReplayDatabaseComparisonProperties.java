@@ -33,6 +33,7 @@ public class ReplayDatabaseComparisonProperties {
 
     private String baseTargetEnv = "base";
     private String baseSchema = "";
+    private String scriptConfigPasswordKey = "";
     private boolean importEnabled = true;
 
     public String getBaseTargetEnv() {
@@ -49,6 +50,14 @@ public class ReplayDatabaseComparisonProperties {
 
     public void setBaseSchema(String baseSchema) {
         this.baseSchema = baseSchema;
+    }
+
+    public String getScriptConfigPasswordKey() {
+        return scriptConfigPasswordKey;
+    }
+
+    public void setScriptConfigPasswordKey(String scriptConfigPasswordKey) {
+        this.scriptConfigPasswordKey = scriptConfigPasswordKey;
     }
 
     public boolean isImportEnabled() {

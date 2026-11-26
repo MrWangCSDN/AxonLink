@@ -8,6 +8,7 @@ import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.common.R;
 import com.axonlink.security.DiiTokenBypassFilter;
 import com.axonlink.security.UserPrincipalResolver;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,11 +37,14 @@ public class ReplayDatabaseComparisonScriptConfigurationController {
     private static final long MAX_EXCEL_BYTES = 10 * 1024 * 1024L;
     private final ReplayDatabaseComparisonScriptConfigurationService service;
     private final UserPrincipalResolver resolver;
+    private final ObjectMapper json;
 
     public ReplayDatabaseComparisonScriptConfigurationController(
-            ReplayDatabaseComparisonScriptConfigurationService service, UserPrincipalResolver resolver) {
+            ReplayDatabaseComparisonScriptConfigurationService service, UserPrincipalResolver resolver,
+            ObjectMapper json) {
         this.service = service;
         this.resolver = resolver;
+        this.json = json;
     }
 
     @GetMapping public R<Page> list() { return R.ok(service.list()); }
@@ -56,9 +60,18 @@ public class ReplayDatabaseComparisonScriptConfigurationController {
         return R.ok(service.update(id, body, operator(request)));
     }
 
+    @PostMapping("/preview-metadata")
+    public R<TableImportResult> previewMetadata(@RequestBody(required = false) PreviewRequest body,
+                                                HttpServletRequest request) {
+        operator(request);
+        return R.ok(service.previewMetadata(body));
+    }
+
     @PostMapping(value = "/import-tables", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public R<TableImportResult> importTables(@RequestPart("file") MultipartFile file, HttpServletRequest request)
-            throws IOException {
+    public R<TableImportResult> importTables(@RequestPart("file") MultipartFile file,
+            @RequestPart(value = "connection", required = false) byte[] connection,
+            @RequestParam(required = false) Long configurationId, @RequestParam(required = false) Long revision,
+            HttpServletRequest request) throws IOException {
         operator(request);
         if (file == null || file.isEmpty()) throw new IllegalArgumentException("请选择非空的表清单Excel");
         if (file.getSize() > MAX_EXCEL_BYTES) throw new UploadTooLarge();
@@ -67,7 +80,10 @@ public class ReplayDatabaseComparisonScriptConfigurationController {
                 || name.toLowerCase(Locale.ROOT).endsWith(".xls"))) {
             throw new IllegalArgumentException("表清单仅支持.xls或.xlsx文件");
         }
-        try (var input = file.getInputStream()) { return R.ok(service.importTables(input)); }
+        ConnectionRequest source = connection == null ? null : json.readValue(connection, ConnectionRequest.class);
+        try (var input = file.getInputStream()) {
+            return R.ok(service.importTables(input, configurationId, revision, source));
+        }
     }
 
     @GetMapping("/{id}/download")
@@ -124,7 +140,7 @@ public class ReplayDatabaseComparisonScriptConfigurationController {
     public ResponseEntity<R<Void>> invalid(IllegalArgumentException failure) { return error(HttpStatus.BAD_REQUEST, failure.getMessage()); }
 
     @ExceptionHandler(Exception.class) public ResponseEntity<R<Void>> unexpected(Exception failure) {
-        log.error("[replay-script-config] request failed", failure);
+        log.error("[replay-script-config] request failed ({})", failure.getClass().getSimpleName());
         return error(HttpStatus.INTERNAL_SERVER_ERROR, "命名脚本配置请求失败");
     }
 

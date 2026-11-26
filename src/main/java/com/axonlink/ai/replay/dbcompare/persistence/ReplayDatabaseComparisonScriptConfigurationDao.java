@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScriptConfiguration.Summary;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.stereotype.Repository;
@@ -34,7 +35,8 @@ public class ReplayDatabaseComparisonScriptConfigurationDao {
                         r.getBytes("script_content_gzip"), r.getString("script_sha256"),
                         r.getLong("script_size"), r.getInt("table_count"), r.getInt("field_count"),
                         r.getString("updated_by"), r.getTimestamp("created_at").toLocalDateTime(),
-                        r.getTimestamp("updated_at").toLocalDateTime()), id).stream().findFirst().orElse(null);
+                        r.getTimestamp("updated_at").toLocalDateTime(), r.getString("connection_json"),
+                        r.getString("password_ciphertext")), id).stream().findFirst().orElse(null);
     }
 
     public long insert(WriteConfiguration value) {
@@ -42,7 +44,8 @@ public class ReplayDatabaseComparisonScriptConfigurationDao {
         jdbc.update(connection -> {
             var statement = connection.prepareStatement("INSERT INTO dii_replay_db_compare_script_config "
                     + "(name,name_key,revision,config_json,file_name,script_content_gzip,script_sha256,script_size,"
-                    + "table_count,field_count,updated_by,created_at,updated_at) VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                    + "table_count,field_count,updated_by,created_at,updated_at,connection_json,password_ciphertext) "
+                    + "VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setString(1, value.name());
             statement.setString(2, value.nameKey());
@@ -56,6 +59,8 @@ public class ReplayDatabaseComparisonScriptConfigurationDao {
             statement.setString(10, value.updatedBy());
             statement.setTimestamp(11, Timestamp.valueOf(value.updatedAt()));
             statement.setTimestamp(12, Timestamp.valueOf(value.updatedAt()));
+            statement.setString(13, value.connectionJson());
+            statement.setString(14, value.passwordCiphertext());
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -66,18 +71,28 @@ public class ReplayDatabaseComparisonScriptConfigurationDao {
     public int update(long id, long expectedRevision, WriteConfiguration value) {
         return jdbc.update("UPDATE dii_replay_db_compare_script_config SET name=?,name_key=?,revision=revision+1,"
                         + "config_json=?,file_name=?,script_content_gzip=?,script_sha256=?,script_size=?,"
-                        + "table_count=?,field_count=?,updated_by=?,updated_at=? WHERE id=? AND revision=?",
+                        + "table_count=?,field_count=?,updated_by=?,updated_at=?,connection_json=?,password_ciphertext=? "
+                        + "WHERE id=? AND revision=?",
                 value.name(), value.nameKey(), value.configJson(), value.fileName(), value.scriptContentGzip(),
                 value.scriptSha256(), value.scriptSize(), value.tableCount(), value.fieldCount(),
-                value.updatedBy(), Timestamp.valueOf(value.updatedAt()), id, expectedRevision);
+                value.updatedBy(), Timestamp.valueOf(value.updatedAt()), value.connectionJson(),
+                value.passwordCiphertext(), id, expectedRevision);
     }
 
     public record WriteConfiguration(String name, String nameKey, String configJson, String fileName,
                                      byte[] scriptContentGzip, String scriptSha256, long scriptSize,
-                                     int tableCount, int fieldCount, String updatedBy, LocalDateTime updatedAt) {}
+                                     int tableCount, int fieldCount, String updatedBy, LocalDateTime updatedAt,
+                                     String connectionJson, @JsonIgnore String passwordCiphertext) {
+        @Override public String toString() { return "WriteConfiguration[redacted]"; }
+    }
 
     public record StoredConfiguration(long id, String name, String nameKey, long revision, String configJson,
                                       String fileName, byte[] scriptContentGzip, String scriptSha256,
                                       long scriptSize, int tableCount, int fieldCount, String updatedBy,
-                                      LocalDateTime createdAt, LocalDateTime updatedAt) {}
+                                      LocalDateTime createdAt, LocalDateTime updatedAt, String connectionJson,
+                                      @JsonIgnore String passwordCiphertext) {
+        @Override public String toString() {
+            return "StoredConfiguration[id=" + id + ", revision=" + revision + "]";
+        }
+    }
 }

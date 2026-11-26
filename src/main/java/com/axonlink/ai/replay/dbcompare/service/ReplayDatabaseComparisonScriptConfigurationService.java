@@ -13,13 +13,17 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import javax.crypto.SecretKey;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -42,25 +46,36 @@ import java.util.zip.GZIPInputStream;
 @Service
 public class ReplayDatabaseComparisonScriptConfigurationService {
     private static final int METADATA_BATCH_SIZE = 200;
+    private static final ConnectionDetails BASE = new ConnectionDetails("BASE", null, null, null, null, null, null);
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_$#]*");
     private final ReplayDatabaseComparisonScriptConfigurationDao dao;
     private final ReplayBaseMetadataService metadata;
     private final ReplayDatabaseComparisonConfigScriptGenerator generator;
     private final ReplayDatabaseComparisonTablesExcelParser parser;
+    private final ReplayScriptConfigDataSource dataSource;
+    private final ReplayScriptConfigPasswordCipher passwordCipher;
     private final Clock clock;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
     @Autowired
     public ReplayDatabaseComparisonScriptConfigurationService(ReplayDatabaseComparisonScriptConfigurationDao dao,
             ReplayBaseMetadataService metadata, ReplayDatabaseComparisonConfigScriptGenerator generator,
-            ReplayDatabaseComparisonTablesExcelParser parser) {
-        this(dao,metadata,generator,parser,Clock.system(ZoneId.of("Asia/Shanghai")));
+            ReplayDatabaseComparisonTablesExcelParser parser, ReplayScriptConfigDataSource dataSource,
+            ReplayScriptConfigPasswordCipher passwordCipher) {
+        this(dao, metadata, generator, parser, dataSource, passwordCipher, Clock.system(ZoneId.of("Asia/Shanghai")));
     }
 
-    public ReplayDatabaseComparisonScriptConfigurationService(ReplayDatabaseComparisonScriptConfigurationDao dao,
+    ReplayDatabaseComparisonScriptConfigurationService(ReplayDatabaseComparisonScriptConfigurationDao dao,
             ReplayBaseMetadataService metadata, ReplayDatabaseComparisonConfigScriptGenerator generator,
-            ReplayDatabaseComparisonTablesExcelParser parser, Clock clock) {
-        this.dao=dao; this.metadata=metadata; this.generator=generator; this.parser=parser; this.clock=clock;
+            ReplayDatabaseComparisonTablesExcelParser parser, ReplayScriptConfigDataSource dataSource,
+            ReplayScriptConfigPasswordCipher passwordCipher, Clock clock) {
+        this.dao = dao;
+        this.metadata = metadata;
+        this.generator = generator;
+        this.parser = parser;
+        this.dataSource = dataSource;
+        this.passwordCipher = passwordCipher;
+        this.clock = clock;
     }
 
     public Page list() { return new Page(dao.list()); }
@@ -73,9 +88,9 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         if (request.revision()!=null && request.revision()!=0) {
             throw new IllegalArgumentException("新建配置的revision必须为空或0");
         }
-        WriteConfiguration value = materialize(request,name,1,actor);
+        Materialized materialized = materialize(request, name, 1, actor, resolveSource(request.connection(), null));
         try {
-            return detail(dao.insert(value));
+            return materialized.detail(dao.insert(materialized.value()), 1);
         } catch (DuplicateKeyException exception) {
             throw conflict("SCRIPT_CONFIG_NAME_CONFLICT","配置名称已存在，请使用其他名称");
         }
@@ -88,22 +103,55 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         if (request.revision()==null || request.revision()<1 || request.revision()!=current.revision()) {
             throw revisionConflict();
         }
-        WriteConfiguration value = materialize(request,name,current.revision()+1,actor);
+        long revision = current.revision() + 1;
+        Materialized materialized = materialize(request, name, revision, actor,
+                resolveSource(request.connection(), current));
         try {
-            if (dao.update(id,current.revision(),value)!=1) throw revisionConflict();
-            return detail(id);
+            if (dao.update(id, current.revision(), materialized.value()) != 1) throw revisionConflict();
+            return materialized.detail(id, revision);
         } catch (DuplicateKeyException exception) {
             throw conflict("SCRIPT_CONFIG_NAME_CONFLICT","配置名称已存在，请使用其他名称");
         }
     }
 
-    public TableImportResult importTables(InputStream input) {
+    public TableImportResult importTables(InputStream input, Long configurationId, Long revision,
+                                          ConnectionRequest connection) {
+        StoredConfiguration current = currentForPreview(configurationId, revision);
         List<ReplayDatabaseComparisonTablesExcelParser.ParsedTable> parsed = parser.parse(input);
         Map<String,Integer> rows = new LinkedHashMap<>();
-        parsed.forEach(table -> rows.put(table.table().tableName(),table.row()));
-        Prepared prepared = prepare(List.of(),parsed.stream().map(
-                ReplayDatabaseComparisonTablesExcelParser.ParsedTable::table).toList(),rows);
+        parsed.forEach(table -> rows.put(table.table().tableName(), table.row()));
+        Prepared prepared = prepare(List.of(), parsed.stream().map(
+                ReplayDatabaseComparisonTablesExcelParser.ParsedTable::table).toList(), rows,
+                resolveSource(connection, current), false);
         return new TableImportResult(prepared.content().tables());
+    }
+
+    public TableImportResult previewMetadata(PreviewRequest request) {
+        if (request == null) throw new IllegalArgumentException("缺少预览请求");
+        StoredConfiguration current = currentForPreview(
+                exactLong(request.configurationId()), exactLong(request.revision()));
+        Prepared prepared = prepare(List.of(), request.tables(), Map.of(),
+                resolveSource(request.connection(), current), false);
+        return new TableImportResult(prepared.content().tables());
+    }
+
+    private Long exactLong(BigDecimal number) {
+        if (number == null) return null;
+        try {
+            return number.longValueExact();
+        } catch (ArithmeticException failure) {
+            throw new IllegalArgumentException("配置ID与修订号必须为正整数");
+        }
+    }
+
+    private StoredConfiguration currentForPreview(Long id, Long revision) {
+        if (id == null && revision == null) return null;
+        if (id == null || revision == null || id < 1 || revision < 1) {
+            throw new IllegalArgumentException("引用已保存配置时必须提供有效的配置ID和修订号");
+        }
+        StoredConfiguration current = requireStored(id);
+        if (revision != current.revision()) throw revisionConflict();
+        return current;
     }
 
     public ReplayDatabaseComparisonConfigScriptService.ScriptFile download(long id, Long expectedRevision) {
@@ -134,21 +182,77 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         return new ReplayDatabaseComparisonConfigScriptService.ScriptFile(stored.fileName(),stored.scriptSha256(),bytes);
     }
 
-    private WriteConfiguration materialize(SaveRequest request,String name,long revision,String actor) {
-        Prepared prepared=prepare(request.globalIgnoredFields(),request.tables(),Map.of());
+    private Materialized materialize(SaveRequest request, String name, long revision, String actor,
+                                           ResolvedSource source) {
+        Prepared prepared = prepare(request.globalIgnoredFields(), request.tables(), Map.of(), source, true);
         // User-controlled display names never enter a SQL comment or filesystem path.
-        String artifact="script-config-"+sha256(name.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8)).substring(0,16)+"-r"+revision;
-        var script=generator.generateNamed(artifact,prepared.tables(),prepared.maximums());
+        String artifact = "script-config-" + sha256(name.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.UTF_8))
+                .substring(0,16) + "-r" + revision;
+        var script = generator.generateNamed(artifact, prepared.tables(), prepared.maximums());
         try {
-            return new WriteConfiguration(name,name.toLowerCase(Locale.ROOT),json.writeValueAsString(prepared.content()),
-                    artifact+".sql",script.gzipContent(),script.sha256(),script.scriptSize(),
-                    script.tableCount(),script.fieldCount(),actor,LocalDateTime.now(clock));
+            String connectionJson = null;
+            String ciphertext = null;
+            if (source != null) {
+                connectionJson = json.writeValueAsString(source.connection());
+                ciphertext = source.savedCiphertext();
+                if (ciphertext == null) ciphertext = passwordCipher.encrypt(source.password(), source.key());
+            }
+            var value = new WriteConfiguration(name, name.toLowerCase(Locale.ROOT),
+                    json.writeValueAsString(prepared.content()), artifact + ".sql", script.gzipContent(),
+                    script.sha256(), script.scriptSize(), script.tableCount(), script.fieldCount(), actor,
+                    LocalDateTime.now(clock), connectionJson, ciphertext);
+            ConnectionDetails connection = source == null ? BASE : publicConnection(source.connection(), true);
+            return new Materialized(value, prepared.content(), connection);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("无法保存命名脚本配置",exception);
+            throw new IllegalStateException("无法保存命名脚本配置");
         }
     }
 
-    private Prepared prepare(List<String> globalFields,List<TableRequest> requested,Map<String,Integer> excelRows) {
+    private ResolvedSource resolveSource(ConnectionRequest request, StoredConfiguration current) {
+        if (request != null && "BASE".equals(request.mode())) return null;
+        if (request != null && !"CUSTOM".equals(request.mode())) {
+            throw new IllegalArgumentException("数据源模式必须为BASE或CUSTOM");
+        }
+
+        String password = request == null ? null : request.password();
+        if (password != null && !password.isEmpty()) {
+            ConnectionDetails connection = dataSource.normalize(request);
+            return new ResolvedSource(connection, password, null, passwordCipher.requireKey());
+        }
+        ConnectionDetails stored = storedConnection(current);
+        if (request == null && stored == BASE) return null;
+
+        ConnectionDetails connection = request == null ? stored : dataSource.normalize(request);
+        String ciphertext = current == null ? null : current.passwordCiphertext();
+        if (ciphertext == null || !sameAuthentication(connection, stored)) {
+            throw new IllegalArgumentException("请为当前数据源提供密码");
+        }
+        SecretKey key = passwordCipher.requireKey();
+        return new ResolvedSource(connection, passwordCipher.decrypt(ciphertext, key), ciphertext, key);
+    }
+
+    private boolean sameAuthentication(ConnectionDetails requested, ConnectionDetails stored) {
+        return "CUSTOM".equals(stored.mode()) && requested.host().equals(stored.host())
+                && requested.port().equals(stored.port()) && requested.database().equals(stored.database())
+                && requested.username().equals(stored.username());
+    }
+
+    private ConnectionDetails storedConnection(StoredConfiguration stored) {
+        if (stored == null || stored.connectionJson() == null) return BASE;
+        try {
+            ConnectionDetails details = json.readValue(stored.connectionJson(), ConnectionDetails.class);
+            if (details == null || !"CUSTOM".equals(details.mode()) || details.host() == null || details.port() == null
+                    || details.database() == null || details.schema() == null || details.username() == null) {
+                throw corrupted();
+            }
+            return details;
+        } catch (JsonProcessingException failure) {
+            throw corrupted();
+        }
+    }
+
+    private Prepared prepare(List<String> globalFields, List<TableRequest> requested, Map<String,Integer> excelRows,
+                             ResolvedSource source, boolean validateIgnoredFields) {
         List<ValidationError> errors=new ArrayList<>();
         List<String> global=fieldNames(globalFields,null,null,errors);
         List<TableRequest> inputs=requested==null?List.of():requested;
@@ -184,16 +288,15 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
             } catch (ArithmeticException exception) {
                 errors.add(new ValidationError(row,tableName,"maxPartitionNum","最大hash分区数必须为1到256的整数"));
             }
-            List<String> ignored=fieldNames(table.ignoredFields(),row,tableName,errors);
+            List<String> ignored = validateIgnoredFields
+                    ? fieldNames(table.ignoredFields(), row, tableName, errors) : List.of();
             normalized.add(new NormalizedTable(row,tableName,comment,domain,owner,maximum,ignored));
         }
         requireValid(errors);
 
-        List<String> names=normalized.stream().map(NormalizedTable::name).toList();
-        Map<String,ReplayBaseMetadataSnapshot> snapshots=new LinkedHashMap<>();
-        for (int start=0; start<names.size(); start+=METADATA_BATCH_SIZE) {
-            snapshots.putAll(metadata.inspectTables(names.subList(start,Math.min(names.size(),start+METADATA_BATCH_SIZE))));
-        }
+        List<String> names = normalized.stream().map(NormalizedTable::name).toList();
+        Map<String,ReplayBaseMetadataSnapshot> snapshots = readSnapshots(names, source);
+        String schema = source == null ? metadata.schemaName() : source.connection().schema();
         List<Table> frozen=new ArrayList<>();
         List<ReplayDbCompareVersionTableItem> effective=new ArrayList<>();
         Map<String,Integer> maximums=new LinkedHashMap<>();
@@ -201,7 +304,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         for (NormalizedTable table : normalized) {
             ReplayBaseMetadataSnapshot snapshot=snapshots.get(table.name());
             if (snapshot==null || !snapshot.tableExists()) {
-                errors.add(new ValidationError(table.row(),table.name(),null,"母库表不存在"));
+                errors.add(new ValidationError(table.row(),table.name(),null,"所选数据源中不存在该表"));
                 continue;
             }
             int before=errors.size();
@@ -220,11 +323,11 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
             columns.forEach(column->byName.put(column.columnName(),column));
             for (String ignored : table.ignored()) {
                 var column=byName.get(ignored);
-                if (column==null) errors.add(new ValidationError(table.row(),table.name(),ignored,"单表忽略字段在母库中不存在"));
+                if (column==null) errors.add(new ValidationError(table.row(),table.name(),ignored,"单表忽略字段在所选数据源中不存在"));
                 else if (column.primaryKey()) errors.add(new ValidationError(table.row(),table.name(),ignored,"主键字段不能忽略"));
             }
             String rawComment=table.comment().isEmpty()?snapshot.tableComment():table.comment();
-            if (hasNul(rawComment)) errors.add(new ValidationError(table.row(),table.name(),"tableComment","母库表中文名不能包含NUL字符"));
+            if (hasNul(rawComment)) errors.add(new ValidationError(table.row(),table.name(),"tableComment","所选数据源的表中文名不能包含NUL字符"));
             if (errors.size()!=before) continue;
             Set<String> local=Set.copyOf(table.ignored());
             List<ReplayDbCompareVersionField> fields=new ArrayList<>();
@@ -236,7 +339,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
             }
             String comment=text(rawComment);
             frozen.add(new Table(table.name(),comment,table.domain(),table.owner(),table.maximum(),table.ignored(),columns));
-            effective.add(new ReplayDbCompareVersionTableItem(0L,1L,metadata.schemaName(),table.name(),comment,table.domain(),
+            effective.add(new ReplayDbCompareVersionTableItem(0L,1L,schema,table.name(),comment,table.domain(),
                     null,null,table.owner(),null,null,null,null,null,null,LocalDate.now(clock),fields.size(),fields)
                     .withComparisonKey(new ReplayDbCompareKeySelection("PRIMARY","PRIMARY_KEY",
                             primary.stream().map(ReplayBaseColumnOption::columnName).toList())));
@@ -246,26 +349,40 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         return new Prepared(new Content(global,frozen),List.copyOf(effective),Map.copyOf(maximums));
     }
 
+    private Map<String, ReplayBaseMetadataSnapshot> readSnapshots(List<String> names, ResolvedSource source) {
+        Map<String, ReplayBaseMetadataSnapshot> snapshots = new LinkedHashMap<>();
+        try (Connection connection = source == null ? null : dataSource.open(source.connection(), source.password())) {
+            for (int start = 0; start < names.size(); start += METADATA_BATCH_SIZE) {
+                List<String> batch = names.subList(start, Math.min(names.size(), start + METADATA_BATCH_SIZE));
+                snapshots.putAll(source == null ? metadata.inspectTables(batch)
+                        : metadata.inspectTables(connection, source.connection().schema(), batch));
+            }
+            return snapshots;
+        } catch (SQLException failure) {
+            throw ReplayScriptConfigDataSource.unavailable();
+        }
+    }
+
     private List<ReplayBaseColumnOption> validatedColumns(NormalizedTable table,ReplayBaseMetadataSnapshot snapshot,
                                                          List<ValidationError> errors) {
         if (!table.name().equals(normalize(snapshot.tableName()))) {
-            errors.add(new ValidationError(table.row(),table.name(),null,"母库返回的表名不一致"));
+            errors.add(new ValidationError(table.row(),table.name(),null,"所选数据源返回的表名不一致"));
         }
         List<ReplayBaseColumnOption> result=new ArrayList<>();
         Set<String> names=new HashSet<>();
         Set<Integer> positions=new HashSet<>();
         for (var column : snapshot.columns()) {
             if (column==null) {
-                errors.add(new ValidationError(table.row(),table.name(),null,"母库字段元数据不完整"));
+                errors.add(new ValidationError(table.row(),table.name(),null,"所选数据源的字段元数据不完整"));
                 continue;
             }
             String name=normalize(column.columnName());
             if (hasNul(column.columnComment())) {
-                errors.add(new ValidationError(table.row(),table.name(),name,"母库字段注释不能包含NUL字符"));
+                errors.add(new ValidationError(table.row(),table.name(),name,"所选数据源的字段注释不能包含NUL字符"));
             }
             if (!IDENTIFIER.matcher(name).matches() || !names.add(name) || column.ordinalPosition()<1
                     || !positions.add(column.ordinalPosition())) {
-                errors.add(new ValidationError(table.row(),table.name(),name,"母库字段标识或顺序无效"));
+                errors.add(new ValidationError(table.row(),table.name(),name,"所选数据源的字段标识或顺序无效"));
             }
             result.add(new ReplayBaseColumnOption(name,column.columnComment(),column.dataType(),column.ordinalPosition(),
                     column.primaryKey(),column.primaryKeyOrder()));
@@ -289,10 +406,20 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
             Content content=json.readValue(stored.configJson(),Content.class);
             if (content==null || content.tables().size()!=stored.tableCount()) throw corrupted();
             return new Detail(stored.id(),stored.name(),stored.revision(),content.globalIgnoredFields(),content.tables(),
-                    stored.tableCount(),stored.fieldCount(),stored.updatedBy(),stored.updatedAt());
+                    stored.tableCount(),stored.fieldCount(),stored.updatedBy(),stored.updatedAt(), publicConnection(stored));
         } catch (JsonProcessingException exception) {
             throw corrupted();
         }
+    }
+
+    private ConnectionDetails publicConnection(StoredConfiguration stored) {
+        return publicConnection(storedConnection(stored), stored.passwordCiphertext() != null);
+    }
+
+    private ConnectionDetails publicConnection(ConnectionDetails details, boolean passwordConfigured) {
+        if (details == BASE) return BASE;
+        return new ConnectionDetails(details.mode(), details.host(), details.port(), details.database(),
+                details.schema(), details.username(), passwordConfigured);
     }
 
     private StoredConfiguration requireStored(long id) {
@@ -337,6 +464,18 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
     private String normalize(String value) { return text(value).toLowerCase(Locale.ROOT); }
     private String text(String value) { return value==null?"":value.trim(); }
     private boolean hasNul(String value) { return value!=null && value.indexOf('\0')>=0; }
+
+    private record Materialized(WriteConfiguration value, Content content, ConnectionDetails connection) {
+        Detail detail(long id, long revision) {
+            return new Detail(id, value.name(), revision, content.globalIgnoredFields(), content.tables(),
+                    value.tableCount(), value.fieldCount(), value.updatedBy(), value.updatedAt(), connection);
+        }
+    }
+
+    private record ResolvedSource(ConnectionDetails connection, String password, String savedCiphertext,
+                                  SecretKey key) {
+        @Override public String toString() { return "ResolvedSource[redacted]"; }
+    }
 
     private record NormalizedTable(Integer row,String name,String comment,String domain,String owner,int maximum,List<String> ignored) {}
     private record Prepared(Content content,List<ReplayDbCompareVersionTableItem> tables,Map<String,Integer> maximums) {}
