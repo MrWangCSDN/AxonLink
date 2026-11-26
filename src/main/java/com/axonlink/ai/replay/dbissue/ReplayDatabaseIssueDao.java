@@ -133,7 +133,13 @@ public class ReplayDatabaseIssueDao {
     }
     private Object[] values(Map<String,Object> r){return new Object[]{r.get("issueId"),r.get("tableName"),r.get("tableComment"),r.get("domain"),r.get("owner"),r.get("issueLevel"),r.get("fieldName"),r.get("differenceCount"),r.getOrDefault("total528",0L),r.getOrDefault("totalCcbs",0L),r.get("batchNo"),java.sql.Date.valueOf(ReplayDatabaseIssueExcelParser.batchDate((String)r.get("batchNo"))),r.get("issueStatus"),r.get("issueType"),text(r.get("reviewStatus")),text(r.get("reviewReason")),text(r.get("defectRepairDate")),text(r.get("cooperationPerson")),text(r.get("plannedCompletionDate")).isBlank()?null:java.sql.Date.valueOf(text(r.get("plannedCompletionDate"))),encode(r)};}
     private Map<String,Object> row(ResultSet rs,int n)throws SQLException{var r=decode(rs.getString("data_snapshot"));r.put("tableName",rs.getString("table_name"));r.put("batchNo",rs.getString("batch_no"));r.put("plannedCompletionDate",text(rs.getDate("planned_completion_date")));r.put("plannedCompletionDateChangeCount",rs.getLong("plan_date_change_count"));r.put("id",rs.getLong("id"));r.put("version",rs.getLong("version"));r.put("differenceCount",rs.getLong("difference_count"));r.put("total528",rs.getLong("total_528"));r.put("totalCcbs",rs.getLong("total_ccbs"));r.put("reviewStatus",text(rs.getString("review_status")));r.put("reviewReason",text(rs.getString("review_reason")));r.put("defectRepairDate",text(rs.getString("defect_repair_date")));r.put("cooperationPerson",text(rs.getString("cooperation_person_display")));return r;}
-    private Map<String,Object> joinedRow(ResultSet rs,int n)throws SQLException{var r=row(rs,n);r.put("domain",rs.getString("mapped_domain"));r.put("owner",rs.getString("mapped_owner"));return r;}
+    private Map<String,Object> joinedRow(ResultSet rs,int n)throws SQLException{
+        var r=row(rs,n);
+        r.put("domain",rs.getString("mapped_domain"));
+        r.put("owner",rs.getString("mapped_owner"));
+        r.put(TECHNOLOGY_OWNER_FIELD,rs.getString("mapped_technology_owner"));
+        return r;
+    }
     public static String reviewDisplay(Map<String,Object> row){String state=text(row.get("reviewStatus"));return state.equals("待审核")?state:state.equals("已审核")?(text(row.get("reviewReason")).trim().isEmpty()?"已审核（未填写原因）":"已审核（已填写原因）"):"";}
     public Map<String,Object> list(Map<String,?> criteria){
         String order=orderBy(criteria);var where=where(criteria,null);var args=new ArrayList<>(where.args());
@@ -141,7 +147,9 @@ public class ReplayDatabaseIssueDao {
         long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+from+where.sql(),Long.class,args.toArray()));
         int limit=Math.max(1,Math.min(integer(first(criteria.get("limit")),50),200)),offset=Math.max(0,integer(first(criteria.get("offset")),0));
         args.add(limit);args.add(offset);
-        var items=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+","+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL+" AS mapped_owner"+from+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
+        var items=jdbc.query("SELECT i.*,"+PLAN_DATE_COUNT_SQL+","+DOMAIN_SQL+" AS mapped_domain,"+OWNER_SQL
+                +" AS mapped_owner,"+TECHNOLOGY_OWNER_SQL+" AS mapped_technology_owner"
+                +from+where.sql()+" ORDER BY "+order+" LIMIT ? OFFSET ?",this::joinedRow,args.toArray());
         addOccurrenceBatches(items);
         items.forEach(item->item.put("reviewStatusDisplay",reviewDisplay(item)));
         return Map.of("items",items,"total",total,"limit",limit,"offset",offset);

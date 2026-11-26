@@ -349,6 +349,55 @@ class ReplayDatabaseIssueTest {
         assertEquals("新建",dao.findByIssueId("koba_off_sheet_acct").get("issueStatus"));
         assertEquals("",dao.findByIssueId("koba_off_sheet_acct").get("defectRepairDate"));
     }
+    @Test void listKeepsTheMatchedTechnologyOwnerWhileReviewUsesTheCurrentAssignment() {
+        registerTechnologyOwner();
+        jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('owner2','负责人乙','E002',1)");
+        service.importFile(file(true,"DB20261012-01",1,0,0),null,actor);
+        var stored=dao.findByIssueId("koba_off_sheet_acct");
+        long id=((Number)stored.get("id")).longValue();
+        stored.put("issueStatus","无需处理");
+        stored.put("issueType","规则性差异");
+        stored.put("reviewStatus","待审核");
+        stored.put("technologyOwnerDisplay","过期快照");
+        stored.put("technologyOwner","过期快照");
+        dao.update(stored);
+
+        var reader=new ReplayDatabaseIssueDao(jdbc) {
+            @Override public Map<String,Object> list(Map<String,?> criteria) {
+                var page=super.list(criteria);
+                // Commit the reassignment on an independent connection after the selected rows were read.
+                try(var writer=jdbc.getDataSource().getConnection();
+                    var update=writer.prepareStatement("""
+                            UPDATE dii_replay_database_table_person
+                               SET technology_owner_usernames='owner2',
+                                   technology_owner_emp_nos='E002',
+                                   technology_owner_display='负责人乙(owner2)'
+                             WHERE table_name='koba_off_sheet_acct'
+                            """)) {
+                    assertEquals(1,update.executeUpdate());
+                } catch(java.sql.SQLException failure) {
+                    throw new AssertionError("Could not reassign the technology owner",failure);
+                }
+                return page;
+            }
+        };
+        var currentOwner=new ReplayIssueOperator("owner2","负责人乙");
+        var issueService=new ReplayDatabaseIssueService(parser,reader,users);
+        var page=issueService.list(Map.of("technologyOwners",List.of("编辑人(E001)")),currentOwner);
+        assertEquals(1L,page.get("total"));
+        var item=(Map<?,?>)((List<?>)page.get("items")).get(0);
+        assertEquals("编辑人(E001)",item.get("technologyOwnerDisplay"));
+        assertEquals("编辑人(E001)",item.get("technologyOwner"));
+        assertEquals("owner2",item.get("technologyOwnerUsername"));
+        assertEquals("负责人乙",item.get("technologyOwnerName"));
+        assertEquals(true,item.get("canReview"));
+
+        var approved=issueService.approve(id,Map.of("version",item.get("version"),"reason","确认合理"),currentOwner);
+        assertEquals("已审核",approved.get("reviewStatus"));
+        assertEquals("负责人乙(owner2)",approved.get("technologyOwnerDisplay"));
+        assertEquals("负责人乙(owner2)",approved.get("technologyOwner"));
+    }
+
     @Test void multipleTechnologyOwnersDisplayWithoutExtraEmployeeNumbersAndEachActiveOwnerCanReview(){
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('owner2','负责人乙','11077712',1),('disabled','停用人','D001',0)");
         String display="编辑人(editor)、负责人乙(owner2)、停用人(disabled)";

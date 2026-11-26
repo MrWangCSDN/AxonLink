@@ -240,7 +240,10 @@ public class ReplayDatabaseIssueService {
             var owner=owners.get(ReplayDatabaseIssueDao.TableIdentity.of(row));var item=new LinkedHashMap<String,Object>(row);
             if(mapRegistration){item.put("domain",owner.domain());item.put("owner",owner.owner());}
             boolean authorized=authorized(owner,actor),noAction=text(row.get("issueStatus")).equals("无需处理"),approved=text(row.get("reviewStatus")).equals("已审核");
-            item.put("technologyOwnerUsername",owner.username());item.put("technologyOwnerName",owner.name());item.put("technologyOwnerDisplay",owner.display());item.put("technologyOwner",owner.display());
+            item.put("technologyOwnerUsername",owner.username());item.put("technologyOwnerName",owner.name());
+            // 列表展示使用筛选时读取的值，权限仍按当前人员计算。
+            String display=mapRegistration?owner.display():text(row.get("technologyOwnerDisplay"));
+            item.put("technologyOwnerDisplay",display);item.put("technologyOwner",display);
             item.put("canReview",noAction&&Set.of("待审核","已审核").contains(text(row.get("reviewStatus")))&&authorized);
             item.put("canEdit",loggedIn&&!Set.of("已修复",NOT_COMPARED).contains(text(row.get("issueStatus")))&&(!noAction||!approved||authorized));
             item.put("reviewStatusDisplay",ReplayDatabaseIssueDao.reviewDisplay(row));result.add(item);
