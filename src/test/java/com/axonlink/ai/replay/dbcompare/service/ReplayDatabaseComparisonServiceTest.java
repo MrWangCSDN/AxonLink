@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dbcompare.ReplayDbCompareSampleLimitMigrationFixture;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseColumnOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseValidatedTable;
@@ -50,6 +51,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -167,6 +169,45 @@ class ReplayDatabaseComparisonServiceTest {
         assertEquals(17, changed.sampleLimit());
         assertEquals(created.version()+1, changed.version());
 
+    }
+
+    @Test void fullDifferenceSamplingUsesExistingPermissionAndSurvivesOmittedEditsAndReregistration() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var request = assertDoesNotThrow(() -> sampleSave(null, "-1"));
+        assertThrows(ReplayDatabaseComparisonPartitionForbiddenException.class,
+                () -> service.create(request, operator));
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("creator"));
+        service.setPartitionProperties(properties);
+
+        ReplayDbCompareSampleLimitMigrationFixture.apply(jdbc);
+        when(metadataService.inspectTable("acct_master")).thenReturn(
+                metadata("acct_master", List.of("acct_no"), List.of("acct_no")));
+        var created = service.create(request, operator);
+        assertEquals(-1, created.sampleLimit());
+        assertEquals(-1, service.detail(created.id()).sampleLimit());
+        assertEquals("-1", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail "
+                + "WHERE field_code='sampleLimit' AND before_value='100'", String.class));
+        var hasher = new ReplayDatabaseComparisonConfigurationHasher();
+        assertNotEquals(hasher.hash(List.of(created)), hasher.hash(List.of(created.withSampleLimit(100))));
+
+        properties.setPartitionAdminEmpNos(List.of());
+        var edited = service.update(created.id(),
+                save("acct_master", "存款组", "101", List.of("acct_no"), created.version()), operator);
+        assertEquals(-1, edited.sampleLimit());
+        var deleted = service.delete(edited.id(), new ReplayDbCompareDeleteRequest(edited.version(), "删除"), operator);
+        var restored = service.reregister(edited.id(), new ReplayDbCompareReregisterRequest(deleted.version(),
+                "存款组", "101", List.of("acct_no"), "恢复", null, null), operator);
+        assertEquals(-1, restored.sampleLimit());
+    }
+
+    @Test void sampleLimitKeepsTheStrictIntegerWireContract() throws Exception {
+        for (String invalid : List.of("-2", "10001", "-1.0", "0.5", "\"-1\"", "true", "9223372036854775808")) {
+            assertThrows(com.fasterxml.jackson.core.JsonProcessingException.class, () -> sampleSave(null, invalid));
+        }
+        assertEquals(0, sampleSave(null, "0").sampleLimit());
+        assertEquals(10000, sampleSave(null, "10000").sampleLimit());
+        assertEquals(-1, assertDoesNotThrow(() -> sampleSave(null, "-1")).sampleLimit());
     }
 
     @Test void sampleLimitReregisterAndMetadataRefreshKeepTheConfiguredValue() throws Exception {

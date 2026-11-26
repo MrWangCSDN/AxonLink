@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dbcompare.ReplayDbCompareSampleLimitMigrationFixture;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigScriptStatus;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
@@ -149,13 +150,38 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     void legacyDownloadStillRemovesNewerConfigurationColumns() {
         var stored = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
 
-        var legacy = service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.LEGACY);
+        var legacy = service.download(VERSION_NO, ConfigScriptTarget.LEGACY);
+        assertArrayEquals(ConfigScriptTarget.LEGACY.file(stored).content(), legacy.content());
         String sql = new String(legacy.content(), StandardCharsets.UTF_8);
         assertFalse(sql.contains("bcomp_partition_num"));
         assertFalse(sql.contains("bcomp_shard_strategy"));
         assertFalse(sql.contains("bcomp_sample_limit"));
         assertTrue(new String(stored.content(), StandardCharsets.UTF_8).contains("bcomp_partition_num"));
         assertArrayEquals(stored.content(), service.download(VERSION_NO).content());
+    }
+
+    @Test
+    void legacyTargetRejectsAFullDifferenceSnapshotBeforeWritingAnArtifact() {
+        ReplayDbCompareSampleLimitMigrationFixture.apply(jdbc);
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET sample_limit=-1 WHERE version_id=?", versionId);
+        var operator = new ReplayIssueOperator("tester", "Tester");
+
+        var failure = assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate(VERSION_NO, operator, ConfigScriptTarget.LEGACY));
+        assertEquals(422, failure.status().value());
+        assertEquals("SAMPLE_LIMIT_REQUIRES_NEW", failure.errorCode());
+        assertFalse(service.status(VERSION_NO).generated());
+
+        var file = service.generate(VERSION_NO, operator, ConfigScriptTarget.NEW);
+        assertTrue(new String(file.content(), StandardCharsets.UTF_8)
+                .contains("'HASH',-1,'张三','zhangsan',64)"));
+        assertArrayEquals(file.content(), service.download(VERSION_NO, ConfigScriptTarget.NEW).content());
+        var downloadFailure = assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.download(VERSION_NO, ConfigScriptTarget.LEGACY));
+        assertEquals("SAMPLE_LIMIT_REQUIRES_NEW", downloadFailure.errorCode());
+        var frozen = service.download(VERSION_NO);
+        assertEquals("SAMPLE_LIMIT_REQUIRES_NEW", assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.forTarget(VERSION_NO, frozen, ConfigScriptTarget.LEGACY)).errorCode());
     }
 
     @Test

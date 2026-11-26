@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -207,6 +208,18 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         assertTrue(sql(generator.generate("v1", List.of(table.withSampleLimit(0)))).contains("'HASH',0)"));
         assertThrows(ReplayDatabaseComparisonGenerationException.class,
                 () -> generator.generate("v1", List.of(table.withSampleLimit(10001))));
+    }
+
+    @Test
+    void newScriptExportsAllDifferencesWithoutWideningTheSourceQuery() {
+        var primaryKey = new ReplayDbCompareVersionField("id", "编号", 1, true, 1, 1);
+        var table = scopedTable("(status = '1')", 7L, primaryKey).withSampleLimit(-1);
+        String script = assertDoesNotThrow(() -> sql(generator.generateNew("v1", List.of(table))));
+        assertTrue(script.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
+        assertTrue(script.contains("'HASH',-1,'张三','zhangsan',64)"));
+        assertTrue(script.contains("(select id from txn where (status = ''1'') order by id limit 7) orig"));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generateNew("v1", List.of(table.withSampleLimit(-2))));
     }
 
     @Test

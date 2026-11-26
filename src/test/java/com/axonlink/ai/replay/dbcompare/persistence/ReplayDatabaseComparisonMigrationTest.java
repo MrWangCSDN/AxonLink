@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.persistence;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dbcompare.ReplayDbCompareSampleLimitMigrationFixture;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DuplicateKeyException;
@@ -9,6 +10,7 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -86,7 +88,7 @@ class ReplayDatabaseComparisonMigrationTest {
     }
 
     @Test
-    void sampleLimitDefaultChangesOnlyForFutureRows() {
+    void fullDifferenceMigrationPreservesHistoricalSamplesAndDefault() {
         JdbcTemplate jdbc = ReplayIssueTestFixtures.newJdbc();
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/daoindex/V62__dii_replay_database_comparison_fields.sql"),
@@ -120,6 +122,14 @@ class ReplayDatabaseComparisonMigrationTest {
                 .execute(jdbc.getDataSource());
         jdbc.update(insertRegistration, "new_default");
         jdbc.update(insertSnapshot, "new_default");
+        jdbc.update(insertRegistration, "old_cap");
+        jdbc.update(insertSnapshot, "old_cap");
+        for (String table : List.of("dii_replay_db_compare_registration", "dii_replay_db_compare_version_table")) {
+            jdbc.update("UPDATE " + table + " SET sample_limit=10000 WHERE table_name='old_cap'");
+        }
+        ReplayDbCompareSampleLimitMigrationFixture.apply(jdbc);
+        jdbc.update(insertRegistration, "post_migration");
+        jdbc.update(insertSnapshot, "post_migration");
         for (String table : List.of("dii_replay_db_compare_registration", "dii_replay_db_compare_version_table")) {
             assertEquals(1000, jdbc.queryForObject(
                     "SELECT sample_limit FROM " + table + " WHERE table_name='old_default'", Integer.class));
@@ -127,6 +137,18 @@ class ReplayDatabaseComparisonMigrationTest {
                     "SELECT sample_limit FROM " + table + " WHERE table_name='old_zero'", Integer.class));
             assertEquals(100, jdbc.queryForObject(
                     "SELECT sample_limit FROM " + table + " WHERE table_name='new_default'", Integer.class));
+            assertEquals(10000, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='old_cap'", Integer.class));
+            assertEquals(100, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='post_migration'", Integer.class));
+            assertDoesNotThrow(() -> jdbc.update(
+                    "UPDATE " + table + " SET sample_limit=-1 WHERE table_name='new_default'"));
+            assertEquals(-1, jdbc.queryForObject(
+                    "SELECT sample_limit FROM " + table + " WHERE table_name='new_default'", Integer.class));
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> jdbc.update(
+                    "UPDATE " + table + " SET sample_limit=-2 WHERE table_name='new_default'"));
+            assertThrows(org.springframework.dao.DataIntegrityViolationException.class, () -> jdbc.update(
+                    "UPDATE " + table + " SET sample_limit=10001 WHERE table_name='new_default'"));
         }
     }
 

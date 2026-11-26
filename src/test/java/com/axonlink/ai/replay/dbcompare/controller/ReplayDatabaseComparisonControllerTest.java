@@ -286,12 +286,10 @@ class ReplayDatabaseComparisonControllerTest {
         when(configScriptService.status(versionNo)).thenReturn(new ReplayDbCompareConfigScriptStatus(
                 true, fileName, (long) sql.length, sha256, "editor", "编辑人",
                 LocalDateTime.of(2026, 9, 14, 18, 35, 26, 318_000_000)));
-        when(configScriptService.generate(eq(versionNo), any())).thenReturn(
+        when(configScriptService.generate(eq(versionNo), any(), eq(ConfigScriptTarget.NEW))).thenReturn(
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
-        when(configScriptService.download(versionNo)).thenReturn(
+        when(configScriptService.download(versionNo, ConfigScriptTarget.NEW)).thenReturn(
                 new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
-        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.NEW)))
-                .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/versions/"
                         + versionNo + "/config-script"))
@@ -313,15 +311,14 @@ class ReplayDatabaseComparisonControllerTest {
                 .andExpect(header().string("X-Content-SHA256", sha256))
                 .andExpect(content().bytes(sql));
 
-        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY)))
-                .thenAnswer(invocation -> invocation.getArgument(1));
+        when(configScriptService.download(versionNo, ConfigScriptTarget.LEGACY)).thenReturn(
+                new ReplayDatabaseComparisonConfigScriptService.ScriptFile(fileName, sha256, sql));
         mvc.perform(get("/api/ai/parallel-replay/database-comparison-fields/versions/"
                         + versionNo + "/config-script/download").param("targetVersion", "LEGACY"))
                 .andExpect(status().isOk()).andExpect(content().bytes(sql));
-        verify(configScriptService).forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.LEGACY));
-
-        verify(configScriptService).generate(eq(versionNo), any(ReplayIssueOperator.class));
-        verify(configScriptService, org.mockito.Mockito.times(2)).download(versionNo);
+        verify(configScriptService).download(versionNo, ConfigScriptTarget.LEGACY);
+        verify(configScriptService).generate(eq(versionNo), any(ReplayIssueOperator.class), eq(ConfigScriptTarget.NEW));
+        verify(configScriptService).download(versionNo, ConfigScriptTarget.NEW);
     }
 
     @Test
@@ -341,11 +338,9 @@ class ReplayDatabaseComparisonControllerTest {
                 new UserPrincipalResolver.Resolved("UIAS", "A012345", null));
         String versionNo = "20260914-172637";
         byte[] sql = "SELECT 1;".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        when(configScriptService.generate(versionNo, new ReplayIssueOperator("A012345", "A012345")))
+        when(configScriptService.generate(versionNo, new ReplayIssueOperator("A012345", "A012345"), ConfigScriptTarget.NEW))
                 .thenReturn(new ReplayDatabaseComparisonConfigScriptService.ScriptFile(
                         "replay-db-compare-config-20260914-172637.sql", "a".repeat(64), sql));
-        when(configScriptService.forTarget(eq(versionNo), any(), eq(ConfigScriptTarget.NEW)))
-                .thenAnswer(invocation -> invocation.getArgument(1));
 
         mvc.perform(post("/api/ai/parallel-replay/database-comparison-fields/versions/"
                         + versionNo + "/config-script"))
@@ -353,14 +348,14 @@ class ReplayDatabaseComparisonControllerTest {
                 .andExpect(content().bytes(sql));
 
         verify(configScriptService).generate(
-                versionNo, new ReplayIssueOperator("A012345", "A012345"));
+                versionNo, new ReplayIssueOperator("A012345", "A012345"), ConfigScriptTarget.NEW);
     }
 
     @Test
     void returnsCompleteConfigScriptValidationErrors() throws Exception {
         when(resolver.resolve(any())).thenReturn(authenticated("editor", "编辑人", "200"));
         String versionNo = "20260914-172637";
-        when(configScriptService.generate(eq(versionNo), any())).thenThrow(
+        when(configScriptService.generate(eq(versionNo), any(), eq(ConfigScriptTarget.NEW))).thenThrow(
                 new ReplayDatabaseComparisonGenerationException(
                         HttpStatus.UNPROCESSABLE_ENTITY,
                         "CONFIG_SCRIPT_VALIDATION_FAILED",

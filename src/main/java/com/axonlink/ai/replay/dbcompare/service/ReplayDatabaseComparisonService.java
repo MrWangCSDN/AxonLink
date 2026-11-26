@@ -34,6 +34,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbComparePrimaryKeySyncResult;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareQuery;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareReregisterRequest;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSampleLimit;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSaveRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScopeFilterValue;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareState;
@@ -161,7 +162,9 @@ public class ReplayDatabaseComparisonService {
 
     private int sampleForSave(Integer requested, int current, ReplayIssueOperator operator) {
         if (requested == null) return current;
-        if (requested < 0 || requested > 10000) throw new IllegalArgumentException("样本数必须为 0 到 10000 的整数");
+        if (!ReplayDbCompareSampleLimit.isValid(requested)) {
+            throw new IllegalArgumentException(ReplayDbCompareSampleLimit.RANGE_ERROR);
+        }
         if (requested != current) {
             SysUser user = findActiveUser(operator.username());
             if (user == null || com.axonlink.security.DiiTokenBypassFilter.DII_PRINCIPAL.equals(operator.username())

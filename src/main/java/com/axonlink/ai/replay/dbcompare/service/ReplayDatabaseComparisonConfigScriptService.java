@@ -2,6 +2,7 @@ package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigScriptStatus;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionDao;
+import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionDao.StoredVersion;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionScriptDao;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -69,7 +70,16 @@ public class ReplayDatabaseComparisonConfigScriptService {
     }
 
     public ScriptFile generate(String versionNo, ReplayIssueOperator operator) {
-        ReplayDatabaseComparisonVersionDao.StoredVersion version = requireVersion(versionNo);
+        return generate(requireVersion(versionNo), operator);
+    }
+
+    public ScriptFile generate(String versionNo, ReplayIssueOperator operator, ConfigScriptTarget target) {
+        StoredVersion version = requireSupportedTarget(versionNo, target);
+        return renderTarget(version, generate(version, operator), target);
+    }
+
+    private ScriptFile generate(StoredVersion version, ReplayIssueOperator operator) {
+        String versionNo = version.versionNo();
         ReplayDatabaseComparisonVersionScriptDao.StoredScript existing =
                 scriptDao.findByVersionId(version.id());
         if (existing != null) {
@@ -106,7 +116,15 @@ public class ReplayDatabaseComparisonConfigScriptService {
     }
 
     public ScriptFile download(String versionNo) {
-        ReplayDatabaseComparisonVersionDao.StoredVersion version = requireVersion(versionNo);
+        return download(requireVersion(versionNo));
+    }
+
+    public ScriptFile download(String versionNo, ConfigScriptTarget target) {
+        StoredVersion version = requireSupportedTarget(versionNo, target);
+        return renderTarget(version, download(version), target);
+    }
+
+    private ScriptFile download(StoredVersion version) {
         ReplayDatabaseComparisonVersionScriptDao.StoredScript script =
                 scriptDao.findByVersionId(version.id());
         if (script == null) {
@@ -117,9 +135,21 @@ public class ReplayDatabaseComparisonConfigScriptService {
     }
 
     public ScriptFile forTarget(String versionNo, ScriptFile file, ConfigScriptTarget target) {
+        return renderTarget(requireSupportedTarget(versionNo, target), file, target);
+    }
+
+    private StoredVersion requireSupportedTarget(String versionNo, ConfigScriptTarget target) {
+        StoredVersion version = requireVersion(versionNo);
+        if (target == ConfigScriptTarget.LEGACY && versionDao.hasFullDifferenceSamples(version.id())) {
+            throw error(HttpStatus.UNPROCESSABLE_ENTITY, "SAMPLE_LIMIT_REQUIRES_NEW",
+                    "旧版脚本不支持全量差异明细，请下载新版脚本");
+        }
+        return version;
+    }
+
+    private ScriptFile renderTarget(StoredVersion version, ScriptFile file, ConfigScriptTarget target) {
         if (target == ConfigScriptTarget.LEGACY) return target.file(file);
-        ReplayDatabaseComparisonVersionDao.StoredVersion version = requireVersion(versionNo);
-        var generated = generator.generateNew(versionNo, versionDao.findCompleteSnapshot(version.id()));
+        var generated = generator.generateNew(version.versionNo(), versionDao.findCompleteSnapshot(version.id()));
         return new ScriptFile(file.fileName().replaceFirst("\\.sql$", "-new.sql"),
                 generated.sha256(), generated.sqlContent());
     }

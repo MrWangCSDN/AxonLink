@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigScriptValidationError;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSampleLimit;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTableItem;
@@ -121,8 +122,8 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         List<ReplayDbCompareConfigScriptValidationError> errors = new ArrayList<>();
         for (ReplayDbCompareVersionTableItem table : tables) {
             String tableName = table.tableName();
-            if (table.sampleLimit() < 0 || table.sampleLimit() > 10000) {
-                errors.add(error(tableName, null, "样本数必须为 0 到 10000 的整数"));
+            if (!ReplayDbCompareSampleLimit.isValid(table.sampleLimit())) {
+                errors.add(error(tableName, null, ReplayDbCompareSampleLimit.RANGE_ERROR));
             }
             if (newTarget && table.reviserName() != null && table.reviserName().trim().length() > 100) {
                 errors.add(error(tableName, null, "修订人姓名不能超过100个字符"));

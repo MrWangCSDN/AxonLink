@@ -7,6 +7,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareRegistration;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSampleLimit;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionPage;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionQuery;
@@ -188,6 +189,12 @@ public class ReplayDatabaseComparisonVersionDao {
                 "SELECT * FROM dii_replay_db_compare_version WHERE version_no=?",
                 (row, index) -> mapStoredVersion(row), versionNo);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public boolean hasFullDifferenceSamples(long versionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM dii_replay_db_compare_version_table WHERE version_id=? AND sample_limit=?)",
+                Boolean.class, versionId, ReplayDbCompareSampleLimit.ALL));
     }
 
     public List<ReplayDbCompareVersionTableItem> findCompleteSnapshot(long versionId) {

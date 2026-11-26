@@ -1,6 +1,7 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
+import com.axonlink.ai.replay.dbcompare.ReplayDbCompareSampleLimitMigrationFixture;
 import com.axonlink.ai.replay.dbcompare.dto.*;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonDao;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonVersionDao;
@@ -96,6 +97,34 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
         assertEquals(256, service.updateCustomSql(updated.id(), request("来源表", SQL, updated.version(), "source_table", 1), operator()).maxPartitionNum());
         assertEquals(100, versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id()).get(0).maxPartitionNum());
         assertEquals("256", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail WHERE field_code='maxPartitionNum' AND before_value='100'", String.class));
+    }
+
+    @Test
+    void customSqlFullDifferenceSampleIsStoredAndFrozenIndependentlyOfLaterEdits() throws Exception {
+        var properties = new com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties();
+        properties.setPartitionAdminEmpNos(List.of("100"));
+        service.setPartitionProperties(properties);
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        com.fasterxml.jackson.databind.node.ObjectNode payload =
+                json.valueToTree(request("来源表", SQL, null, "source_table", 1));
+        payload.put("sampleLimit", -1);
+        var full = assertDoesNotThrow(() -> json.treeToValue(payload, ReplayDbCompareCustomSqlSaveRequest.class));
+        ReplayDbCompareSampleLimitMigrationFixture.apply(jdbc);
+        var saved = service.createCustomSql(full, operator());
+        assertEquals(-1, saved.sampleLimit());
+
+        var version = versionService.generate("secret", "secret", operator());
+        long snapshotId = versions.findStoredVersion(version.versionNo()).id();
+        var frozen = versions.findCompleteSnapshot(snapshotId).get(0);
+        assertEquals(-1, frozen.sampleLimit());
+
+        payload.put("version", saved.version()).put("sampleLimit", 0);
+        var summaryOnly = service.updateCustomSql(saved.id(),
+                json.treeToValue(payload, ReplayDbCompareCustomSqlSaveRequest.class), operator());
+        assertEquals(0, summaryOnly.sampleLimit());
+        assertEquals("0", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail "
+                + "WHERE field_code='sampleLimit' AND before_value='-1'", String.class));
+        assertEquals(-1, versions.findCompleteSnapshot(snapshotId).get(0).sampleLimit());
     }
 
     @Test
