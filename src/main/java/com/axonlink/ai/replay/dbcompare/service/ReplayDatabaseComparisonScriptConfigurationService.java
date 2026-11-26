@@ -114,6 +114,10 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         }
     }
 
+    public TableImportResult importTables(InputStream input) {
+        return importTables(input, null, null, null);
+    }
+
     public TableImportResult importTables(InputStream input, Long configurationId, Long revision,
                                           ConnectionRequest connection) {
         StoredConfiguration current = currentForPreview(configurationId, revision);
@@ -358,7 +362,8 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
                         : metadata.inspectTables(connection, source.connection().schema(), batch));
             }
             return snapshots;
-        } catch (SQLException failure) {
+        } catch (SQLException | RuntimeException failure) {
+            if (source == null && failure instanceof RuntimeException runtime) throw runtime;
             throw ReplayScriptConfigDataSource.unavailable();
         }
     }

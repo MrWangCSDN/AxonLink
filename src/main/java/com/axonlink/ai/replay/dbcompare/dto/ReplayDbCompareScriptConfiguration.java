@@ -1,5 +1,6 @@
 package com.axonlink.ai.replay.dbcompare.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -18,6 +19,15 @@ public final class ReplayDbCompareScriptConfiguration {
                               List<TableRequest> tables, ConnectionRequest connection) {
         public SaveRequest(String name, Long revision, List<String> globalIgnoredFields, List<TableRequest> tables) {
             this(name, revision, globalIgnoredFields, tables, null);
+        }
+
+        @JsonCreator
+        static SaveRequest fromJson(@JsonProperty("name") String name, @JsonProperty("revision") BigDecimal revision,
+                                    @JsonProperty("globalIgnoredFields") List<String> globalIgnoredFields,
+                                    @JsonProperty("tables") List<TableRequest> tables,
+                                    @JsonProperty("connection") ConnectionRequest connection) {
+            return new SaveRequest(name, revision == null ? null : revision.longValueExact(),
+                    globalIgnoredFields, tables, connection);
         }
     }
 

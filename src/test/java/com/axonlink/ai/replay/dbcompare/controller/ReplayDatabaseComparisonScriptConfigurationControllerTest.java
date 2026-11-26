@@ -153,6 +153,17 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
         mvc.perform(get(BASE)).andExpect(jsonPath("$.data.items.length()").value(0));
     }
 
+    @Test void createRejectsFractionalAndOverflowRevisionsBeforeMetadataLookup() throws Exception {
+        var payload = (ObjectNode) json.readTree(body("修订号校验", 64, 0L, List.of()));
+        for (String revision : List.of("0.9", "9223372036854775808")) {
+            payload.set("revision", json.readTree(revision));
+            mvc.perform(post(BASE).contentType(MediaType.APPLICATION_JSON).content(payload.toString()))
+                    .andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(metadata);
+        mvc.perform(get(BASE)).andExpect(jsonPath("$.data.items.length()").value(0));
+    }
+
     @Test void rejectsMissingCustomPasswordAndFractionalPortWithoutSavingABaseScript() throws Exception {
         var payload = (ObjectNode) json.readTree(body("独立数据源", 64, 0L, List.of()));
         var connection = payload.putObject("connection")

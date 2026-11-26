@@ -6,12 +6,18 @@ import com.axonlink.ai.replay.dbcompare.dto.*;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareScriptConfiguration.*;
 import com.axonlink.ai.replay.dbcompare.persistence.ReplayDatabaseComparisonScriptConfigurationDao;
 import com.axonlink.ai.replay.dto.ReplayIssueOperator;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -99,6 +105,64 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
         verify(driver).connect(eq("jdbc:postgresql://db.example.test:5432/Migration"), argThat(
                 options -> PASSWORD.equals(options.getProperty("password")) && "Reader".equals(options.getProperty("user"))));
         verify(metadata, never()).inspectTables(anyCollection());
+    }
+
+    @Test void rejectsHostComponentsWithoutConnectingOrReusingTheCurrentPassword() throws Exception {
+        properties.setScriptConfigPasswordKey(KEY);
+        customMetadata("staging", "staging_id");
+        BigDecimal port = BigDecimal.valueOf(5544);
+        Detail saved = service.create(sourceRequest("迁移比对", null,
+                new ConnectionRequest("CUSTOM", "localhost", port, "Migration", "staging", "Reader", PASSWORD)), actor);
+        verify(driver).connect(eq("jdbc:postgresql://localhost:5544/Migration"),
+                argThat(options -> PASSWORD.equals(options.getProperty("password"))));
+        clearInvocations(driver, metadata);
+
+        for (String host : List.of("localhost/", "localhost/path", "reader@localhost", "localhost?options=hello",
+                "localhost#fragment", "localhost:5555", "localhost,other", "localhost%2f", "[::1]/")) {
+            var unsafe = new ConnectionRequest("CUSTOM", host, port, "Migration", "staging", "Reader", PASSWORD);
+            assertThrows(IllegalArgumentException.class, () ->
+                    service.update(saved.id(), sourceRequest("迁移比对", 1L, unsafe), actor), host);
+            var retain = new ConnectionRequest("CUSTOM", host, port, "Migration", "staging", "Reader", "");
+            assertThrows(IllegalArgumentException.class, () ->
+                    service.update(saved.id(), sourceRequest("迁移比对", 1L, retain), actor), host);
+        }
+
+        verifyNoInteractions(driver, metadata);
+        assertEquals(1L, service.detail(saved.id()).revision());
+    }
+
+    @Test void usesTheExactPortForBracketedAndUnbracketedIpv6() throws Exception {
+        properties.setScriptConfigPasswordKey(KEY);
+        customMetadata("staging", "staging_id");
+        BigDecimal port = BigDecimal.valueOf(5544);
+        Detail saved = service.create(sourceRequest("迁移比对", null,
+                new ConnectionRequest("CUSTOM", "[2001:DB8::1]", port, "Migration", "staging", "Reader", PASSWORD)), actor);
+
+        service.update(saved.id(), sourceRequest("迁移比对", 1L,
+                new ConnectionRequest("CUSTOM", "2001:db8::1", port, "Migration", "staging", "Reader", "")), actor);
+
+        verify(driver, times(2)).connect(eq("jdbc:postgresql://[2001:db8::1]:5544/Migration"),
+                argThat(options -> PASSWORD.equals(options.getProperty("password"))));
+    }
+
+    @Test void rejectsMalformedUpdateRevisionBeforeReusingTheSavedPassword() throws Exception {
+        properties.setScriptConfigPasswordKey(KEY);
+        customMetadata("staging", "staging_id");
+        Detail saved = service.create(sourceRequest("迁移比对", null,
+                connection("db.example.test", "Migration", "staging", "Reader", PASSWORD)), actor);
+        clearInvocations(driver, metadata);
+
+        for (String revision : List.of("1.9", "9223372036854775808")) {
+            String request = """
+                    {"name":"迁移比对","revision":%s,
+                     "tables":[{"tableName":"acct_master","domainName":"存款组"}]}
+                    """.formatted(revision);
+            assertThrows(JsonProcessingException.class,
+                    () -> service.update(saved.id(), json.readValue(request, SaveRequest.class), actor));
+        }
+
+        verifyNoInteractions(driver, metadata);
+        assertEquals(1L, service.detail(saved.id()).revision());
     }
 
     @Test void onlyReusesPasswordWithMatchingAuthenticationAndClearsItWhenSavingBase() throws Exception {
@@ -220,9 +284,63 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
         queries.verify(sourceConnection).close();
     }
 
-    @Test void readOnlySetupFailureClosesTheSourceAndSanitizesTheDriverError() throws Exception {
+    @Test void customQueryRuntimeErrorDoesNotLeakItsMessageOrWrite() throws Exception {
         properties.setScriptConfigPasswordKey(KEY);
-        doThrow(new SQLException("driver diagnostic " + PASSWORD)).when(sourceConnection).setReadOnly(true);
+        when(metadata.inspectTables(eq(sourceConnection), eq("public"), anyCollection()))
+                .thenThrow(new IllegalArgumentException("driver diagnostic " + PASSWORD));
+
+        assertSanitizedSourceFailure();
+
+        verify(sourceConnection).close();
+    }
+
+    @Test void customCloseRuntimeErrorDoesNotLeakItsMessageOrWrite() throws Exception {
+        properties.setScriptConfigPasswordKey(KEY);
+        customMetadata("public", "custom_id");
+        doThrow(new IllegalArgumentException("driver diagnostic " + PASSWORD)).when(sourceConnection).close();
+
+        assertSanitizedSourceFailure();
+
+        verify(sourceConnection).close();
+    }
+
+    private void assertSanitizedSourceFailure() {
+        var failure = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
+                service.create(sourceRequest("迁移比对", null,
+                        connection("db.example.test", "Migration", "public", "Reader", PASSWORD)), actor));
+        assertEquals(503, failure.status().value());
+        assertEquals("SCRIPT_CONFIG_DATABASE_UNAVAILABLE", failure.errorCode());
+        assertFalse(failure.toString().contains(PASSWORD));
+        assertNull(failure.getCause());
+        assertTrue(dao.list().isEmpty());
+    }
+
+    @Test void legacyJavaImportPreviewsBaseMetadataWithoutSourceContext() throws Exception {
+        try (var workbook = new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
+            var sheet = workbook.createSheet("tables");
+            var header = sheet.createRow(0);
+            header.createCell(0).setCellValue("表名");
+            header.createCell(1).setCellValue("分组");
+            var row = sheet.createRow(1);
+            row.createCell(0).setCellValue("acct_master");
+            row.createCell(1).setCellValue("存款组");
+            workbook.write(out);
+            var preview = service.importTables(new ByteArrayInputStream(out.toByteArray()));
+            assertEquals("acct_master", preview.tables().get(0).tableName());
+            assertEquals("id", preview.tables().get(0).fields().get(0).columnName());
+        }
+
+        assertTrue(dao.list().isEmpty());
+        verifyNoInteractions(driver);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void readOnlySetupFailureClosesTheSourceAndSanitizesTheDriverError(boolean unchecked) throws Exception {
+        properties.setScriptConfigPasswordKey(KEY);
+        Throwable diagnostic = unchecked ? new IllegalArgumentException("driver diagnostic " + PASSWORD)
+                : new SQLException("driver diagnostic " + PASSWORD);
+        doThrow(diagnostic).when(sourceConnection).setReadOnly(true);
 
         var failure = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
                 service.create(sourceRequest("迁移比对", null,

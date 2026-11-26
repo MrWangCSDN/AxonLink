@@ -92,9 +92,16 @@ public class ReplayScriptConfigDataSource {
     }
 
     private String authority(String host, int port) {
+        String expectedHost = host.indexOf(':') >= 0 ? "[" + host + "]" : host;
+        String expectedAuthority = expectedHost + ":" + port;
         try {
             URI address = new URI("postgresql", null, host, port, null, null, null);
-            if (address.getHost() != null && host.indexOf('%') < 0) return address.getRawAuthority();
+            if (host.indexOf('%') < 0 && expectedHost.equals(address.getHost()) && address.getPort() == port
+                    && expectedAuthority.equals(address.getRawAuthority()) && address.getRawUserInfo() == null
+                    && "".equals(address.getRawPath()) && address.getRawQuery() == null
+                    && address.getRawFragment() == null) {
+                return expectedAuthority;
+            }
         } catch (URISyntaxException ignored) {
             // Keep invalid endpoint text out of validation responses.
         }
