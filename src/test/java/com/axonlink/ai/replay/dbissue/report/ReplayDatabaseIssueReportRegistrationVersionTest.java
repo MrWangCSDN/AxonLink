@@ -30,12 +30,32 @@ class ReplayDatabaseIssueReportRegistrationVersionTest {
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"))
                 .execute(jdbc.getDataSource());
+        new ResourceDatabasePopulator(new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"))
+                .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         jdbc.execute("ALTER TABLE dii_replay_database_issue ADD COLUMN defect_repair_date VARCHAR(32) NOT NULL DEFAULT ''");
         service = new ReplayDatabaseIssueReportService(new ReplayDatabaseIssueReportDao(jdbc));
         version(10, VERSION, 107);
         snapshotTable(101, 10, "base", "a", 3);
         snapshotTable(102, 10, "base", "b", 4);
         snapshotTable(103, 10, "base", "unused", 100);
+    }
+
+    @Test
+    void samePhysicalTableConfigurationsKeepSeparateFieldTotalsAndDifferences() {
+        snapshotTable(104, 10, "base", "a_1", 2);
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET source_table_name='a',configuration_name='条件配置' WHERE table_name IN ('a','a_1')");
+        facts(BATCH, 10L, List.of("a", "a_1"));
+        for (String code : List.of("a", "a_1")) {
+            jdbc.update("INSERT INTO dii_replay_database_issue(issue_id,table_name,domain_name,issue_level,field_name,difference_count,batch_no,batch_date,issue_status,issue_type,data_snapshot) "
+                    + "VALUES (?,?,'旧领域','字段级','f0',100,?,'2026-10-28','打开','',?)", code + "-f0", code, BATCH, "{\"differenceCount\":100}");
+        }
+        var report = service.build(BATCH);
+        assertEquals(2, report.total().comparedTableCount());
+        assertEquals(5L, report.total().fieldCount());
+        assertEquals(3L, report.total().identicalFieldCount());
+        assertEquals(2, report.total().issueCount());
+        assertEquals(200, report.total().fieldDifferenceCount());
     }
 
     @Test

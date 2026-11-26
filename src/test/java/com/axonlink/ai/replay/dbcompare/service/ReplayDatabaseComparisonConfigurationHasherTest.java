@@ -23,6 +23,18 @@ class ReplayDatabaseComparisonConfigurationHasherTest {
             new ReplayDatabaseComparisonConfigurationHasher();
 
     @Test
+    void freezesThePhysicalSourceAndHumanConfigurationNameForOrdinaryAliases() {
+        var base = registration(1L, "acct_master_1", "账户主表", 3,
+                List.of(field("acct_no", "账号", 1, true, 1)));
+        var first = base.withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(
+                "acct_master", "活期账户"));
+        assertNotEquals(hasher.hash(List.of(first)), hasher.hash(List.of(base.withConfigurationIdentity(
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity("other_acct", "活期账户")))));
+        assertNotEquals(hasher.hash(List.of(first)), hasher.hash(List.of(base.withConfigurationIdentity(
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity("acct_master", "定期账户")))));
+    }
+
+    @Test
     void includesTheNewMaximumDimensionWithoutReusingTheOldConfigurationHash() {
         var table = registration(1L, "acct_master", "账户主表", 3,
                 List.of(field("acct_no", "账号", 1, true, 1)));

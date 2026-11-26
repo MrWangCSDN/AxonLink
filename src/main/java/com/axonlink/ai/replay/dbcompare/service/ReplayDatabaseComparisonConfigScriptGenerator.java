@@ -56,7 +56,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                                          List<ReplayDbCompareVersionTableItem> snapshotTables,
                                          Map<String,Integer> maxPartitionNums) {
         if (maxPartitionNums == null) throw new IllegalArgumentException("命名脚本必须指定最大hash分区数");
-        return generate(artifactVersion,snapshotTables,true,maxPartitionNums);
+        return generate(artifactVersion,snapshotTables,true,maxPartitionNums,false);
     }
 
     private GeneratedScript generate(
@@ -70,14 +70,15 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                 maximums.put(table.tableName(), table.maxPartitionNum());
             }
         }
-        return generate(versionNo,snapshotTables,newTarget,maximums);
+        return generate(versionNo,snapshotTables,newTarget,maximums,newTarget);
     }
 
     private GeneratedScript generate(
             String versionNo,
             List<ReplayDbCompareVersionTableItem> snapshotTables,
             boolean newTarget,
-            Map<String,Integer> maxPartitionNums) {
+            Map<String,Integer> maxPartitionNums,
+            boolean configurationMetadata) {
         List<ReplayDbCompareVersionTableItem> tables = new ArrayList<>(
                 snapshotTables == null ? List.of() : snapshotTables);
         validate(tables, newTarget);
@@ -101,8 +102,8 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                 .thenComparing(ReplayDbCompareVersionTableItem::tableName));
         int fieldCount = tables.stream().mapToInt(table -> table.fields().size()).sum();
         try (ScriptOutput output = new ScriptOutput()) {
-            writePreamble(output, newTarget);
-            writeConfigurationRows(output, tables, newTarget, maxPartitionNums);
+            writePreamble(output, newTarget, configurationMetadata);
+            writeConfigurationRows(output, tables, newTarget, maxPartitionNums, configurationMetadata);
             writeFieldRows(output, tables, newTarget, maxPartitionNums!=null);
             writeTableSqlRows(output, tables, newTarget, maxPartitionNums!=null);
             output.write("COMMIT;\n\n");
@@ -120,8 +121,21 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
 
     private void validate(List<ReplayDbCompareVersionTableItem> tables, boolean newTarget) {
         List<ReplayDbCompareConfigScriptValidationError> errors = new ArrayList<>();
+        Set<String> codes = new HashSet<>();
         for (ReplayDbCompareVersionTableItem table : tables) {
             String tableName = table.tableName();
+            if (tableName != null && !codes.add(tableName.toLowerCase(java.util.Locale.ROOT))) {
+                errors.add(error(tableName, null, "固定配置标识重复"));
+            }
+            if (tableName != null && tableName.length() > 100) {
+                errors.add(error(tableName, null, "固定配置标识不能超过100个字符"));
+            }
+            if (!validIdentifier(table.sourceTableName()) || table.sourceTableName().length() > 256) {
+                errors.add(error(tableName, null, "真实来源表名不是合法数据库标识符"));
+            }
+            if (!newTarget && isAdditionalConfiguration(table)) {
+                errors.add(error(tableName, null, "额外配置必须使用新版17列脚本"));
+            }
             if (!ReplayDbCompareSampleLimit.isValid(table.sampleLimit())) {
                 errors.add(error(tableName, null, ReplayDbCompareSampleLimit.RANGE_ERROR));
             }
@@ -174,12 +188,19 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         }
     }
 
+    static boolean isAdditionalConfiguration(ReplayDbCompareVersionTableItem table) {
+        return table.configurationIdentity() != null
+                && !table.configurationIdentity().configurationName().isBlank()
+                && !table.tableName().equalsIgnoreCase(table.sourceTableName());
+    }
+
     private void validateCustomSql(ReplayDbCompareVersionTableItem table,
                                    List<ReplayDbCompareConfigScriptValidationError> errors) {
         try {
             var definition = table.customSql();
             var parsed = ReplayDatabaseComparisonCustomSqlAnalyzer.parseSql(definition.sql());
-            if (!parsed.sourceTableName().equals(definition.sourceTableName())) {
+            if (!parsed.sourceTableName().equals(definition.sourceTableName())
+                    || !parsed.sourceTableName().equalsIgnoreCase(table.sourceTableName())) {
                 throw new IllegalArgumentException("SQL 来源表与版本快照关联表不一致");
             }
             if (hasText(table.whereSql()) || table.whereCondition() != null) {
@@ -251,8 +272,11 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         return value != null && IDENTIFIER.matcher(value).matches();
     }
 
-    private void writePreamble(ScriptOutput output, boolean newTarget) throws IOException {
+    private void writePreamble(ScriptOutput output, boolean newTarget, boolean configurationMetadata) throws IOException {
         String suffix = newTarget ? "_new" : "";
+        if (configurationMetadata) {
+            output.write("-- 请通过 BD 配置导入功能导入此 NEW17 脚本，由导入器维护固定配置标识映射；不要直接在元数据库执行。\n");
+        }
         output.write("START TRANSACTION;\n\n");
         output.write("TRUNCATE TABLE tss_bcomp_field" + suffix + ";\n");
         output.write("TRUNCATE TABLE tss_bcomp_table_sql" + suffix + ";\n");
@@ -262,13 +286,14 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
     private void writeConfigurationRows(
             ScriptOutput output,
             List<ReplayDbCompareVersionTableItem> tables, boolean newTarget,
-            Map<String,Integer> maxPartitionNums) throws IOException {
+            Map<String,Integer> maxPartitionNums, boolean configurationMetadata) throws IOException {
         writeBatches(output, tables.size(),
                 "INSERT INTO tss_bcomp_conf" + (newTarget ? "_new" : "") + "\n"
                         + "  (bcomp_index,bcomp_module,bcomp_name,bcomp_memo,bcomp_type,"
                         + "bcomp_range,bcomp_time_node,bcomp_state,bcomp_partition_num,bcomp_shard_strategy,bcomp_sample_limit"
                         + (newTarget ? ",reviser_name,reviser_username" : "")
-                        + (maxPartitionNums != null ? ",bcomp_max_partition_num" : "") + ")\nVALUES\n",
+                        + (maxPartitionNums != null ? ",bcomp_max_partition_num" : "")
+                        + (configurationMetadata ? ",source_table_name,configuration_name,configuration_scope" : "") + ")\nVALUES\n",
                 index -> {
                     ReplayDbCompareVersionTableItem table = tables.get(index);
                     String memoBase = hasText(table.tableComment())
@@ -282,6 +307,10 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
                             + ",'2','1','3','1',1,'HASH'," + table.sampleLimit()
                             + (newTarget ? "," + quoteNullable(table.reviserName(),named) + "," + quoteNullable(table.reviserUsername(),named) : "")
                             + (maxPartitionNums != null ? "," + maxPartitionNums.get(table.tableName()) : "")
+                            + (configurationMetadata ? "," + quoteNamed(table.sourceTableName())
+                                    + "," + quoteNamed(table.configurationName())
+                                    + "," + quoteNamed(table.customSql() == null
+                                            ? (table.whereSql() == null ? "" : table.whereSql()) : table.customSql().sql()) : "")
                             + ")";
                 });
     }
@@ -342,7 +371,7 @@ public class ReplayDatabaseComparisonConfigScriptGenerator {
         String fields = String.join(",", orderedFields(table).stream()
                 .map(ReplayDbCompareVersionField::columnName).toList());
         StringBuilder select = new StringBuilder("(select ")
-                .append(fields).append(" from ").append(table.tableName());
+                .append(fields).append(" from ").append(table.sourceTableName());
         if (hasText(table.whereSql())) {
             select.append(" where ").append(table.whereSql());
         }

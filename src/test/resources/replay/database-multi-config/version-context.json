@@ -1,0 +1,70 @@
+{
+  "producer": "Axon registration service → version service freeze → version DAO readback → generateNew (actual output supplied by parent task)",
+  "initialVersion": "20261126-200000",
+  "reorderedVersion": "20261126-200001",
+  "comparisonDate": "20261126",
+  "taskBatch": "header-contract",
+  "executedCodes": [
+    "a",
+    "a_1"
+  ],
+  "notExecutedCodes": [
+    "a0"
+  ],
+  "stableInternalIds": {
+    "a": 1,
+    "a_1": 2,
+    "a0": 3
+  },
+  "packageIndexesInitially": {
+    "a": 1,
+    "a_1": 2
+  },
+  "packageIndexesAfterReordering": {
+    "a": 1,
+    "a0": 2,
+    "a_1": 3
+  },
+  "originSourceSchema": "ENV_OLD",
+  "destinationSourceSchema": "ENV_NEW",
+  "sourceEngine": "local H2 controlled rows; SQL files unmodified",
+  "bdCommit": "0c4eded",
+  "expected": {
+    "configurationCount": 2,
+    "originCount": 4,
+    "destinationCount": 4,
+    "differentRows": 3,
+    "fieldDetailRows": 2,
+    "totalFieldsAcrossExecutedConfigurations": 4,
+    "inconsistentFieldsAcrossExecutedConfigurations": 2,
+    "consistentFieldsAcrossExecutedConfigurations": 2
+  },
+  "sha256": {
+    "axon-initial.sql": "86fb87076760f00962c51c934c9aede0659afeaf89bfd4976fb36c5b9d8dcf9c",
+    "axon-reordered.sql": "5cc2ac3c7446a64271f86096ebb544b7336bdd8bbeebe3fe66db281d60e1cb13",
+    "BD-Axon实际脚本-同表多配置-20261126.xlsx": "e1488af27206f882587352c419732f400f632c84c7a17d7054dd9a747731e569",
+    "BD-Axon实际脚本-528-ccbs-20261126.xlsx": "aab5c8024791236e5765298a8e409e4f344c1e2b362d690b4958f48faa871dc1"
+  },
+  "origin": {
+    "databaseId": 1,
+    "databaseName": "528",
+    "schema": "ENV_OLD",
+    "meaning": "来源/母库；仅528存在=LINE_RESULT 3"
+  },
+  "destination": {
+    "databaseId": 2,
+    "databaseName": "ccbs",
+    "schema": "ENV_NEW",
+    "meaning": "目标；仅ccbs存在=LINE_RESULT 2"
+  },
+  "headers": [
+    "528总量",
+    "ccbs总量",
+    "仅528存在",
+    "仅ccbs存在"
+  ],
+  "excel": "BD-Axon实际脚本-528-ccbs-20261126.xlsx",
+  "resultSnapshot": "results-528-ccbs.json",
+  "environmentNameConfiguration": "Normal PUT /api/databases/1 and /2; task names are frozen, so same SQL/data were normally claimed and re-executed under a new batch. Old snapshots and Excel were not modified.",
+  "previousCountsAndConfigurationMetadataUnchanged": true
+}

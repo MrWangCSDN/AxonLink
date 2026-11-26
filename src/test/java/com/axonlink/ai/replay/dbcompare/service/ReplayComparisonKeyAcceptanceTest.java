@@ -47,6 +47,7 @@ class ReplayComparisonKeyAcceptanceTest {
             "V91__replay_db_compare_custom_sql.sql", "V96__replay_db_compare_max_partition_num.sql",
             "V82__replay_database_table_person.sql");
         new ResourceDatabasePopulator(migrations.stream().map(name->new ClassPathResource("db/daoindex/"+name)).toArray(ClassPathResource[]::new)).execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         users=new SysUserDao(jdbc);registrations=new ReplayDatabaseComparisonDao(jdbc);versions=new ReplayDatabaseComparisonVersionDao(jdbc);
         metadata=mock(ReplayBaseMetadataService.class);

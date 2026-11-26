@@ -6,6 +6,7 @@ import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetail;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditDetailDraft;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditEvent;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareAuditOperation;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareImportError;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareImportResult;
@@ -17,9 +18,11 @@ import com.axonlink.ai.replay.dto.ReplayIssueOperator;
 import com.axonlink.ai.user.entity.SysUser;
 import com.axonlink.ai.user.persistence.SysUserDao;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.IOException;
@@ -50,6 +53,7 @@ public class ReplayDatabaseComparisonImportService {
     private final ReplayDatabaseComparisonExcelParser parser;
     private final ReplayBaseMetadataService metadataService;
     private final ReplayDatabaseComparisonDao dao;
+    private final ReplayDatabaseComparisonCodeAllocator codeAllocator;
     private final ReplayDatabaseComparisonReviserResolver reviserResolver;
     private final ReplayDatabaseComparisonAuditDiff auditDiff;
     private final TransactionTemplate transactionTemplate;
@@ -80,6 +84,7 @@ public class ReplayDatabaseComparisonImportService {
         this.parser = parser;
         this.metadataService = metadataService;
         this.dao = dao;
+        this.codeAllocator = new ReplayDatabaseComparisonCodeAllocator(diiResultJdbcTemplate, metadataService);
         this.reviserResolver = new ReplayDatabaseComparisonReviserResolver(userDao);
         this.auditDiff = auditDiff;
         this.transactionTemplate = new TransactionTemplate(
@@ -102,12 +107,11 @@ public class ReplayDatabaseComparisonImportService {
             return failed(parsed.tables().size(), errors);
         }
 
-        Counts counts = transactionTemplate.execute(status -> writeAll(prepared));
-        if (counts == null) {
+        ReplayDbCompareImportResult result = transactionTemplate.execute(status -> writeAll(prepared, status));
+        if (result == null) {
             throw new IllegalStateException("数据库比对字段导入事务未完成");
         }
-        return new ReplayDbCompareImportResult(
-                true, parsed.tables().size(), counts.created, counts.updated, counts.unchanged, List.of());
+        return result;
     }
 
     private void prepare(
@@ -155,9 +159,16 @@ public class ReplayDatabaseComparisonImportService {
                     parsed.tableName(), parsed.fieldNames());
             ReplayDbCompareRegistration existing = dao.findBySchemaAndTable(
                     incoming.schemaName(), incoming.tableName());
+            if (existing != null && !incoming.tableName().equalsIgnoreCase(existing.sourceTableName())) {
+                throw new IllegalArgumentException("固定配置标识 " + existing.tableName()
+                        + " 已关联真实表 " + existing.sourceTableName() + "，无法按此表名导入字段");
+            }
             if (existing != null && existing.deleted()) {
                 parsed.rows().forEach(row -> errors.add(error(row, "该表已删除，请在页面中重新登记")));
                 return;
+            }
+            if (existing != null && existing.customSql() != null) {
+                throw new IllegalArgumentException("该表的默认配置为自定义 SQL，请在登记页面编辑结果字段");
             }
             List<String> combinedNames = mergeFieldNames(existing, parsed.fieldNames());
             ReplayBaseValidatedTable trusted = existing == null
@@ -174,30 +185,44 @@ public class ReplayDatabaseComparisonImportService {
         }
     }
 
-    private Counts writeAll(List<PreparedImport> prepared) {
-        Counts counts = new Counts();
+    private ReplayDbCompareImportResult writeAll(List<PreparedImport> prepared, TransactionStatus transaction) {
+        int created = 0, updated = 0, unchanged = 0;
         LocalDateTime now = LocalDateTime.now(clock);
         for (PreparedImport item : prepared) {
             if (item.existing == null) {
-                writeCreate(item, now);
-                counts.created++;
+                try {
+                    writeCreate(item, now);
+                } catch (ReplayDatabaseComparisonGenerationException conflict) {
+                    if (conflict.status() != HttpStatus.CONFLICT) throw conflict;
+                    transaction.setRollbackOnly();
+                    return failed(prepared.size(), item.parsed.rows().stream()
+                            .map(row -> error(row, conflict.getMessage())).toList());
+                }
+                created++;
             } else if (writeUpdate(item, now)) {
-                counts.updated++;
+                updated++;
             } else {
-                counts.unchanged++;
+                unchanged++;
             }
         }
-        return counts;
+        return new ReplayDbCompareImportResult(true, prepared.size(), created, updated, unchanged, List.of());
     }
 
     private void writeCreate(PreparedImport item, LocalDateTime now) {
+        String source = item.metadata.tableName();
+        String code = codeAllocator.allocate(item.metadata.schemaName(), source, false);
+        if (!code.equalsIgnoreCase(source)) {
+            throw new ReplayDatabaseComparisonGenerationException(HttpStatus.CONFLICT, "REGISTRATION_CODE_CONFLICT",
+                    "固定配置标识 " + source + " 已被占用，请在登记页面选择配置", Map.of("tableName", source));
+        }
         ReplayDbCompareRegistration registration = new ReplayDbCompareRegistration(
-                null, item.metadata.schemaName(), item.metadata.tableName(), item.metadata.tableComment(),
+                null, item.metadata.schemaName(), code, item.metadata.tableComment(),
                 domain(item), developerEmpNo(item), developerUsername(item), developerName(item),
                 technologyEmpNo(item), technologyName(item), LocalDate.now(clock), false, null, null, null, 0,
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now,
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields)
-                .withComparisonKey(ReplayDatabaseComparisonKeys.choose(item.metadata.tableName(), item.metadata.keyOptions(), null, null));
+                .withComparisonKey(ReplayDatabaseComparisonKeys.choose(source, item.metadata.keyOptions(), null, null))
+                .withConfigurationIdentity(new ReplayDbCompareConfigurationIdentity(source, "默认配置"));
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(null, state(registration), ReplayDbCompareAuditOperation.IMPORT);
         long id = dao.insertRegistration(registration);
@@ -217,7 +242,10 @@ public class ReplayDatabaseComparisonImportService {
                 false, null, null, null, current.version() + 1,
                 current.createdBy(), current.createdName(), current.createdAt(),
                 SYSTEM_ACTOR.empNo, SYSTEM_ACTOR.name, now, item.fields,
-                current.whereCondition(), current.compareLimit(), current.orderingPrimaryKeyNames(), null).withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit()).withMaxPartitionNum(current.maxPartitionNum()).withComparisonKey(current.comparisonKey());
+                current.whereCondition(), current.compareLimit(), current.orderingPrimaryKeyNames(), null)
+                .withPartitionNum(current.partitionNum()).withSampleLimit(current.sampleLimit())
+                .withMaxPartitionNum(current.maxPartitionNum()).withComparisonKey(current.comparisonKey())
+                .withConfigurationIdentity(current.configurationIdentity());
         List<ReplayDbCompareAuditDetailDraft> details =
                 auditDiff.compare(state(current), state(target), ReplayDbCompareAuditOperation.IMPORT);
         if (details.isEmpty()) {
@@ -367,9 +395,4 @@ public class ReplayDatabaseComparisonImportService {
     private String value(String text) { return text == null ? "" : text; }
     private String displayName(String text) { return text == null ? "" : text.split("\\(", 2)[0]; }
 
-    private static final class Counts {
-        private int created;
-        private int updated;
-        private int unchanged;
-    }
 }

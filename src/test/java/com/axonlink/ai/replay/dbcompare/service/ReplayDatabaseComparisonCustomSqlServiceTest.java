@@ -35,6 +35,24 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     private ReplayDatabaseComparisonService service;
     private ReplayDatabaseComparisonVersionService versionService;
 
+    @Test
+    void multipleSqlConfigurationsKeepIndependentFixedCodesAndNeverReuseDeletedSuffixes() throws Exception {
+        var first = service.createCustomSql(request("条件一", SQL, null, "source_table", 1), operator());
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var values = mapper.valueToTree(request("条件二", SQL.replace("sum(amount)", "sum(amount * 2)"), null, "source_table", 1));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) values).put("createAdditionalConfiguration", true);
+        var second = service.createCustomSql(mapper.treeToValue(values, ReplayDbCompareCustomSqlSaveRequest.class), operator());
+        assertEquals("source_table_1", second.tableName());
+        assertEquals("source_table", second.sourceTableName());
+        assertEquals("条件二", second.configurationName());
+        var renamed = service.updateCustomSql(second.id(), request("重命名", second.customSql().sql(), second.version(), "source_table", 1), operator());
+        assertEquals(second.tableName(), renamed.tableName());
+        assertEquals("重命名", renamed.configurationName());
+        service.delete(renamed.id(), new ReplayDbCompareDeleteRequest(renamed.version(), "删除"), operator());
+        assertEquals("source_table_2", service.createCustomSql(mapper.treeToValue(values, ReplayDbCompareCustomSqlSaveRequest.class), operator()).tableName());
+        assertEquals(first, dao.findByIdIncludingDeleted(first.id()));
+    }
+
     @BeforeEach
     void setUp() {
         jdbc = ReplayIssueTestFixtures.newJdbc();
@@ -51,6 +69,7 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,developer_display,developer_usernames,developer_emp_nos,technology_owner_display,technology_owner_emp_nos,imported_at) VALUES ('source_table','存款组','张三(zhangsan)','zhangsan','100','赵经理','101',CURRENT_TIMESTAMP)");
         dao = new ReplayDatabaseComparisonDao(jdbc);
@@ -194,14 +213,14 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     }
 
     @Test
-    void legacyAliasEditUsesPhysicalNameAndAuditsIdentityOnlyChanges() {
+    void legacyAliasEditKeepsTheFixedCodeAndIsIdempotent() {
         var first = service.createCustomSql(request("来源表", SQL, null, "source_table", 1), operator());
         jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='sql_legacy' WHERE id=?", first.id());
         var updated = service.updateCustomSql(first.id(), request("来源表", SQL, first.version(), "source_table", 1), operator());
-        assertEquals("source_table", updated.tableName());
-        assertEquals(first.version() + 1, updated.version());
-        assertEquals("sql_legacy", jdbc.queryForObject("SELECT before_value FROM dii_replay_db_compare_audit_detail WHERE field_code='tableName'", String.class));
-        assertEquals("source_table", jdbc.queryForObject("SELECT after_value FROM dii_replay_db_compare_audit_detail WHERE field_code='tableName'", String.class));
+        assertEquals("sql_legacy", updated.tableName());
+        assertEquals(first.version(), updated.version());
+        assertEquals("source_table", updated.sourceTableName());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_detail WHERE field_code='tableName'", Integer.class));
     }
 
     @Test
@@ -235,14 +254,13 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     }
 
     @Test
-    void legacyAliasRenameCannotOverwriteAnExistingPhysicalRegistration() {
+    void legacyAliasEditDoesNotOverwriteAnExistingPhysicalRegistration() {
         var sql = service.createCustomSql(request(null, SQL, null, "source_table", 1), operator());
         jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='sql_legacy' WHERE id=?", sql.id());
         var legacy = dao.findByIdIncludingDeleted(sql.id());
         var physical = ordinaryRegistration();
-        var error = assertThrows(ReplayDatabaseComparisonGenerationException.class, () ->
-                service.updateCustomSql(sql.id(), request(null, SQL, sql.version(), "source_table", 1), operator()));
-        assertEquals("DUPLICATE_REGISTRATION", error.errorCode());
+        var updated = service.updateCustomSql(sql.id(), request(null, SQL, sql.version(), "source_table", 1), operator());
+        assertEquals("sql_legacy", updated.tableName());
         assertEquals(legacy, dao.findByIdIncludingDeleted(sql.id()));
         assertEquals(physical, dao.findByIdIncludingDeleted(physical.id()));
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_audit_event", Integer.class));
@@ -257,7 +275,7 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
         var oldSnapshot = versions.findCompleteSnapshot(versions.findStoredVersion(generated.versionNo()).id());
         assertEquals("sql_legacy", oldSnapshot.get(0).tableName());
         assertEquals(SQL, oldSnapshot.get(0).customSql().sql());
-        assertEquals("source_table", dao.findByIdIncludingDeleted(first.id()).tableName());
+        assertEquals("sql_legacy", dao.findByIdIncludingDeleted(first.id()).tableName());
     }
 
     @Test

@@ -16,7 +16,16 @@ public record ReplayDbCompareReregisterRequest(
         Integer sampleLimit,
         String comparisonKeyName,
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = ReplayDbCompareMaxPartitionNumDeserializer.class)
-        Integer maxPartitionNum) {
+        Integer maxPartitionNum,
+        String configurationName) {
+
+    public ReplayDbCompareReregisterRequest(long version, String domainName, String groupOwnerEmpNo,
+            List<String> fieldNames, String reason, ReplayDbCompareConditionTree whereCondition,
+            Long compareLimit, Integer partitionNum, Integer sampleLimit, String comparisonKeyName,
+            Integer maxPartitionNum) {
+        this(version, domainName, groupOwnerEmpNo, fieldNames, reason, whereCondition, compareLimit,
+                partitionNum, sampleLimit, comparisonKeyName, maxPartitionNum, null);
+    }
 
     public ReplayDbCompareReregisterRequest(
         long version,

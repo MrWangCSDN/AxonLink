@@ -47,16 +47,23 @@ public class ReplayDatabaseIssueService {
             var registrationVersion = resolveRegistrationVersion(parsed.batchNo(), registrationVersionNo, parsed.tables());
             dao.checkTableDates(parsed.tables(),parsed.batchDate());
             var current=dao.current();
+            var currentIdentities=dao.configurationIdentities(current.stream().map(ReplayDatabaseIssueDao.TableIdentity::of).toList());
+            var incomingIdentities=dao.configurationIdentities(parsed.tables(),registrationVersion==null?null:registrationVersion.id());
             for(var row:current)if(parsed.tables().contains(text(row.get("tableName")))&&ReplayDatabaseIssueExcelParser.batchDate(text(row.get("batchNo"))).isAfter(parsed.batchDate()))throw new IllegalArgumentException("当前表已有更新批次，不允许倒序导入："+row.get("tableName"));
             var known=new HashMap<String,Map<String,Object>>();current.forEach(r->known.put(text(r.get("issueId")),r));
             var incomingIds=new HashSet<String>();int created=0,updated=0,repaired=0;
             var metadata=new HashMap<String,Map<String,String>>();
+            var incomingSources=new HashSet<String>();
             for(var input:parsed.issues()){
                 incomingIds.add(input.issueId());var before=known.get(input.issueId());
                 Map<String,Object> after=before==null?blank():new LinkedHashMap<>(before);
                 var meta=metadata.computeIfAbsent(input.tableName(), table -> dao.metadata(table,
                         registrationVersion == null ? null : registrationVersion.id()));
+                var identity=incomingIdentities.get(input.tableName());
+                String source=identity==null?"":identity.sourceTableName();
+                if(!source.isBlank())incomingSources.add(source);
                 var raw=new LinkedHashMap<String,Object>();raw.put("issueId",input.issueId());raw.put("tableName",input.tableName());raw.put("tableComment",input.tableComment().isEmpty()?meta.getOrDefault("tableComment",""):input.tableComment());raw.put("domain",meta.getOrDefault("domain",""));raw.put("owner",meta.getOrDefault("owner",""));raw.put("issueLevel",input.issueLevel());raw.put("fieldName",input.fieldName());raw.put("differenceCount",input.differenceCount());raw.put("total528",input.total528());raw.put("totalCcbs",input.totalCcbs());raw.put("only528Count",input.only528());raw.put("onlyCcbsCount",input.onlyCcbs());raw.put("sameKeyDifferentRowCount",input.sameKeyDifferentRowCount());raw.put("batchNo",parsed.batchNo());
+                raw.put("sourceTableName",source);raw.put("configurationName",identity==null?"":identity.configurationName());
                 after.putAll(raw);after.put("importedAt",at);after.put("lastOccurredDate",parsed.batchDate().toString());
                 String operation="基础数据覆盖，人工内容继承";
                 boolean hasDifference=input.issueLevel().equals("表级") ? input.only528()+input.onlyCcbs()>0 : input.differenceCount()>0;
@@ -84,6 +91,8 @@ public class ReplayDatabaseIssueService {
             }
             for(var before:current){
                 if(!parsed.tables().contains(text(before.get("tableName")))){
+                    var identity=currentIdentities.get(ReplayDatabaseIssueDao.TableIdentity.of(before));
+                    if(identity!=null&&incomingSources.contains(identity.sourceTableName()))continue;
                     var after=new LinkedHashMap<>(before);after.put("issueStatus",NOT_COMPARED);after.put("defectRepairDate",parsed.batchDate().toString());clearReview(after);
                     dao.update(after);dao.history(before,after,null,parsed.batchNo(),"不参与比对",at,actor.username(),actor.realName(),true);
                 }
@@ -125,7 +134,7 @@ public class ReplayDatabaseIssueService {
         if (version == null) {
             Set<String> sqlCodes = dao.customSqlComparisonCodes(tables);
             if (!sqlCodes.isEmpty()) {
-                throw new IllegalArgumentException("自定义 SQL 比对结果必须关联登记版本，请选择登记版本后导入："
+                throw new IllegalArgumentException("自定义 SQL 或额外配置比对结果必须关联登记版本，请选择登记版本后导入："
                         + String.join("、", new TreeSet<>(sqlCodes)));
             }
             return null;
@@ -236,8 +245,12 @@ public class ReplayDatabaseIssueService {
     private Map<String,Object> projected(Map<String,Object> row,ReplayIssueOperator actor){return project(List.of(row),actor,true).get(0);}
     private List<Map<String,Object>> project(List<Map<String,Object>> rows,ReplayIssueOperator actor,boolean mapRegistration){
         var owners=technologyOwners(rows);var result=new ArrayList<Map<String,Object>>();boolean loggedIn=actor!=null&&!text(actor.username()).isBlank();
+        var identities=dao.configurationIdentities(rows.stream().map(ReplayDatabaseIssueDao.TableIdentity::of).toList());
         for(var row:rows){
             var owner=owners.get(ReplayDatabaseIssueDao.TableIdentity.of(row));var item=new LinkedHashMap<String,Object>(row);
+            var identity=identities.get(ReplayDatabaseIssueDao.TableIdentity.of(row));
+            item.put("sourceTableName",identity==null?"":identity.sourceTableName());
+            item.put("configurationName",identity==null?"":identity.configurationName());
             if(mapRegistration){item.put("domain",owner.domain());item.put("owner",owner.owner());}
             boolean authorized=authorized(owner,actor),noAction=text(row.get("issueStatus")).equals("无需处理"),approved=text(row.get("reviewStatus")).equals("已审核");
             item.put("technologyOwnerUsername",owner.username());item.put("technologyOwnerName",owner.name());

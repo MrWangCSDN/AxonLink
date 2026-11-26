@@ -58,6 +58,7 @@ class ReplayDatabaseIssueVisibilityTest {
                 "V83__replay_database_issue_plan_date.sql", "V89__replay_database_issue_registration_version.sql").stream()
                 .map(name -> new ClassPathResource("db/daoindex/" + name)).toArray(ClassPathResource[]::new))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         dao = new ReplayDatabaseIssueDao(jdbc);
         service = new ReplayDatabaseIssueService(new ReplayDatabaseIssueExcelParser(), dao, new SysUserDao(jdbc), CLOCK);
         var resolver = mock(UserPrincipalResolver.class);

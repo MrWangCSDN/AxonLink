@@ -136,7 +136,7 @@ public class ReplayDatabaseComparisonVersionService {
                     registration.orderingPrimaryKeyNames(), registration.metadataValidation())
                     .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
                     .withComparisonKey(registration.comparisonKey())
-                    .withCustomSql(registration.customSql());
+                    .withCustomSql(registration.customSql()).withConfigurationIdentity(registration.configurationIdentity());
         }).toList();
     }
 
@@ -332,7 +332,8 @@ public class ReplayDatabaseComparisonVersionService {
                     prepared.fields(), null, registration.compareLimit(), prepared.comparisonKey().columnNames(), null, null)
                     .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
                     .withComparisonKey(prepared.comparisonKey())
-                    .withCustomSql(new ReplayDbCompareCustomSql(analysis.sql(), analysis.sourceTableName(), analysis.resultColumns())));
+                    .withCustomSql(new ReplayDbCompareCustomSql(analysis.sql(), analysis.sourceTableName(), analysis.resultColumns()))
+                    .withConfigurationIdentity(registration.configurationIdentity()));
         } catch (ReplayBaseDatabaseUnavailableException exception) {
             errors.add(gateError(registration, ReplayDbCompareMetadataStatus.UNAVAILABLE,
                     List.of(), exception.getMessage()));
@@ -448,7 +449,7 @@ public class ReplayDatabaseComparisonVersionService {
                 snapshotFields, compiledScope.conditionTree(), compiledScope.compareLimit(),
                 registration.orderingPrimaryKeyNames(), compiledScope.whereSql(), null)
                 .withPartitionNum(registration.partitionNum()).withSampleLimit(registration.sampleLimit()).withMaxPartitionNum(registration.maxPartitionNum())
-                .withComparisonKey(snapshotKey).withCustomSql(registration.customSql()));
+                .withComparisonKey(snapshotKey).withCustomSql(registration.customSql()).withConfigurationIdentity(registration.configurationIdentity()));
     }
 
     private boolean hasCompletePrimaryKeyOrder(List<ReplayBaseColumnOption> columns) {

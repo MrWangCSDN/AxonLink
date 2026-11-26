@@ -49,6 +49,7 @@ class ReplayDatabaseIssueTypeRulesTest {
                 new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"),
                 new ClassPathResource("db/user/01_user_ddl.sql")).execute(jdbc.getDataSource());
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('editor','编辑人','E001',1)");
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         dao = new ReplayDatabaseIssueDao(jdbc);
         service = new ReplayDatabaseIssueService(new ReplayDatabaseIssueExcelParser(), dao, new SysUserDao(jdbc),
                 Clock.fixed(Instant.parse("2026-10-12T02:00:00Z"), ZoneId.of("Asia/Shanghai")));

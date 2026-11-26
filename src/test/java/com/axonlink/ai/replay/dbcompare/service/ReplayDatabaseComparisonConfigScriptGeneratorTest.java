@@ -28,12 +28,48 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator =
             new ReplayDatabaseComparisonConfigScriptGenerator();
 
+    @Test
+    void newTargetCarriesImmutableCodePhysicalSourceNameAndFullScopeButNamedRemainsFourteenColumns() {
+        var input = scopedTable("(status = 'A\\B')", null, field("id", "编号", true, 1))
+                .withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(
+                        "physical_acct", "账户'一\\组"));
+        String result = sql(generator.generateNew("multi", List.of(input)));
+        assertTrue(result.contains("bcomp_max_partition_num,source_table_name,configuration_name,configuration_scope)"));
+        assertTrue(result.contains("'dept','txn'"));
+        assertTrue(result.contains(HexFormat.of().formatHex(
+                "from physical_acct where (status = 'A\\B')".getBytes(StandardCharsets.UTF_8))));
+        assertTrue(result.contains("'physical_acct',CONVERT(0x"));
+        assertTrue(result.contains(HexFormat.of().formatHex("账户'一\\组".getBytes(StandardCharsets.UTF_8))));
+        assertTrue(result.contains(HexFormat.of().formatHex("(status = 'A\\B')".getBytes(StandardCharsets.UTF_8))));
+        String named = sql(generator.generateNamed("named", List.of(input), Map.of("txn", 64)));
+        assertFalse(named.contains("configuration_scope"));
+        assertTrue(named.contains("bcomp_max_partition_num)"));
+    }
+
+    @Test
+    void newTargetRejectsOversizedConfigurationCodesAndDuplicateCodes() {
+        var tooLong = table("a".repeat(101), "账户", "存款组", field("id", "编号", true, 1));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generateNew("multi", List.of(tooLong)));
+        var input = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> generator.generateNew("multi", List.of(input, input)));
+    }
+
+    @Test
+    void legacyRejectsNewAdditionalConfigurationsWithoutChangingHistoricalCustomSqlAliases() {
+        var input = table("acct_master_1", "账户", "存款组", field("id", "编号", true, 1))
+                .withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(
+                        "acct_master", "第二配置"));
+        assertThrows(ReplayDatabaseComparisonGenerationException.class, () -> generator.generate("multi", List.of(input)));
+    }
+
     @Test void allNewConfigurationsIncludeTheFourteenthMaxPartitionColumn() {
         var input = table("acct_master", "账户", "存款组", field("id", "编号", true, 1));
         var originalNew = sql(generator.generateNew("v1",List.of(input)));
         var named = sql(generator.generateNamed("named-1",List.of(input),Map.of("acct_master",100)));
-        assertTrue(originalNew.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
-        assertTrue(originalNew.contains(",1,'HASH',100,'张三','zhangsan',64)"));
+        assertTrue(originalNew.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num,source_table_name,configuration_name,configuration_scope)"));
+        assertTrue(originalNew.contains(",1,'HASH',100,'张三','zhangsan',64,'acct_master','默认配置','')"));
         assertTrue(named.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
         assertTrue(named.contains(",1,'HASH',100,'张三','zhangsan',100)"));
         assertTrue(named.contains("INSERT INTO tss_bcomp_conf_new"));
@@ -57,8 +93,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         var second = table("loan_detail", "贷款", "贷款组", field("id", "编号", true, 1))
                 .withMaxPartitionNum(256);
         String builtin = sql(generator.generateNew("v2",List.of(first, second)));
-        assertTrue(builtin.contains(",1,'HASH',33,'张三','zhangsan',100)"));
-        assertTrue(builtin.contains(",1,'HASH',100,'张三','zhangsan',256)"));
+        assertTrue(builtin.contains(",1,'HASH',33,'张三','zhangsan',100,'acct_master'"));
+        assertTrue(builtin.contains(",1,'HASH',100,'张三','zhangsan',256,'loan_detail'"));
         assertFalse(sql(generator.generate("v2",List.of(first))).contains("bcomp_max_partition_num"));
         String named = sql(generator.generateNamed("profile",List.of(first),Map.of("acct_master",64)));
         assertTrue(named.contains(",1,'HASH',33,'张三','zhangsan',64)"));
@@ -143,7 +179,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
             var matcher = java.util.regex.Pattern.compile("CONVERT\\(0x([0-9a-f]+) USING utf8mb4\\)").matcher(sql(generated));
             List<String> queries = new ArrayList<>();
             while (matcher.find()) {
-                queries.add(new String(HexFormat.of().parseHex(matcher.group(1)), StandardCharsets.UTF_8));
+                String text = new String(HexFormat.of().parseHex(matcher.group(1)), StandardCharsets.UTF_8);
+                if (text.endsWith(") orig") || text.endsWith(") dest")) queries.add(text);
             }
             assertEquals(2, queries.size());
             assertTrue(queries.get(0).contains("a\\b"));
@@ -215,8 +252,8 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         var primaryKey = new ReplayDbCompareVersionField("id", "编号", 1, true, 1, 1);
         var table = scopedTable("(status = '1')", 7L, primaryKey).withSampleLimit(-1);
         String script = assertDoesNotThrow(() -> sql(generator.generateNew("v1", List.of(table))));
-        assertTrue(script.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
-        assertTrue(script.contains("'HASH',-1,'张三','zhangsan',64)"));
+        assertTrue(script.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num,source_table_name,configuration_name,configuration_scope)"));
+        assertTrue(script.contains("'HASH',-1,'张三','zhangsan',64,'txn'"));
         assertTrue(script.contains("(select id from txn where (status = ''1'') order by id limit 7) orig"));
         assertThrows(ReplayDatabaseComparisonGenerationException.class,
                 () -> generator.generateNew("v1", List.of(table.withSampleLimit(-2))));
@@ -359,7 +396,9 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
         assertEquals(422, error.status().value());
         Map<?, ?> data = (Map<?, ?>) error.data();
         List<?> errors = (List<?>) data.get("errors");
-        assertEquals(5, errors.size());
+        assertEquals(6, errors.size());
+        assertTrue(errors.stream().map(ReplayDbCompareConfigScriptValidationError.class::cast)
+                .anyMatch(item -> item.reason().contains("真实来源表名")));
         assertTrue(errors.stream().map(ReplayDbCompareConfigScriptValidationError.class::cast)
                 .anyMatch(item -> item.reason().contains("领域")));
         assertTrue(errors.stream().map(ReplayDbCompareConfigScriptValidationError.class::cast)

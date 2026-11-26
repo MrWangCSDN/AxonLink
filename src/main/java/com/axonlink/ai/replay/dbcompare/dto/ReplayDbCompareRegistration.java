@@ -39,7 +39,45 @@ public record ReplayDbCompareRegistration(
         int sampleLimit,
         ReplayDbCompareKeySelection comparisonKey,
         ReplayDbCompareCustomSql customSql,
+        int maxPartitionNum,
+        @com.fasterxml.jackson.annotation.JsonIgnore ReplayDbCompareConfigurationIdentity configurationIdentity) {
+    public ReplayDbCompareRegistration(
+        Long id,
+        String schemaName,
+        String tableName,
+        String tableComment,
+        String domainName,
+        String reviserEmpNo,
+        String reviserUsername,
+        String reviserName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        boolean deleted,
+        String deletedReason,
+        String deletedBy,
+        LocalDateTime deletedAt,
+        long version,
+        String createdBy,
+        String createdName,
+        LocalDateTime createdAt,
+        String updatedBy,
+        String updatedName,
+        LocalDateTime updatedAt,
+        List<ReplayDbCompareField> fields,
+        ReplayDbCompareConditionTree whereCondition,
+        Long compareLimit,
+        List<String> orderingPrimaryKeyNames,
+        String compiledWhereSql,
+        ReplayDbCompareMetadataValidation metadataValidation,
+        int partitionNum,
+        int sampleLimit,
+        ReplayDbCompareKeySelection comparisonKey,
+        ReplayDbCompareCustomSql customSql,
         int maxPartitionNum) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum, null);
+    }
+
 
     public ReplayDbCompareRegistration(
         Long id,
@@ -156,7 +194,7 @@ public record ReplayDbCompareRegistration(
                 groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version,
                 createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition,
                 compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit,
-                comparisonKey, customSql, maxPartitionNum);
+                comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareRegistration(
@@ -198,7 +236,7 @@ public record ReplayDbCompareRegistration(
                 groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version,
                 createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition,
                 compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit,
-                comparisonKey, customSql, maxPartitionNum);
+                comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareRegistration(
@@ -242,7 +280,7 @@ public record ReplayDbCompareRegistration(
                 groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version,
                 createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition,
                 compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit,
-                comparisonKey, customSql, maxPartitionNum);
+                comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareRegistration {
@@ -348,7 +386,7 @@ public record ReplayDbCompareRegistration(
                 groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version,
                 createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition,
                 compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit,
-                comparisonKey, customSql, maxPartitionNum);
+                comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     @JsonProperty("registrationType")
@@ -363,10 +401,24 @@ public record ReplayDbCompareRegistration(
 
     @JsonProperty("sourceTableName")
     public String sourceTableName() {
-        return customSql == null ? tableName : customSql.sourceTableName();
+        return configurationIdentity != null ? configurationIdentity.sourceTableName() : customSql == null ? tableName : customSql.sourceTableName();
     }
 
     public ReplayDbCompareRegistration withMaxPartitionNum(int maxPartitionNum) {
-        return new ReplayDbCompareRegistration(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+        return new ReplayDbCompareRegistration(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
+    }
+
+    @JsonProperty("configurationName")
+    public String configurationName() {
+        return configurationIdentity == null || configurationIdentity.configurationName().isBlank()
+                ? "默认配置" : configurationIdentity.configurationName();
+    }
+
+    public ReplayDbCompareRegistration withConfigurationIdentity(ReplayDbCompareConfigurationIdentity identity) {
+        return new ReplayDbCompareRegistration(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum, identity);
+    }
+
+    public ReplayDbCompareRegistration withComparisonCode(String code) {
+        return new ReplayDbCompareRegistration(id, schemaName, code, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, deleted, deletedReason, deletedBy, deletedAt, version, createdBy, createdName, createdAt, updatedBy, updatedName, updatedAt, fields, whereCondition, compareLimit, orderingPrimaryKeyNames, compiledWhereSql, metadataValidation, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum, configurationIdentity);
     }
 }

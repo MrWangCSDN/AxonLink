@@ -1,0 +1,113 @@
+[ {
+  "sourceRegistrationId" : 1,
+  "sourceRegistrationVersion" : 0,
+  "schemaName" : "base",
+  "tableName" : "a",
+  "tableComment" : "真实表",
+  "domainName" : "存款组",
+  "reviserEmpNo" : "100",
+  "reviserUsername" : "creator",
+  "reviserName" : "创建人",
+  "groupOwnerEmpNo" : "101",
+  "groupOwnerUsername" : "leader-a",
+  "groupOwnerName" : "赵经理",
+  "whereCondition" : {
+    "connector" : "AND",
+    "groups" : [ {
+      "connector" : "AND",
+      "conditions" : [ {
+        "columnName" : "flag_a",
+        "operator" : "EQ",
+        "values" : [ "1" ]
+      } ]
+    } ]
+  },
+  "whereSql" : "flag_a = 1",
+  "compareLimit" : null,
+  "registeredDate" : [ 2026, 11, 26 ],
+  "fieldCount" : 2,
+  "fields" : [ {
+    "columnName" : "id",
+    "columnComment" : "标识",
+    "ordinalPosition" : 1,
+    "primaryKey" : true,
+    "primaryKeyOrder" : 1,
+    "comparisonOrder" : 1
+  }, {
+    "columnName" : "amount",
+    "columnComment" : "金额",
+    "ordinalPosition" : 2,
+    "primaryKey" : false,
+    "primaryKeyOrder" : null,
+    "comparisonOrder" : 2
+  } ],
+  "partitionNum" : 1,
+  "sampleLimit" : 100,
+  "comparisonKey" : {
+    "indexName" : "PRIMARY",
+    "indexType" : "PRIMARY_KEY",
+    "columnNames" : [ "id" ]
+  },
+  "customSql" : null,
+  "maxPartitionNum" : 64,
+  "sourceTableName" : "a",
+  "configurationName" : "条件一",
+  "comparisonCode" : "a",
+  "registrationType" : "TABLE"
+}, {
+  "sourceRegistrationId" : 2,
+  "sourceRegistrationVersion" : 0,
+  "schemaName" : "base",
+  "tableName" : "a_1",
+  "tableComment" : "真实表",
+  "domainName" : "存款组",
+  "reviserEmpNo" : "100",
+  "reviserUsername" : "creator",
+  "reviserName" : "创建人",
+  "groupOwnerEmpNo" : "101",
+  "groupOwnerUsername" : "leader-a",
+  "groupOwnerName" : "赵经理",
+  "whereCondition" : {
+    "connector" : "AND",
+    "groups" : [ {
+      "connector" : "AND",
+      "conditions" : [ {
+        "columnName" : "flag_b",
+        "operator" : "EQ",
+        "values" : [ "2" ]
+      } ]
+    } ]
+  },
+  "whereSql" : "flag_b = 2",
+  "compareLimit" : null,
+  "registeredDate" : [ 2026, 11, 26 ],
+  "fieldCount" : 2,
+  "fields" : [ {
+    "columnName" : "id",
+    "columnComment" : "标识",
+    "ordinalPosition" : 1,
+    "primaryKey" : true,
+    "primaryKeyOrder" : 1,
+    "comparisonOrder" : 1
+  }, {
+    "columnName" : "amount",
+    "columnComment" : "金额",
+    "ordinalPosition" : 2,
+    "primaryKey" : false,
+    "primaryKeyOrder" : null,
+    "comparisonOrder" : 2
+  } ],
+  "partitionNum" : 1,
+  "sampleLimit" : 100,
+  "comparisonKey" : {
+    "indexName" : "PRIMARY",
+    "indexType" : "PRIMARY_KEY",
+    "columnNames" : [ "id" ]
+  },
+  "customSql" : null,
+  "maxPartitionNum" : 64,
+  "sourceTableName" : "a",
+  "configurationName" : "条件二",
+  "comparisonCode" : "a_1",
+  "registrationType" : "TABLE"
+} ]

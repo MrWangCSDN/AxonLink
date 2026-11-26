@@ -14,7 +14,23 @@ public record ReplayDbCompareCustomSqlSaveRequest(
         @JsonDeserialize(using = ReplayDbComparePartitionNumDeserializer.class) Integer partitionNum,
         @JsonDeserialize(using = ReplayDbCompareSampleLimitDeserializer.class) Integer sampleLimit,
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = ReplayDbCompareMaxPartitionNumDeserializer.class)
+        Integer maxPartitionNum,
+        Boolean createAdditionalConfiguration) {
+    public ReplayDbCompareCustomSqlSaveRequest(
+        String displayName,
+        String sourceTableName,
+        String sql,
+        List<String> fieldNames,
+        List<String> resultKeyColumns,
+        Long version,
+        Long compareLimit,
+        @JsonDeserialize(using = ReplayDbComparePartitionNumDeserializer.class) Integer partitionNum,
+        @JsonDeserialize(using = ReplayDbCompareSampleLimitDeserializer.class) Integer sampleLimit,
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = ReplayDbCompareMaxPartitionNumDeserializer.class)
         Integer maxPartitionNum) {
+        this(displayName, sourceTableName, sql, fieldNames, resultKeyColumns, version, compareLimit, partitionNum, sampleLimit, maxPartitionNum, null);
+    }
+
 
     public ReplayDbCompareCustomSqlSaveRequest(
         String displayName,

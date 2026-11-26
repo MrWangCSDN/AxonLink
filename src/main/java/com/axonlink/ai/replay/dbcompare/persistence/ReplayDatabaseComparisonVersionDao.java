@@ -3,6 +3,7 @@ package com.axonlink.ai.replay.dbcompare.persistence;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonKeys;
 import com.axonlink.ai.replay.dbcompare.service.ReplayDatabaseComparisonCustomSqlCodec;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterOption;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterRequest;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareHeaderFilterResult;
@@ -115,8 +116,8 @@ public class ReplayDatabaseComparisonVersionDao {
                             + "schema_name,table_name,table_comment,domain_name,reviser_emp_no,"
                             + "reviser_username,reviser_name,group_owner_emp_no,group_owner_username,"
                             + "group_owner_name,where_condition_json,where_sql,compare_limit,registered_date,partition_num,sample_limit,comparison_key_json,"
-                            + "registration_type,source_table_name,custom_sql,result_columns_json,max_partition_num) "
-                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            + "registration_type,source_table_name,custom_sql,result_columns_json,max_partition_num,configuration_name) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     Statement.RETURN_GENERATED_KEYS);
             statement.setLong(1, versionId);
             statement.setLong(2, registration.id());
@@ -139,10 +140,12 @@ public class ReplayDatabaseComparisonVersionDao {
             statement.setInt(19, registration.sampleLimit());
             statement.setString(20, ReplayDatabaseComparisonKeys.encode(registration.comparisonKey()));
             statement.setString(21, registration.registrationType());
-            statement.setString(22, registration.customSql() == null ? null : registration.sourceTableName());
+            statement.setString(22, registration.sourceTableName());
             statement.setString(23, registration.customSql() == null ? null : registration.customSql().sql());
             statement.setString(24, ReplayDatabaseComparisonCustomSqlCodec.encodeColumns(registration.customSql()));
             statement.setInt(25, registration.maxPartitionNum());
+            statement.setString(26, registration.configurationIdentity() == null ? ""
+                    : registration.configurationIdentity().configurationName());
             return statement;
         }, keys);
         Number key = keys.getKey();
@@ -197,6 +200,12 @@ public class ReplayDatabaseComparisonVersionDao {
                 Boolean.class, versionId, ReplayDbCompareSampleLimit.ALL));
     }
 
+    public boolean hasAdditionalConfigurations(long versionId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM dii_replay_db_compare_version_table "
+                + "WHERE version_id=? AND TRIM(COALESCE(configuration_name,''))<>'' "
+                + "AND LOWER(COALESCE(NULLIF(TRIM(source_table_name),''),table_name))<>LOWER(table_name))", Boolean.class, versionId));
+    }
+
     public List<ReplayDbCompareVersionTableItem> findCompleteSnapshot(long versionId) {
         List<SnapshotRow> rows = jdbc.query(
                 "SELECT t.*,(SELECT COUNT(*) FROM dii_replay_db_compare_version_field fc "
@@ -220,7 +229,8 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getDate("registered_date").toLocalDate(),
                                 row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withMaxPartitionNum(row.getInt("max_partition_num")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
                                 .withCustomSql(ReplayDatabaseComparisonCustomSqlCodec.decode(row.getString("registration_type"),
-                                        row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))),
+                                        row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))
+                                .withConfigurationIdentity(configurationIdentity(row))),
                 versionId);
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -286,7 +296,8 @@ public class ReplayDatabaseComparisonVersionDao {
                                 row.getDate("registered_date").toLocalDate(),
                                 row.getInt("field_count"), List.of()).withPartitionNum(row.getInt("partition_num")).withSampleLimit(row.getInt("sample_limit")).withMaxPartitionNum(row.getInt("max_partition_num")).withComparisonKey(ReplayDatabaseComparisonKeys.decode(row.getString("comparison_key_json")))
                                 .withCustomSql(ReplayDatabaseComparisonCustomSqlCodec.decode(row.getString("registration_type"),
-                                        row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))),
+                                        row.getString("source_table_name"), row.getString("custom_sql"), row.getString("result_columns_json")))
+                                .withConfigurationIdentity(configurationIdentity(row))),
                 arguments.toArray());
         Map<Long, List<ReplayDbCompareVersionField>> fields = findVersionFields(
                 rows.stream().map(SnapshotRow::id).toList());
@@ -369,7 +380,7 @@ public class ReplayDatabaseComparisonVersionDao {
         List<Object> arguments = new ArrayList<>();
         arguments.add(versionId);
         if (!"tableName".equals(excludedKey) && hasText(query.tableKeyword())) {
-            sql.append(" AND LOWER(CONCAT(t.table_name,' ',COALESCE(t.table_comment,''),' ',COALESCE(t.source_table_name,''))) LIKE ?");
+            sql.append(" AND LOWER(CONCAT(t.table_name,' ',COALESCE(t.table_comment,''),' ',COALESCE(t.source_table_name,''),' ',COALESCE(t.configuration_name,''))) LIKE ?");
             arguments.add(pattern(query.tableKeyword()));
         }
         if (!"tableName".equals(excludedKey)) {
@@ -507,7 +518,14 @@ public class ReplayDatabaseComparisonVersionDao {
                 item.reviserEmpNo(), item.reviserUsername(), item.reviserName(),
                 item.groupOwnerEmpNo(), item.groupOwnerUsername(), item.groupOwnerName(),
                 item.whereCondition(), item.whereSql(), item.compareLimit(), item.registeredDate(),
-                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withMaxPartitionNum(item.maxPartitionNum()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql());
+                item.fieldCount(), fields).withPartitionNum(item.partitionNum()).withSampleLimit(item.sampleLimit()).withMaxPartitionNum(item.maxPartitionNum()).withComparisonKey(item.comparisonKey()).withCustomSql(item.customSql())
+                .withConfigurationIdentity(item.configurationIdentity());
+    }
+
+    private ReplayDbCompareConfigurationIdentity configurationIdentity(java.sql.ResultSet row) throws SQLException {
+        String source = row.getString("source_table_name");
+        if (source == null || source.isBlank()) source = row.getString("table_name");
+        return new ReplayDbCompareConfigurationIdentity(source, row.getString("configuration_name"));
     }
 
     private boolean hasText(String value) {
@@ -562,7 +580,7 @@ public class ReplayDatabaseComparisonVersionDao {
                 case "tableName" -> new VersionHeaderColumn(
                         key, "t.table_name",
                         "CASE WHEN COALESCE(t.table_comment,'')='' THEN t.table_name ELSE CONCAT(t.table_name,'(',t.table_comment,')') END",
-                        "CONCAT(t.table_name,' ',COALESCE(t.table_comment,''),' ',COALESCE(t.source_table_name,''))", false);
+                        "CONCAT(t.table_name,' ',COALESCE(t.table_comment,''),' ',COALESCE(t.source_table_name,''),' ',COALESCE(t.configuration_name,''))", false);
                 case "fieldName" -> new VersionHeaderColumn(
                         key, "hf.column_name",
                         "CASE WHEN COALESCE(hf.column_comment,'')='' THEN hf.column_name ELSE CONCAT(hf.column_name,'(',hf.column_comment,')') END",

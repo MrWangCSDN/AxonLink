@@ -33,6 +33,7 @@ class ReplayDatabaseIssueTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V82__replay_database_table_person.sql"),
                 new ClassPathResource("db/daoindex/V77__replay_database_issues.sql"),new ClassPathResource("db/daoindex/V78__replay_database_issue_review_projection.sql"),new ClassPathResource("db/daoindex/V79__replay_database_issue_repair_date_projection.sql"),new ClassPathResource("db/daoindex/V80__replay_database_issue_collaborator_projection.sql"),new ClassPathResource("db/daoindex/V81__replay_database_issue_completion_totals.sql"),new ClassPathResource("db/daoindex/V83__replay_database_issue_plan_date.sql"),new ClassPathResource("db/daoindex/V89__replay_database_issue_registration_version.sql"),new ClassPathResource("db/user/01_user_ddl.sql")).execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         dao=new ReplayDatabaseIssueDao(jdbc);
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES ('editor','编辑人','E001',1)");
         users=new SysUserDao(jdbc);

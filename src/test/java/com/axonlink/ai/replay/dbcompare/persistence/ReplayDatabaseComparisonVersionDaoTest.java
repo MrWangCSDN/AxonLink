@@ -54,8 +54,30 @@ class ReplayDatabaseComparisonVersionDaoTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         dao = new ReplayDatabaseComparisonVersionDao(jdbc);
         now = LocalDateTime.of(2026, 9, 14, 15, 30, 0);
+    }
+
+    @Test
+    void freezesOrdinaryConfigurationCodeSourceAndNameAcrossBothSnapshotReadersAndCopies() {
+        long version = dao.insertVersion("multi-version", "c".repeat(64), 1, 1, "100", "张三", now);
+        var input = registration(1L, 1L, "acct_master_1", "账户", "存款组", "100", "张三",
+                List.of(field("id", "编号", 1, true, 1)))
+                .withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(
+                        "acct_master", "活期配置"));
+        long snapshot = dao.insertVersionTable(version, input);
+        dao.insertVersionFields(snapshot, input.fields());
+        assertEquals("acct_master", jdbc.queryForObject("SELECT source_table_name FROM dii_replay_db_compare_version_table WHERE id=?", String.class, snapshot));
+        assertEquals("活期配置", jdbc.queryForObject("SELECT configuration_name FROM dii_replay_db_compare_version_table WHERE id=?", String.class, snapshot));
+        for (var result : List.of(dao.findCompleteSnapshot(version).get(0),
+                dao.searchVersion("multi-version", ReplayDbCompareVersionQuery.empty(0, 20)).items().get(0))) {
+            assertEquals("acct_master_1", result.comparisonCode());
+            assertEquals("acct_master", result.sourceTableName());
+            assertEquals("活期配置", result.configurationName());
+            assertEquals(input.configurationIdentity(), result.configurationIdentity());
+            assertEquals(1, result.fields().size());
+        }
     }
 
     @Test

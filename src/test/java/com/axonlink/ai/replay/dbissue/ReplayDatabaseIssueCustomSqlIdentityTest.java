@@ -48,6 +48,7 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
                 "V83__replay_database_issue_plan_date.sql", "V89__replay_database_issue_registration_version.sql");
         new ResourceDatabasePopulator(migrations.stream().map(name -> new ClassPathResource("db/daoindex/" + name))
                 .toArray(ClassPathResource[]::new)).execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         new ResourceDatabasePopulator(new ClassPathResource("db/user/01_user_ddl.sql")).execute(jdbc.getDataSource());
         jdbc.update("INSERT INTO ccbs_ai_sys_user(username,real_name,emp_no,status) VALUES "
                 + "('owner_a','负责人甲','OA',1),('owner_b','负责人乙','OB',1),('dev_a','开发甲','DA',1),('dev_b','开发乙','DB',1)");
@@ -61,6 +62,49 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
         dates = new ReplayDatabaseIssuePlanDateService(dao, policy, users, CLOCK);
         issues = new ReplayDatabaseIssueService(new ReplayDatabaseIssueExcelParser(), dao, users, CLOCK);
         issues.setPlanDates(dates);
+    }
+
+    @Test
+    void ordinaryConfigurationAliasesRequireVersionBindingAndDisplayTheirFrozenIdentity() {
+        currentSql("source_b", false);
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET registration_type='TABLE',custom_sql=NULL,result_columns_json=NULL,configuration_name='当前配置'");
+        long version = version("v1");
+        snapshot(version, "base", "source_a");
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET registration_type='TABLE',custom_sql=NULL,result_columns_json=NULL,configuration_name='冻结配置'");
+        assertThrows(IllegalArgumentException.class, () -> issues.importFile(aliasFile(), null, actor("dev_a")));
+        issues.importFile(aliasFile(), null, actor("dev_a"), null, "v1");
+        var input = dao.findByIssueId(CODE);
+        var listed = item(((Number) input.get("id")).longValue(), "owner_a");
+        assertEquals(CODE, listed.get("tableName"));
+        assertEquals("source_a", listed.get("sourceTableName"));
+        assertEquals("冻结配置", listed.get("configurationName"));
+        assertEquals("贷款组", listed.get("domain"));
+        assertEquals("开发甲(dev_a)", listed.get("owner"));
+        assertNotNull(dao.findByIssueId(CODE + "-value"));
+        jdbc.update("DELETE FROM dii_replay_database_table_person WHERE table_name='source_a'");
+        assertTrue(dao.metadata(CODE, version).isEmpty());
+        assertEquals("source_a", item(((Number) input.get("id")).longValue(), "owner_a").get("sourceTableName"));
+    }
+
+    @Test
+    void importingOneConfigurationPreservesAbsentSiblingsFromTheSameFrozenPhysicalSource() {
+        currentSql("source_a", false);
+        long version = version("v1");
+        snapshot(version, "base", "source_a");
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET registration_type='TABLE',custom_sql=NULL,result_columns_json=NULL,configuration_name='额外配置'");
+        jdbc.update("INSERT INTO dii_replay_db_compare_version_table(version_id,source_registration_id,source_registration_version,schema_name,table_name,domain_name,registered_date,registration_type,source_table_name,configuration_name) "
+                + "VALUES (?,2,0,'base','source_a','贷款组',CURRENT_DATE,'TABLE','source_a','默认配置')", version);
+        issues.importFile(aliasFileForBatch(FIRST_BATCH, CODE, "source_a"), null, actor("dev_a"), null, "v1");
+        var before = dao.findByIssueId(CODE);
+        jdbc.update("DELETE FROM dii_replay_database_table_person WHERE table_name='source_a'");
+        issues.importFile(aliasFileForBatch(SECOND_BATCH, "source_a"), null, actor("dev_a"), null, "v1");
+        var after = dao.findByIssueId(CODE);
+        assertEquals(before.get("id"), after.get("id"));
+        assertEquals(before.get("version"), after.get("version"));
+        assertEquals(before.get("issueStatus"), after.get("issueStatus"));
+        assertEquals("", after.get("defectRepairDate"));
+        assertEquals(FIRST_BATCH, jdbc.queryForObject("SELECT batch_no FROM dii_replay_database_issue_table_state WHERE table_name=?", String.class, CODE));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_database_issue_history WHERE issue_id=? AND batch_no=?", Integer.class, before.get("id"), SECOND_BATCH));
     }
 
     @Test
@@ -258,6 +302,10 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
     }
 
     private static MockMultipartFile aliasFile() {
+        return aliasFileForBatch(FIRST_BATCH, CODE);
+    }
+
+    private static MockMultipartFile aliasFileForBatch(String batch, String... codes) {
         try (var workbook = new XSSFWorkbook(); var out = new ByteArrayOutputStream()) {
             var tableSheet = workbook.createSheet("表明细");
             var tableHeaders = tableSheet.createRow(0);
@@ -265,12 +313,6 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
             for (int index = 0; index < headers.size(); index++) {
                 tableHeaders.createCell(index).setCellValue(headers.get(index));
             }
-            var table = tableSheet.createRow(1);
-            table.createCell(0).setCellValue(CODE);
-            table.createCell(1).setCellValue(1);
-            table.createCell(2).setCellValue(0);
-            table.createCell(3).setCellValue(1);
-            table.createCell(4).setCellValue(FIRST_BATCH);
 
             var fieldSheet = workbook.createSheet("表字段明细");
             var fieldHeaders = fieldSheet.createRow(0);
@@ -278,11 +320,19 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
             for (int index = 0; index < names.size(); index++) {
                 fieldHeaders.createCell(index).setCellValue(names.get(index));
             }
-            var field = fieldSheet.createRow(1);
-            field.createCell(0).setCellValue(CODE);
-            field.createCell(1).setCellValue("value");
-            field.createCell(2).setCellValue(1);
-            field.createCell(3).setCellValue(FIRST_BATCH);
+            for (int index = 0; index < codes.length; index++) {
+                var table = tableSheet.createRow(index + 1);
+                table.createCell(0).setCellValue(codes[index]);
+                table.createCell(1).setCellValue(1);
+                table.createCell(2).setCellValue(0);
+                table.createCell(3).setCellValue(1);
+                table.createCell(4).setCellValue(batch);
+                var field = fieldSheet.createRow(index + 1);
+                field.createCell(0).setCellValue(codes[index]);
+                field.createCell(1).setCellValue("value");
+                field.createCell(2).setCellValue(1);
+                field.createCell(3).setCellValue(batch);
+            }
             workbook.write(out);
             return new MockMultipartFile("file", "database-issues.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", out.toByteArray());

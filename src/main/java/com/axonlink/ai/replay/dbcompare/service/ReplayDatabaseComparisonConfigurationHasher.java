@@ -31,6 +31,8 @@ public class ReplayDatabaseComparisonConfigurationHasher {
             putLong(digest, registration.version());
             putString(digest, normalize(registration.schemaName()));
             putString(digest, normalize(registration.tableName()));
+            putString(digest, normalize(registration.sourceTableName()));
+            putString(digest, registration.configurationName());
             putString(digest, registration.tableComment());
             putString(digest, registration.domainName());
             putString(digest, registration.reviserEmpNo());

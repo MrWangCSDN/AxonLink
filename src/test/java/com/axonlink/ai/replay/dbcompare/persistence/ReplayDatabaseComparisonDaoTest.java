@@ -67,6 +67,7 @@ class ReplayDatabaseComparisonDaoTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
     }
 

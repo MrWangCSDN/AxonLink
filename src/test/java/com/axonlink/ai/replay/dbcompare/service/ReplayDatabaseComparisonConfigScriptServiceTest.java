@@ -61,6 +61,7 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
         scriptDao = new ReplayDatabaseComparisonVersionScriptDao(jdbc);
         service = new ReplayDatabaseComparisonConfigScriptService(
@@ -79,6 +80,42 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
     }
 
     @Test
+    void downloadsVerifiedFrozenNewBytesWithoutRenderingTheSnapshotAgain() {
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET table_name='acct_master_1',source_table_name='acct_master',configuration_name='活期配置' WHERE version_id=?", versionId);
+        var operator = new ReplayIssueOperator("tester", "Tester");
+        var frozen = service.generate(VERSION_NO, operator, ConfigScriptTarget.NEW);
+        assertTrue(frozen.fileName().endsWith("-new.sql"));
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET configuration_name='后续元数据变化',max_partition_num=100 WHERE version_id=?", versionId);
+
+        var downloaded = service.download(VERSION_NO, ConfigScriptTarget.NEW);
+        assertArrayEquals(frozen.content(), downloaded.content());
+        assertEquals(frozen.sha256(), downloaded.sha256());
+        assertArrayEquals(frozen.content(), service.generate(VERSION_NO, operator, ConfigScriptTarget.NEW).content());
+        assertArrayEquals(frozen.content(), service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content());
+        assertEquals(frozen.sha256(), service.status(VERSION_NO).sha256());
+    }
+
+    @Test
+    void newAdditionalConfigurationsFreezeNewFormatAndRejectLegacyBeforeReadingTheStoredBlob() {
+        jdbc.update("UPDATE dii_replay_db_compare_version_table SET table_name='acct_master_1',source_table_name='acct_master',configuration_name='活期配置' WHERE version_id=?", versionId);
+        var operator = new ReplayIssueOperator("tester", "Tester");
+        var failure = assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.generate(VERSION_NO, operator, ConfigScriptTarget.LEGACY));
+        assertEquals("MULTI_CONFIGURATION_REQUIRES_NEW", failure.errorCode());
+        assertFalse(service.status(VERSION_NO).generated());
+        var file = service.generate(VERSION_NO, operator, ConfigScriptTarget.NEW);
+        String sql = new String(file.content(), StandardCharsets.UTF_8);
+        assertTrue(sql.contains("configuration_scope"));
+        assertTrue(sql.contains("'acct_master_1'"));
+        assertTrue(sql.contains("from acct_master)"));
+        assertArrayEquals(file.content(), service.download(VERSION_NO, ConfigScriptTarget.NEW).content());
+        assertArrayEquals(file.content(), service.download(VERSION_NO).content());
+        assertEquals(file.sha256(), service.status(VERSION_NO).sha256());
+        assertEquals("MULTI_CONFIGURATION_REQUIRES_NEW", assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.download(VERSION_NO, ConfigScriptTarget.LEGACY)).errorCode());
+    }
+
+    @Test
     void newTargetHasItsOwnHashAndDoesNotOverwriteStoredLegacyScript() throws Exception {
         var legacy = service.generate(VERSION_NO, new ReplayIssueOperator("tester", "Tester"));
         var converted = service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW);
@@ -86,8 +123,8 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         assertTrue(sql.contains("TRUNCATE TABLE tss_bcomp_conf_new;"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_field_new"));
         assertTrue(sql.contains("INSERT INTO tss_bcomp_table_sql_new"));
-        assertTrue(sql.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num)"));
-        assertTrue(sql.contains("'张三','zhangsan',64)"));
+        assertTrue(sql.contains("bcomp_sample_limit,reviser_name,reviser_username,bcomp_max_partition_num,source_table_name,configuration_name,configuration_scope)"));
+        assertTrue(sql.contains("'张三','zhangsan',64,'acct_master'"));
         assertTrue(converted.fileName().endsWith("-new.sql"));
         assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                 .digest(converted.content())), converted.sha256());
@@ -105,8 +142,8 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
                 .withMaxPartitionNum(256));
         String sql = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW)
                 .content(), StandardCharsets.UTF_8);
-        assertTrue(sql.contains("'张三','zhangsan',100)"));
-        assertFalse(sql.contains("'张三','zhangsan',256)"));
+        assertTrue(sql.contains("'张三','zhangsan',100,'acct_master'"));
+        assertFalse(sql.contains("'张三','zhangsan',256,'acct_master'"));
         assertArrayEquals(legacy.content(),service.download(VERSION_NO).content());
         assertEquals(legacy.sha256(),service.status(VERSION_NO).sha256());
     }
@@ -174,7 +211,7 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
 
         var file = service.generate(VERSION_NO, operator, ConfigScriptTarget.NEW);
         assertTrue(new String(file.content(), StandardCharsets.UTF_8)
-                .contains("'HASH',-1,'张三','zhangsan',64)"));
+                .contains("'HASH',-1,'张三','zhangsan',64,'acct_master'"));
         assertArrayEquals(file.content(), service.download(VERSION_NO, ConfigScriptTarget.NEW).content());
         var downloadFailure = assertThrows(ReplayDatabaseComparisonGenerationException.class,
                 () -> service.download(VERSION_NO, ConfigScriptTarget.LEGACY));
@@ -190,10 +227,10 @@ class ReplayDatabaseComparisonConfigScriptServiceTest {
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=?,reviser_username=? WHERE version_id=?",
                 "王'山河", "c-wangsh8", versionId);
         String sql = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
-        assertTrue(sql.contains("'王''山河','c-wangsh8',64)"));
+        assertTrue(sql.contains("'王''山河','c-wangsh8',64,'acct_master'"));
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=NULL,reviser_username=NULL WHERE version_id=?", versionId);
         String noReviser = new String(service.forTarget(VERSION_NO, service.download(VERSION_NO), ConfigScriptTarget.NEW).content(), StandardCharsets.UTF_8);
-        assertTrue(noReviser.contains(",'HASH',100,NULL,NULL,64)"));
+        assertTrue(noReviser.contains(",'HASH',100,NULL,NULL,64,'acct_master'"));
         jdbc.update("UPDATE dii_replay_db_compare_version_table SET reviser_name=? WHERE version_id=?",
                 "王".repeat(101), versionId);
         assertThrows(ReplayDatabaseComparisonGenerationException.class,

@@ -420,6 +420,7 @@ class ReplayDatabaseComparisonServiceTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         createUsers(jdbc);
         dao = spy(new ReplayDatabaseComparisonDao(jdbc));
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);

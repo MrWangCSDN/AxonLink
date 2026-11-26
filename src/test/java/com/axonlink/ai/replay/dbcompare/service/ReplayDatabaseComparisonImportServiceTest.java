@@ -64,6 +64,7 @@ class ReplayDatabaseComparisonImportServiceTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         dao = new ReplayDatabaseComparisonDao(jdbc);
         versionDao = new ReplayDatabaseComparisonVersionDao(jdbc);
@@ -214,6 +215,102 @@ class ReplayDatabaseComparisonImportServiceTest {
         assertNull(registration.groupOwnerName());
         assertEquals("UNIQUE_INDEX", registration.comparisonKey().indexType());
         assertEquals(List.of("settlement_no"), registration.comparisonKey().columnNames());
+    }
+
+    @Test
+    void physicalTableCannotOverwriteAnotherSourcesConfigurationWithTheSameCode() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var service = service();
+        assertTrue(service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "acct_no", "创建人"))), operator).success());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='acct_1' WHERE table_name='acct'");
+
+        var result = service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct_1", "status", "编辑人"))), operator);
+
+        assertFalse(result.success());
+        assertTrue(result.errors().stream().anyMatch(error -> error.tableName().equals("acct_1")
+                && error.reason().contains("acct")));
+        var sibling = dao.findBySchemaAndTable("base_schema", "acct_1");
+        assertEquals("acct", sibling.sourceTableName());
+        assertEquals(0, sibling.version());
+        assertEquals(List.of("acct_no"), sibling.fields().stream().map(field -> field.columnName()).toList());
+    }
+
+    @Test
+    void importUpdatesTheDefaultTableWithoutChangingOtherConfigurationsOfItsSource() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var service = service();
+        assertTrue(service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "acct_no", "创建人"),
+                input("存款", "acct_1", "acct_no", "创建人"))), operator).success());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET configuration_name='一般账户' WHERE table_name='acct'");
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET source_table_name='acct',configuration_name='特定账户' WHERE table_name='acct_1'");
+
+        var result = service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "status", "编辑人"))), operator);
+
+        assertTrue(result.success());
+        var base = dao.findBySchemaAndTable("base_schema", "acct");
+        assertEquals("一般账户", base.configurationName());
+        assertEquals(List.of("acct_no", "status"), base.fields().stream().map(field -> field.columnName()).toList());
+        var sibling = dao.findBySchemaAndTable("base_schema", "acct_1");
+        assertEquals("特定账户", sibling.configurationName());
+        assertEquals(0, sibling.version());
+        assertEquals(List.of("acct_no"), sibling.fields().stream().map(field -> field.columnName()).toList());
+    }
+
+    @Test
+    void importCannotAddPhysicalFieldsToACustomSqlResult() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var service = service();
+        assertTrue(service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "acct_no", "创建人"))), operator).success());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET registration_type='CUSTOM_SQL',"
+                + "custom_sql='select acct_no from acct',result_columns_json='[]' WHERE table_name='acct'");
+
+        var result = service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "status", "编辑人"))), operator);
+
+        assertFalse(result.success());
+        assertTrue(result.errors().stream().anyMatch(error -> error.reason().contains("SQL")));
+        assertEquals(List.of("acct_no"), dao.findBySchemaAndTable("base_schema", "acct").fields()
+                .stream().map(field -> field.columnName()).toList());
+    }
+
+    @Test
+    void importCannotAddASiblingWhenOnlyALegacyAliasExists() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var service = service();
+        assertTrue(service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "acct_no", "创建人"))), operator).success());
+        jdbc.update("UPDATE dii_replay_db_compare_registration SET table_name='legacy_acct' WHERE table_name='acct'");
+        jdbc.update("DELETE FROM dii_replay_db_compare_configuration_sequence");
+
+        var result = service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "another_table", "acct_no", "创建人"),
+                input("存款", "acct", "status", "编辑人"))), operator);
+
+        assertFalse(result.success());
+        assertFalse(result.errors().isEmpty());
+        assertNull(dao.findBySchemaAndTable("base_schema", "acct"));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
+    }
+
+    @Test
+    void importCannotRecycleAReservedCodeAfterTheRegistrationIsRemoved() throws Exception {
+        var operator = new ReplayIssueOperator("creator", "创建人");
+        var service = service();
+        assertTrue(service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "acct_no", "创建人"))), operator).success());
+        jdbc.update("DELETE FROM dii_replay_db_compare_registration WHERE table_name='acct'");
+
+        var result = service.importFile(new ByteArrayInputStream(workbook(
+                input("存款", "acct", "status", "编辑人"))), operator);
+
+        assertFalse(result.success());
+        assertFalse(result.errors().isEmpty());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dii_replay_db_compare_registration", Integer.class));
     }
 
     @Test

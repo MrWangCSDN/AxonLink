@@ -88,12 +88,14 @@ public class ReplayDatabaseComparisonConfigScriptService {
         String generatedBy = requireText(operator == null ? null : operator.username(), "用户未登录");
         String generatedName = operator.realName() == null || operator.realName().isBlank()
                 ? generatedBy : operator.realName().trim();
-        ReplayDatabaseComparisonConfigScriptGenerator.GeneratedScript generated = generator.generate(
-                versionNo, versionDao.findCompleteSnapshot(version.id()));
+        var snapshot = versionDao.findCompleteSnapshot(version.id());
+        boolean additional = snapshot.stream().anyMatch(ReplayDatabaseComparisonConfigScriptGenerator::isAdditionalConfiguration);
+        ReplayDatabaseComparisonConfigScriptGenerator.GeneratedScript generated = additional
+                ? generator.generateNew(versionNo, snapshot) : generator.generate(versionNo, snapshot);
         ReplayDatabaseComparisonVersionScriptDao.NewScript newScript =
                 new ReplayDatabaseComparisonVersionScriptDao.NewScript(
                         version.id(),
-                        "replay-db-compare-config-" + versionNo + ".sql",
+                        "replay-db-compare-config-" + versionNo + (additional ? "-new.sql" : ".sql"),
                         "GZIP",
                         generated.gzipContent(),
                         generated.sha256(),
@@ -140,6 +142,10 @@ public class ReplayDatabaseComparisonConfigScriptService {
 
     private StoredVersion requireSupportedTarget(String versionNo, ConfigScriptTarget target) {
         StoredVersion version = requireVersion(versionNo);
+        if (target == ConfigScriptTarget.LEGACY && versionDao.hasAdditionalConfigurations(version.id())) {
+            throw error(HttpStatus.UNPROCESSABLE_ENTITY, "MULTI_CONFIGURATION_REQUIRES_NEW",
+                    "额外配置必须使用包含真实来源、配置名称和范围的新版脚本");
+        }
         if (target == ConfigScriptTarget.LEGACY && versionDao.hasFullDifferenceSamples(version.id())) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY, "SAMPLE_LIMIT_REQUIRES_NEW",
                     "旧版脚本不支持全量差异明细，请下载新版脚本");
@@ -149,6 +155,7 @@ public class ReplayDatabaseComparisonConfigScriptService {
 
     private ScriptFile renderTarget(StoredVersion version, ScriptFile file, ConfigScriptTarget target) {
         if (target == ConfigScriptTarget.LEGACY) return target.file(file);
+        if (file.fileName().endsWith("-new.sql")) return file;
         var generated = generator.generateNew(version.versionNo(), versionDao.findCompleteSnapshot(version.id()));
         return new ScriptFile(file.fileName().replaceFirst("\\.sql$", "-new.sql"),
                 generated.sha256(), generated.sqlContent());

@@ -60,6 +60,19 @@ class ReplayDatabaseComparisonVersionServiceTest {
     private ReplayDatabaseComparisonService registrationService;
     private ReplayDatabaseComparisonVersionService service;
 
+    @Test
+    void ordinaryVersionGatePreservesConfigurationIdentityAfterRefreshingPhysicalMetadata() {
+        insertRegistration("acct_master_1", "账户", List.of(field("id", "编号", 1, true, 1)));
+        var input = registrationDao.findAllActiveWithFields().get(0).withConfigurationIdentity(
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity("acct_master", "活期配置"));
+        when(metadataService.inspectTables(List.of("acct_master"))).thenReturn(Map.of("acct_master", metadataFor(input)));
+        var gate = service.validateAll(List.of(input));
+        assertTrue(gate.valid());
+        assertEquals(input.configurationIdentity(), gate.registrations().get(0).configurationIdentity());
+        assertEquals("acct_master", gate.registrations().get(0).sourceTableName());
+        assertEquals("acct_master_1", gate.registrations().get(0).comparisonCode());
+    }
+
     @BeforeEach
     void setUp() {
         jdbc = ReplayIssueTestFixtures.newJdbc();
@@ -76,6 +89,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
                 new ClassPathResource("db/daoindex/V91__replay_db_compare_custom_sql.sql"),
                 new ClassPathResource("db/daoindex/V96__replay_db_compare_max_partition_num.sql"))
                 .execute(jdbc.getDataSource());
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         ReplayDatabaseComparisonServiceTest.createUsers(jdbc);
         SysUserDao userDao = new SysUserDao(jdbc);
         registrationDao = spy(new ReplayDatabaseComparisonDao(jdbc));
@@ -94,6 +108,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
         insertRegistration("sql_one", "金额汇总", List.of(field("id", "旧标识", 1, false, 1)));
         var definition = new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of());
         var registration = registrationDao.findAllActiveWithFields().get(0).withCustomSql(definition)
+                .withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity("acct", ""))
                 .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
         var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
         var freshColumns = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn("id", "ID", "VARCHAR", 2));
@@ -113,6 +128,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
         assertEquals(freshColumns, snapshot.customSql().resultColumns());
         assertEquals("ID", snapshot.fields().get(0).columnComment());
         assertEquals("sql_one", snapshot.tableName());
+        assertEquals(registration.configurationIdentity(), snapshot.configurationIdentity());
         verify(metadataService).inspectTables(List.of("acct"));
     }
 
@@ -121,6 +137,7 @@ class ReplayDatabaseComparisonVersionServiceTest {
         insertRegistration("sql_one", "错误查询", List.of(field("id", "标识", 1, false, 1)));
         var registration = registrationDao.findAllActiveWithFields().get(0)
                 .withCustomSql(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql("select id from acct", "acct", List.of()))
+                .withConfigurationIdentity(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity("acct", ""))
                 .withComparisonKey(new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("id")));
         var analyzer = mock(ReplayDatabaseComparisonCustomSqlAnalyzer.class);
         service.setCustomSqlAnalyzer(analyzer);

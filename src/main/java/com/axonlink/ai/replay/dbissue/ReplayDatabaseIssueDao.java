@@ -59,7 +59,7 @@ public class ReplayDatabaseIssueDao {
         }
     }
 
-    private record ResolvedSource(String tableName, String displayName) { }
+    private record ResolvedSource(String tableName, String displayName, String configurationName) { }
     private record SourcePersonnel(String identity, String name, String domain, String owner,
                                    String developerUsernames, String tableComment) { }
     public record TechnologyOwnerRegistration(TableIdentity table, String identity, String name,
@@ -78,12 +78,13 @@ public class ReplayDatabaseIssueDao {
     private static final String TECHNOLOGY_OWNER_SQL="COALESCE(registration.technology_owner_display,'')";
     private static final String FROZEN_SOURCE_SQL = """
             CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN NULLIF(TRIM(snapshot.source_table_name),'')
-                 ELSE snapshot.table_name END
+                 ELSE COALESCE(NULLIF(TRIM(snapshot.source_table_name),''),snapshot.table_name) END
             """;
     private static final String UNBOUND_SOURCE_SQL = """
             CASE WHEN EXISTS (SELECT 1 FROM dii_replay_db_compare_registration current_registration
                                WHERE LOWER(current_registration.table_name)=LOWER(i.table_name)
-                                 AND current_registration.registration_type='CUSTOM_SQL'
+                                 AND (current_registration.registration_type='CUSTOM_SQL'
+                                      OR NULLIF(TRIM(current_registration.source_table_name),'') IS NOT NULL)
                                  AND LOWER(TRIM(COALESCE(current_registration.source_table_name,'')))<>
                                      LOWER(TRIM(current_registration.table_name))) %s THEN NULL
                  ELSE i.table_name END
@@ -91,7 +92,8 @@ public class ReplayDatabaseIssueDao {
     private static final String HISTORICAL_ALIAS_SQL = """
             OR EXISTS (SELECT 1 FROM dii_replay_db_compare_version_table historical_registration
                         WHERE LOWER(historical_registration.table_name)=LOWER(i.table_name)
-                          AND historical_registration.registration_type='CUSTOM_SQL'
+                          AND (historical_registration.registration_type='CUSTOM_SQL'
+                               OR NULLIF(TRIM(historical_registration.source_table_name),'') IS NOT NULL)
                           AND LOWER(TRIM(COALESCE(historical_registration.source_table_name,'')))<>
                               LOWER(TRIM(historical_registration.table_name)))
             """;
@@ -290,7 +292,8 @@ public class ReplayDatabaseIssueDao {
             return Set.of();
         }
         Set<String> result = new LinkedHashSet<>(jdbc.queryForList(
-                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE registration_type='CUSTOM_SQL' "
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE (registration_type='CUSTOM_SQL' "
+                        + "OR (NULLIF(TRIM(source_table_name),'') IS NOT NULL AND LOWER(TRIM(source_table_name))<>LOWER(TRIM(table_name)))) "
                         + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ")",
                 String.class, codes.toArray()));
         result.addAll(historicalSqlAliasCodes(codes));
@@ -304,7 +307,7 @@ public class ReplayDatabaseIssueDao {
             return Set.of();
         }
         Set<String> result = new LinkedHashSet<>(jdbc.queryForList(
-                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE registration_type='CUSTOM_SQL' "
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_registration WHERE (registration_type='CUSTOM_SQL' OR NULLIF(TRIM(source_table_name),'') IS NOT NULL) "
                         + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ") "
                         + "AND LOWER(TRIM(COALESCE(source_table_name,'')))<>LOWER(TRIM(table_name))",
                 String.class, codes.toArray()));
@@ -317,7 +320,7 @@ public class ReplayDatabaseIssueDao {
             return Set.of();
         }
         return new LinkedHashSet<>(jdbc.queryForList(
-                "SELECT LOWER(table_name) FROM dii_replay_db_compare_version_table WHERE registration_type='CUSTOM_SQL' "
+                "SELECT LOWER(table_name) FROM dii_replay_db_compare_version_table WHERE (registration_type='CUSTOM_SQL' OR NULLIF(TRIM(source_table_name),'') IS NOT NULL) "
                         + "AND LOWER(table_name) IN (" + String.join(",", Collections.nCopies(codes.size(), "?")) + ") "
                         + "AND LOWER(TRIM(COALESCE(source_table_name,'')))<>LOWER(TRIM(table_name))",
                 String.class, codes.toArray()));
@@ -358,11 +361,33 @@ public class ReplayDatabaseIssueDao {
             return Map.of();
         }
         SourcePersonnel person = personnel(Set.of(source.tableName())).get(source.tableName());
-        if (person == null) {
-            return Map.of();
-        }
+        if (person == null) return Map.of();
         return Map.of("tableComment", source.displayName() == null ? person.tableComment() : source.displayName(),
-                "domain", person.domain(), "owner", person.owner());
+                "domain", person.domain(), "owner", person.owner(),
+                "sourceTableName", source.tableName(), "configurationName", configurationName(source));
+    }
+
+    public Map<TableIdentity, com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity> configurationIdentities(Collection<TableIdentity> tables) {
+        var result = new LinkedHashMap<TableIdentity, com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity>();
+        sourceTables(tables).forEach((key, source) -> result.put(key,
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(source.tableName(), configurationName(source))));
+        return result;
+    }
+
+    public Map<String, com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity> configurationIdentities(Collection<String> codes, Long versionId) {
+        var result = new LinkedHashMap<String, com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity>();
+        if (versionId == null) {
+            configurationIdentities(codes.stream().map(TableIdentity::new).toList())
+                    .forEach((key, identity) -> result.put(key.tableName(), identity));
+        } else {
+            versionSources(versionId, codes).forEach((code, source) -> result.put(code,
+                    new com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity(source.tableName(), configurationName(source))));
+        }
+        return result;
+    }
+
+    private static String configurationName(ResolvedSource source) {
+        return text(source.configurationName()).isBlank() ? "默认配置" : text(source.configurationName());
     }
 
     public List<TechnologyOwnerRegistration> technologyOwners(Collection<TableIdentity> tables) {
@@ -413,8 +438,13 @@ public class ReplayDatabaseIssueDao {
         if (!unbound.isEmpty()) {
             List<String> codes = unbound.stream().map(TableIdentity::tableName).distinct().toList();
             Set<String> sqlAliases = customSqlAliasCodes(codes);
+            Map<String, String> names = new HashMap<>();
+            jdbc.query("SELECT LOWER(table_name) AS code,MIN(configuration_name) AS configuration_name "
+                    + "FROM dii_replay_db_compare_registration WHERE LOWER(table_name) IN ("
+                    + String.join(",", Collections.nCopies(codes.size(), "?")) + ") GROUP BY LOWER(table_name) HAVING COUNT(*)=1",
+                    (org.springframework.jdbc.core.RowCallbackHandler) row -> names.put(row.getString("code"), row.getString("configuration_name")), codes.toArray());
             unbound.stream().filter(identity -> !sqlAliases.contains(identity.tableName()))
-                    .forEach(identity -> result.put(identity, new ResolvedSource(identity.tableName(), null)));
+                    .forEach(identity -> result.put(identity, new ResolvedSource(identity.tableName(), null, names.get(identity.tableName()))));
         }
         return result;
     }
@@ -430,7 +460,7 @@ public class ReplayDatabaseIssueDao {
         arguments.addAll(codes);
         String sql = "SELECT LOWER(snapshot.table_name) AS comparison_code,COUNT(*) AS matching_items,MAX("
                 + FROZEN_SOURCE_SQL + ") AS source_table_name,"
-                + "MAX(CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN snapshot.table_comment END) AS display_name "
+                + "MAX(CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN snapshot.table_comment END) AS display_name,MAX(snapshot.configuration_name) AS configuration_name "
                 + "FROM dii_replay_db_compare_version_table snapshot "
                 + "JOIN dii_replay_db_compare_version snapshot_version ON snapshot_version.id=snapshot.version_id "
                 + "WHERE snapshot.version_id=? AND LOWER(snapshot.table_name) IN ("
@@ -438,7 +468,7 @@ public class ReplayDatabaseIssueDao {
         jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) row -> {
             String source = text(row.getString("source_table_name")).trim().toLowerCase(Locale.ROOT);
             if (row.getLong("matching_items") == 1 && !source.isBlank()) {
-                result.put(row.getString("comparison_code"), new ResolvedSource(source, row.getString("display_name")));
+                result.put(row.getString("comparison_code"), new ResolvedSource(source, row.getString("display_name"), row.getString("configuration_name")));
             }
         }, arguments.toArray());
         return result;

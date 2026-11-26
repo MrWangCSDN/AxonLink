@@ -37,6 +37,7 @@ class ReplayDatabaseIssuePlanDateTest {
         jdbc.update("INSERT INTO dii_replay_database_table_person(table_name,domain_name,developer_usernames,imported_at) VALUES ('koba_off_sheet_acct','贷款组','other、developer',CURRENT_TIMESTAMP)");
         properties=new ReplayIssuePlanDateProperties();var regular=new ReplayIssuePlanDateProperties.EditorGroup();regular.setEmpNos(List.of("E001"));properties.getEditors().put("贷款组",regular);
         var elevated=new ReplayIssuePlanDateProperties.EditorGroup();elevated.setEmpNos(List.of("A001"));properties.getAdvancedEditors().put("贷款组",elevated);
+        com.axonlink.ai.replay.dbcompare.ReplayDbCompareMultiConfigurationFixture.install(jdbc);
         var users=new SysUserDao(jdbc);dao=new ReplayDatabaseIssueDao(jdbc);
         policy=new ReplayIssuePlanDateService(mock(ReplayIssueDao.class),users,mock(ReplayTransactionPersonDao.class),properties);
         var clock=Clock.fixed(Instant.parse("2026-10-12T02:00:00Z"),ZoneId.of("Asia/Shanghai"));

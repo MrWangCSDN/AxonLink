@@ -29,7 +29,37 @@ public record ReplayDbCompareListItem(
         int sampleLimit,
         ReplayDbCompareKeySelection comparisonKey,
         ReplayDbCompareCustomSql customSql,
+        int maxPartitionNum,
+        @com.fasterxml.jackson.annotation.JsonIgnore ReplayDbCompareConfigurationIdentity configurationIdentity) {
+    public ReplayDbCompareListItem(
+        long id,
+        String schemaName,
+        String tableName,
+        String tableComment,
+        String domainName,
+        String reviserEmpNo,
+        String reviserUsername,
+        String reviserName,
+        String groupOwnerEmpNo,
+        String groupOwnerName,
+        LocalDate registeredDate,
+        long version,
+        int fieldCount,
+        List<String> fieldPreview,
+        ReplayDbCompareConditionTree whereCondition,
+        boolean whereConditionConfigured,
+        Long compareLimit,
+        ReplayDbCompareMetadataValidation metadataValidation,
+        List<String> primaryKeyNames,
+        List<String> orderingPrimaryKeyNames,
+        int partitionNum,
+        int sampleLimit,
+        ReplayDbCompareKeySelection comparisonKey,
+        ReplayDbCompareCustomSql customSql,
         int maxPartitionNum) {
+        this(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum, null);
+    }
+
 
     public ReplayDbCompareListItem(
         long id,
@@ -120,7 +150,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareListItem(
@@ -153,7 +183,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareListItem(
@@ -188,7 +218,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     public ReplayDbCompareListItem {
@@ -246,7 +276,7 @@ public record ReplayDbCompareListItem(
                 id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName,
                 groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition,
                 whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames,
-                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+                partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
     }
 
     @JsonProperty("registrationType")
@@ -261,10 +291,17 @@ public record ReplayDbCompareListItem(
 
     @JsonProperty("sourceTableName")
     public String sourceTableName() {
-        return customSql == null ? tableName : customSql.sourceTableName();
+        return configurationIdentity != null ? configurationIdentity.sourceTableName() : customSql == null ? tableName : customSql.sourceTableName();
     }
 
     public ReplayDbCompareListItem withMaxPartitionNum(int maxPartitionNum) {
-        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum);
+        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum).withConfigurationIdentity(configurationIdentity);
+    }
+
+    @JsonProperty("configurationName")
+    public String configurationName() { return configurationIdentity == null || configurationIdentity.configurationName().isBlank() ? "默认配置" : configurationIdentity.configurationName(); }
+
+    public ReplayDbCompareListItem withConfigurationIdentity(ReplayDbCompareConfigurationIdentity identity) {
+        return new ReplayDbCompareListItem(id, schemaName, tableName, tableComment, domainName, reviserEmpNo, reviserUsername, reviserName, groupOwnerEmpNo, groupOwnerName, registeredDate, version, fieldCount, fieldPreview, whereCondition, whereConditionConfigured, compareLimit, metadataValidation, primaryKeyNames, orderingPrimaryKeyNames, partitionNum, sampleLimit, comparisonKey, customSql, maxPartitionNum, identity);
     }
 }
