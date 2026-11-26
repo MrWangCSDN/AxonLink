@@ -566,6 +566,114 @@ class ReplayDatabaseIssueControllerTest {
         mvc.perform(get("/api/ai/parallel-replay/database-issues").param("issueIds","koba_off_sheet_acct"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].canReview").value(false));
     }
+    @Test void technologyOwnerCandidatesIgnoreTheirOwnSelectionsAndScopeOtherColumns() throws Exception {
+        seedTechnologyOwnerFilterRows();
+
+        mvc.perform(post("/api/ai/parallel-replay/database-issues/filter-options")
+                .contentType("application/json").content("""
+                        {"field":"technologyOwnerDisplay","keyword":"tEcH_oNe","domains":["贷款组"],
+                         "technologyOwners":["不存在"],"technologyOwnerDisplay":"不存在","limit":1,"offset":99}
+                        """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].value").value("何甲(Tech_One)、刘乙(two%acct)"))
+                .andExpect(jsonPath("$.data.items[0].count").value(3))
+                .andExpect(jsonPath("$.data.candidateCount").value(1))
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(3))
+                .andExpect(jsonPath("$.data.truncated").value(false));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options")
+                .param("field","technologyOwnerDisplay").param("domains","贷款组").param("keyword","TWO%"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].value").value("何甲(Tech_One)、刘乙(two%acct)"));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options")
+                .param("field","technologyOwnerDisplay").param("domains","贷款组"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(3))
+                .andExpect(jsonPath("$.data.matchedIssueCount").value(5))
+                .andExpect(jsonPath("$.data.items[0].value").value(""))
+                .andExpect(jsonPath("$.data.items[0].count").value(1));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues/filter-options")
+                .param("field","domain").param("technologyOwners","何甲(Tech_One)、刘乙(two%acct)"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].value").value("贷款组"))
+                .andExpect(jsonPath("$.data.items[0].count").value(3));
+    }
+
+    @Test void technologyOwnerListAndExportUseTheSameExactAndFuzzyCriteria() throws Exception {
+        seedTechnologyOwnerFilterRows();
+
+        mvc.perform(get("/api/ai/parallel-replay/database-issues")
+                .param("technologyOwners","何甲(Tech_One)、刘乙(two%acct)","")
+                .param("domains","贷款组").param("limit","1").param("offset","1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(4))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].technologyOwnerDisplay").value("何甲(Tech_One)、刘乙(two%acct)"));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues").param("technologyOwners","何甲(Tech_One)"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get("/api/ai/parallel-replay/database-issues")
+                .param("technologyOwnerDisplay","TECH_ONE").param("domains","贷款组"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3));
+        String criteria = """
+                {"technologyOwners":["何甲(Tech_One)、刘乙(two%acct)",""],
+                 "technologyOwnerDisplay":"TWO%ACCT","domains":["贷款组"]}
+                """;
+        mvc.perform(post("/api/ai/parallel-replay/database-issues")
+                .contentType("application/json").content(criteria))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(3))
+                .andExpect(jsonPath("$.data.items[0].technologyOwnerDisplay").value("何甲(Tech_One)、刘乙(two%acct)"));
+
+        byte[] exported = mvc.perform(post("/api/ai/parallel-replay/database-issues/export")
+                .contentType("application/json").content(criteria))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(exported))) {
+            var sheet = workbook.getSheetAt(0);
+            assertEquals(3,sheet.getLastRowNum());
+            for (int row=1;row<=3;row++) {
+                assertEquals("何甲(Tech_One)、刘乙(two%acct)",sheet.getRow(row).getCell(3).getStringCellValue());
+            }
+        }
+        byte[] blankExport = mvc.perform(get("/api/ai/parallel-replay/database-issues/export")
+                .param("technologyOwners",""))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        try (var workbook = new XSSFWorkbook(new ByteArrayInputStream(blankExport))) {
+            var sheet = workbook.getSheetAt(0);
+            assertEquals(1,sheet.getLastRowNum());
+            assertEquals("",sheet.getRow(1).getCell(3).getStringCellValue());
+            assertEquals("blank_technology_owner",sheet.getRow(1).getCell(13).getStringCellValue());
+        }
+    }
+
+    @Test void technologyOwnerSelectionsEnforceTheExistingLimit() throws Exception {
+        String criteria = new ObjectMapper().writeValueAsString(Map.of("technologyOwners",Collections.nCopies(501,"")));
+        mvc.perform(post("/api/ai/parallel-replay/database-issues").contentType("application/json").content(criteria))
+                .andExpect(status().isBadRequest());
+    }
+
+    private void seedTechnologyOwnerFilterRows() throws Exception {
+        seedFilterRows();
+        jdbc.update("UPDATE dii_replay_database_table_person SET technology_owner_display=? WHERE table_name=?",
+                "何甲(Tech_One)、刘乙(two%acct)","koba_off_sheet_acct");
+        jdbc.update("UPDATE dii_replay_database_table_person SET technology_owner_display=? WHERE table_name=?",
+                "科外(tech_one)","extra_table");
+        registerMetadata("similar_technology_owner","贷款组","开发负责人","","");
+        jdbc.update("UPDATE dii_replay_database_table_person SET technology_owner_display=? WHERE table_name=?",
+                "何甲(TechXOne)、刘乙(twoXacct)","similar_technology_owner");
+        insertStoredIssue("similar_technology_owner","similar_technology_owner","表级","",4L);
+        registerMetadata("blank_technology_owner","贷款组","开发负责人","","");
+        jdbc.update("UPDATE dii_replay_database_table_person SET technology_owner_display=NULL WHERE table_name=?",
+                "blank_technology_owner");
+        insertStoredIssue("blank_technology_owner","blank_technology_owner","表级","",5L);
+        insertStoredIssue("not_compared_technology_owner","koba_off_sheet_acct","表级","",6L);
+        var hidden = dao.findByIssueId("not_compared_technology_owner");
+        hidden.put("issueStatus","不参与比对");
+        dao.update(hidden);
+    }
+
     @Test void currentRegistrationDrivesDomainOwnerFilteringOptionsExportAndMutationResponsesWithoutReimport() throws Exception {
         importBatch("DB20261012-01",3,1,2);
         assertEquals("",dao.find(1).get("domain"));assertEquals("",dao.find(1).get("owner"));

@@ -110,6 +110,14 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
         assertEquals(true, item(second, "owner_b").get("canReview"));
         assertEquals(true, item(first, "dev_a").get("canEditPlanDate"));
         assertEquals(false, item(second, "dev_a").get("canEditPlanDate"));
+
+        assertEquals("负责人甲(owner_a)", item(first, "owner_a").get("technologyOwnerDisplay"));
+        assertEquals("负责人乙(owner_b)", item(second, "owner_a").get("technologyOwnerDisplay"));
+        var result = dao.list(Map.of("technologyOwners", List.of("负责人甲(owner_a)")));
+        assertEquals(1L, result.get("total"));
+        assertEquals(first, ((Map<?,?>) ((List<?>) result.get("items")).get(0)).get("id"));
+        assertEquals(List.of(Map.of("value", "负责人乙(owner_b)", "count", 1L)),
+                dao.filterOptions("technologyOwnerDisplay", Map.of("batchNos", List.of(SECOND_BATCH))).get("items"));
     }
 
     @Test
@@ -216,6 +224,11 @@ class ReplayDatabaseIssueCustomSqlIdentityTest {
         assertTrue(dao.distinct("domain_name").isEmpty());
         assertEquals(List.of(Map.of("value", "", "count", 1L)),
                 dao.filterOptions("domain", Map.of()).get("items"));
+        assertEquals("", item(id, "owner_b").get("technologyOwnerDisplay"));
+        assertEquals(0L, dao.list(Map.of("technologyOwners", List.of("错误负责人(owner_b)"))).get("total"));
+        assertEquals(1L, dao.list(Map.of("technologyOwners", List.of(""))).get("total"));
+        assertEquals(List.of(Map.of("value", "", "count", 1L)),
+                dao.filterOptions("technologyOwnerDisplay", Map.of()).get("items"));
         assertTrue(dao.metadata(CODE).isEmpty());
         assertTrue(dao.technologyOwners(List.of(new ReplayDatabaseIssueDao.TableIdentity(CODE, FIRST_BATCH))).isEmpty());
     }

@@ -14,8 +14,16 @@ import java.util.function.Supplier;
 
 @Repository
 public class ReplayDatabaseIssueDao {
+    private static final String TECHNOLOGY_OWNER_FIELD="technologyOwnerDisplay";
     private record HeaderFilter(String field,String parameter,String column,boolean numeric) {
-        String columnSql(){return field.equals("domain")?DOMAIN_SQL:field.equals("owner")?OWNER_SQL:"i."+column;}
+        String columnSql(){
+            return switch(field){
+                case "domain" -> DOMAIN_SQL;
+                case "owner" -> OWNER_SQL;
+                case TECHNOLOGY_OWNER_FIELD -> TECHNOLOGY_OWNER_SQL;
+                default -> "i."+column;
+            };
+        }
         String valueSql(){return field.equals("plannedCompletionDate")?"COALESCE(CAST(i.planned_completion_date AS CHAR(10)),'')":field.equals("reviewStatus")?REVIEW_DISPLAY_SQL:numeric?"CONCAT('',"+columnSql()+")":"COALESCE("+columnSql()+",'')";}
     }
     private static final String REVIEW_DISPLAY_SQL="CASE WHEN i.review_status='待审核' THEN '待审核' WHEN i.review_status='已审核' AND TRIM(COALESCE(i.review_reason,''))='' THEN '已审核（未填写原因）' WHEN i.review_status='已审核' THEN '已审核（已填写原因）' ELSE '' END";
@@ -25,6 +33,7 @@ public class ReplayDatabaseIssueDao {
             new HeaderFilter("tableComment","tableComments","table_comment",false),
             new HeaderFilter("domain","domains","domain_name",false),
             new HeaderFilter("owner","owners","owner_display",false),
+            new HeaderFilter(TECHNOLOGY_OWNER_FIELD,"technologyOwners","technology_owner_display",false),
             new HeaderFilter("cooperationPerson","cooperationPersons","cooperation_person_display",false),
             new HeaderFilter("issueLevel","issueLevels","issue_level",false),
             new HeaderFilter("fieldName","fieldNames","field_name",false),
@@ -66,6 +75,7 @@ public class ReplayDatabaseIssueDao {
     private static final int MAX_FILTER_CANDIDATES=500;
     private static final String DOMAIN_SQL="COALESCE(registration.domain_name,'')";
     private static final String OWNER_SQL="COALESCE(registration.developer_display,'')";
+    private static final String TECHNOLOGY_OWNER_SQL="COALESCE(registration.technology_owner_display,'')";
     private static final String FROZEN_SOURCE_SQL = """
             CASE WHEN snapshot.registration_type='CUSTOM_SQL' THEN NULLIF(TRIM(snapshot.source_table_name),'')
                  ELSE snapshot.table_name END
@@ -215,11 +225,15 @@ public class ReplayDatabaseIssueDao {
         }
         var columns=Map.of("domain","domain_name","issueLevel","issue_level","issueStatus","issue_status","issueType","issue_type","batchNo","batch_no");
         columns.forEach((key,col)->{if(key.equals(excludedField))return;String value=text(first(criteria.get(key)));if(!value.isBlank()){where.append(" AND ").append(key.equals("domain")?DOMAIN_SQL:"i."+col).append("=?");args.add(value);}});
-        for(String key:List.of("keyword","owner")){
+        for(String key:List.of("keyword","owner",TECHNOLOGY_OWNER_FIELD)){
             if(key.equals(excludedField))continue;
             String value=text(first(criteria.get(key)));if(value.isBlank())continue;
-            String escaped=like(value);
+            String escaped=like(key.equals(TECHNOLOGY_OWNER_FIELD)?value.toLowerCase(Locale.ROOT):value);
             if(key.equals("owner")){where.append(" AND ").append(OWNER_SQL).append(" LIKE ? ESCAPE '!'");args.add(escaped);}
+            else if(key.equals(TECHNOLOGY_OWNER_FIELD)){
+                where.append(" AND LOWER(").append(TECHNOLOGY_OWNER_SQL).append(") LIKE ? ESCAPE '!'");
+                args.add(escaped);
+            }
             else{where.append(" AND (i.issue_id LIKE ? ESCAPE '!' OR i.table_name LIKE ? ESCAPE '!' OR i.table_comment LIKE ? ESCAPE '!')");args.addAll(List.of(escaped,escaped,escaped));}
         }
         return new QueryWhere(where.toString(),args);
