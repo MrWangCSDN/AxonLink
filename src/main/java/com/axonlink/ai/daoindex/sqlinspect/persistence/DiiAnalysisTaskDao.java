@@ -5,9 +5,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -100,9 +103,6 @@ public class DiiAnalysisTaskDao {
              WHERE t.id IN (:taskIds)
             """;
 
-    private static final Map<String, Object> EMPTY_STATS = Map.of(
-            "explain_err", 0L, "llm_done", 0L, "llm_failed", 0L, "llm_running", 0L, "pool_count", 0L);
-
     // 「一天一次·覆盖式」：查当天（结果库 MySQL 本地时区）已存在的巡检任务。
     // CURDATE() 取数据库当天日期，DATE(created_at) 把 created_at 截断到日，
     // 只返回 id + status 两列即可（service 层据此判断是否拒绝/删旧）。
@@ -117,10 +117,14 @@ public class DiiAnalysisTaskDao {
 
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate namedJdbc;
+    private final TransactionTemplate pageReadTransaction;
 
     public DiiAnalysisTaskDao(JdbcTemplate diiResultJdbcTemplate) {
         this.jdbc = diiResultJdbcTemplate;
         this.namedJdbc = new NamedParameterJdbcTemplate(diiResultJdbcTemplate);
+        this.pageReadTransaction = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
+        this.pageReadTransaction.setReadOnly(true);
+        this.pageReadTransaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     }
 
     /** 创建新任务。返回 taskId。 */
@@ -274,7 +278,12 @@ public class DiiAnalysisTaskDao {
         sql.append(" ORDER BY id DESC LIMIT ? OFFSET ?");
         args.add(eff);
         args.add(Math.max(offset, 0));
-        List<Map<String, Object>> page = jdbc.queryForList(sql.toString(), args.toArray());
+        // 覆盖式重跑会删除旧任务，两次查询需要读取同一个快照。
+        return pageReadTransaction.execute(transaction -> listPageWithStats(sql.toString(), args.toArray()));
+    }
+
+    private List<Map<String, Object>> listPageWithStats(String sql, Object[] args) {
+        List<Map<String, Object>> page = jdbc.queryForList(sql, args);
         if (page.isEmpty()) {
             return page;
         }
@@ -285,8 +294,7 @@ public class DiiAnalysisTaskDao {
             statsByTaskId.put(stats.remove("id"), stats);
         }
         for (Map<String, Object> task : page) {
-            // 覆盖式重跑可能在两次查询之间删除旧任务，退回零计数。
-            task.putAll(statsByTaskId.getOrDefault(task.get("id"), EMPTY_STATS));
+            task.putAll(statsByTaskId.get(task.get("id")));
         }
         return page;
     }

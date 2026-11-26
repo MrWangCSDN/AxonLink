@@ -8,6 +8,9 @@ import org.springframework.jdbc.datasource.embedded.EmbeddedDatabase;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -138,6 +141,35 @@ public class DiiAnalysisTaskDaoTest {
                 "llm_done", "llm_failed", "llm_running", "pool_count"
         ), page.get(0).keySet());
         assertEquals(42, page.get(0).get("total_sqls"));
+    }
+
+    @Test
+    void keepsEnvironmentCountsWhenAnotherConnectionReplacesTheTask() {
+        insertTask(1, "uat", "DONE");
+        jdbc.update("INSERT INTO dii_sql_pool (env) VALUES ('uat'), ('uat'), ('uat'), ('uat'), ('uat')");
+
+        JdbcTemplate pageReader = new JdbcTemplate(database) {
+            @Override
+            public List<Map<String, Object>> queryForList(String sql, Object... args) {
+                List<Map<String, Object>> page = super.queryForList(sql, args);
+                try (Connection writer = database.getConnection(); Statement statement = writer.createStatement()) {
+                    statement.executeUpdate("DELETE FROM dii_analysis_task WHERE id = 1");
+                    statement.executeUpdate("""
+                            INSERT INTO dii_analysis_task (id, task_no, env, status)
+                            VALUES (2, 'TASK-2', 'uat', 'RUNNING')
+                            """);
+                } catch (SQLException e) {
+                    throw new AssertionError("Could not replace the task on a separate connection", e);
+                }
+                return page;
+            }
+        };
+
+        List<Map<String, Object>> page = new DiiAnalysisTaskDao(pageReader).list(1, 0);
+
+        assertEquals(List.of(1L), taskIds(page));
+        assertEquals(5L, ((Number) page.get(0).get("pool_count")).longValue());
+        assertEquals(List.of(2L), taskIds(dao.list(1, 0)));
     }
 
     @Test
