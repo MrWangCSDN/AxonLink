@@ -1,6 +1,6 @@
 # Full Difference Recording Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Axon登记样本数支持全量，bd完整保存比对范围内全部差异行并可分页核查。
 
@@ -61,12 +61,12 @@
 
 **Interfaces:** consumes/produces `sampleLimit:number`; selects all => -1; finite box0..10000; no-permission omission unchanged. Display -1 as全量 only for sampleLimit, never alter other numeric audit fields.
 
-- [ ] RED: 新建默认100，选择全量提交-1；加载-1展示全量；切回恢复上次数字，换表重置；普通及自定义SQL同等覆盖。
-- [ ] RED: 无权限/保存中模式及输入不可改，无权限请求省略；列表/详情/冻结版本/审计复制显示全量且其他-1审计字段原样。
-- [ ] Run five targeted spec files, confirm new interaction/display assertions fail.
-- [ ] Implement compact指定数量/全量选项及草稿数量；复用现有授权与请求转发，统一sampleLimit格式化。
-- [ ] GREEN targeted tests then `npm test` and `npm run build`；不扩展固定版本Excel结构。
-- [ ] Commit only task files; root把已验bundle复制到后端static并校验。
+- [x] RED: 新建默认100，选择全量提交-1；加载-1展示全量；切回恢复上次数字，换表重置；普通及自定义SQL同等覆盖。
+- [x] RED: 无权限/保存中模式及输入不可改，无权限请求省略；列表/详情/冻结版本/审计复制显示全量且其他-1审计字段原样。
+- [x] Run five targeted spec files, confirm new interaction/display assertions fail.
+- [x] Implement compact指定数量/全量选项及草稿数量；复用现有授权与请求转发，统一sampleLimit格式化。
+- [x] GREEN targeted tests then `npm test` and `npm run build`；不扩展固定版本Excel结构。
+- [x] Commit only task files; root把已验bundle复制到后端static并校验。
 
 ### Task 3: bd导入和结果存储契约
 
@@ -79,12 +79,12 @@
 
 **Interfaces:** explicit signedINT BCOMP_SAMPLE_LIMIT=-1; three sample counters、pattern SAMPLE_COUNT和SAMPLE_NO为BIGINT/long；JSON形状保持，分页size有界。
 
-- [ ] RED: 实际NEW14列带-1导入成功，11/13列同理；-2及10001拒绝并整次回滚；更新省略及复制保留-1。
-- [ ] RED: 结果计数和序号超过2147483647仍精确读取；无pattern type4包含Top127外明细。
-- [ ] Run targeted tests and confirm prior validator/int path fails.
-- [ ] Implement parser range/copy保留；双方言DDL及H2 schema；JDBC getLong/setLong和long模型，不修改全局fallback0..10000。
-- [ ] GREEN tests both dialect modes；检查旧结果升级后保持，元库迁移不自动触达现场。
-- [ ] Commit import/result/model/SQL tests coherently.
+- [x] RED: 实际NEW14列带-1导入成功，11/13列同理；-2及10001拒绝并整次回滚；更新省略及复制保留-1。
+- [x] RED: 结果计数和序号超过2147483647仍精确读取；无pattern type4包含Top127外明细。
+- [x] Run targeted tests and confirm prior validator/int path fails.
+- [x] Implement parser range/copy保留；双方言DDL及H2 schema；JDBC getLong/setLong和long模型，不修改全局fallback0..10000。
+- [x] GREEN tests both dialect modes；检查旧结果升级后保持，元库迁移不自动触达现场。
+- [x] Commit import/result/model/SQL tests coherently.
 
 ### Task 4: bd全量Spark执行及原子发布
 
@@ -96,14 +96,14 @@
 
 **Interfaces:** FullDifferenceStage以runId/partition/attempt/localNo暂存；PartitionManifest返回身份、long matched/2/3/4 totals和按配置字段名计数；`DailyResultPublisher.publishFull`发布获胜manifest，旧publish不变。
 
-- [ ] RED: 生成type2/3/4、重复可空键差额，>20000行及>127patterns，断言全量行count与精确汇总/字段统计一致，未通过driverResultAggregate收全集。
-- [ ] RED: 两attempt同partition仅赢家发布，失败attempt部分commit及late speculative行不混入；关闭run后晚到insert失败；清理不删除running task的run。
-- [ ] RED: 发布删旧后注入异常，旧每日结果/明细/任务状态rollback一致；manifest计数不符拒绝发布；commit异常不重放。
-- [ ] Run focused tests and observe bounded sample/truncation or missing stage failure.
-- [ ] Implement独立全量mapPartitions，coalesce(min原partition,4),false；每attempt单JDBC连接100条batchcommit，差额逐occurrence用long展开，仅collect小manifest。
-- [ ] Implement run/stage/winner隔离；事务锁task/day、选择成功attempt、count校验、long前缀序号、DB GROUP BY Top127+OTHER、全部明细及摘要/字段计数/任务一次commit，finally清run。
-- [ ] GREEN `mvn -pl compare-spark -am test`及`mvn -Pspark-3.4 -pl compare-spark -am test`；确认旧0/限额路径边界保持。
-- [ ] Commit only full-path/cleanup tests and implementation files.
+- [x] RED: 生成type2/3/4、重复可空键差额，>20000行及>127patterns，断言全量行count与精确汇总/字段统计一致，未通过driverResultAggregate收全集。
+- [x] RED: 两attempt同partition仅赢家发布，失败attempt部分commit及late speculative行不混入；关闭run后晚到insert失败；清理不删除running task的run。
+- [x] RED: 发布删旧后注入异常，旧每日结果/明细/任务状态rollback一致；manifest计数不符拒绝发布；commit异常不重放。
+- [x] Run focused tests and observe bounded sample/truncation or missing stage failure.
+- [x] Implement独立全量mapPartitions，coalesce(min原partition,4),false；每attempt单JDBC连接100条batchcommit，差额逐occurrence用long展开，仅collect小manifest。
+- [x] Implement run/stage/winner隔离；事务锁task/day、选择成功attempt、count校验、long前缀序号、DB GROUP BY Top127+OTHER、全部明细及摘要/字段计数/任务一次commit，finally清run。
+- [x] GREEN `mvn -pl compare-spark -am test`及`mvn -Pspark-3.4 -pl compare-spark -am test`；确认旧0/限额路径边界保持。
+- [x] Commit only full-path/cleanup tests and implementation files.
 
 ### Task 5: bd全量结果展示
 
@@ -113,19 +113,33 @@
 
 **Interfaces:** detailLimit=-1展示全量，原有限样本/0文案保持；type4默认不传patternId而分页浏览全部，Top127快捷入口保持。
 
-- [ ] RED: -1结果显示全量，不出现负数样本提示；全部type4请求无pattern，翻页保留type4且能显示折叠组合行；快捷分组仍发实际pattern。
-- [ ] RED: -1模式提示单值展示沿用裁剪，0与有限限额文案无回归。
-- [ ] Run targeted UI tests, verify new assertions fail.
-- [ ] Implement minimal existing-page wording and default all-pattern browse without无界请求。
-- [ ] GREEN UI targeted/full tests and `npm run build`；不修改服务/Spark/SQL以免共享工作区冲突。
-- [ ] Commit only compare-ui task files.
+- [x] RED: -1结果显示全量，不出现负数样本提示；全部type4请求无pattern，翻页保留type4且能显示折叠组合行；快捷分组仍发实际pattern。
+- [x] RED: -1模式提示单值展示沿用裁剪，0与有限限额文案无回归。
+- [x] Run targeted UI tests, verify new assertions fail.
+- [x] Implement minimal existing-page wording and default all-pattern browse without无界请求。
+- [x] GREEN UI targeted/full tests and `npm run build`；不修改服务/Spark/SQL以免共享工作区冲突。
+- [x] Commit only compare-ui task files.
 
 ### Task 6: Cross-project review and delivery
 
-- [ ] Independent review of complete diffs with five Review Focus conditions; fix each finding with a regression reproducer before claiming closure.
-- [ ] Cross-project actual NEW SQL fixture: frozen-1 =>14列=>bd strict import=>stored-1=>Spark full=>all types/counts=>paged UI。
-- [ ] Run appropriate full backend/service/Spark3.4+3.5/UI builds once after final changes; repeat only for new changes/failures.
-- [ ] Copy verified Axon frontend bundle into local backendstatic and compare file manifests; no unsolicitedZIP。
-- [ ] Update Obsidian implementation status with actual evidence, `git diff --check`、frontmatter/links checks；commit docs。
-- [ ] Fetch and integrate latest remote main for each repo, push authorized commits withoutforce；preserve all unrelated dirty/source branches。
-- [ ] Report concise completion, commits and migration/deployment prerequisites, explicitly separate local verification from production validation。
+- [x] Independent review of complete diffs with five Review Focus conditions; fix each finding with a regression reproducer before claiming closure.
+- [x] Cross-project actual NEW SQL fixture: frozen-1 =>14列=>bd strict import=>stored-1=>Spark full=>all types/counts=>paged UI。
+- [x] Run appropriate full backend/service/Spark3.4+3.5/UI builds once after final changes; repeat only for new changes/failures.
+- [x] Copy verified Axon frontend bundle into local backendstatic and compare file manifests; no unsolicitedZIP。
+- [x] Update Obsidian implementation status with actual evidence, `git diff --check`、frontmatter/links checks；commit docs。
+- [x] Fetch and integrate latest remote main for each repo, push authorized commits withoutforce；preserve all unrelated dirty/source branches。
+- [x] Report concise completion, commits and migration/deployment prerequisites, explicitly separate local verification from production validation。
+
+
+## Final verification and delivery (2026-11-26)
+
+- Axon frontend: 856 tests pass, production build pass; switching to a different table resets full mode to default100. Runtime commit a5b64d8, added isolation regression993538b.
+- Axon backend:197 focused tests and1686 full tests,0 failures/errors,6 existing skips; Java17 clean package pass. Exact233 frontend files verified in local backend static and clean JAR.
+- bd: Spark3.5.3 and3.4.0 clean verify each100 tests pass; service230 tests,0 failures/errors,1 environment-dependent Gauss integration skip. Local validation used public openGauss JDBC6.0.0 and local-servlet-tests profile; enterprise BES/openGauss6.0.0-htrunk8 runtime remains an intranet build prerequisite.
+- bd UI:109 tests,TypeScript and production build pass. Clean local service package contains exactly3 matching UI files; Spark JAR contains FullDifferenceStage.
+- Actual frozen Axon NEW14 SQL passed production bd import in both dialect test modes. Real local Spark main saved20003 field differences and2 rows on each one-sided category; stage tests preserved20130 field rows and130 patterns, rejected losing/late attempts and preserved old results on publish failure.
+- Isolated MySQL9.4 verified Axon V98 and bd GDB legacy upgrade/clean install, six BIGINT columns above3billion, winner copy SQL and FK cleanup. Temporary database instances/data removed. No production database was accessed.
+- Independent review: maintenance timeout/starvation, mixed-pattern unchanged fields and expired overflow guidance all fixed with failing reproductions and passing final suites. No unresolved blocking findings.
+- Pushed frontend993538b, backende410b7c, bd6f97c18 and design9c50c21 to their GitHub main branches without force. This completion record is a subsequent documentation-only commit.
+- Deployment order: Axon V98; bd corresponding add_bcomp_full_details_new.sql or add_bcomp_full_details_gdb.sql before synchronized service/Spark/UI rollout, then import full-mode config. Existing WHERE/compareLimit and display projection limits remain. Real Gauss/intranet cluster load validation and production rollout were not performed.
+- The separate axon-import-seven-day-retention branch was preserved and not integrated; current main keeps BD_DIFF_RETENTION_DAYS default30.
