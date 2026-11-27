@@ -32,11 +32,15 @@ mkdir -p "$(dirname "${OUTPUT}")"
 rm -f -- "${OUTPUT}"
 
 cd "${REPO_ROOT}"
-zip -qr -UN=UTF8 "${OUTPUT}" "${SOURCE_PATHS[@]}" -x \
+zip -qr "${OUTPUT}" "${SOURCE_PATHS[@]}" -x \
   '.DS_Store' '*/.DS_Store' '*.java.zip' \
   'src/main/resources/111.txt' \
   'src/main/resources/111.txt.zip' \
   'src/main/resources/application-local.yml'
+
+# Apple zip may omit the UTF-8 flag even when filenames already contain UTF-8 bytes.
+JAVA_BIN="${JAVA_HOME:+${JAVA_HOME}/bin/}java"
+"${JAVA_BIN}" --source 17 "${SCRIPT_DIR}/NormalizeZipUtf8.java" "${OUTPUT}"
 unzip -tq "${OUTPUT}"
 
 REQUIRED_REGISTRY='src/main/java/com/axonlink/ai/daoindex/datasource/TargetDataSourceRegistry.java'
