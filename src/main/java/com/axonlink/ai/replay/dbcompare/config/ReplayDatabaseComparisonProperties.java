@@ -52,6 +52,7 @@ public class ReplayDatabaseComparisonProperties {
         this.baseSchema = baseSchema;
     }
 
+    /** Optional original AES key for reading legacy passwords; new saved passwords need no key. */
     public String getScriptConfigPasswordKey() {
         return scriptConfigPasswordKey;
     }

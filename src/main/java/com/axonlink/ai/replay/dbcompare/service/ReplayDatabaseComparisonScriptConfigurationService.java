@@ -13,7 +13,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.SecretKey;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -53,7 +52,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
     private final ReplayDatabaseComparisonConfigScriptGenerator generator;
     private final ReplayDatabaseComparisonTablesExcelParser parser;
     private final ReplayScriptConfigDataSource dataSource;
-    private final ReplayScriptConfigPasswordCipher passwordCipher;
+    private final ReplayScriptConfigPasswordStorage passwords;
     private final Clock clock;
     private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
 
@@ -74,7 +73,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         this.generator = generator;
         this.parser = parser;
         this.dataSource = dataSource;
-        this.passwordCipher = passwordCipher;
+        this.passwords = new ReplayScriptConfigPasswordStorage(passwordCipher);
         this.clock = clock;
     }
 
@@ -198,8 +197,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
             String ciphertext = null;
             if (source != null) {
                 connectionJson = json.writeValueAsString(source.connection());
-                ciphertext = source.savedCiphertext();
-                if (ciphertext == null) ciphertext = passwordCipher.encrypt(source.password(), source.key());
+                ciphertext = passwords.store(source.password());
             }
             var value = new WriteConfiguration(name, name.toLowerCase(Locale.ROOT),
                     json.writeValueAsString(prepared.content()), artifact + ".sql", script.gzipContent(),
@@ -221,18 +219,17 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         String password = request == null ? null : request.password();
         if (password != null && !password.isEmpty()) {
             ConnectionDetails connection = dataSource.normalize(request);
-            return new ResolvedSource(connection, password, null, passwordCipher.requireKey());
+            return new ResolvedSource(connection, password);
         }
         ConnectionDetails stored = storedConnection(current);
         if (request == null && stored == BASE) return null;
 
         ConnectionDetails connection = request == null ? stored : dataSource.normalize(request);
         String ciphertext = current == null ? null : current.passwordCiphertext();
-        if (ciphertext == null || !sameAuthentication(connection, stored)) {
+        if (!sameAuthentication(connection, stored)) {
             throw new IllegalArgumentException("请为当前数据源提供密码");
         }
-        SecretKey key = passwordCipher.requireKey();
-        return new ResolvedSource(connection, passwordCipher.decrypt(ciphertext, key), ciphertext, key);
+        return new ResolvedSource(connection, passwords.read(ciphertext));
     }
 
     private boolean sameAuthentication(ConnectionDetails requested, ConnectionDetails stored) {
@@ -477,8 +474,7 @@ public class ReplayDatabaseComparisonScriptConfigurationService {
         }
     }
 
-    private record ResolvedSource(ConnectionDetails connection, String password, String savedCiphertext,
-                                  SecretKey key) {
+    private record ResolvedSource(ConnectionDetails connection, String password) {
         @Override public String toString() { return "ResolvedSource[redacted]"; }
     }
 

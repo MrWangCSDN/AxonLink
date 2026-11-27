@@ -438,5 +438,6 @@ replay-database-comparison:
   partition-admin-emp-nos: ${REPLAY_DB_COMPARE_PARTITION_ADMIN_EMP_NOS:}
   base-target-env: ${REPLAY_BASE_TARGET_ENV:base}
   base-schema: ${REPLAY_BASE_DB_SCHEMA:}
+  # Optional compatibility key for old AES password records. New saves do not require it.
   script-config-password-key: ${REPLAY_DB_SCRIPT_PASSWORD_KEY:}
   import-enabled: ${REPLAY_DB_COMPARE_IMPORT_ENABLED:true}

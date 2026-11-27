@@ -1,5 +1,9 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.axonlink.ai.replay.ReplayIssueTestFixtures;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
 import com.axonlink.ai.replay.dbcompare.dto.*;
@@ -10,10 +14,16 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.StatementCreatorUtils;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 
 import java.io.ByteArrayInputStream;
@@ -70,12 +80,15 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
                 Clock.fixed(Instant.parse("2026-11-24T02:00:00Z"), ZoneId.of("Asia/Shanghai")));
     }
 
-    @Test void savesIndependentSourceMetadataWithoutExposingEitherPassword() throws Exception {
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void savesIndependentSourceMetadataWithoutExposingEitherPassword(CapturedOutput output) throws Exception {
         properties.setScriptConfigPasswordKey(KEY);
         customMetadata("staging", "staging_id");
         customMetadata("public", "live_id");
         var staging = connection("DB.Example.Test", "Migration", "staging", "Reader", PASSWORD);
-        var live = connection("db2.example.test", "Production", "public", "Reader", PASSWORD);
+        String livePassword = "live-only-credential";
+        var live = connection("db2.example.test", "Production", "public", "Reader", livePassword);
 
         Detail first = service.create(sourceRequest("迁移比对", null, staging), actor);
         Detail second = service.create(sourceRequest("线上比对", null, live), actor);
@@ -85,8 +98,8 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
         assertEquals("staging_id", first.tables().get(0).fields().get(0).columnName());
         assertEquals("live_id", second.tables().get(0).fields().get(0).columnName());
         var stored = dao.find(first.id());
-        assertTrue(stored.passwordCiphertext().startsWith("v1:"));
-        assertNotEquals(stored.passwordCiphertext(), dao.find(second.id()).passwordCiphertext());
+        assertEquals("plain:v1:" + PASSWORD, stored.passwordCiphertext());
+        assertEquals("plain:v1:" + livePassword, dao.find(second.id()).passwordCiphertext());
         assertFalse(stored.configJson().contains("connection"));
         assertFalse(stored.connectionJson().contains("password"));
         assertFalse(stored.toString().contains(stored.passwordCiphertext()));
@@ -105,6 +118,8 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
         verify(driver).connect(eq("jdbc:postgresql://db.example.test:5432/Migration"), argThat(
                 options -> PASSWORD.equals(options.getProperty("password")) && "Reader".equals(options.getProperty("user"))));
         verify(metadata, never()).inspectTables(anyCollection());
+        assertFalse(output.getAll().contains(PASSWORD));
+        assertFalse(output.getAll().contains(livePassword));
     }
 
     @Test void rejectsHostComponentsWithoutConnectingOrReusingTheCurrentPassword() throws Exception {
@@ -203,31 +218,128 @@ class ReplayDatabaseComparisonScriptConfigurationServiceTest {
         assertNull(dao.find(first.id()).passwordCiphertext());
     }
 
-    @Test void missingKeyWrongKeyAndTamperingLeaveFrozenDownloadUsable() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"", "not-base64", "AQID"})
+    void savesPreviewsAndReusesCustomPasswordWithoutValidKey(String configuredKey) throws Exception {
+        properties.setScriptConfigPasswordKey(configuredKey);
+        customMetadata("public", "custom_id");
         var custom = connection("db.example.test", "Migration", "public", "Reader", PASSWORD);
-        for (String key : List.of("", "not-base64", "AQID")) {
-            properties.setScriptConfigPasswordKey(key);
-            assertEquals(503, error(() -> service.create(sourceRequest("迁移比对", null, custom), actor)));
-            assertTrue(dao.list().isEmpty());
+        var create = sourceRequest("迁移比对", null, custom);
+        service.previewMetadata(new PreviewRequest(null, null, custom, create.tables()));
+        Detail saved = service.create(create, actor);
+        assertEquals("plain:v1:" + PASSWORD, dao.find(saved.id()).passwordCiphertext());
+
+        var reuse = connection("db.example.test", "Migration", "public", "Reader", "");
+        var edit = sourceRequest("迁移比对", 1L, reuse);
+        service.previewMetadata(new PreviewRequest(BigDecimal.valueOf(saved.id()), BigDecimal.ONE, reuse, edit.tables()));
+        assertEquals(2L, service.update(saved.id(), edit, actor).revision());
+        verify(driver, times(4)).connect(anyString(), argThat(options -> PASSWORD.equals(options.getProperty("password"))));
+    }
+
+    private long savedLegacyCustomConfiguration() throws Exception {
+        var saved = service.create(sourceRequest("迁移比对", null, null), actor);
+        properties.setScriptConfigPasswordKey(KEY);
+        var cipher = new ReplayScriptConfigPasswordCipher(properties);
+        var oldConnection = new ConnectionDetails("CUSTOM", "db.example.test", 5432, "Migration", "public", "Reader", null);
+        jdbc.update("UPDATE dii_replay_db_compare_script_config SET connection_json=?,password_ciphertext=? WHERE id=?",
+                json.writeValueAsString(oldConnection), cipher.encrypt(PASSWORD, cipher.requireKey()), saved.id());
+        return saved.id();
+    }
+
+    @Test void legacyCiphertextIsMigratedOnSaveButNeverOnPreview() throws Exception {
+        long id = savedLegacyCustomConfiguration();
+        String legacyValue = dao.find(id).passwordCiphertext();
+        customMetadata("public", "custom_id");
+        var edit = sourceRequest("迁移比对", 1L, null);
+        service.previewMetadata(new PreviewRequest(BigDecimal.valueOf(id), BigDecimal.ONE, null, edit.tables()));
+        assertEquals(legacyValue, dao.find(id).passwordCiphertext());
+        assertEquals(2L, service.update(id, edit, actor).revision());
+        assertEquals("plain:v1:" + PASSWORD, dao.find(id).passwordCiphertext());
+        verify(driver, times(2)).connect(anyString(), argThat(options -> PASSWORD.equals(options.getProperty("password"))));
+    }
+
+    @Test void jdbcTraceDoesNotExposePasswordsDuringMigrationOrExplicitReplacement() throws Exception {
+        long id = savedLegacyCustomConfiguration();
+        customMetadata("public", "custom_id");
+        String replacement = "jdbc-trace-test-replacement";
+        String marker = "jdbc-trace-test-control";
+        Logger logger = (Logger) LoggerFactory.getLogger(StatementCreatorUtils.class);
+        Level previousLevel = logger.getLevel();
+        boolean previousAdditivity = logger.isAdditive();
+        var captured = new ListAppender<ILoggingEvent>();
+        captured.start();
+        try {
+            logger.addAppender(captured);
+            logger.setAdditive(false);
+            logger.setLevel(Level.TRACE);
+            jdbc.queryForObject("SELECT CAST(? AS VARCHAR)", String.class, marker);
+            assertEquals(2L, service.update(id, sourceRequest("迁移比对", 1L, null), actor).revision());
+            var updatedConnection = connection("db.example.test", "Migration", "public", "Reader", replacement);
+            assertEquals(3L, service.update(id, sourceRequest("迁移比对", 2L, updatedConnection), actor).revision());
+        } finally {
+            logger.setLevel(previousLevel);
+            logger.setAdditive(previousAdditivity);
+            logger.detachAppender(captured);
+            captured.stop();
         }
+        var messages = captured.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertTrue(messages.stream().anyMatch(message -> message.contains(marker)), "缺少 JDBC 参数跟踪对照日志");
+        assertAll(
+                () -> assertFalse(messages.stream().anyMatch(message -> message.contains(PASSWORD))),
+                () -> assertFalse(messages.stream().anyMatch(message -> message.contains(replacement))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"plain:v1:literal-value", "v1:literal-value"})
+    void suppliedPasswordIsOpaqueEvenWhenItStartsWithAStorageMarker(String value) throws Exception {
+        customMetadata("public", "custom_id");
+        var explicit = connection("db.example.test", "Migration", "public", "Reader", value);
+        var saved = service.create(sourceRequest("迁移比对", null, explicit), actor);
+        assertEquals("plain:v1:" + value, dao.find(saved.id()).passwordCiphertext());
+        var reuse = connection("db.example.test", "Migration", "public", "Reader", "");
+        assertEquals(2L, service.update(saved.id(), sourceRequest("迁移比对", 1L, reuse), actor).revision());
+        assertEquals("plain:v1:" + value, dao.find(saved.id()).passwordCiphertext());
+        verify(driver, times(2)).connect(anyString(), argThat(options -> value.equals(options.getProperty("password"))));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="})
+    void unreadableLegacyPasswordRequiresReentryAndCanBeReplaced(String configuredKey) throws Exception {
+        long id = savedLegacyCustomConfiguration();
+        properties.setScriptConfigPasswordKey(configuredKey);
+        assertReentryAndReplacement(id);
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {"unknown-format:opaque", "plain:v1:", "v1:AAAAAAAAAAAA"})
+    void damagedSavedCustomPasswordCanOnlyBeRecoveredByReentry(String storedValue) throws Exception {
+        long id = savedLegacyCustomConfiguration();
+        jdbc.update("UPDATE dii_replay_db_compare_script_config SET password_ciphertext=? WHERE id=?", storedValue, id);
+        assertReentryAndReplacement(id);
+    }
+
+    private void assertReentryAndReplacement(long id) throws SQLException {
+        var stored = dao.find(id);
+        var frozen = service.download(id, 1L);
+        var edit = sourceRequest("迁移比对", 1L, null);
+        var failure = assertThrows(ReplayDatabaseComparisonGenerationException.class,
+                () -> service.update(id, edit, actor));
+        assertEquals(422, failure.status().value());
+        assertEquals("SCRIPT_CONFIG_PASSWORD_REENTRY_REQUIRED", failure.errorCode());
+        assertFalse(failure.getMessage().contains(PASSWORD));
+        if (stored.passwordCiphertext() != null) assertFalse(failure.getMessage().contains(stored.passwordCiphertext()));
+        assertEquals(1L, dao.find(id).revision());
+        assertEquals(stored.passwordCiphertext(), dao.find(id).passwordCiphertext());
+        assertArrayEquals(stored.scriptContentGzip(), dao.find(id).scriptContentGzip());
+        assertArrayEquals(frozen.content(), service.download(id, 1L).content());
         verifyNoInteractions(driver);
 
-        properties.setScriptConfigPasswordKey(KEY);
         customMetadata("public", "custom_id");
-        Detail saved = service.create(sourceRequest("迁移比对", null, custom), actor);
-        var file = service.download(saved.id(), 1L);
-        byte[] wrong = new byte[32];
-        Arrays.fill(wrong, (byte) 1);
-        properties.setScriptConfigPasswordKey(Base64.getEncoder().encodeToString(wrong));
-        assertEquals(503, error(() -> service.update(saved.id(), sourceRequest("迁移比对", 1L, null), actor)));
-
-        properties.setScriptConfigPasswordKey(KEY);
-        jdbc.update("UPDATE dii_replay_db_compare_script_config SET password_ciphertext=? WHERE id=?",
-                "v1:" + Base64.getEncoder().encodeToString(new byte[40]), saved.id());
-        assertEquals(503, error(() -> service.update(saved.id(), sourceRequest("迁移比对", 1L, null), actor)));
-        verify(driver, times(1)).connect(anyString(), any(Properties.class));
-        assertEquals(1L, service.detail(saved.id()).revision());
-        assertArrayEquals(file.content(), service.download(saved.id(), 1L).content());
+        var replace = connection("db.example.test", "Migration", "public", "Reader", "replacement");
+        assertEquals(2L, service.update(id, sourceRequest("迁移比对", 1L, replace), actor).revision());
+        assertEquals("plain:v1:replacement", dao.find(id).passwordCiphertext());
+        verify(driver).connect(anyString(), argThat(options -> "replacement".equals(options.getProperty("password"))));
     }
 
     @Test void sourceFailureClosesConnectionAndKeepsTheSelectedRevisionAndFrozenBytes() throws Exception {

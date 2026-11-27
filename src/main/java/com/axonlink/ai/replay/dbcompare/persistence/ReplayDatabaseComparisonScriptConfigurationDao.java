@@ -73,10 +73,24 @@ public class ReplayDatabaseComparisonScriptConfigurationDao {
                         + "config_json=?,file_name=?,script_content_gzip=?,script_sha256=?,script_size=?,"
                         + "table_count=?,field_count=?,updated_by=?,updated_at=?,connection_json=?,password_ciphertext=? "
                         + "WHERE id=? AND revision=?",
-                value.name(), value.nameKey(), value.configJson(), value.fileName(), value.scriptContentGzip(),
-                value.scriptSha256(), value.scriptSize(), value.tableCount(), value.fieldCount(),
-                value.updatedBy(), Timestamp.valueOf(value.updatedAt()), value.connectionJson(),
-                value.passwordCiphertext(), id, expectedRevision);
+                statement -> {
+                    // Bind directly, as insert does: Spring's varargs binder logs parameter values at TRACE.
+                    statement.setString(1, value.name());
+                    statement.setString(2, value.nameKey());
+                    statement.setString(3, value.configJson());
+                    statement.setString(4, value.fileName());
+                    statement.setBytes(5, value.scriptContentGzip());
+                    statement.setString(6, value.scriptSha256());
+                    statement.setLong(7, value.scriptSize());
+                    statement.setInt(8, value.tableCount());
+                    statement.setInt(9, value.fieldCount());
+                    statement.setString(10, value.updatedBy());
+                    statement.setTimestamp(11, Timestamp.valueOf(value.updatedAt()));
+                    statement.setString(12, value.connectionJson());
+                    statement.setString(13, value.passwordCiphertext());
+                    statement.setLong(14, id);
+                    statement.setLong(15, expectedRevision);
+                });
     }
 
     public record WriteConfiguration(String name, String nameKey, String configJson, String fileName,

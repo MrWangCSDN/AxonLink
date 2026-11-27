@@ -240,19 +240,27 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
     @Test void importAcceptsAnOrdinaryConnectionTextPartAndProtectsParseErrors() throws Exception {
         long id = create().path("id").asLong();
         var workbook = excelFile();
+        // The saved CUSTOM row is from an installation whose original encryption key is unavailable.
+        jdbc.update("UPDATE dii_replay_db_compare_script_config SET connection_json=?,password_ciphertext=? WHERE id=?",
+                """
+                {"mode":"CUSTOM","host":"db.example.test","port":5432,"database":"Migration",
+                 "schema":"staging","username":"Reader"}
+                """, "v1:unreadable-sentinel", id);
         byte[] source = """
                 {"mode":"CUSTOM","host":"db.example.test","port":5432,"database":"Migration",
-                 "schema":"staging","username":"Reader","password":" 测试密码 "}
+                 "schema":"staging","username":"Reader","password":""}
                 """.getBytes(StandardCharsets.UTF_8);
         var part = new MockPart("connection", source);
 
         mvc.perform(multipart(BASE + "/import-tables").file(workbook).part(part)
                         .param("configurationId", Long.toString(id)).param("revision", "2"))
                 .andExpect(status().isConflict());
-        mvc.perform(multipart(BASE + "/import-tables").file(workbook).part(part)
+        var reentry = mvc.perform(multipart(BASE + "/import-tables").file(workbook).part(part)
                         .param("configurationId", Long.toString(id)).param("revision", "1"))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.data.errorCode").value("SCRIPT_CONFIG_PASSWORD_UNAVAILABLE"));
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.data.errorCode").value("SCRIPT_CONFIG_PASSWORD_REENTRY_REQUIRED"))
+                .andReturn().getResponse();
+        assertFalse(reentry.getContentAsString().contains("unreadable-sentinel"));
 
         byte[] malformed = "{\"password\":\"sentinel-password\"".getBytes(StandardCharsets.UTF_8);
         var response = mvc.perform(multipart(BASE + "/import-tables").file(workbook)
@@ -260,6 +268,28 @@ class ReplayDatabaseComparisonScriptConfigurationControllerTest {
                 .andExpect(status().isBadRequest()).andReturn().getResponse();
         assertFalse(response.getContentAsString().contains("sentinel-password"));
         mvc.perform(get(BASE + "/" + id)).andExpect(jsonPath("$.data.revision").value(1));
+    }
+
+    @Test void savedPlainPasswordStaysOutOfHttpListDetailAndFrozenDownload() throws Exception {
+        long id = create().path("id").asLong();
+        String password = "sentinel-plain-password";
+        jdbc.update("UPDATE dii_replay_db_compare_script_config SET connection_json=?,password_ciphertext=? WHERE id=?",
+                """
+                {"mode":"CUSTOM","host":"db.example.test","port":5432,"database":"Migration",
+                 "schema":"staging","username":"Reader"}
+                """, "plain:v1:" + password, id);
+
+        var detail = mvc.perform(get(BASE + "/" + id)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connection.passwordConfigured").value(true))
+                .andExpect(jsonPath("$.data.connection.password").doesNotExist())
+                .andReturn().getResponse();
+        var list = mvc.perform(get(BASE)).andExpect(status().isOk()).andReturn().getResponse();
+        var download = mvc.perform(get(BASE + "/" + id + "/download").param("revision", "1"))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        for (var response : List.of(list, detail, download)) {
+            assertFalse(response.getContentAsString().contains(password));
+            assertFalse(response.getContentAsString().contains("plain:v1:"));
+        }
     }
 
     @Test void writesRequireHumanLoginAndRejectOversizedOrWrongFormatUploads() throws Exception {
