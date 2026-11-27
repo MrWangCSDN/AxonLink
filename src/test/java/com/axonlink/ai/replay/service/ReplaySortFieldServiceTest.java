@@ -28,10 +28,7 @@ class ReplaySortFieldServiceTest {
     void setUp() {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
-        jdbc.update("INSERT INTO znzx_service "
-                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
-                        + "VALUES (?,?,?,?,?,?)",
-                "app", "S120034071CorpInfo.QryTrdCrclr", "flow", "6208", "描述", "公共组");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "6208", BASE + "&sop", BASE + "&soap", BASE + "&bzjson");
         service = new ReplaySortFieldService(
                 new ReplaySortFieldDao(jdbc), new ReplayConfigServiceCodeResolver(jdbc),
                 new ReplayConfigPersonResolver(jdbc));

@@ -8,26 +8,23 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.regex.Pattern;
+
+import static com.axonlink.ai.replay.service.ReplayConfigServiceCodeResolver.SERVICE_MAPPING_TABLE;
 
 /**
  * 配置服务码到「全量交易人员清单」的映射解析。
  *
- * <p>链路：配置最终服务码去后缀得 base → 匹配 znzx_service 去点号的 esf_service_code →
- * 取 znzx_service.tran_code → 匹配 dii_replay_transaction_person.old_transaction_code →
- * 取老核心交易码、开发人员、行方负责人。映射不到时返回 {@code null}。
+ * <p>完整服务码对应映射表的 esf_service_code，交易码取自映射表的 tran_code。
+ * 通过人员清单的 old_transaction_code 补充领域、开发人员和行方负责人。
  */
 @Service
 public class ReplayConfigPersonResolver {
-
-    private static final Pattern SUFFIX_PATTERN = Pattern.compile("&(sop|soap|bzjson)$");
 
     private final JdbcTemplate jdbc;
 
@@ -41,43 +38,28 @@ public class ReplayConfigPersonResolver {
         if (finalServiceCodes == null || finalServiceCodes.isEmpty()) {
             return result;
         }
-        Set<String> bases = new LinkedHashSet<>();
         for (String code : finalServiceCodes) {
-            if (code == null) {
-                continue;
-            }
-            String base = stripSuffix(code.trim());
-            if (!base.isBlank()) {
-                bases.add(base);
+            if (code != null) {
+                result.put(code, null);
             }
         }
-        Map<String, ReplayConfigPersonInfo> byBase = new HashMap<>();
-        if (!bases.isEmpty()) {
-            String placeholders = String.join(",", Collections.nCopies(bases.size(), "?"));
-            List<Object> args = new ArrayList<>(bases);
-            jdbc.query("SELECT REPLACE(z.esf_service_code,'.','') AS service_base, "
-                            + "p.old_transaction_code AS person_code, p.domain, p.developer, p.bank_owner, p.bank_owner_emp_nos "
-                            + "FROM znzx_service z "
-                            + "LEFT JOIN dii_replay_transaction_person p ON p.old_transaction_code = z.tran_code "
-                            + "WHERE REPLACE(z.esf_service_code,'.','') IN (" + placeholders + ") "
-                            + "ORDER BY service_base, CASE WHEN p.old_transaction_code IS NULL THEN 1 ELSE 0 END, p.id",
-                    rs -> {
-                        String base = rs.getString("service_base");
-                        String personCode = rs.getString("person_code");
-                        if (base == null || personCode == null || byBase.containsKey(base)) {
-                            return;
-                        }
-                        byBase.put(base, new ReplayConfigPersonInfo(personCode, rs.getString("domain"),
-                                rs.getString("developer"),
-                                rs.getString("bank_owner"), rs.getString("bank_owner_emp_nos")));
-                    }, args.toArray());
+        if (result.isEmpty()) {
+            return result;
         }
-        for (String code : finalServiceCodes) {
-            if (code == null) {
-                continue;
-            }
-            result.put(code, byBase.get(stripSuffix(code.trim())));
-        }
+        String placeholders = String.join(",", Collections.nCopies(result.size(), "?"));
+        jdbc.query("SELECT z.esf_service_code, z.tran_code, p.old_transaction_code AS person_code, "
+                        + "p.domain, p.developer, p.bank_owner, p.bank_owner_emp_nos "
+                        + "FROM " + SERVICE_MAPPING_TABLE + " z "
+                        + "LEFT JOIN dii_replay_transaction_person p ON p.old_transaction_code = z.tran_code "
+                        + "WHERE z.esf_service_code IN (" + placeholders + ")",
+                rs -> {
+                    String code = rs.getString("esf_service_code");
+                    if (result.containsKey(code)) {
+                        result.putIfAbsent(code, new ReplayConfigPersonInfo(rs.getString("tran_code"),
+                                rs.getString("domain"), rs.getString("developer"), rs.getString("bank_owner"),
+                                rs.getString("bank_owner_emp_nos"), rs.getString("person_code") != null));
+                    }
+                }, result.keySet().toArray());
         return result;
     }
 
@@ -85,7 +67,7 @@ public class ReplayConfigPersonResolver {
      * 解析某工号作为行方负责人可审核的全部最终服务码集合。
      *
      * <p>路径：人员清单 bank_owner_emp_nos 命中该工号 → old_transaction_code →
-     * znzx_service.tran_code → esf_service_code 去点号 → 匹配无后缀存量码及三种标准后缀。
+     * 映射表 tran_code → 完整 esf_service_code。
      */
     public Set<String> findReviewableServiceCodes(String empNo) {
         return findServiceCodesByIdentity("bank_owner_emp_nos", empNo);
@@ -118,9 +100,10 @@ public class ReplayConfigPersonResolver {
         }
         String placeholders = String.join(",", Collections.nCopies(transactionCodes.size(), "?"));
         List<String> esfCodes = jdbc.queryForList(
-                "SELECT esf_service_code FROM znzx_service WHERE tran_code IN (" + placeholders + ")",
+                "SELECT DISTINCT esf_service_code FROM " + SERVICE_MAPPING_TABLE
+                        + " WHERE tran_code IN (" + placeholders + ")",
                 String.class, transactionCodes.toArray());
-        return ReplayConfigServiceCodeResolver.expandServiceCodes(esfCodes, true);
+        return new LinkedHashSet<>(esfCodes);
     }
 
     /** 全部领域选项，取自全量交易人员清单。 */
@@ -138,9 +121,10 @@ public class ReplayConfigPersonResolver {
                 String.class);
     }
 
-    /** 复用列表展示的人员映射，按配置表实际存储的服务码筛选领域和开发人员。 */
+    /** 按配置表实际存储的服务码筛选列表展示的映射字段。 */
     public Set<String> resolveConfigServiceCodes(String resource, String domain, String developer,
-                                                 boolean domainEmpty, boolean developerEmpty) {
+                                                 boolean domainEmpty, boolean developerEmpty,
+                                                 boolean internalTransactionCodeEmpty) {
         String table;
         String codeColumn;
         switch (resource) {
@@ -148,10 +132,18 @@ public class ReplayConfigPersonResolver {
             case "conditional-ignores" -> { table = "dii_replay_conditional_rmove"; codeColumn = "orig_trcd"; }
             case "error-code-ignores" -> { table = "dii_replay_error_code_ignore_config"; codeColumn = "service_code"; }
             case "sort-fields" -> { table = "dii_replay_sort_field"; codeColumn = "orig_trcd"; }
+            case "message-sequence-ignores" -> {
+                table = "dii_replay_message_sequence_ignore";
+                codeColumn = "service_code";
+            }
+            case "one-side-error-code-ignores" -> {
+                table = "dii_replay_one_side_error_code_ignore";
+                codeColumn = "service_code";
+            }
             default -> throw new IllegalArgumentException("不支持的忽略清单类型");
         }
         if ((domain == null || domain.isBlank()) && (developer == null || developer.isBlank())
-                && !domainEmpty && !developerEmpty) {
+                && !domainEmpty && !developerEmpty && !internalTransactionCodeEmpty) {
             return null;
         }
         List<String> configCodes = jdbc.queryForList(
@@ -168,7 +160,9 @@ public class ReplayConfigPersonResolver {
                     ? person == null || isBlank(person.developer())
                     : developer == null || developer.isBlank()
                     || person != null && Objects.equals(person.developer(), developer.trim());
-            if (domainMatches && developerMatches) {
+            boolean transactionCodeMatches = !internalTransactionCodeEmpty
+                    || person == null || isBlank(person.oldTransactionCode());
+            if (domainMatches && developerMatches && transactionCodeMatches) {
                 result.add(configCode);
             }
         }
@@ -192,12 +186,9 @@ public class ReplayConfigPersonResolver {
         return result;
     }
 
-    /** 去掉最终服务码的 &sop / &soap / &bzjson 后缀。 */
-    public static String stripSuffix(String code) {
-        if (code == null) {
-            return null;
-        }
-        return SUFFIX_PATTERN.matcher(code.trim()).replaceFirst("");
+    /** 服务码集合求三方交集；任一侧为 {@code null} 表示不限制。 */
+    public static Set<String> intersect(Set<String> first, Set<String> second, Set<String> third) {
+        return intersect(intersect(first, second), third);
     }
 
     /** 登录人工号是否命中行方负责人工号列表。 */
@@ -213,7 +204,7 @@ public class ReplayConfigPersonResolver {
      */
     public static String reviewDisabledReason(ReplayConfigPersonInfo info, ReplayConfigOperator operator,
                                               int reviewStatus) {
-        if (info == null) {
+        if (info == null || !info.personMapped()) {
             return "无审核人";
         }
         if (reviewStatus == 1) {
@@ -239,6 +230,9 @@ public class ReplayConfigPersonResolver {
 
     /** 无审核权限提示：带上行方负责人姓名。 */
     public static String reviewForbiddenMessage(ReplayConfigPersonInfo info) {
+        if (info == null || !info.personMapped()) {
+            return "无审核人";
+        }
         String names = reviewerContactNames(info);
         return names.isEmpty() ? "没有审核权限" : "没有权限，请联系" + names + "进行审核";
     }

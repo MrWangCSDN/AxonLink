@@ -221,7 +221,7 @@ public class ReplayOneSideErrorCodeIgnoreDao {
         return new ReplayOneSideErrorCodeIgnoreRow(rs.getLong("id"), rs.getString("service_code"), rs.getString("category"),
                 rs.getString("ownership"), rs.getString("error_code"), rs.getString("ignore_reason"), rs.getInt("review_status"),
                 ReplayConfigSqlSupport.localDateTime(rs, "created_at"), ReplayConfigSqlSupport.localDateTime(rs, "updated_at"),
-                null, null, null, false, null);
+                null, null, null, false, null, null);
     }
 
     private ReplayConfigOperationView mapOperation(ResultSet rs, int rowNum) throws SQLException {

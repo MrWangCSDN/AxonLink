@@ -52,9 +52,12 @@ public class ReplayOneSideErrorCodeIgnoreController extends AbstractReplayConfig
             @RequestParam(required = false) String ownership, @RequestParam(required = false) String errorCode,
             @RequestParam(required = false) Integer reviewStatus, @RequestParam(required = false) Boolean reviewableByMe,
             @RequestParam(required = false) Boolean developedByMe, @RequestParam(required = false) Boolean reasonEmpty,
+            @RequestParam(required = false) String domain,
+            @RequestParam(required = false) Boolean domainEmpty,
+            @RequestParam(required = false) boolean internalTransactionCodeEmpty,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, category, serviceCode, ownership, errorCode, reviewStatus,
-                reviewableByMe, developedByMe, reasonEmpty, resolveOperator(request)));
+                reviewableByMe, developedByMe, reasonEmpty, domain, domainEmpty, internalTransactionCodeEmpty, resolveOperator(request)));
     }
 
     @PostMapping

@@ -84,6 +84,20 @@ public class ReplayErrorCodeIgnoreService {
                                                            Boolean developedByMe, Boolean reasonEmpty,
                                                            Boolean domainEmpty, String developer, Boolean developerEmpty,
                                                            ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, serviceCode, oldRespCode, newRespCode,
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, domainEmpty, developer,
+                developerEmpty, false, operator);
+    }
+
+    public ReplayConfigPage<ReplayErrorCodeIgnoreRow> list(Integer limit, Integer offset,
+                                                           String internalTransactionCode, String domain,
+                                                           String serviceCode,
+                                                           String oldRespCode, String newRespCode,
+                                                           Integer reviewStatus, Boolean reviewableByMe,
+                                                           Boolean developedByMe, Boolean reasonEmpty,
+                                                           Boolean domainEmpty, String developer, Boolean developerEmpty,
+                                                           boolean internalTransactionCodeEmpty,
+                                                           ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
@@ -94,7 +108,7 @@ public class ReplayErrorCodeIgnoreService {
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 ReplayConfigPersonResolver.intersect(
-                        resolver.resolveServiceCodesForSearch(internalTransactionCode),
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
                         onlyReviewableByMe
                                 ? personResolver.findReviewableServiceCodes(
                                         operator == null ? null : operator.empNo())
@@ -105,7 +119,8 @@ public class ReplayErrorCodeIgnoreService {
                         : null);
         serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
                 personResolver.resolveConfigServiceCodes("error-code-ignores", domain, developer,
-                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty),
+                        internalTransactionCodeEmpty));
         long total = dao.count(serviceCode, oldRespCode, newRespCode, serviceCodes, effectiveReviewStatus,
                 reasonEmpty);
         if (total == 0) {
@@ -215,9 +230,6 @@ public class ReplayErrorCodeIgnoreService {
                 .get(current.serviceCode());
         if (current.reviewStatus() == 1) {
             return enrich(current, operator);
-        }
-        if (info == null) {
-            throw new ReplayConfigReviewForbiddenException("无审核人");
         }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
             throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));

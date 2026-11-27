@@ -9,7 +9,6 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ReplayConfigServiceCodeResolverTest {
 
@@ -21,23 +20,16 @@ class ReplayConfigServiceCodeResolverTest {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
         resolver = new ReplayConfigServiceCodeResolver(jdbc);
-        insertMapping("S120034071.CorpInfo.Qry", "Y444");
-        insertMapping("SEQFoo", "Y444");
-        insertMapping("OTHER.Bar", "Z999");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "Y444",
+                "S120034071CorpInfoQry&sop", "S120034071CorpInfoQry&sop", "SEQFoo&soap");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "Z999", "OTHERBar&sop");
     }
 
     @Test
-    void resolvesDotsAndAppendsThreeSuffixesWithDedup() {
+    void resolvesStoredServiceCodesWithDedup() {
         Set<String> codes = resolver.resolveFinalServiceCodes("Y444");
 
-        assertEquals(6, codes.size());
-        assertTrue(codes.contains("S120034071CorpInfoQry&sop"));
-        assertTrue(codes.contains("S120034071CorpInfoQry&soap"));
-        assertTrue(codes.contains("S120034071CorpInfoQry&bzjson"));
-        assertTrue(codes.contains("SEQFoo&sop"));
-        assertTrue(codes.contains("SEQFoo&soap"));
-        assertTrue(codes.contains("SEQFoo&bzjson"));
-        assertTrue(!codes.contains("OTHERBar&sop"));
+        assertEquals(Set.of("S120034071CorpInfoQry&sop", "SEQFoo&soap"), codes);
     }
 
     @Test
@@ -47,10 +39,4 @@ class ReplayConfigServiceCodeResolverTest {
         assertNull(resolver.resolveFinalServiceCodes(null));
     }
 
-    private void insertMapping(String esfServiceCode, String tranCode) {
-        jdbc.update("INSERT INTO znzx_service "
-                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
-                        + "VALUES (?,?,?,?,?,?)",
-                "app", esfServiceCode, "flow-1", tranCode, "描述", "公共组");
-    }
 }

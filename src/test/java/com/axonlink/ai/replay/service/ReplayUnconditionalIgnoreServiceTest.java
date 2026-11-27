@@ -39,10 +39,7 @@ class ReplayUnconditionalIgnoreServiceTest {
     void setUp() {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
-        jdbc.update("INSERT INTO znzx_service "
-                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
-                        + "VALUES (?,?,?,?,?,?)",
-                "app", "S1", "flow", "Y444", "描述", "公共组");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "Y444", "S1&sop", "S1&soap", "S1&bzjson");
         jdbc.update("INSERT INTO dii_replay_transaction_person "
                         + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
                         + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -399,7 +396,7 @@ class ReplayUnconditionalIgnoreServiceTest {
 
     @Test
     void listsDistinctDomainsFromPersonList() {
-        seedServiceAndPerson("S2", "Z999", "贷款组", "贷款查询", "c-zhaoliu");
+        seedServiceAndPerson("S2&sop", "Z999", "贷款组", "贷款查询", "c-zhaoliu");
 
         assertEquals(Set.of("公共组", "贷款组"),
                 new HashSet<>(new ReplayConfigPersonResolver(jdbc).listDomains()));
@@ -477,10 +474,7 @@ class ReplayUnconditionalIgnoreServiceTest {
 
     private void seedServiceAndPerson(String esfServiceCode, String tranCode, String domain, String name,
                                       String bankOwnerEmpNos) {
-        jdbc.update("INSERT INTO znzx_service "
-                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
-                        + "VALUES (?,?,?,?,?,?)",
-                "app-" + tranCode, esfServiceCode, "flow", tranCode, "描述", domain);
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, tranCode, esfServiceCode);
         jdbc.update("INSERT INTO dii_replay_transaction_person "
                         + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
                         + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",

@@ -60,10 +60,11 @@ public class ReplayUnconditionalIgnoreController extends AbstractReplayConfigCon
             @RequestParam(required = false) Boolean domainEmpty,
             @RequestParam(required = false) String developer,
             @RequestParam(required = false) Boolean developerEmpty,
+            @RequestParam(required = false) boolean internalTransactionCodeEmpty,
             HttpServletRequest request) {
         return R.ok(service.list(limit, offset, internalTransactionCode, domain, tranCode, fieldName,
                 reviewStatus, reviewableByMe, developedByMe, reasonEmpty, fieldChineseNameEmpty,
-                domainEmpty, developer, developerEmpty, resolveOperator(request)));
+                domainEmpty, developer, developerEmpty, internalTransactionCodeEmpty, resolveOperator(request)));
     }
 
     @PostMapping

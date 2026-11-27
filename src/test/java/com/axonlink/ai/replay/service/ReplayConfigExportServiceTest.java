@@ -52,10 +52,7 @@ class ReplayConfigExportServiceTest {
     void setUp() {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
-        jdbc.update("INSERT INTO znzx_service "
-                        + "(application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) "
-                        + "VALUES (?,?,?,?,?,?)",
-                "app", "S1", "flow", "Y444", "描述", "公共组");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "Y444", "S1&sop");
         jdbc.update("INSERT INTO dii_replay_transaction_person "
                         + "(domain,old_transaction_code,old_transaction_name,developer,developer_usernames,"
                         + "bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",

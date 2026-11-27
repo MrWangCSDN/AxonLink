@@ -28,8 +28,7 @@ class ReplayMessageSequenceIgnoreServiceTest {
     void setUp() {
         jdbc = ReplayConfigTestFixtures.newJdbc();
         ReplayConfigTestFixtures.createSchema(jdbc);
-        jdbc.update("INSERT INTO znzx_service (application_name,esf_service_code,flow_id,tran_code,function_desc,group_name) VALUES (?,?,?,?,?,?)",
-                "app", "S1", "flow", "0126", "查询", "公共组");
+        ReplayConfigTestFixtures.insertServiceMappings(jdbc, "0126", "S1&sop");
         jdbc.update("INSERT INTO dii_replay_transaction_person (domain,old_transaction_code,old_transaction_name,developer,developer_usernames,bank_owner,bank_owner_emp_nos,imported_at) VALUES (?,?,?,?,?,?,?,?)",
                 "公共组", "0126", "查询", "开发", "dev", "敬恒杰", "review-no", Timestamp.valueOf(LocalDateTime.now()));
         service = new ReplayMessageSequenceIgnoreService(

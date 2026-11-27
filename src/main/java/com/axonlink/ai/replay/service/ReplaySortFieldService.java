@@ -15,7 +15,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -100,6 +99,21 @@ public class ReplaySortFieldService {
                                                      Boolean fieldChineseNameEmpty, Boolean domainEmpty,
                                                      String developer, Boolean developerEmpty,
                                                      ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, origTrcd, origArryName, origFieldName,
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, fieldChineseNameEmpty, domainEmpty,
+                developer, developerEmpty, false, operator);
+    }
+
+    public ReplayConfigPage<ReplaySortFieldRow> list(Integer limit, Integer offset,
+                                                     String internalTransactionCode, String domain,
+                                                     String origTrcd,
+                                                     String origArryName, String origFieldName,
+                                                     Integer reviewStatus, Boolean reviewableByMe,
+                                                     Boolean developedByMe, Boolean reasonEmpty,
+                                                     Boolean fieldChineseNameEmpty, Boolean domainEmpty,
+                                                     String developer, Boolean developerEmpty,
+                                                     boolean internalTransactionCodeEmpty,
+                                                     ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
@@ -110,7 +124,7 @@ public class ReplaySortFieldService {
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 ReplayConfigPersonResolver.intersect(
-                        resolver.resolveServiceCodesForSearch(internalTransactionCode),
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
                         onlyReviewableByMe
                                 ? personResolver.findReviewableServiceCodes(
                                         operator == null ? null : operator.empNo())
@@ -121,7 +135,8 @@ public class ReplaySortFieldService {
                         : null);
         serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
                 personResolver.resolveConfigServiceCodes("sort-fields", domain, developer,
-                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty),
+                        internalTransactionCodeEmpty));
         long total = dao.count(origTrcd, origArryName, origFieldName, serviceCodes, effectiveReviewStatus,
                 reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {
@@ -158,26 +173,21 @@ public class ReplaySortFieldService {
                 request == null ? null : request.newSortFieldChineseName());
         String ignoreReason = ReplayConfigValidation.requireIgnoreReason(
                 request == null ? null : request.ignoreReason());
-        List<String> esfCodes = resolver.findEsfServiceCodes(tranCode);
-        if (esfCodes.isEmpty()) {
+        Set<String> serviceCodes = resolver.resolveFinalServiceCodes(tranCode);
+        if (serviceCodes.isEmpty()) {
             throw new IllegalArgumentException("交易码无映射：" + tranCode);
         }
-        Set<String> seen = new LinkedHashSet<>();
         List<ReplaySortFieldDraft> drafts = new ArrayList<>();
-        for (String esfCode : esfCodes) {
-            if (esfCode == null) {
-                continue;
+        for (String serviceCode : serviceCodes) {
+            if (serviceCode == null || !(serviceCode.endsWith("&sop") || serviceCode.endsWith("&soap")
+                    || serviceCode.endsWith("&bzjson"))) {
+                throw new IllegalArgumentException("交易码关联了不支持的服务码：" + serviceCode);
             }
-            String base = esfCode.replace(".", "");
-            if (base.isBlank()) {
-                continue;
-            }
-            addDraft(drafts, seen, base + "&sop", oldParsed, oldSortFieldChineseName, ignoreReason);
-            addDraft(drafts, seen, base + "&soap", newParsed, newSortFieldChineseName, ignoreReason);
-            addDraft(drafts, seen, base + "&bzjson", newParsed, newSortFieldChineseName, ignoreReason);
-        }
-        if (drafts.isEmpty()) {
-            throw new IllegalArgumentException("交易码无映射：" + tranCode);
+            boolean oldCore = serviceCode.endsWith("&sop");
+            ParsedSortField parsed = oldCore ? oldParsed : newParsed;
+            String fieldChineseName = oldCore ? oldSortFieldChineseName : newSortFieldChineseName;
+            drafts.add(new ReplaySortFieldDraft(
+                    serviceCode, parsed.arryName(), parsed.fieldName(), fieldChineseName, ignoreReason));
         }
         try {
             return enrich(dao.createAll(drafts, operator), operator);
@@ -235,9 +245,6 @@ public class ReplaySortFieldService {
         if (current.reviewStatus() == 1) {
             return enrich(current, operator);
         }
-        if (info == null) {
-            throw new ReplayConfigReviewForbiddenException("无审核人");
-        }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
             throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         }
@@ -269,15 +276,6 @@ public class ReplaySortFieldService {
             throw new ReplayConfigNotFoundException("记录不存在");
         }
         return dao.operations(id, resolvedLimit, resolvedOffset);
-    }
-
-    private static void addDraft(List<ReplaySortFieldDraft> drafts, Set<String> seen, String origTrcd,
-                                 ParsedSortField parsed, String fieldChineseName, String ignoreReason) {
-        String key = origTrcd + "|" + parsed.arryName() + "|" + parsed.fieldName();
-        if (seen.add(key)) {
-            drafts.add(new ReplaySortFieldDraft(
-                    origTrcd, parsed.arryName(), parsed.fieldName(), fieldChineseName, ignoreReason));
-        }
     }
 
     /** 解析 A.B 或 A(B,C)：A 为对象/数组名称，其余为排序字段。 */

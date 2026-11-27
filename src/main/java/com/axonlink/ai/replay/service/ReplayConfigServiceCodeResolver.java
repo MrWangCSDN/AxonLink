@@ -7,15 +7,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * 内部核心交易码到最终服务码集合的映射解析。
- *
- * <p>解析规则：精确查询只读表 {@code znzx_service.tran_code}，读取全部
- * {@code esf_service_code}，去除其中所有点号后分别追加 {@code &sop}、{@code &soap}、
- * {@code &bzjson}，合并去重。
- */
+/** 从只读映射表按内部核心交易码查找完整服务码。 */
 @Service
 public class ReplayConfigServiceCodeResolver {
+
+    static final String SERVICE_MAPPING_TABLE = "znzx_service";
 
     private final JdbcTemplate jdbc;
 
@@ -31,48 +27,9 @@ public class ReplayConfigServiceCodeResolver {
         if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
             return null;
         }
-        return expandServiceCodes(findEsfServiceCodes(internalTransactionCode), false);
-    }
-
-    /** 列表查询同时匹配存量无后缀服务码与标准服务码。 */
-    public Set<String> resolveServiceCodesForSearch(String internalTransactionCode) {
-        if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
-            return null;
-        }
-        return expandServiceCodes(findEsfServiceCodes(internalTransactionCode), true);
-    }
-
-    static Set<String> expandServiceCodes(List<String> esfCodes, boolean includeLegacy) {
-        Set<String> result = new LinkedHashSet<>();
-        for (String esfCode : esfCodes) {
-            if (esfCode == null) {
-                continue;
-            }
-            String base = esfCode.replace(".", "");
-            if (base.isBlank()) {
-                continue;
-            }
-            if (includeLegacy) {
-                result.add(base);
-            }
-            result.add(base + "&sop");
-            result.add(base + "&soap");
-            result.add(base + "&bzjson");
-        }
-        return result;
-    }
-
-    /**
-     * 按内部核心交易码查询原始 esf_service_code 列表（未去点号、未追加后缀）。
-     *
-     * @return 无映射时返回空列表
-     */
-    public List<String> findEsfServiceCodes(String internalTransactionCode) {
-        if (internalTransactionCode == null || internalTransactionCode.isBlank()) {
-            return List.of();
-        }
-        return jdbc.queryForList(
-                "SELECT esf_service_code FROM znzx_service WHERE tran_code = ?",
+        List<String> codes = jdbc.queryForList(
+                "SELECT DISTINCT esf_service_code FROM " + SERVICE_MAPPING_TABLE + " WHERE tran_code = ?",
                 String.class, internalTransactionCode.trim());
+        return new LinkedHashSet<>(codes);
     }
 }

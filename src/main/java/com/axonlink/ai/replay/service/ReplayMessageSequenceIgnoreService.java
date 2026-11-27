@@ -32,6 +32,17 @@ public class ReplayMessageSequenceIgnoreService {
     public ReplayConfigPage<ReplayMessageSequenceIgnoreRow> list(
             Integer limit, Integer offset, String category, String serviceCode, String messageSequence,
             Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            String domain, Boolean domainEmpty,
+            ReplayConfigOperator operator) {
+        return list(limit, offset, category, serviceCode, messageSequence, reviewStatus, reviewableByMe,
+                developedByMe, reasonEmpty, domain, domainEmpty, false, operator);
+    }
+
+    public ReplayConfigPage<ReplayMessageSequenceIgnoreRow> list(
+            Integer limit, Integer offset, String category, String serviceCode, String messageSequence,
+            Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            String domain, Boolean domainEmpty,
+            boolean internalTransactionCodeEmpty,
             ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
@@ -44,6 +55,8 @@ public class ReplayMessageSequenceIgnoreService {
         }
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
+                personResolver.resolveConfigServiceCodes("message-sequence-ignores", domain, null,
+                        Boolean.TRUE.equals(domainEmpty), false, internalTransactionCodeEmpty),
                 onlyReviewableByMe
                         ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo())
                         : null,
@@ -55,6 +68,14 @@ public class ReplayMessageSequenceIgnoreService {
         if (total == 0) return new ReplayConfigPage<>(0, List.of());
         return new ReplayConfigPage<>(total, enrich(dao.list(resolvedCategory, serviceCode, messageSequence,
                 serviceCodes, effectiveReviewStatus, reasonEmpty, resolvedLimit, resolvedOffset), operator));
+    }
+
+    public ReplayConfigPage<ReplayMessageSequenceIgnoreRow> list(
+            Integer limit, Integer offset, String category, String serviceCode, String messageSequence,
+            Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            ReplayConfigOperator operator) {
+        return list(limit, offset, category, serviceCode, messageSequence, reviewStatus,
+                reviewableByMe, developedByMe, reasonEmpty, null, null, operator);
     }
 
     public List<ReplayMessageSequenceIgnoreRow> create(ReplayMessageSequenceIgnoreCreateRequest request,
@@ -101,7 +122,6 @@ public class ReplayMessageSequenceIgnoreService {
         if (current.reviewStatus() == 1) return enrich(current, operator);
         ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.serviceCode()))
                 .get(current.serviceCode());
-        if (info == null) throw new ReplayConfigReviewForbiddenException("无审核人");
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
             throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         }
@@ -160,6 +180,7 @@ public class ReplayMessageSequenceIgnoreService {
         return new ReplayMessageSequenceIgnoreRow(row.id(), row.serviceCode(), row.category(),
                 row.messageSequence(), row.ignoreReason(), row.reviewStatus(), row.createdAt(), row.updatedAt(),
                 info == null ? null : info.oldTransactionCode(), info == null ? null : info.developer(),
-                info == null ? null : info.bankOwner(), disabledReason == null, disabledReason);
+                info == null ? null : info.bankOwner(), disabledReason == null, disabledReason,
+                info == null ? null : info.domain());
     }
 }

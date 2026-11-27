@@ -99,6 +99,21 @@ public class ReplayConditionalRmoveService {
                                                             Boolean fieldChineseNameEmpty, Boolean domainEmpty,
                                                             String developer, Boolean developerEmpty,
                                                             ReplayConfigOperator operator) {
+        return list(limit, offset, internalTransactionCode, domain, origTrcd, fieldRmoveName, fieldFileFlag,
+                reviewStatus, reviewableByMe, developedByMe, reasonEmpty, fieldChineseNameEmpty, domainEmpty,
+                developer, developerEmpty, false, operator);
+    }
+
+    public ReplayConfigPage<ReplayConditionalRmoveRow> list(Integer limit, Integer offset,
+                                                            String internalTransactionCode, String domain,
+                                                            String origTrcd,
+                                                            String fieldRmoveName, Integer fieldFileFlag,
+                                                            Integer reviewStatus, Boolean reviewableByMe,
+                                                            Boolean developedByMe, Boolean reasonEmpty,
+                                                            Boolean fieldChineseNameEmpty, Boolean domainEmpty,
+                                                            String developer, Boolean developerEmpty,
+                                                            boolean internalTransactionCodeEmpty,
+                                                            ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
         Integer resolvedReviewStatus = ReplayConfigValidation.optionalReviewStatus(reviewStatus);
@@ -109,7 +124,7 @@ public class ReplayConditionalRmoveService {
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
                 ReplayConfigPersonResolver.intersect(
-                        resolver.resolveServiceCodesForSearch(internalTransactionCode),
+                        resolver.resolveFinalServiceCodes(internalTransactionCode),
                         onlyReviewableByMe
                                 ? personResolver.findReviewableServiceCodes(
                                         operator == null ? null : operator.empNo())
@@ -120,7 +135,8 @@ public class ReplayConditionalRmoveService {
                         : null);
         serviceCodes = ReplayConfigPersonResolver.intersect(serviceCodes,
                 personResolver.resolveConfigServiceCodes("conditional-ignores", domain, developer,
-                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty)));
+                        Boolean.TRUE.equals(domainEmpty), Boolean.TRUE.equals(developerEmpty),
+                        internalTransactionCodeEmpty));
         long total = dao.count(origTrcd, fieldRmoveName, fieldFileFlag, serviceCodes, effectiveReviewStatus,
                 reasonEmpty, fieldChineseNameEmpty);
         if (total == 0) {
@@ -214,9 +230,6 @@ public class ReplayConditionalRmoveService {
                 .get(current.origTrcd());
         if (current.reviewStatus() == 1) {
             return enrich(current, operator);
-        }
-        if (info == null) {
-            throw new ReplayConfigReviewForbiddenException("无审核人");
         }
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) {
             throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));

@@ -20,14 +20,18 @@ public final class ReplayConfigTestFixtures {
         return new JdbcTemplate(dataSource);
     }
 
+    public static void insertServiceMappings(JdbcTemplate jdbc, String tranCode, String... serviceCodes) {
+        for (String serviceCode : serviceCodes) {
+            jdbc.update("INSERT INTO znzx_service (esf_service_code, tran_code) VALUES (?, ?)",
+                    serviceCode, tranCode);
+        }
+    }
+
     public static void createSchema(JdbcTemplate jdbc) {
         jdbc.execute("CREATE TABLE znzx_service ("
-                + "application_name VARCHAR(128) NOT NULL,"
                 + "esf_service_code VARCHAR(256) NOT NULL,"
-                + "flow_id VARCHAR(128) NOT NULL,"
                 + "tran_code VARCHAR(128) NOT NULL,"
-                + "function_desc VARCHAR(512),"
-                + "group_name VARCHAR(128))");
+                + "function_desc VARCHAR(512))");
         jdbc.execute("CREATE INDEX idx_znzx_service_tran_code ON znzx_service(tran_code)");
         jdbc.execute("CREATE TABLE dii_replay_transaction_person ("
                 + "id BIGINT AUTO_INCREMENT PRIMARY KEY,"

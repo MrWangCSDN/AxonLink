@@ -244,7 +244,7 @@ public class ReplayMessageSequenceIgnoreDao {
         return new ReplayMessageSequenceIgnoreRow(rs.getLong("id"), rs.getString("service_code"),
                 rs.getString("category"), rs.getString("message_sequence"), rs.getString("ignore_reason"),
                 rs.getInt("review_status"), ReplayConfigSqlSupport.localDateTime(rs, "created_at"),
-                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), null, null, null, false, null);
+                ReplayConfigSqlSupport.localDateTime(rs, "updated_at"), null, null, null, false, null, null);
     }
 
     private ReplayConfigOperationView mapOperation(ResultSet rs, int rowNum) throws SQLException {

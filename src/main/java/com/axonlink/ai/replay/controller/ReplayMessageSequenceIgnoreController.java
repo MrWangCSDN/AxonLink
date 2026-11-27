@@ -55,9 +55,13 @@ public class ReplayMessageSequenceIgnoreController extends AbstractReplayConfigC
             @RequestParam(required = false) String messageSequence, @RequestParam(required = false) Integer reviewStatus,
             @RequestParam(required = false) Boolean reviewableByMe,
             @RequestParam(required = false) Boolean developedByMe,
-            @RequestParam(required = false) Boolean reasonEmpty, HttpServletRequest request) {
+            @RequestParam(required = false) Boolean reasonEmpty,
+            @RequestParam(required = false) String domain,
+            @RequestParam(required = false) Boolean domainEmpty,
+            @RequestParam(required = false) boolean internalTransactionCodeEmpty,
+            HttpServletRequest request) {
         return R.ok(service.list(limit, offset, category, serviceCode, messageSequence, reviewStatus,
-                reviewableByMe, developedByMe, reasonEmpty, resolveOperator(request)));
+                reviewableByMe, developedByMe, reasonEmpty, domain, domainEmpty, internalTransactionCodeEmpty, resolveOperator(request)));
     }
 
     @PostMapping

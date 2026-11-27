@@ -32,6 +32,17 @@ public class ReplayOneSideErrorCodeIgnoreService {
     public ReplayConfigPage<ReplayOneSideErrorCodeIgnoreRow> list(
             Integer limit, Integer offset, String category, String serviceCode, String ownership, String errorCode,
             Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            String domain, Boolean domainEmpty,
+            ReplayConfigOperator operator) {
+        return list(limit, offset, category, serviceCode, ownership, errorCode, reviewStatus, reviewableByMe,
+                developedByMe, reasonEmpty, domain, domainEmpty, false, operator);
+    }
+
+    public ReplayConfigPage<ReplayOneSideErrorCodeIgnoreRow> list(
+            Integer limit, Integer offset, String category, String serviceCode, String ownership, String errorCode,
+            Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            String domain, Boolean domainEmpty,
+            boolean internalTransactionCodeEmpty,
             ReplayConfigOperator operator) {
         int resolvedLimit = ReplayConfigValidation.pageLimit(limit);
         int resolvedOffset = ReplayConfigValidation.pageOffset(offset);
@@ -42,12 +53,22 @@ public class ReplayOneSideErrorCodeIgnoreService {
         if (onlyReviewableByMe && Integer.valueOf(1).equals(resolvedReviewStatus)) return new ReplayConfigPage<>(0, List.of());
         Integer effectiveReviewStatus = onlyReviewableByMe ? Integer.valueOf(0) : resolvedReviewStatus;
         Set<String> serviceCodes = ReplayConfigPersonResolver.intersect(
+                personResolver.resolveConfigServiceCodes("one-side-error-code-ignores", domain, null,
+                        Boolean.TRUE.equals(domainEmpty), false, internalTransactionCodeEmpty),
                 onlyReviewableByMe ? personResolver.findReviewableServiceCodes(operator == null ? null : operator.empNo()) : null,
                 Boolean.TRUE.equals(developedByMe) ? personResolver.findDevelopedServiceCodes(operator == null ? null : operator.username()) : null);
         long total = dao.count(resolvedCategory, serviceCode, resolvedOwnership, errorCode, serviceCodes, effectiveReviewStatus, reasonEmpty);
         if (total == 0) return new ReplayConfigPage<>(0, List.of());
         return new ReplayConfigPage<>(total, enrich(dao.list(resolvedCategory, serviceCode, resolvedOwnership, errorCode,
                 serviceCodes, effectiveReviewStatus, reasonEmpty, resolvedLimit, resolvedOffset), operator));
+    }
+
+    public ReplayConfigPage<ReplayOneSideErrorCodeIgnoreRow> list(
+            Integer limit, Integer offset, String category, String serviceCode, String ownership, String errorCode,
+            Integer reviewStatus, Boolean reviewableByMe, Boolean developedByMe, Boolean reasonEmpty,
+            ReplayConfigOperator operator) {
+        return list(limit, offset, category, serviceCode, ownership, errorCode, reviewStatus,
+                reviewableByMe, developedByMe, reasonEmpty, null, null, operator);
     }
 
     public List<ReplayOneSideErrorCodeIgnoreRow> create(ReplayOneSideErrorCodeIgnoreCreateRequest request,
@@ -90,7 +111,6 @@ public class ReplayOneSideErrorCodeIgnoreService {
         ReplayOneSideErrorCodeIgnoreRow current = requireRow(id);
         if (current.reviewStatus() == 1) return enrich(current, operator);
         ReplayConfigPersonInfo info = personResolver.resolveByServiceCodes(List.of(current.serviceCode())).get(current.serviceCode());
-        if (info == null) throw new ReplayConfigReviewForbiddenException("无审核人");
         if (!ReplayConfigPersonResolver.matchesBankOwner(info, operator)) throw new ReplayConfigReviewForbiddenException(ReplayConfigPersonResolver.reviewForbiddenMessage(info));
         return enrich(dao.review(current, operator), operator);
     }
@@ -130,6 +150,7 @@ public class ReplayOneSideErrorCodeIgnoreService {
         String disabledReason = ReplayConfigPersonResolver.reviewDisabledReason(info, operator, row.reviewStatus());
         return new ReplayOneSideErrorCodeIgnoreRow(row.id(), row.serviceCode(), row.category(), row.ownership(), row.errorCode(), row.ignoreReason(),
                 row.reviewStatus(), row.createdAt(), row.updatedAt(), info == null ? null : info.oldTransactionCode(),
-                info == null ? null : info.developer(), info == null ? null : info.bankOwner(), disabledReason == null, disabledReason);
+                info == null ? null : info.developer(), info == null ? null : info.bankOwner(), disabledReason == null, disabledReason,
+                info == null ? null : info.domain());
     }
 }
