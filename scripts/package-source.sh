@@ -32,7 +32,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
 rm -f -- "${OUTPUT}"
 
 cd "${REPO_ROOT}"
-zip -qr "${OUTPUT}" "${SOURCE_PATHS[@]}" -x \
+zip -qr -UN=UTF8 "${OUTPUT}" "${SOURCE_PATHS[@]}" -x \
   '.DS_Store' '*/.DS_Store' '*.java.zip' \
   'src/main/resources/111.txt' \
   'src/main/resources/111.txt.zip' \
