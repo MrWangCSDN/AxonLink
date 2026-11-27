@@ -317,6 +317,7 @@ public class ReplayDatabaseComparisonService {
         result.put("sourceTableComment", analysis.sourceTableComment());
         result.put("resultColumns", analysis.resultColumns());
         result.put("candidateKeyColumns", analysis.candidateKeyColumns());
+        result.put("keyOptions", analysis.keyOptions());
         var person = tablePersonDao == null ? null : tablePersonDao.findByTableName(analysis.sourceTableName());
         result.put("domainName", person == null ? "" : person.domain());
         result.put("reviserName", person == null ? "" : person.developer());

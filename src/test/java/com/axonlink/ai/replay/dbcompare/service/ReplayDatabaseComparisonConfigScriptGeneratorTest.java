@@ -1,6 +1,10 @@
 package com.axonlink.ai.replay.dbcompare.service;
 
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigScriptValidationError;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareConfigurationIdentity;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareCustomSql;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlColumn;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareVersionTableItem;
 import org.junit.jupiter.api.Test;
@@ -8,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -130,6 +136,74 @@ class ReplayDatabaseComparisonConfigScriptGeneratorTest {
             assertFalse(output.contains(";) result_q"));
             assertTrue(output.contains("'SQL_123456','汇总比对'"));
         }
+    }
+
+    @Test
+    void correlatedExistsGeneratesExecutableTwoSidedQueriesAndDistinctNew17Configurations() throws Exception {
+        String source = "kgnb_chrg_item";
+        var snapshots = List.of(
+                correlatedSnapshot(source, "存在_样本", false, 100, null),
+                correlatedSnapshot(source + "_1", "不存在_全量", true, -1, null),
+                correlatedSnapshot(source + "_2", "存在_全量", false, -1, null));
+        var artifact = generator.generateNew("exists-fixture", snapshots);
+        String output = sql(artifact);
+
+        assertEquals(3, artifact.tableCount());
+        assertEquals(12, artifact.fieldCount());
+        assertTrue(output.contains("source_table_name,configuration_name,configuration_scope)"));
+        for (int index = 0; index < snapshots.size(); index++) {
+            var snapshot = snapshots.get(index);
+            String scope = snapshot.customSql().sql().replace("'", "''");
+            String configurationValues = "'HASH'," + snapshot.sampleLimit() + ",'创建人','creator',64,'"
+                    + source + "','" + snapshot.configurationName() + "','" + scope + "')";
+            assertTrue(output.contains("'dept','" + snapshot.tableName() + "'"));
+            assertTrue(output.contains(configurationValues));
+            String projection = correlatedProjection(scope);
+            String sqlRow = "(" + (index + 1) + ",'" + projection + ") orig',1,'" + projection + ") dest',2)";
+            assertTrue(output.contains(sqlRow), snapshot.tableName());
+            assertTrue(output.contains("(" + (index + 1) + ",'tenant_id','1','tenant_id','1','1','1','0')"));
+            assertTrue(output.contains("(" + (index + 1) + ",'item_id','1','item_id','2','2','1','0')"));
+            assertTrue(output.contains("(" + (index + 1) + ",'gntltr_id','1','gntltr_id','3','3','0','0')"));
+            assertTrue(output.contains("(" + (index + 1) + ",'amount','1','amount','4','4','0','0')"));
+        }
+
+        var limited = correlatedSnapshot(source, "有序限量", false, 100, 25L);
+        String limitedScript = sql(generator.generateNew("exists-limited", List.of(limited)));
+        String limitedProjection = correlatedProjection(limited.customSql().sql().replace("'", "''"))
+                + " order by \"tenant_id\",\"item_id\" limit 25)";
+        assertTrue(limitedScript.contains(limitedProjection + " orig"));
+        assertTrue(limitedScript.contains(limitedProjection + " dest"));
+
+        String outputDirectory = System.getProperty("axon.exists.fixture.dir");
+        if (outputDirectory != null && !outputDirectory.isBlank()) {
+            var directory = Files.createDirectories(Path.of(outputDirectory));
+            Files.write(directory.resolve("axon-exists-new17.sql"), artifact.sqlContent());
+        }
+    }
+
+    private String correlatedProjection(String escapedScope) {
+        return "(select result_q.\"tenant_id\" as \"tenant_id\",result_q.\"item_id\" as \"item_id\","
+                + "result_q.\"gntltr_id\" as \"gntltr_id\",result_q.\"amount\" as \"amount\" from (\n"
+                + escapedScope + "\n) result_q";
+    }
+
+    private ReplayDbCompareVersionTableItem correlatedSnapshot(
+            String code, String name, boolean negate, int sampleLimit, Long compareLimit) {
+        String source = "kgnb_chrg_item";
+        String query = "select kci.tenant_id,kci.item_id,kci.gntltr_id,kci.amount from " + source
+                + " kci where " + (negate ? "not exists" : "exists")
+                + " (select 1 from kgna_gntl_acct kga where kga.gntltr_id=kci.gntltr_id and kga.gntltr_bsn_stcd<>'S')";
+        String canonical = ReplayDatabaseComparisonCustomSqlAnalyzer.parseSql(query).sql();
+        var fields = List.of(field("tenant_id", "tenant_id", false, 1), field("item_id", "item_id", false, 2),
+                field("gntltr_id", "gntltr_id", false, 3), field("amount", "amount", false, 4));
+        var columns = fields.stream().map(field -> new ReplayDbCompareSqlColumn(field.columnName(),
+                field.columnName(), field.columnName().equals("amount") ? "numeric" : "varchar", field.comparisonOrder())).toList();
+        return new ReplayDbCompareVersionTableItem(1L, 1L, "base_schema", code, "收费项目", "存款组",
+                "100", "creator", "创建人", "101", "owner", "负责人",
+                null, null, compareLimit, LocalDate.of(2026, 11, 27), fields.size(), fields)
+                .withSampleLimit(sampleLimit).withCustomSql(new ReplayDbCompareCustomSql(canonical, source, columns))
+                .withConfigurationIdentity(new ReplayDbCompareConfigurationIdentity(source, name))
+                .withComparisonKey(new ReplayDbCompareKeySelection("SQL_RESULT_KEY", "RESULT_KEY", List.of("tenant_id", "item_id")));
     }
 
     @Test

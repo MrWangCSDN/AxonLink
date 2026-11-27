@@ -209,9 +209,22 @@ public class ReplayBaseMetadataService {
         return inspectTables(connection, schema, normalizedIdentifiers(tableNames), 30);
     }
 
+    /** Custom SQL uses exact relation names and original column spellings on its existing readonly connection. */
+    Map<String, ReplayBaseMetadataSnapshot> inspectTables(
+            Connection connection, String schema, Collection<String> tableNames, int queryTimeoutSeconds)
+            throws SQLException {
+        return inspectTables(connection, schema, normalizedIdentifiers(tableNames), queryTimeoutSeconds, true);
+    }
+
     private Map<String, ReplayBaseMetadataSnapshot> inspectTables(
             Connection connection, String schema, LinkedHashSet<String> normalizedNames,
             int queryTimeoutSeconds) throws SQLException {
+        return inspectTables(connection, schema, normalizedNames, queryTimeoutSeconds, false);
+    }
+
+    private Map<String, ReplayBaseMetadataSnapshot> inspectTables(
+            Connection connection, String schema, LinkedHashSet<String> normalizedNames,
+            int queryTimeoutSeconds, boolean exactRelationNames) throws SQLException {
         if (normalizedNames.isEmpty()) return Map.of();
 
         String tablePlaceholders = String.join(",", Collections.nCopies(normalizedNames.size(), "?"));
@@ -222,9 +235,9 @@ public class ReplayBaseMetadataService {
                   JOIN pg_namespace n ON n.oid = c.relnamespace
                  WHERE c.relkind IN ('r', 'p')
                    AND n.nspname = ?
-                   AND lower(c.relname) IN (%s)
+                   AND %s IN (%s)
                  ORDER BY lower(c.relname)
-                """.formatted(tablePlaceholders);
+                """.formatted(exactRelationNames ? "c.relname" : "lower(c.relname)", tablePlaceholders);
 
         Map<String, String> existingTables = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(tableSql)) {
@@ -243,9 +256,9 @@ public class ReplayBaseMetadataService {
         }
 
         Map<String, List<ReplayBaseColumnOption>> columnsByTable = queryColumnsByTables(
-                connection, schema, existingTables.keySet(), queryTimeoutSeconds);
+                connection, schema, existingTables.keySet(), queryTimeoutSeconds, exactRelationNames);
         Map<String, List<ReplayBaseKeyOption>> keysByTable = queryKeysByTables(
-                connection, schema, columnsByTable, queryTimeoutSeconds);
+                connection, schema, columnsByTable, queryTimeoutSeconds, exactRelationNames);
         LinkedHashMap<String, ReplayBaseMetadataSnapshot> result = new LinkedHashMap<>();
         for (String tableName : normalizedNames) {
             boolean exists = existingTables.containsKey(tableName);
@@ -364,14 +377,14 @@ public class ReplayBaseMetadataService {
 
     private Map<String, List<ReplayBaseColumnOption>> queryColumnsByTables(
             Connection connection, String schema, Collection<String> tableNames,
-            int queryTimeoutSeconds) throws SQLException {
+            int queryTimeoutSeconds, boolean exactRelationNames) throws SQLException {
         if (tableNames.isEmpty()) {
             return Map.of();
         }
         String placeholders = String.join(",", Collections.nCopies(tableNames.size(), "?"));
         String sql = """
                 SELECT lower(c.relname) AS table_name,
-                       lower(a.attname) AS column_name,
+                       %s AS column_name,
                        col_description(c.oid, a.attnum) AS column_comment,
                        format_type(a.atttypid, a.atttypmod) AS data_type,
                        a.attnum AS ordinal_position,
@@ -381,11 +394,12 @@ public class ReplayBaseMetadataService {
                   JOIN pg_namespace n ON n.oid = c.relnamespace
                   LEFT JOIN pg_constraint pk ON pk.conrelid = c.oid AND pk.contype = 'p'
                  WHERE n.nspname = ?
-                   AND lower(c.relname) IN (%s)
+                   AND %s IN (%s)
                    AND a.attnum > 0
                    AND NOT a.attisdropped
                  ORDER BY lower(c.relname), a.attnum
-                """.formatted(placeholders);
+                """.formatted(exactRelationNames ? "a.attname" : "lower(a.attname)",
+                        exactRelationNames ? "c.relname" : "lower(c.relname)", placeholders);
         Map<String, List<ReplayBaseColumnOption>> result = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             configureBatchQuery(statement, schema, queryTimeoutSeconds);
@@ -401,7 +415,8 @@ public class ReplayBaseMetadataService {
                             rows.getString("primary_key_attnums"), ordinalPosition);
                     result.computeIfAbsent(tableName, ignored -> new ArrayList<>()).add(
                             new ReplayBaseColumnOption(
-                                    normalizeIdentifier(rows.getString("column_name")),
+                                    exactRelationNames ? rows.getString("column_name")
+                                            : normalizeIdentifier(rows.getString("column_name")),
                                     rows.getString("column_comment"),
                                     rows.getString("data_type"),
                                     ordinalPosition,
@@ -416,6 +431,12 @@ public class ReplayBaseMetadataService {
     private Map<String, List<ReplayBaseKeyOption>> queryKeysByTables(
             Connection connection, String schema, Map<String, List<ReplayBaseColumnOption>> columnsByTable,
             int queryTimeoutSeconds) throws SQLException {
+        return queryKeysByTables(connection, schema, columnsByTable, queryTimeoutSeconds, false);
+    }
+
+    private Map<String, List<ReplayBaseKeyOption>> queryKeysByTables(
+            Connection connection, String schema, Map<String, List<ReplayBaseColumnOption>> columnsByTable,
+            int queryTimeoutSeconds, boolean exactRelationNames) throws SQLException {
         if (columnsByTable.isEmpty()) {
             return Map.of();
         }
@@ -432,14 +453,14 @@ public class ReplayBaseMetadataService {
                   JOIN pg_namespace n ON n.oid = c.relnamespace
                   JOIN pg_class index_class ON index_class.oid = i.indexrelid
                  WHERE n.nspname = ?
-                   AND lower(c.relname) IN (%s)
+                   AND %s IN (%s)
                    AND i.indisunique
                    AND i.indisvalid
                    AND i.indisready
                    AND i.indexprs IS NULL
                    AND i.indpred IS NULL
                  ORDER BY lower(c.relname), i.indisprimary DESC, index_class.relname
-                """.formatted(placeholders);
+                """.formatted(exactRelationNames ? "c.relname" : "lower(c.relname)", placeholders);
         Map<String, Map<Integer, String>> columnNamesByTable = new LinkedHashMap<>();
         columnsByTable.forEach((tableName, columns) -> {
             Map<Integer, String> names = new LinkedHashMap<>();

@@ -36,6 +36,22 @@ class ReplayDatabaseComparisonCustomSqlServiceTest {
     private ReplayDatabaseComparisonVersionService versionService;
 
     @Test
+    void analysisReturnsEveryMatchingIndexOption() {
+        var original = analysis(SQL);
+        var options = List.of(new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption(
+                "source_pk", "PRIMARY_KEY", List.of("id")),
+                new com.axonlink.ai.replay.dbcompare.dto.ReplayBaseKeyOption(
+                        "source_unique", "UNIQUE_INDEX", List.of("id")));
+        when(analyzer.analyze(SQL)).thenReturn(new ReplayDbCompareSqlAnalysis(original.sql(), original.schemaName(),
+                original.sourceTableName(), original.sourceTableComment(), original.resultColumns(), List.of("id"), options));
+
+        var response = service.analyzeCustomSql(SQL, operator());
+
+        assertEquals(options, response.get("keyOptions"));
+        assertEquals(List.of("id"), response.get("candidateKeyColumns"));
+    }
+
+    @Test
     void multipleSqlConfigurationsKeepIndependentFixedCodesAndNeverReuseDeletedSuffixes() throws Exception {
         var first = service.createCustomSql(request("条件一", SQL, null, "source_table", 1), operator());
         var mapper = new com.fasterxml.jackson.databind.ObjectMapper();

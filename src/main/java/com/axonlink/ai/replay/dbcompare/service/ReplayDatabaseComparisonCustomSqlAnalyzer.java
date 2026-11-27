@@ -5,11 +5,18 @@ import com.alibaba.druid.sql.SQLUtils;
 import com.alibaba.druid.sql.ast.SQLObject;
 import com.alibaba.druid.sql.ast.SQLStatement;
 import com.alibaba.druid.sql.ast.SQLCurrentTimeExpr;
+import com.alibaba.druid.sql.ast.SQLExpr;
 import com.alibaba.druid.sql.ast.expr.SQLAggregateExpr;
 import com.alibaba.druid.sql.ast.expr.SQLAllColumnExpr;
 import com.alibaba.druid.sql.ast.expr.SQLCastExpr;
+import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExpr;
+import com.alibaba.druid.sql.ast.expr.SQLBinaryOpExprGroup;
+import com.alibaba.druid.sql.ast.expr.SQLBinaryOperator;
+import com.alibaba.druid.sql.ast.expr.SQLExistsExpr;
 import com.alibaba.druid.sql.ast.expr.SQLIdentifierExpr;
+import com.alibaba.druid.sql.ast.expr.SQLIntegerExpr;
 import com.alibaba.druid.sql.ast.expr.SQLMethodInvokeExpr;
+import com.alibaba.druid.sql.ast.expr.SQLNotExpr;
 import com.alibaba.druid.sql.ast.expr.SQLPropertyExpr;
 import com.alibaba.druid.sql.ast.expr.SQLVariantRefExpr;
 import com.alibaba.druid.sql.ast.statement.SQLExprTableSource;
@@ -20,6 +27,7 @@ import com.alibaba.druid.sql.ast.statement.SQLSelectStatement;
 import com.alibaba.druid.sql.dialect.postgresql.ast.stmt.PGSelectQueryBlock;
 import com.alibaba.druid.sql.dialect.postgresql.visitor.PGASTVisitorAdapter;
 import com.axonlink.ai.replay.dbcompare.config.ReplayDatabaseComparisonProperties;
+import com.axonlink.ai.replay.dbcompare.dto.ReplayBaseMetadataSnapshot;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareField;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareKeySelection;
 import com.axonlink.ai.replay.dbcompare.dto.ReplayDbCompareSqlAnalysis;
@@ -34,7 +42,9 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -64,22 +74,26 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
             "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "LOCALTIME", "LOCALTIMESTAMP",
             "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER", "CURRENT_ROLE", "CURRENT_SCHEMA", "CURRENT_CATALOG");
     private static final String TABLE_SQL = """
-            SELECT obj_description(c.oid) AS table_comment
-              FROM pg_class c
-              JOIN pg_namespace n ON n.oid = c.relnamespace
+            SELECT pg_catalog.obj_description(c.oid) AS table_comment,
+                   pg_catalog.pg_table_is_visible(c.oid) AS table_visible
+              FROM pg_catalog.pg_class c
+              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN ('r', 'p')
             """;
 
     private final ReplayBaseDataSourceRegistry registry;
     private final ReplayDatabaseComparisonProperties properties;
+    private final ReplayBaseMetadataService metadataService;
     private final ReplayDatabaseComparisonScopeCompiler scopeCompiler =
             new ReplayDatabaseComparisonScopeCompiler(new ReplayDatabaseComparisonConditionCodec());
 
     public ReplayDatabaseComparisonCustomSqlAnalyzer(
             ReplayBaseDataSourceRegistry registry,
-            ReplayDatabaseComparisonProperties properties) {
+            ReplayDatabaseComparisonProperties properties,
+            ReplayBaseMetadataService metadataService) {
         this.registry = registry;
         this.properties = properties;
+        this.metadataService = metadataService;
     }
 
     public ReplayDbCompareSqlAnalysis analyze(String sql) {
@@ -92,10 +106,23 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
         try (Connection connection = registry.requireDataSource().getConnection()) {
             connection.setReadOnly(true);
             connection.setSchema(schema);
-            String comment = sourceTableComment(connection, schema, parsed.sourceTableName());
+            String comment = null;
+            for (String table : parsed.referencedTableNames()) {
+                String tableComment = sourceTableComment(connection, schema, table);
+                if (table.equals(parsed.sourceTableName())) comment = tableComment;
+            }
+            ReplayBaseMetadataSnapshot source = metadataService.inspectTables(connection, schema,
+                    List.of(parsed.sourceTableName()), METADATA_TIMEOUT_SECONDS).get(parsed.sourceTableName());
+            if (source == null || !source.tableExists() || source.keyOptions().isEmpty()) {
+                throw new IllegalArgumentException("来源表缺少有效主键或唯一索引：" + parsed.sourceTableName());
+            }
             List<ReplayDbCompareSqlColumn> columns = resultColumns(connection, parsed.sql());
+            var availableKeys = ReplayDatabaseComparisonCustomSqlKeys.availableKeys(columns, source.keyOptions());
+            if (availableKeys.isEmpty()) {
+                throw new IllegalArgumentException("SQL 结果字段未包含来源表任何一组完整主键或唯一索引，请修改 SQL 后重新解析");
+            }
             return new ReplayDbCompareSqlAnalysis(parsed.sql(), schema, parsed.sourceTableName(), comment,
-                    columns, candidateKeys(parsed.query(), columns));
+                    columns, availableKeys.get(0).columnNames(), availableKeys);
         } catch (SQLException exception) {
             String state = exception.getSQLState();
             if (state != null && (state.startsWith("22")
@@ -115,6 +142,9 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
             throw new IllegalArgumentException("结果比对键必须包含在所选比对字段中");
         }
         ReplayDbCompareSqlAnalysis analysis = analyze(sql);
+        if (!ReplayDatabaseComparisonCustomSqlKeys.matchesSourceKey(analysis.keyOptions(), keys)) {
+            throw new IllegalArgumentException("结果比对键必须选择来源表一组完整主键或唯一索引字段");
+        }
         Map<String, ReplayDbCompareSqlColumn> columns = new LinkedHashMap<>();
         analysis.resultColumns().forEach(column -> columns.put(column.columnName(), column));
         List<ReplayDbCompareField> fields = new ArrayList<>();
@@ -145,23 +175,17 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
         if (select.getWithSubQuery() != null || !(select.getQuery() instanceof SQLSelectQueryBlock query)) {
             throw new IllegalArgumentException("暂不支持 WITH、UNION 或子查询");
         }
-        if (!(query.getFrom() instanceof SQLExprTableSource source)
-                || !(source.getExpr() instanceof SQLIdentifierExpr identifier)
-                || source.getSampling() != null || source.getPartitionSize() != 0) {
-            throw new IllegalArgumentException("FROM 必须是不带 Schema 的单个基础表，暂不支持 JOIN 或子查询");
-        }
-        String name = SQLUtils.normalize(identifier.getName());
-        String tableName = name.toLowerCase(Locale.ROOT);
-        if (!IDENTIFIER.matcher(tableName).matches() || tableName.length() > 256
-                || identifier.getName().startsWith("\"") && !name.equals(tableName)) {
-            throw new IllegalArgumentException("来源表必须使用普通小写表名");
-        }
+        String tableName = sourceTableName(query);
         validateClauses(select, query);
+        Set<SQLSelect> allowedSubqueries = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<String> referencedTables = new LinkedHashSet<>();
+        referencedTables.add(tableName);
+        collectWhereExists(query.getWhere(), allowedSubqueries, referencedTables);
         statement.accept(new PGASTVisitorAdapter() {
             @Override
             public void preVisit(SQLObject object) {
-                if (object instanceof SQLSelect nested && nested != select) {
-                    throw new IllegalArgumentException("暂不支持子查询");
+                if (object instanceof SQLSelect nested && nested != select && !allowedSubqueries.contains(nested)) {
+                    throw new IllegalArgumentException("仅支持外层 WHERE 中的单层 EXISTS/NOT EXISTS 子查询");
                 }
                 if (object instanceof SQLVariantRefExpr) {
                     throw new IllegalArgumentException("SQL 不支持参数占位符");
@@ -195,7 +219,70 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
         statement.setAfterSemi(false);
         String normalized = SQLUtils.toSQLString(statement, DbType.postgresql).trim();
         requireSqlSize(normalized);
-        return new ParsedSql(normalized, tableName, query);
+        return new ParsedSql(normalized, tableName, query, referencedTables);
+    }
+
+    private static String sourceTableName(SQLSelectQueryBlock query) {
+        if (!(query.getFrom() instanceof SQLExprTableSource source)
+                || !(source.getExpr() instanceof SQLIdentifierExpr identifier)
+                || source.getSampling() != null || source.getPartitionSize() != 0) {
+            throw new IllegalArgumentException("FROM 必须是不带 Schema 的单个基础表，暂不支持 JOIN 或 FROM 子查询");
+        }
+        String name = SQLUtils.normalize(identifier.getName());
+        String table = name.toLowerCase(Locale.ROOT);
+        if (!IDENTIFIER.matcher(table).matches() || table.length() > 256
+                || identifier.getName().startsWith("\"") && !name.equals(table)) {
+            throw new IllegalArgumentException("来源表必须使用普通小写表名");
+        }
+        return table;
+    }
+
+    /** Only boolean WHERE leaves grant permission; structurally equal subqueries elsewhere must remain rejected. */
+    private static void collectWhereExists(SQLExpr expression, Set<SQLSelect> allowed, Set<String> tables) {
+        if (expression instanceof SQLExistsExpr exists) {
+            SQLSelect nested = exists.getSubQuery();
+            if (nested == null || nested.getWithSubQuery() != null
+                    || !(nested.getQuery() instanceof SQLSelectQueryBlock query)) {
+                throw new IllegalArgumentException("EXISTS 内层仅支持单个基础表 SELECT 查询");
+            }
+            validateClauses(nested, query);
+            if (query.getDistionOption() != 0 || query.getGroupBy() != null
+                    || query.getOrderBy() != null || nested.getOrderBy() != null
+                    || query.getSelectList().size() != 1) {
+                throw new IllegalArgumentException("EXISTS 内层仅支持 SELECT 1 或 SELECT *，不支持分组、排序或 DISTINCT");
+            }
+            SQLSelectItem projection = query.getSelectItem(0);
+            boolean constantOne = projection.getExpr() instanceof SQLIntegerExpr integer
+                    && "1".equals(integer.getNumber().toString());
+            boolean bareStar = projection.getExpr() instanceof SQLAllColumnExpr star
+                    && star.getOwner() == null
+                    && (star.getExcept() == null || star.getExcept().isEmpty())
+                    && (star.getReplace() == null || star.getReplace().isEmpty());
+            if (projection.getAlias() != null || !(constantOne || bareStar)) {
+                throw new IllegalArgumentException("EXISTS 内层仅支持无别名的 SELECT 1 或 SELECT *");
+            }
+            nested.accept(new PGASTVisitorAdapter() {
+                @Override public void preVisit(SQLObject object) {
+                    if (object instanceof SQLAggregateExpr) {
+                        throw new IllegalArgumentException("EXISTS 内层暂不支持聚合函数");
+                    }
+                }
+            });
+            tables.add(sourceTableName(query));
+            allowed.add(nested);
+            // Do not grant permissions inside this subquery: deeper SELECT nodes fail the whole-tree validation.
+        } else if (expression instanceof SQLBinaryOpExpr binary && booleanConnector(binary.getOperator())) {
+            collectWhereExists(binary.getLeft(), allowed, tables);
+            collectWhereExists(binary.getRight(), allowed, tables);
+        } else if (expression instanceof SQLBinaryOpExprGroup group && booleanConnector(group.getOperator())) {
+            for (SQLExpr item : group.getItems()) collectWhereExists(item, allowed, tables);
+        } else if (expression instanceof SQLNotExpr not) {
+            collectWhereExists(not.getExpr(), allowed, tables);
+        }
+    }
+
+    private static boolean booleanConnector(SQLBinaryOperator operator) {
+        return operator == SQLBinaryOperator.BooleanAnd || operator == SQLBinaryOperator.BooleanOr;
     }
 
     private static void validateClauses(SQLSelect select, SQLSelectQueryBlock query) {
@@ -256,6 +343,9 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
                 if (!rows.next()) {
                     throw new IllegalArgumentException("BASE 母库中不存在来源表：" + tableName);
                 }
+                if (!rows.getBoolean("table_visible")) {
+                    throw new IllegalArgumentException("BASE 母库来源表被同名系统表或临时表遮蔽：" + tableName);
+                }
                 return rows.getString("table_comment");
             }
         }
@@ -285,30 +375,10 @@ public class ReplayDatabaseComparisonCustomSqlAnalyzer {
         }
     }
 
-    private List<String> candidateKeys(SQLSelectQueryBlock query, List<ReplayDbCompareSqlColumn> columns) {
-        if (query.getGroupBy() == null || query.getSelectList().size() != columns.size()) {
-            return List.of();
+    record ParsedSql(String sql, String sourceTableName, SQLSelectQueryBlock query, Set<String> referencedTableNames) {
+        ParsedSql {
+            referencedTableNames = Collections.unmodifiableSet(new LinkedHashSet<>(referencedTableNames));
         }
-        LinkedHashSet<String> keys = new LinkedHashSet<>();
-        for (var grouping : query.getGroupBy().getItems()) {
-            int matched = -1;
-            for (int index = 0; index < query.getSelectList().size(); index++) {
-                SQLSelectItem item = query.getSelectItem(index);
-                if (item.getExpr().toString().equalsIgnoreCase(grouping.toString())
-                        || item.getAlias() != null && SQLUtils.normalize(item.getAlias()).equalsIgnoreCase(grouping.toString())) {
-                    matched = index;
-                    break;
-                }
-            }
-            if (matched < 0) {
-                return List.of();
-            }
-            keys.add(columns.get(matched).columnName());
-        }
-        return List.copyOf(keys);
-    }
-
-    record ParsedSql(String sql, String sourceTableName, SQLSelectQueryBlock query) {
     }
 
     public record PreparedSql(ReplayDbCompareSqlAnalysis analysis,
